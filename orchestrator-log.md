@@ -46,3 +46,6 @@ BUILD OK stack-head
 - 2026-09-13 02:08:54 +03: COMMIT OK 01-unconstrained-a: [main a63437f] Add experiment 01 unconstrained-a
 - 2026-09-13 02:08:54 +03: START 06-hub-and-spokes attempt 1 via claude-opus, pid 23106
 - 2026-09-13 02:10:14 +03: FINISH 03-unconstrained-c via codex, exit 0, README present
+- 2026-09-13 02:10:14 +03: COMMIT OK 03-unconstrained-c: [main 6cb15c6] Add experiment 03 unconstrained-c
+- 2026-09-13 02:10:15 +03: START 07-stack-timeline attempt 1 via codex, pid 24677
+- 2026-09-13 02:10:35 +03: FINISH 05-boxes-static-vs-runtime via codex, exit 0, README present
