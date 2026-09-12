@@ -57,3 +57,29 @@ BUILD OK stack-head
 - 2026-09-13 02:29:46 +03: COMMIT OK 04-textbook-chapter: [main 37a5420] Add experiment 04 textbook-chapter
 - 2026-09-13 02:29:46 +03: START 09-diff-of-intent attempt 1 via codex, pid 38374
 - 2026-09-13 02:41:26 +03: FINISH 07-stack-timeline via codex, exit 0, README present
+- 2026-09-13 02:41:27 +03: COMMIT OK 07-stack-timeline: [main c6d49d3] Add experiment 07 stack-timeline
+- 2026-09-13 02:41:27 +03: START 10-tour-guide attempt 1 via claude-opus, pid 52978
+- 2026-09-13 02:43:54 +03: MONITOR OK supervisor=1153, finished=5, running=5, queued=30, dirty-worktrees=0, missing-readmes=0, free-disk=33.6GiB
+- 2026-09-13 02:54:37 +03: README MISSING 02-unconstrained-b after worker exit 1
+- 2026-09-13 02:54:37 +03: REQUEUE 02-unconstrained-b after attempt 2: worker exited 1 without README
+- 2026-09-13 02:54:37 +03: README MISSING 08-adversarial after worker exit 1
+- 2026-09-13 02:54:37 +03: REQUEUE 08-adversarial after attempt 1: worker exited 1 without README
+- 2026-09-13 02:54:37 +03: START 02-unconstrained-b attempt 3 via codex, pid 58740
+- 2026-09-13 02:54:37 +03: START 08-adversarial attempt 2 via claude-opus, pid 58741
+- 2026-09-13 02:54:47 +03: README MISSING 06-hub-and-spokes after worker exit 1
+- 2026-09-13 02:54:47 +03: REQUEUE 06-hub-and-spokes after attempt 1: worker exited 1 without README
+- 2026-09-13 02:54:47 +03: README MISSING 10-tour-guide after worker exit 1
+- 2026-09-13 02:54:47 +03: REQUEUE 10-tour-guide after attempt 1: worker exited 1 without README
+- 2026-09-13 02:54:47 +03: README MISSING 08-adversarial after worker exit 1
+- 2026-09-13 02:54:47 +03: REQUEUE 08-adversarial after attempt 2: worker exited 1 without README
+- 2026-09-13 02:54:47 +03: START 06-hub-and-spokes attempt 2 via claude-opus, pid 59325
+- 2026-09-13 02:54:47 +03: START 08-adversarial attempt 3 via codex, pid 59326
+- 2026-09-13 02:54:47 +03: START 10-tour-guide attempt 2 via claude-opus, pid 59327
+- 2026-09-13 02:54:57 +03: README MISSING 06-hub-and-spokes after worker exit 1
+- 2026-09-13 02:54:57 +03: REQUEUE 06-hub-and-spokes after attempt 2: worker exited 1 without README
+- 2026-09-13 02:54:57 +03: README MISSING 10-tour-guide after worker exit 1
+- 2026-09-13 02:54:57 +03: REQUEUE 10-tour-guide after attempt 2: worker exited 1 without README
+- 2026-09-13 02:54:57 +03: START 06-hub-and-spokes attempt 3 via codex, pid 59944
+- 2026-09-13 02:54:57 +03: START 10-tour-guide attempt 3 via codex, pid 59945
+- 2026-09-13 02:59:01 +03: MONITOR OK supervisor=1153, finished=5, running=5, queued=30, dirty-worktrees=0, missing-readmes=0, free-disk=33.0GiB
+- 2026-09-13 02:59:18 +03: FINISH 09-diff-of-intent via codex, exit 0, README present
