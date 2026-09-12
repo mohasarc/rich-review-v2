@@ -461,7 +461,7 @@ The orchestrator runs each brief as its own subagent, using whatever subagent me
 - **Empty queue.** Generate more briefs per section 8.3. Never idle for long while the human sleeps.
 - **Runs until killed.** Record how to stop it in `orchestrator-log.md`.
 - **Model.** Strongest available. Do not downgrade to save cost.
-- **Harness variety.** If more than one agent harness is available on the machine, spread briefs across them and record which per experiment. Different harnesses are one more source of variety.
+- **Harness variety.** Two harnesses are available: Codex and Claude Code. Spread briefs across both and record which per experiment; different harnesses are one more source of variety. Codex credits are effectively unlimited. Claude Code subagents must run the Opus model, never Fable. If Claude Code fails for credit or quota reasons, put that brief back in the queue, run it on Codex, and send every later brief to Codex. Log the switch.
 
 ---
 
