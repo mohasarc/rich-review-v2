@@ -37,7 +37,8 @@ def experiment_rows() -> tuple[list[str], int]:
     for folder in folders:
         readme_path = folder / "README.md"
         if not readme_path.exists():
-            failed += 1
+            if (QUEUE / "done" / f"{folder.name}.md").exists():
+                failed += 1
             continue
         markdown = readme_path.read_text(errors="replace")
         name = folder.name
