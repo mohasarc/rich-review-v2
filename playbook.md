@@ -28,7 +28,7 @@ These apply to every experiment, whatever form it takes.
 8. **Decisions are first-class.** Every decision the change embodies is surfaced. Each is marked as *stated* (a reason exists in PR body, commits, plan, transcript) or *unexplained* (no reason found). Never invent a reason. Unrequested changes and weakened/deleted tests are decisions and get the same weight as architectural ones.
 9. **Linear and nonlinear.** A reader can go top to bottom, or jump from any high-level element into a lower-level explanation of that element, and come back.
 10. **Pictures before words.** When a diagram and a paragraph say the same thing, the paragraph goes.
-11. **Self-contained.** Opens from disk. No servers required to view (a local static server is fine if the agent documents the one command). No external services.
+11. **Openable by the human.** The README says how to open it: a file, one command, or a URL. Servers, hosting, external services, any library or API are all fine.
 12. **Symnav untouched.** Never modify, commit to, push, or rebase any symnav branch. Worktrees are read-only except for build artifacts (`node_modules`, `dist`).
 13. **Every experiment folder has a README** (section 7). The README is as important as the artifact.
 14. **The agent declares its choices**: angle, shape, box lens, opening style, representations used, inputs used, what it tried and dropped. In the README.
@@ -167,7 +167,7 @@ Agents get the bundle path in their brief. They may go beyond it (git log of tou
   scripts/                 orchestrator's own scripts: worker loop, bundle builder, index builder
 ```
 
-`git init` the directory. Commit `philosophy.md`, `playbook.md`, `scripts/`, `queue/`, and every experiment folder as it completes (one commit per experiment: `Add experiment NN <slug>`). Gitignore `worktrees/`, `node_modules/`, and anything over 20 MB. Never push anywhere.
+`git init` the directory. Commit `philosophy.md`, `playbook.md`, `scripts/`, `queue/`, and every experiment folder as it completes (one commit per experiment: `Add experiment NN <slug>`). Gitignore `worktrees/`, `node_modules/`, and anything over 20 MB.
 
 ---
 
@@ -531,8 +531,6 @@ When the human returns they open `index.html`. It should let them, in this order
 
 - Modifying, committing to, pushing, or rebasing any symnav branch or the symnav clone.
 - Deleting another agent's worktree or experiment folder.
-- Pushing `rich-review-v2` anywhere.
-- External services, hosting, paid APIs beyond the agent harness itself.
 - Reading `~/projects/rich-review/`.
 - Verdict, approve/reject, or comment-storage UI.
 - Inventing a rationale for a decision and presenting it as the author's.
