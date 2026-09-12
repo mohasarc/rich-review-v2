@@ -54,7 +54,9 @@ def experiment_rows() -> tuple[list[str], int]:
         spent = first_line(section(markdown, "Time spent")) or "unspecified"
         dropped = first_line(section(markdown, "What I would drop")) or "none stated"
         harness_path = folder / "harness.txt"
-        harness = first_line(harness_path.read_text(errors="replace")) if harness_path.exists() else "unrecorded"
+        harness = " → ".join(
+            line.strip() for line in harness_path.read_text(errors="replace").splitlines() if line.strip()
+        ) if harness_path.exists() else "unrecorded"
         screenshot = next(iter(sorted((folder / "screenshots").glob("*.png"))), None)
         screenshot_html = ""
         if screenshot:
