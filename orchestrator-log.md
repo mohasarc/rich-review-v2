@@ -43,3 +43,6 @@ BUILD OK stack-head
 - 2026-09-13 01:58:33 +03: MONITOR START pid 13626, five-minute audits enabled
 - 2026-09-13 01:58:33 +03: MONITOR OK supervisor=1153, finished=0, running=5, queued=35, dirty-worktrees=0, missing-readmes=0, free-disk=37.4GiB
 - 2026-09-13 02:08:54 +03: FINISH 01-unconstrained-a via codex, exit 0, README present
+- 2026-09-13 02:08:54 +03: COMMIT OK 01-unconstrained-a: [main a63437f] Add experiment 01 unconstrained-a
+- 2026-09-13 02:08:54 +03: START 06-hub-and-spokes attempt 1 via claude-opus, pid 23106
+- 2026-09-13 02:10:14 +03: FINISH 03-unconstrained-c via codex, exit 0, README present
