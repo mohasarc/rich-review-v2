@@ -1,0 +1,3413 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 8684a7df1..07b4420f1 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -6,10 +6,12 @@
+ 
+ ## Repo layout
+ 
+-- `apps/cli` — the `symnav` binary. Wires Commander, owns the user-facing CLI surface, depends on the three production libraries below.
++- `apps/cli` — the `symnav` binary. Wires Commander, owns the user-facing CLI surface, depends on the five production libraries below.
+ - `packages/core` — language-agnostic primitives and the cross-language backend interface. Has no internal dependencies.
+-- `packages/renderer` — output formatters (text, JSON). Depends only on `@symnav/core`.
++- `packages/daemon` — portable host execution, output, diagnostic, command, and lifecycle report contracts. Has no internal dependencies. Daemon mechanisms move here only when their real implementations migrate.
++- `packages/renderer` — output formatters (text, JSON). May depend only on `@symnav/core` and `@symnav/daemon`.
+ - `packages/backend-typescript` — the TypeScript language backend. Depends only on `@symnav/core`.
++- `packages/telemetry` — shape-only usage capture, storage, and aggregation. Has no internal dependencies.
+ - `packages/testing` — test-only utilities (fixture loader, ESLint config helper, fixtures themselves). Importable from any package's _test_ code; never from production code. Private; never published.
+ 
+ ## Day-to-day commands
+@@ -81,13 +83,15 @@ Writing rules:
+ 
+ The package dependency graph is locked. A given package may import only from the packages listed below.
+ 
+-| Package                      | May depend on (internal)                                         |
+-| ---------------------------- | ---------------------------------------------------------------- |
+-| `@symnav/core`               | (nothing)                                                        |
+-| `@symnav/renderer`           | `@symnav/core`                                                   |
+-| `@symnav/backend-typescript` | `@symnav/core`                                                   |
+-| `symnav` (apps/cli)          | `@symnav/core`, `@symnav/renderer`, `@symnav/backend-typescript` |
+-| `@symnav/testing`            | (nothing)                                                        |
++| Package                      | May depend on (internal)                                                                                |
++| ---------------------------- | ------------------------------------------------------------------------------------------------------- |
++| `@symnav/core`               | (nothing)                                                                                               |
++| `@symnav/daemon`             | (nothing)                                                                                               |
++| `@symnav/renderer`           | `@symnav/core`, `@symnav/daemon`                                                                        |
++| `@symnav/backend-typescript` | `@symnav/core`                                                                                          |
++| `@symnav/telemetry`          | (nothing)                                                                                               |
++| `symnav` (apps/cli)          | `@symnav/core`, `@symnav/daemon`, `@symnav/renderer`, `@symnav/backend-typescript`, `@symnav/telemetry` |
++| `@symnav/testing`            | (nothing)                                                                                               |
+ 
+ `@symnav/testing` is additionally importable from any package's test files. Production code may not import it.
+ 
+diff --git a/apps/cli/package.json b/apps/cli/package.json
+index 4e44d7f8e..0bc9ea565 100644
+--- a/apps/cli/package.json
++++ b/apps/cli/package.json
+@@ -35,6 +35,7 @@
+   "dependencies": {
+     "@symnav/backend-typescript": "workspace:*",
+     "@symnav/core": "workspace:*",
++    "@symnav/daemon": "workspace:*",
+     "@symnav/renderer": "workspace:*",
+     "@symnav/telemetry": "workspace:*",
+     "commander": "^14.0.3",
+diff --git a/apps/cli/src/cli.test.ts b/apps/cli/src/cli.test.ts
+index e7a52d536..7bbf34153 100644
+--- a/apps/cli/src/cli.test.ts
++++ b/apps/cli/src/cli.test.ts
+@@ -1,4 +1,6 @@
+ import { afterEach, expect, it, vi } from "vitest";
++import { DaemonPolicy } from "@symnav/daemon";
++import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
+ import { CommandOutputSnapshot, type DispatchedCommandResult } from "./command-execution-result.js";
+ import type { ProgramDependencies } from "./program-dependencies.js";
+ import { DaemonWorkspaceIdentity } from "./daemon/daemon-workspace-identity.js";
+@@ -10,6 +12,7 @@ afterEach(() => {
+   vi.doUnmock("./daemon/daemon-command-dispatcher.js");
+   vi.doUnmock("./program.js");
+   vi.doUnmock("./state-directory-resolver.js");
++  vi.doUnmock("@symnav/daemon");
+ });
+ 
+ it("owns one canonical state directory across one client invocation", async () => {
+@@ -80,3 +83,55 @@ it("owns one canonical state directory across one client invocation", async () =
+   expect(daemonRecordPath).toBe(expectedIdentity.recordPath("instance"));
+   expect(daemonEndpoint).toBe(expectedIdentity.endpoint("instance"));
+ });
++
++it("owns one exact daemon policy snapshot across one client invocation", async () => {
++  const policy = DaemonPolicyTestFactory.withOverrides(
++    DaemonPolicy.fromSystemMemory({ totalBytes: 8 * 1024 ** 3 }),
++    {
++      transport: { singleResponseTimeoutMs: 471 },
++      resources: {
++        hardProcessRssBytes: 474 * 1024 ** 2,
++        softProcessRssBytes: 473 * 1024 ** 2,
++        resumeProcessRssBytes: 472 * 1024 ** 2,
++      },
++      output: { maximumAggregateSpoolRawBytes: 700 * 1024 ** 2 },
++      shutdown: { idleTimeoutMs: 480 },
++      diagnostics: { maximumDisconnectedTraces: 483 },
++    },
++  );
++  const dependencyPolicies: DaemonPolicy[] = [];
++  const dispatcherPolicies: DaemonPolicy[] = [];
++
++  vi.doMock("@symnav/daemon", () => ({
++    DaemonPolicy: { currentSystem: () => policy },
++  }));
++  vi.doMock("./program.js", () => ({
++    createDefaultDependencies: (_stateDirectory: string, daemonPolicy: DaemonPolicy) => {
++      dependencyPolicies.push(daemonPolicy);
++      return { telemetryEnabled: true } as unknown as ProgramDependencies;
++    },
++    createDefaultProgramContext: () => ({ stdout: {}, stderr: {}, cwd: "/client" }),
++  }));
++  vi.doMock("./cli-program-executor.js", () => ({
++    CommandResultReplayer: { replay: vi.fn() },
++  }));
++  vi.doMock("./daemon/daemon-command-dispatcher.js", () => ({
++    DaemonCommandDispatcher: class {
++      constructor(options: { readonly policy: DaemonPolicy }) {
++        dispatcherPolicies.push(options.policy);
++      }
++
++      execute(): Promise<DispatchedCommandResult> {
++        return Promise.resolve({
++          mode: "cold",
++          result: { output: new CommandOutputSnapshot([]), exitCode: 0 },
++        });
++      }
++    },
++  }));
++
++  await import("./cli.js");
++
++  expect(dependencyPolicies).toEqual([policy]);
++  expect(dispatcherPolicies).toEqual([policy]);
++});
+diff --git a/apps/cli/src/cli.ts b/apps/cli/src/cli.ts
+index e8635e9c7..19c9a08f9 100644
+--- a/apps/cli/src/cli.ts
++++ b/apps/cli/src/cli.ts
+@@ -3,12 +3,16 @@ import { CommandResultReplayer } from "./cli-program-executor.js";
+ import { DaemonCommandDispatcher } from "./daemon/daemon-command-dispatcher.js";
+ import { createDefaultDependencies, createDefaultProgramContext } from "./program.js";
+ import { StateDirectoryResolver } from "./state-directory-resolver.js";
++import { DaemonPolicy } from "@symnav/daemon";
+ 
+ const stateDirectory = new StateDirectoryResolver(process.env).resolve();
+-const dependencies = createDefaultDependencies(stateDirectory);
++const daemonPolicy = DaemonPolicy.currentSystem();
++const dependencies = createDefaultDependencies(stateDirectory, daemonPolicy);
+ const dispatched = await new DaemonCommandDispatcher({
+-  createDependencies: createDefaultDependencies,
++  createDependencies: (canonicalStateDirectory) =>
++    createDefaultDependencies(canonicalStateDirectory, daemonPolicy),
+   stateDirectory,
++  policy: daemonPolicy,
+   daemonEnabled: () => process.env.SYMNAV_DAEMON !== "0",
+ }).execute({
+   argv: process.argv.slice(2),
+diff --git a/apps/cli/src/commands/daemon/register-daemon-command.ts b/apps/cli/src/commands/daemon/register-daemon-command.ts
+index d006a625f..bb3c22ff0 100644
+--- a/apps/cli/src/commands/daemon/register-daemon-command.ts
++++ b/apps/cli/src/commands/daemon/register-daemon-command.ts
+@@ -65,7 +65,12 @@ class DaemonStartAction {
+         registry,
+         new LocalDaemonTransport(),
+         stateDirectory,
+-        { launcher: new NodeDaemonProcessLauncher(dependencies.symnavVersion) },
++        {
++          launcher: new NodeDaemonProcessLauncher(
++            dependencies.symnavVersion,
++            dependencies.daemonPolicy,
++          ),
++        },
+       );
+       const result = await controller.start(workspace.root);
+       context.stdout.write(
+diff --git a/apps/cli/src/daemon/daemon-command-dispatcher.integration.test.ts b/apps/cli/src/daemon/daemon-command-dispatcher.integration.test.ts
+index 3edab986b..4374809d4 100644
+--- a/apps/cli/src/daemon/daemon-command-dispatcher.integration.test.ts
++++ b/apps/cli/src/daemon/daemon-command-dispatcher.integration.test.ts
+@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
+ import { tmpdir } from "node:os";
+ import { join, resolve } from "node:path";
+ import { describe, expect, it, vi } from "vitest";
++import { DaemonPolicy } from "@symnav/daemon";
+ import {
+   CommandOutputSnapshot,
+   type CliExecutionRequest,
+@@ -231,6 +232,7 @@ function createDispatcher(
+         recorder: { record: () => {} },
+       }) as unknown as ProgramDependencies,
+     stateDirectory,
++    policy: DaemonPolicy.currentSystem(),
+     resolveWorkspaceRoot: async () => workspaceRoot,
+     runtimeFactory: () => runtime,
+     executorFactory: () => ({ execute: coldExecute }),
+diff --git a/apps/cli/src/daemon/daemon-command-dispatcher.test.ts b/apps/cli/src/daemon/daemon-command-dispatcher.test.ts
+index 8f6e20d47..6e4d07438 100644
+--- a/apps/cli/src/daemon/daemon-command-dispatcher.test.ts
++++ b/apps/cli/src/daemon/daemon-command-dispatcher.test.ts
+@@ -1,5 +1,6 @@
+ import { join, resolve } from "node:path";
+ import { describe, expect, it, vi } from "vitest";
++import { DaemonPolicy } from "@symnav/daemon";
+ import {
+   CommandOutputSnapshot,
+   type CliExecutionRequest,
+@@ -336,6 +337,7 @@ class DispatchHarness {
+         }) as unknown as ProgramDependencies,
+       daemonEnabled: () => this.options.daemonEnabled ?? true,
+       stateDirectory: "/state",
++      policy: DaemonPolicy.currentSystem(),
+       resolveWorkspaceRoot: async () => workspaceRoot,
+       runtimeFactory: this.runtimeFactory,
+       executorFactory: () => ({ execute: this.coldExecute }),
+diff --git a/apps/cli/src/daemon/daemon-command-dispatcher.ts b/apps/cli/src/daemon/daemon-command-dispatcher.ts
+index d00ab1bce..dbfbbedd0 100644
+--- a/apps/cli/src/daemon/daemon-command-dispatcher.ts
++++ b/apps/cli/src/daemon/daemon-command-dispatcher.ts
+@@ -1,5 +1,6 @@
+ import { randomUUID } from "node:crypto";
+ import { createWorkspace } from "@symnav/core";
++import type { DaemonPolicy } from "@symnav/daemon";
+ import { CliProgramExecutor } from "../cli-program-executor.js";
+ import type {
+   CliExecutionRequest,
+@@ -72,6 +73,7 @@ interface CommandExecutor {
+ export interface DaemonCommandDispatcherOptions {
+   readonly createDependencies: (stateDirectory: string) => ProgramDependencies;
+   readonly stateDirectory: string;
++  readonly policy: DaemonPolicy;
+   readonly daemonEnabled?: () => boolean;
+   readonly selector?: InvocationWorkspaceSelector;
+   readonly resolveWorkspaceRoot?: (
+@@ -81,6 +83,7 @@ export interface DaemonCommandDispatcherOptions {
+   readonly runtimeFactory?: (
+     identity: DaemonWorkspaceIdentity,
+     dependencies: ProgramDependencies,
++    policy: DaemonPolicy,
+   ) => DaemonDispatchRuntime;
+   readonly executorFactory?: (dependencies: ProgramDependencies) => CommandExecutor;
+   readonly requestId?: () => string;
+@@ -96,9 +99,11 @@ export class DaemonCommandDispatcher {
+   private readonly runtimeFactory: (
+     identity: DaemonWorkspaceIdentity,
+     dependencies: ProgramDependencies,
++    policy: DaemonPolicy,
+   ) => DaemonDispatchRuntime;
+   private readonly executorFactory: (dependencies: ProgramDependencies) => CommandExecutor;
+   private readonly requestId: () => string;
++  private readonly policy: DaemonPolicy;
+ 
+   constructor(private readonly options: DaemonCommandDispatcherOptions) {
+     this.selector = options.selector ?? new InvocationWorkspaceSelector();
+@@ -111,6 +116,7 @@ export class DaemonCommandDispatcher {
+     this.executorFactory =
+       options.executorFactory ?? ((dependencies) => new CliProgramExecutor(dependencies));
+     this.requestId = options.requestId ?? randomUUID;
++    this.policy = options.policy;
+   }
+ 
+   async execute(request: CliExecutionRequest): Promise<DispatchedCommandResult> {
+@@ -136,7 +142,7 @@ export class DaemonCommandDispatcher {
+     }
+ 
+     const identity = DaemonWorkspaceIdentity.from(workspaceRoot, this.options.stateDirectory);
+-    const runtime = this.runtimeFactory(identity, workspaceDependencies);
++    const runtime = this.runtimeFactory(identity, workspaceDependencies, this.policy);
+     const routeSnapshot = await this.routeFor(
+       identity,
+       runtime,
+@@ -268,13 +274,14 @@ export class DaemonCommandDispatcher {
+   private static createRuntime(
+     identity: DaemonWorkspaceIdentity,
+     dependencies: ProgramDependencies,
++    policy: DaemonPolicy,
+   ): DaemonDispatchRuntime {
+     const registry = new DaemonRegistry(identity.registryDirectory);
+     const transport = new LocalDaemonTransport();
+     const processTerminator = new NodeDaemonProcessTerminator();
+     const launcher = new NodeDaemonProcessLauncher(
+       dependencies.symnavVersion,
+-      undefined,
++      policy,
+       processTerminator,
+     );
+     return {
+diff --git a/apps/cli/src/daemon/daemon-entry.test.ts b/apps/cli/src/daemon/daemon-entry.test.ts
+index 0125cd093..52f896b56 100644
+--- a/apps/cli/src/daemon/daemon-entry.test.ts
++++ b/apps/cli/src/daemon/daemon-entry.test.ts
+@@ -1,15 +1,15 @@
+ import { afterEach, expect, it, vi } from "vitest";
++import { DaemonPolicy } from "@symnav/daemon";
++import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
+ import type { ProgramDependencies } from "../program-dependencies.js";
+ import { DAEMON_PROTOCOL_VERSION, type DaemonIdentityCoordinates } from "./daemon-protocol.js";
+ import { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
+-import type { DaemonResourcePolicyRecord } from "./daemon-resource-monitor.js";
+ 
+ interface DaemonProcessConfiguration extends DaemonIdentityCoordinates {
+   readonly protocolVersion: number;
+   readonly stateDirectory: string;
+   readonly symnavVersion: string;
+-  readonly memoryCapBytes: number;
+-  readonly resourcePolicy: DaemonResourcePolicyRecord;
++  readonly policy: ReturnType<DaemonPolicy["toSerialized"]>;
+ }
+ 
+ afterEach(() => {
+@@ -29,6 +29,18 @@ it("keeps detached dependencies on the serialized canonical state directory", as
+   const configuredStateDirectory = "/canonical/state-a";
+   const retargetedStateDirectory = "/canonical/state-b";
+   const identity = DaemonWorkspaceIdentity.from("/workspace", configuredStateDirectory);
++  const policy = DaemonPolicyTestFactory.withOverrides(
++    DaemonPolicy.fromSystemMemory({ totalBytes: 1024 * 1024 * 1024 }),
++    {
++      resources: {
++        hardProcessRssBytes: 512 * 1024 * 1024,
++        softProcessRssBytes: 409 * 1024 * 1024,
++        resumeProcessRssBytes: 358 * 1024 * 1024,
++        workerMaxOldGenerationSizeMiB: 257,
++        workerHeapSampleIntervalMs: 26,
++      },
++    },
++  );
+   const configuration: DaemonProcessConfiguration = {
+     protocolVersion: DAEMON_PROTOCOL_VERSION,
+     symnavVersion: "0.1.0",
+@@ -40,14 +52,7 @@ it("keeps detached dependencies on the serialized canonical state directory", as
+     instanceId: "instance",
+     processToken: "token",
+     endpoint: identity.endpoint("instance"),
+-    memoryCapBytes: 1,
+-    resourcePolicy: {
+-      effectiveMemoryBytes: 1024 * 1024 * 1024,
+-      hardProcessRssBytes: 512 * 1024 * 1024,
+-      softProcessRssBytes: 409 * 1024 * 1024,
+-      resumeProcessRssBytes: 358 * 1024 * 1024,
+-      workerMaxOldGenerationSizeMb: 256,
+-    },
++    policy: policy.toSerialized(),
+   };
+   let dependencyStateDirectory = "";
+   let daemonStateDirectory = "";
+@@ -55,13 +60,15 @@ it("keeps detached dependencies on the serialized canonical state directory", as
+   let daemonLogger: unknown;
+   let terminationRecorder: unknown;
+   let terminationObserverInstalled = false;
+-  const createDefaultDependencies = vi.fn((stateDirectory?: string) => {
+-    dependencyStateDirectory = stateDirectory ?? retargetedStateDirectory;
+-    return {
+-      stateDirectory: dependencyStateDirectory,
+-      symnavVersion: configuration.symnavVersion,
+-    } as unknown as ProgramDependencies;
+-  });
++  const createDefaultDependencies = vi.fn(
++    (stateDirectory?: string, _daemonPolicy?: DaemonPolicy) => {
++      dependencyStateDirectory = stateDirectory ?? retargetedStateDirectory;
++      return {
++        stateDirectory: dependencyStateDirectory,
++        symnavVersion: configuration.symnavVersion,
++      } as unknown as ProgramDependencies;
++    },
++  );
+ 
+   vi.doMock("../program.js", () => ({ createDefaultDependencies }));
+   vi.doMock("./daemon-process-launcher.js", () => ({
+@@ -86,14 +93,14 @@ it("keeps detached dependencies on the serialized canonical state directory", as
+     WorkspaceDaemon: class {
+       constructor(options: {
+         readonly dependencies: ProgramDependencies;
+-        readonly resourcePolicy: { readonly record: DaemonResourcePolicyRecord };
++        readonly policy: DaemonPolicy;
+         readonly logger: unknown;
+       }) {
+         const stateOwnedDependencies = options.dependencies as ProgramDependencies & {
+           readonly stateDirectory: string;
+         };
+         daemonStateDirectory = stateOwnedDependencies.stateDirectory;
+-        daemonWorkerLimit = options.resourcePolicy.record.workerMaxOldGenerationSizeMb;
++        daemonWorkerLimit = options.policy.values.resources.workerMaxOldGenerationSizeMiB;
+         daemonLogger = options.logger;
+       }
+ 
+@@ -104,10 +111,10 @@ it("keeps detached dependencies on the serialized canonical state directory", as
+   await import("./daemon-entry.js");
+ 
+   expect(createDefaultDependencies).toHaveBeenCalledOnce();
+-  expect(createDefaultDependencies).toHaveBeenCalledWith(configuredStateDirectory);
++  expect(createDefaultDependencies).toHaveBeenCalledWith(configuredStateDirectory, policy);
+   expect(dependencyStateDirectory).toBe(configuredStateDirectory);
+   expect(daemonStateDirectory).toBe(configuredStateDirectory);
+-  expect(daemonWorkerLimit).toBe(256);
++  expect(daemonWorkerLimit).toBe(257);
+   expect(terminationObserverInstalled).toBe(true);
+   expect(terminationRecorder).toBe(daemonLogger);
+ });
+diff --git a/apps/cli/src/daemon/daemon-entry.ts b/apps/cli/src/daemon/daemon-entry.ts
+index a9d4f6aa8..0e0eea30a 100644
+--- a/apps/cli/src/daemon/daemon-entry.ts
++++ b/apps/cli/src/daemon/daemon-entry.ts
+@@ -1,4 +1,5 @@
+ import { createDefaultDependencies } from "../program.js";
++import { DaemonPolicy } from "@symnav/daemon";
+ import { NodeDaemonClock } from "./daemon-clock.js";
+ import { DaemonLogger } from "./daemon-logger.js";
+ import { DaemonProcessConfigurationParser } from "./daemon-process-launcher.js";
+@@ -23,7 +24,8 @@ class DaemonEntry {
+       identity.endpoint(configuration.instanceId) !== configuration.endpoint
+     )
+       throw new Error("Daemon process identity does not match configuration");
+-    const dependencies = createDefaultDependencies(configuration.stateDirectory);
++    const policy = DaemonPolicy.fromSerialized(configuration.policy);
++    const dependencies = createDefaultDependencies(configuration.stateDirectory, policy);
+     if (dependencies.symnavVersion !== configuration.symnavVersion) {
+       throw new Error("Daemon process version does not match launcher");
+     }
+@@ -38,10 +40,11 @@ class DaemonEntry {
+       instanceId: configuration.instanceId,
+       processToken: configuration.processToken,
+       symnavVersion: configuration.symnavVersion,
+-      memoryCapBytes: configuration.memoryCapBytes,
++      memoryCapBytes: policy.values.resources.hardProcessRssBytes,
+       resourcePolicy: DaemonResourcePolicy.fromSystemMemory(
+-        configuration.resourcePolicy.effectiveMemoryBytes,
++        policy.values.resources.effectiveMemoryBytes,
+       ),
++      policy,
+       dependencies,
+       registry,
+       transport: new LocalDaemonTransport(),
+diff --git a/apps/cli/src/daemon/daemon-navigation-worker-entry.ts b/apps/cli/src/daemon/daemon-navigation-worker-entry.ts
+index dc01e46dd..d92e42c06 100644
+--- a/apps/cli/src/daemon/daemon-navigation-worker-entry.ts
++++ b/apps/cli/src/daemon/daemon-navigation-worker-entry.ts
+@@ -2,6 +2,7 @@ import { performance } from "node:perf_hooks";
+ import { parentPort, workerData } from "node:worker_threads";
+ import { getHeapStatistics } from "node:v8";
+ import type { BackendRefreshSummary } from "@symnav/core";
++import { DaemonPolicy } from "@symnav/daemon";
+ import type { CommandPhaseDurations } from "../program-dependencies.js";
+ import { createDefaultDependencies } from "../program.js";
+ import { RetainedWorkspaceProgram } from "./retained-workspace-program.js";
+@@ -15,6 +16,7 @@ import {
+ interface NavigationWorkerData {
+   readonly stateDirectory: string;
+   readonly generation: number;
++  readonly policy: ReturnType<DaemonPolicy["toSerialized"]>;
+ }
+ 
+ class DaemonNavigationWorkerEntry {
+@@ -28,6 +30,7 @@ class DaemonNavigationWorkerEntry {
+   private tail: Promise<void> = Promise.resolve();
+   private readonly outputAcknowledgements = new Map<string, () => void>();
+   private activeHeapMonitor: WorkerHeapHighWater | undefined;
++  private readonly policy: DaemonPolicy;
+   private commandDurations: CommandPhaseDurations = {
+     freshnessMs: 0,
+     navigationMs: 0,
+@@ -37,7 +40,9 @@ class DaemonNavigationWorkerEntry {
+   constructor(
+     private readonly port: NonNullable<typeof parentPort>,
+     private readonly data: NavigationWorkerData,
+-  ) {}
++  ) {
++    this.policy = DaemonPolicy.fromSerialized(data.policy);
++  }
+ 
+   run(): void {
+     this.port.on("message", (value: unknown) => {
+@@ -88,7 +93,7 @@ class DaemonNavigationWorkerEntry {
+   private async initialize(workspaceRoot: string): Promise<void> {
+     const startedAt = performance.now();
+     try {
+-      const dependencies = createDefaultDependencies(this.data.stateDirectory);
++      const dependencies = createDefaultDependencies(this.data.stateDirectory, this.policy);
+       dependencies.commandPhasesObserved = (durations) => {
+         this.commandDurations = durations;
+         this.activeHeapMonitor?.sample();
+diff --git a/apps/cli/src/daemon/daemon-navigation-worker.test.ts b/apps/cli/src/daemon/daemon-navigation-worker.test.ts
+index 89c734938..aec53c149 100644
+--- a/apps/cli/src/daemon/daemon-navigation-worker.test.ts
++++ b/apps/cli/src/daemon/daemon-navigation-worker.test.ts
+@@ -1,4 +1,9 @@
++import { mkdtempSync, readFileSync, rmSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
+ import { describe, expect, it } from "vitest";
++import { DaemonPolicy } from "@symnav/daemon";
++import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
+ import type { CliExecutionRequest } from "../command-execution-result.js";
+ import { NodeDaemonNavigationWorker } from "./daemon-navigation-worker.js";
+ 
+@@ -9,6 +14,39 @@ const request: CliExecutionRequest = {
+ };
+ 
+ describe("NodeDaemonNavigationWorker", () => {
++  it("passes the exact complete policy to worker data", async () => {
++    const directory = mkdtempSync(join(tmpdir(), "symnav-worker-policy-"));
++    const policyPath = join(directory, "policy.json");
++    const policy = DaemonPolicyTestFactory.withOverrides(
++      DaemonPolicy.fromSystemMemory({ totalBytes: 1024 * 1024 * 1024 }),
++      {
++        resources: {
++          hardProcessRssBytes: 912,
++          softProcessRssBytes: 911,
++          resumeProcessRssBytes: 910,
++          workerHeapSampleIntervalMs: 913,
++        },
++      },
++    );
++    try {
++      const worker = new NodeDaemonNavigationWorker({
++        generation: 7,
++        configuration: { stateDirectory: "/state", policy: policy.toSerialized() },
++        resourceLimits: { maxOldGenerationSizeMb: 128 },
++        entryUrl: new URL(
++          "../../test/helpers/daemon-navigation-worker-fixture.mjs",
++          import.meta.url,
++        ),
++        workerData: { mode: "block", policyPath },
++      });
++      await worker.start("/repo");
++      expect(JSON.parse(readFileSync(policyPath, "utf8"))).toEqual(policy.toSerialized());
++      await worker.drainAndClose();
++    } finally {
++      rmSync(directory, { recursive: true, force: true });
++    }
++  });
++
+   it("keeps the main thread responsive during blocking initialization and execution", async () => {
+     const worker = createWorker("block");
+     const initializationTimer = timerTurn();
+@@ -139,9 +177,10 @@ describe("NodeDaemonNavigationWorker", () => {
+ });
+ 
+ function createWorker(mode: string, maxOldGenerationSizeMb = 128): NodeDaemonNavigationWorker {
++  const policy = DaemonPolicy.fromSystemMemory({ totalBytes: 512 * 1024 * 1024 });
+   return new NodeDaemonNavigationWorker({
+     generation: 7,
+-    configuration: { stateDirectory: "/state" },
++    configuration: { stateDirectory: "/state", policy: policy.toSerialized() },
+     resourceLimits: { maxOldGenerationSizeMb },
+     entryUrl: new URL("../../test/helpers/daemon-navigation-worker-fixture.mjs", import.meta.url),
+     workerData: { mode },
+diff --git a/apps/cli/src/daemon/daemon-navigation-worker.ts b/apps/cli/src/daemon/daemon-navigation-worker.ts
+index c3b51ef9d..9268e41af 100644
+--- a/apps/cli/src/daemon/daemon-navigation-worker.ts
++++ b/apps/cli/src/daemon/daemon-navigation-worker.ts
+@@ -1,4 +1,5 @@
+ import { Worker } from "node:worker_threads";
++import type { DaemonPolicy } from "@symnav/daemon";
+ import type { CliExecutionRequest, CommandOutputRecord } from "../command-execution-result.js";
+ import {
+   DaemonNavigationWorkerProtocol,
+@@ -38,6 +39,7 @@ export interface DaemonNavigationWorker {
+ 
+ export interface DaemonNavigationWorkerConfiguration {
+   readonly stateDirectory: string;
++  readonly policy: ReturnType<DaemonPolicy["toSerialized"]>;
+ }
+ 
+ export interface NodeDaemonNavigationWorkerOptions {
+@@ -83,6 +85,7 @@ export class NodeDaemonNavigationWorker implements DaemonNavigationWorker {
+         workerData: {
+           stateDirectory: options.configuration.stateDirectory,
+           generation: options.generation,
++          policy: options.configuration.policy,
+           ...options.workerData,
+         },
+         resourceLimits: options.resourceLimits,
+diff --git a/apps/cli/src/daemon/daemon-process-launcher.test.ts b/apps/cli/src/daemon/daemon-process-launcher.test.ts
+index 8e4231239..9da819dba 100644
+--- a/apps/cli/src/daemon/daemon-process-launcher.test.ts
++++ b/apps/cli/src/daemon/daemon-process-launcher.test.ts
+@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
+ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ import { StateDirectoryResolver } from "../state-directory-resolver.js";
++import { DaemonPolicy } from "@symnav/daemon";
++import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
+ 
+ const { processListeners, spawnMock } = vi.hoisted(() => ({
+   processListeners: new Map<string, (...args: unknown[]) => void>(),
+@@ -15,7 +17,6 @@ import {
+   DaemonProcessConfigurationParser,
+   NodeDaemonProcessLauncher,
+ } from "./daemon-process-launcher.js";
+-import { DaemonResourcePolicy } from "./daemon-resource-monitor.js";
+ import { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
+ 
+ interface FakeChildProcess {
+@@ -68,7 +69,64 @@ describe("NodeDaemonProcessLauncher", () => {
+       );
+       mkdirSync(identity.identityDirectory, { recursive: true });
+ 
+-      const policy = DaemonResourcePolicy.fromSystemMemory(1024 * 1024 * 1024);
++      const policy = DaemonPolicyTestFactory.withOverrides(
++        DaemonPolicy.fromSystemMemory({ totalBytes: 1024 * 1024 * 1024 }),
++        {
++          transport: {
++            singleResponseTimeoutMs: 101,
++            statusResponseTimeoutMs: 102,
++            executionAdmissionTimeoutMs: 103,
++            maximumJsonPayloadBytes: 104,
++            maximumExecutionControlPayloadBytes: 105,
++          },
++          startup: {
++            coordinationGraceMs: 201,
++            heartbeatIntervalMs: 202,
++            authorizationPollIntervalMs: 203,
++            observationPollIntervalMs: 204,
++            previousInstanceTerminationTimeoutMs: 205,
++            childFailureRetryLimit: 206,
++          },
++          shutdown: {
++            idleTimeoutMs: 301,
++            stopTimeoutMs: 302,
++            forcedTerminationReserveMaximumMs: 303,
++            controllerPollIntervalMs: 304,
++            processSignalExitTimeoutMs: 305,
++            processExitPollIntervalMs: 306,
++            resourceDrainAcknowledgementGraceMs: 307,
++            resourceDrainAcknowledgementPollIntervalMs: 308,
++          },
++          delivery: {
++            postAcceptanceExecutionReattachmentLimit: 401,
++            resultTransferResumeLimitPerExecutionAttempt: 402,
++          },
++          output: {
++            maximumChunkRawBytes: 501,
++            inlineRawBytes: 502,
++            maximumResultRawBytes: 503,
++            maximumAggregateSpoolRawBytes: 504,
++          },
++          resources: {
++            effectiveMemoryBytes: 601,
++            hardProcessRssBytes: 604,
++            softProcessRssBytes: 603,
++            resumeProcessRssBytes: 602,
++            workerMaxOldGenerationSizeMiB: 605,
++            supervisionIntervalMs: 606,
++            replacementWindowMs: 607,
++            replacementLimit: 608,
++            workerHeapSampleIntervalMs: 609,
++          },
++          diagnostics: {
++            logRotateBytes: 701,
++            logBackupCount: 702,
++            maximumQueuedEvents: 703,
++            disconnectedTraceRetentionMs: 704,
++            maximumDisconnectedTraces: 705,
++          },
++        },
++      );
+       await new NodeDaemonProcessLauncher("1.2.3", policy).launch(
+         identity,
+         "instance",
+@@ -98,7 +156,7 @@ describe("NodeDaemonProcessLauncher", () => {
+       expect(configuration.instanceId).toBe("instance");
+       expect(configuration.processToken).toBe("process-token");
+       expect(configuration.startupOwnerKind).toBe("daemon");
+-      expect(configuration.resourcePolicy).toEqual(policy.record);
++      expect(configuration.policy).toEqual(policy.toSerialized());
+       expect(configuration.endpoint).toBe(identity.endpoint("instance"));
+       expect(options.env.SYMNAV_STATE_DIR).toBe(absoluteStateDirectory);
+       expect(options.cwd).toBe(tmpdir());
+@@ -128,22 +186,20 @@ describe("NodeDaemonProcessLauncher", () => {
+     const identity = launcherIdentity(roots);
+ 
+     await expect(
+-      new NodeDaemonProcessLauncher("1.2.3", 128 * 1024 * 1024).launch(
+-        identity,
+-        "instance",
+-        "process-token",
+-      ),
++      new NodeDaemonProcessLauncher(
++        "1.2.3",
++        DaemonPolicy.fromSystemMemory({ totalBytes: 256 * 1024 * 1024 }),
++      ).launch(identity, "instance", "process-token"),
+     ).rejects.toThrow("spawn refused");
+     expect(spawnMock.mock.results[0]?.value.unref).not.toHaveBeenCalled();
+   });
+ 
+   it("reports child exit through the launched process immediately", async () => {
+     const identity = launcherIdentity(roots);
+-    const daemonProcess = await new NodeDaemonProcessLauncher("1.2.3", 128 * 1024 * 1024).launch(
+-      identity,
+-      "instance",
+-      "process-token",
+-    );
++    const daemonProcess = await new NodeDaemonProcessLauncher(
++      "1.2.3",
++      DaemonPolicy.fromSystemMemory({ totalBytes: 256 * 1024 * 1024 }),
++    ).launch(identity, "instance", "process-token");
+     const child = spawnMock.mock.results[0]?.value as FakeChildProcess;
+ 
+     child.emit("exit", 7, "SIGTERM");
+@@ -157,11 +213,10 @@ describe("NodeDaemonProcessLauncher", () => {
+ 
+   it("reports a child spawn error after launch", async () => {
+     const identity = launcherIdentity(roots);
+-    const daemonProcess = await new NodeDaemonProcessLauncher("1.2.3", 128 * 1024 * 1024).launch(
+-      identity,
+-      "instance",
+-      "process-token",
+-    );
++    const daemonProcess = await new NodeDaemonProcessLauncher(
++      "1.2.3",
++      DaemonPolicy.fromSystemMemory({ totalBytes: 256 * 1024 * 1024 }),
++    ).launch(identity, "instance", "process-token");
+     const child = spawnMock.mock.results[0]?.value as FakeChildProcess;
+     const error = new Error("child failed");
+     error.name = "ChildProcessError";
+diff --git a/apps/cli/src/daemon/daemon-process-launcher.ts b/apps/cli/src/daemon/daemon-process-launcher.ts
+index 71dcf3a6c..77a8a7c9f 100644
+--- a/apps/cli/src/daemon/daemon-process-launcher.ts
++++ b/apps/cli/src/daemon/daemon-process-launcher.ts
+@@ -1,19 +1,15 @@
+ import { mkdirSync } from "node:fs";
+-import { tmpdir, totalmem } from "node:os";
++import { tmpdir } from "node:os";
+ import { fileURLToPath } from "node:url";
+ import { spawn } from "node:child_process";
++import { DaemonPolicy } from "@symnav/daemon";
+ import type { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
+ import type { DaemonIdentityCoordinates } from "./daemon-protocol.js";
+-import {
+-  DaemonResourcePolicy,
+-  type DaemonResourcePolicyRecord,
+-} from "./daemon-resource-monitor.js";
+ 
+ interface DaemonProcessConfiguration extends DaemonIdentityCoordinates {
+   readonly stateDirectory: string;
+   readonly symnavVersion: string;
+-  readonly memoryCapBytes: number;
+-  readonly resourcePolicy: DaemonResourcePolicyRecord;
++  readonly policy: ReturnType<DaemonPolicy["toSerialized"]>;
+   readonly startupOwnerKind: "daemon";
+ }
+ 
+@@ -109,23 +105,18 @@ export class NodeDaemonProcessTerminator implements DaemonProcessTerminator {
+ }
+ 
+ export class NodeDaemonProcessLauncher implements DaemonProcessLauncher {
+-  readonly resourcePolicy: DaemonResourcePolicy;
+   private readonly terminator: DaemonProcessTerminator;
+ 
+   constructor(
+     readonly symnavVersion: string,
+-    resourcePolicy: DaemonResourcePolicy | number = NodeDaemonProcessLauncher.defaultPolicy(),
++    readonly policy: DaemonPolicy,
+     terminator: DaemonProcessTerminator = new NodeDaemonProcessTerminator(),
+   ) {
+-    this.resourcePolicy =
+-      typeof resourcePolicy === "number"
+-        ? DaemonResourcePolicy.fromSystemMemory(resourcePolicy * 2)
+-        : resourcePolicy;
+     this.terminator = terminator;
+   }
+ 
+   get memoryCapBytes(): number {
+-    return this.resourcePolicy.record.hardProcessRssBytes;
++    return this.policy.values.resources.hardProcessRssBytes;
+   }
+ 
+   launch(
+@@ -144,8 +135,7 @@ export class NodeDaemonProcessLauncher implements DaemonProcessLauncher {
+       processToken,
+       endpoint: identity.endpoint(instanceId),
+       symnavVersion: this.symnavVersion,
+-      memoryCapBytes: this.memoryCapBytes,
+-      resourcePolicy: this.resourcePolicy.record,
++      policy: this.policy.toSerialized(),
+       startupOwnerKind: "daemon",
+     };
+     const encodedConfiguration = Buffer.from(JSON.stringify(configuration)).toString("base64url");
+@@ -189,10 +179,6 @@ export class NodeDaemonProcessLauncher implements DaemonProcessLauncher {
+       });
+     });
+   }
+-
+-  private static defaultPolicy(): DaemonResourcePolicy {
+-    return DaemonResourcePolicy.fromSystemMemory(totalmem(), process.constrainedMemory?.());
+-  }
+ }
+ 
+ export class DaemonProcessConfigurationParser {
+@@ -218,21 +204,17 @@ export class DaemonProcessConfigurationParser {
+       typeof configuration.processToken === "string" &&
+       typeof configuration.endpoint === "string" &&
+       typeof configuration.symnavVersion === "string" &&
+-      typeof configuration.memoryCapBytes === "number" &&
+-      DaemonProcessConfigurationParser.isResourcePolicy(configuration.resourcePolicy) &&
++      DaemonProcessConfigurationParser.isPolicy(configuration.policy) &&
+       configuration.startupOwnerKind === "daemon"
+     );
+   }
+ 
+-  private static isResourcePolicy(value: unknown): value is DaemonResourcePolicyRecord {
+-    if (typeof value !== "object" || value === null) return false;
+-    const policy = value as Record<string, unknown>;
+-    return (
+-      typeof policy.effectiveMemoryBytes === "number" &&
+-      typeof policy.hardProcessRssBytes === "number" &&
+-      typeof policy.softProcessRssBytes === "number" &&
+-      typeof policy.resumeProcessRssBytes === "number" &&
+-      typeof policy.workerMaxOldGenerationSizeMb === "number"
+-    );
++  private static isPolicy(value: unknown): value is ReturnType<DaemonPolicy["toSerialized"]> {
++    try {
++      DaemonPolicy.fromSerialized(value);
++      return true;
++    } catch {
++      return false;
++    }
+   }
+ }
+diff --git a/apps/cli/src/daemon/workspace-daemon-requests.test.ts b/apps/cli/src/daemon/workspace-daemon-requests.test.ts
+index bf792dfdd..0d6bed2b7 100644
+--- a/apps/cli/src/daemon/workspace-daemon-requests.test.ts
++++ b/apps/cli/src/daemon/workspace-daemon-requests.test.ts
+@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import { afterEach, describe, expect, it, vi } from "vitest";
++import { DaemonPolicy } from "@symnav/daemon";
+ import {
+   CommandOutputSnapshot,
+   type CliExecutionRequest,
+@@ -1301,7 +1302,10 @@ describe("WorkspaceDaemon requests", () => {
+         generations.push(generation);
+         return new NodeDaemonNavigationWorker({
+           generation,
+-          configuration: { stateDirectory: "/state" },
++          configuration: {
++            stateDirectory: "/state",
++            policy: DaemonPolicy.currentSystem().toSerialized(),
++          },
+           entryUrl: new URL(
+             "../../test/helpers/daemon-navigation-worker-fixture.mjs",
+             import.meta.url,
+@@ -1353,7 +1357,10 @@ describe("WorkspaceDaemon requests", () => {
+       navigationWorkerFactory: (generation) =>
+         new NodeDaemonNavigationWorker({
+           generation,
+-          configuration: { stateDirectory: "/state" },
++          configuration: {
++            stateDirectory: "/state",
++            policy: DaemonPolicy.currentSystem().toSerialized(),
++          },
+           entryUrl: new URL(
+             "../../test/helpers/daemon-navigation-worker-fixture.mjs",
+             import.meta.url,
+@@ -1393,7 +1400,10 @@ describe("WorkspaceDaemon requests", () => {
+       navigationWorkerFactory: (generation) =>
+         new NodeDaemonNavigationWorker({
+           generation,
+-          configuration: { stateDirectory: "/state" },
++          configuration: {
++            stateDirectory: "/state",
++            policy: DaemonPolicy.currentSystem().toSerialized(),
++          },
+           entryUrl: new URL(
+             "../../test/helpers/daemon-navigation-worker-fixture.mjs",
+             import.meta.url,
+@@ -1494,13 +1504,15 @@ class RequestHarness {
+       (options.navigationWorkerFactory === undefined
+         ? new ExecutorNavigationWorker(executor ?? new ImmediateExecutor())
+         : undefined);
++    const daemonPolicy = DaemonPolicy.currentSystem();
+     const daemon = new WorkspaceDaemon({
+       identity: harness.identity,
+       instanceId: harness.instanceId,
+       processToken: harness.processToken,
+       symnavVersion: "test",
+       memoryCapBytes: 1024,
+-      dependencies: createDefaultDependencies(harness.identity.stateDirectory),
++      policy: daemonPolicy,
++      dependencies: createDefaultDependencies(harness.identity.stateDirectory, daemonPolicy),
+       registry: harness.registry,
+       transport: harness.transport as unknown as LocalDaemonTransport,
+       ...(navigationWorker === undefined ? {} : { navigationWorker }),
+diff --git a/apps/cli/src/daemon/workspace-daemon.test.ts b/apps/cli/src/daemon/workspace-daemon.test.ts
+index a699c4ddb..0b32288c3 100644
+--- a/apps/cli/src/daemon/workspace-daemon.test.ts
++++ b/apps/cli/src/daemon/workspace-daemon.test.ts
+@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import { fileURLToPath } from "node:url";
+ import { afterEach, describe, expect, it, vi } from "vitest";
++import { DaemonPolicy } from "@symnav/daemon";
+ import {
+   CommandOutputSnapshot,
+   type CliExecutionRequest,
+@@ -476,13 +477,15 @@ class WorkspaceDaemonHarness {
+     ) {
+       throw new Error("Expected daemon-owned startup publication");
+     }
++    const daemonPolicy = DaemonPolicy.currentSystem();
+     const daemon = new WorkspaceDaemon({
+       identity: harness.identity,
+       instanceId: harness.instanceId,
+       processToken: "runtime-token",
+       symnavVersion: "test",
+       memoryCapBytes: runtime.memoryCapBytes ?? 1024,
+-      dependencies: createDefaultDependencies(harness.identity.stateDirectory),
++      policy: daemonPolicy,
++      dependencies: createDefaultDependencies(harness.identity.stateDirectory, daemonPolicy),
+       registry: harness.registry,
+       transport: harness.transport,
+       navigationWorker: runtime.navigationWorker ?? new ExecutorNavigationWorker(executor),
+diff --git a/apps/cli/src/daemon/workspace-daemon.ts b/apps/cli/src/daemon/workspace-daemon.ts
+index 4db39b3c3..da6a32304 100644
+--- a/apps/cli/src/daemon/workspace-daemon.ts
++++ b/apps/cli/src/daemon/workspace-daemon.ts
+@@ -1,4 +1,5 @@
+ import type { ProgramDependencies } from "../program-dependencies.js";
++import type { DaemonPolicy } from "@symnav/daemon";
+ import type { CommandExecutionResult, CommandOutputRecord } from "../command-execution-result.js";
+ import {
+   AcceptedRequestCorruptionError,
+@@ -53,6 +54,7 @@ export interface WorkspaceDaemonOptions {
+   readonly processToken: string;
+   readonly symnavVersion: string;
+   readonly memoryCapBytes: number;
++  readonly policy: DaemonPolicy;
+   readonly dependencies: ProgramDependencies;
+   readonly registry: DaemonRegistry;
+   readonly transport: LocalDaemonTransport;
+@@ -100,6 +102,7 @@ export class WorkspaceDaemon {
+   private readonly lifetime: DaemonLifetime;
+   private readonly resourceSupervisor: DaemonResourceSupervisor;
+   private readonly resourcePolicy: DaemonResourcePolicy;
++  private readonly policy: DaemonPolicy;
+   private readonly operationObserver: DaemonOperationObserver;
+   private readonly acceptedRequests: AcceptedRequestLedger;
+   private readonly completionSpools: DaemonCompletionSpoolStore;
+@@ -128,6 +131,8 @@ export class WorkspaceDaemon {
+   private workerRecoveryOperation: Promise<void> | undefined;
+ 
+   constructor(private readonly options: WorkspaceDaemonOptions) {
++    const policy = options.policy;
++    this.policy = policy;
+     this.forceEscalated = new Promise((resolve) => {
+       this.resolveForceEscalated = resolve;
+     });
+@@ -159,7 +164,10 @@ export class WorkspaceDaemon {
+         ? (generation) =>
+             new NodeDaemonNavigationWorker({
+               generation,
+-              configuration: { stateDirectory: options.identity.stateDirectory },
++              configuration: {
++                stateDirectory: options.identity.stateDirectory,
++                policy: policy.toSerialized(),
++              },
+               resourceLimits: {
+                 maxOldGenerationSizeMb: resourcePolicy.record.workerMaxOldGenerationSizeMb,
+               },
+diff --git a/apps/cli/src/program-dependencies.ts b/apps/cli/src/program-dependencies.ts
+index 921d84ef4..723187880 100644
+--- a/apps/cli/src/program-dependencies.ts
++++ b/apps/cli/src/program-dependencies.ts
+@@ -6,6 +6,7 @@ import type {
+   WorkspaceSession,
+ } from "@symnav/core";
+ import type { Clock, Recorder } from "@symnav/telemetry";
++import type { DaemonPolicy } from "@symnav/daemon";
+ import type { TelemetryIdentityProvider } from "./telemetry/telemetry-identity.js";
+ import type { CommandExecutionMode } from "./command-execution-result.js";
+ 
+@@ -17,6 +18,7 @@ export interface CommandPhaseDurations {
+ 
+ export interface ProgramDependencies {
+   readonly stateDirectory: string;
++  readonly daemonPolicy: DaemonPolicy;
+   fs: FileSystem;
+   backends: () => readonly LanguageBackend[];
+   git: GitHistory;
+diff --git a/apps/cli/src/program.ts b/apps/cli/src/program.ts
+index c03ba18dc..2d1250126 100644
+--- a/apps/cli/src/program.ts
++++ b/apps/cli/src/program.ts
+@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
+ import { fileURLToPath } from "node:url";
+ import { Command as CommanderCommand } from "commander";
+ import { NodeFileSystem } from "@symnav/core";
++import { DaemonPolicy } from "@symnav/daemon";
+ import { TypeScriptBackend } from "@symnav/backend-typescript";
+ import { NodeTelemetryWritePort, NodeUsageRecorder, usageLogPath } from "@symnav/telemetry";
+ import type { Clock } from "@symnav/telemetry";
+@@ -41,11 +42,15 @@ export function createDefaultProgramContext(): ProgramContext {
+   };
+ }
+ 
+-export function createDefaultDependencies(canonicalStateDirectory: string): ProgramDependencies {
++export function createDefaultDependencies(
++  canonicalStateDirectory: string,
++  daemonPolicy: DaemonPolicy,
++): ProgramDependencies {
+   const fs = new NodeFileSystem();
+   const clock: Clock = { now: () => Date.now() };
+   return {
+     stateDirectory: canonicalStateDirectory,
++    daemonPolicy,
+     fs,
+     backends: () => [new TypeScriptBackend(fs)],
+     git: new NodeGitHistory(),
+@@ -66,7 +71,11 @@ export function buildProgram(
+ ): CommanderCommand {
+   const ctx = context ?? createDefaultProgramContext();
+   const deps =
+-    dependencies ?? createDefaultDependencies(new StateDirectoryResolver(process.env).resolve());
++    dependencies ??
++    createDefaultDependencies(
++      new StateDirectoryResolver(process.env).resolve(),
++      DaemonPolicy.currentSystem(),
++    );
+   const program = new CommanderCommand();
+   program
+     .name("symnav")
+diff --git a/apps/cli/test/e2e/daemon/parity.test.ts b/apps/cli/test/e2e/daemon/parity.test.ts
+index 6801597fe..7d8e61c5a 100644
+--- a/apps/cli/test/e2e/daemon/parity.test.ts
++++ b/apps/cli/test/e2e/daemon/parity.test.ts
+@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
+ import { spawn } from "node:child_process";
+ import { createHash } from "node:crypto";
+ import { afterEach, describe, expect, it } from "vitest";
++import { DaemonPolicy } from "@symnav/daemon";
+ import { fixturePath, runSymnavBinary, type RunSymnavBinaryResult } from "@symnav/testing";
+ import type { ChildProcess } from "node:child_process";
+ import type { CliExecutionRequest } from "../../../src/command-execution-result.js";
+@@ -741,7 +742,10 @@ class DaemonParityHarness {
+     const processToken = `${instanceId}-token`;
+     const readyPath = join(this.stateDirectory, `${instanceId}-ready`);
+     const requestStartedPath = join(this.stateDirectory, `${instanceId}-request`);
+-    const symnavVersion = createDefaultDependencies(identity.stateDirectory).symnavVersion;
++    const symnavVersion = createDefaultDependencies(
++      identity.stateDirectory,
++      DaemonPolicy.currentSystem(),
++    ).symnavVersion;
+     const lease = registry.acquireStartup(identity, instanceId);
+     if (lease === undefined) throw new Error("Expected controlled daemon startup ownership");
+     const child = spawn(
+diff --git a/apps/cli/test/e2e/daemon/persistent-pressure.test.ts b/apps/cli/test/e2e/daemon/persistent-pressure.test.ts
+index c060a4f5b..791beabb9 100644
+--- a/apps/cli/test/e2e/daemon/persistent-pressure.test.ts
++++ b/apps/cli/test/e2e/daemon/persistent-pressure.test.ts
+@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
+ import { dirname, join } from "node:path";
+ import { fileURLToPath } from "node:url";
+ import { afterEach, describe, expect, it } from "vitest";
++import { DaemonPolicy } from "@symnav/daemon";
+ import { createDefaultDependencies } from "../../../src/program.js";
+ import {
+   DAEMON_PROTOCOL_VERSION,
+@@ -72,7 +73,8 @@ describe("persistent daemon resource pressure", () => {
+         requestStartedPath,
+         pressurePath,
+         executionOrderPath,
+-        createDefaultDependencies(identity.stateDirectory).symnavVersion,
++        createDefaultDependencies(identity.stateDirectory, DaemonPolicy.currentSystem())
++          .symnavVersion,
+       ],
+       { stdio: ["ignore", "pipe", "pipe"] },
+     );
+@@ -88,7 +90,10 @@ describe("persistent daemon resource pressure", () => {
+     const record: DaemonRecord = {
+       schemaVersion: DAEMON_RECORD_SCHEMA_VERSION,
+       protocolVersion: DAEMON_PROTOCOL_VERSION,
+-      symnavVersion: createDefaultDependencies(identity.stateDirectory).symnavVersion,
++      symnavVersion: createDefaultDependencies(
++        identity.stateDirectory,
++        DaemonPolicy.currentSystem(),
++      ).symnavVersion,
+       workspaceRoot: identity.workspaceRoot,
+       workspaceKey: identity.workspaceKey,
+       stateKey: identity.stateKey,
+diff --git a/apps/cli/test/helpers/daemon-navigation-worker-fixture.mjs b/apps/cli/test/helpers/daemon-navigation-worker-fixture.mjs
+index 71de38681..7e95f1911 100644
+--- a/apps/cli/test/helpers/daemon-navigation-worker-fixture.mjs
++++ b/apps/cli/test/helpers/daemon-navigation-worker-fixture.mjs
+@@ -10,6 +10,9 @@ const pendingResults = new Map();
+ 
+ parentPort.on("message", (message) => {
+   if (message.kind === "initialize") {
++    if (workerData.policyPath !== undefined) {
++      writeFileSync(workerData.policyPath, JSON.stringify(workerData.policy));
++    }
+     if (workerData.mode === "initialize-heap-oom") exhaustOldGeneration();
+     if (workerData.mode === "malformed") {
+       parentPort.postMessage({ kind: "ready", generation, fileCount: "wrong" });
+diff --git a/apps/cli/test/helpers/daemon-startup-caller-exit.ts b/apps/cli/test/helpers/daemon-startup-caller-exit.ts
+index 2521af73c..82401f19f 100644
+--- a/apps/cli/test/helpers/daemon-startup-caller-exit.ts
++++ b/apps/cli/test/helpers/daemon-startup-caller-exit.ts
+@@ -1,6 +1,7 @@
+ import { spawn } from "node:child_process";
+ import { existsSync, writeFileSync } from "node:fs";
+ import { fileURLToPath } from "node:url";
++import { DaemonPolicy } from "@symnav/daemon";
+ import { createDefaultDependencies } from "../../src/program.js";
+ import { StateDirectoryResolver } from "../../src/state-directory-resolver.js";
+ import type { CliExecutionRequest } from "../../src/command-execution-result.js";
+@@ -69,7 +70,8 @@ class DaemonStartupCallerExit {
+     ) {
+       process.exit(3);
+     }
+-    const dependencies = createDefaultDependencies(identity.stateDirectory);
++    const daemonPolicy = DaemonPolicy.currentSystem();
++    const dependencies = createDefaultDependencies(identity.stateDirectory, daemonPolicy);
+     const startingRecord: DaemonRecord = {
+       schemaVersion: DAEMON_RECORD_SCHEMA_VERSION,
+       protocolVersion: DAEMON_PROTOCOL_VERSION,
+@@ -134,11 +136,15 @@ class DaemonStartupCallerExit {
+       workspaceRoot,
+       StateDirectoryResolver.canonicalize(stateDirectory),
+     );
+-    const dependencies = createDefaultDependencies(identity.stateDirectory);
++    const daemonPolicy = DaemonPolicy.currentSystem();
++    const dependencies = createDefaultDependencies(identity.stateDirectory, daemonPolicy);
+     const navigationWorker = new StartupBarrierNavigationWorker(
+       new NodeDaemonNavigationWorker({
+         generation: 1,
+-        configuration: { stateDirectory: identity.stateDirectory },
++        configuration: {
++          stateDirectory: identity.stateDirectory,
++          policy: dependencies.daemonPolicy.toSerialized(),
++        },
+         resourceLimits: { maxOldGenerationSizeMb: 4096 },
+         entryUrl: new URL("../../dist/daemon/daemon-navigation-worker-entry.js", import.meta.url),
+       }),
+@@ -151,6 +157,7 @@ class DaemonStartupCallerExit {
+       processToken,
+       symnavVersion: dependencies.symnavVersion,
+       memoryCapBytes: Number.MAX_SAFE_INTEGER,
++      policy: daemonPolicy,
+       dependencies,
+       registry: new DaemonRegistry(identity.registryDirectory),
+       transport: new LocalDaemonTransport(),
+diff --git a/apps/cli/test/helpers/workspace-daemon-persistent-pressure.ts b/apps/cli/test/helpers/workspace-daemon-persistent-pressure.ts
+index 80a3e684a..7382609b1 100644
+--- a/apps/cli/test/helpers/workspace-daemon-persistent-pressure.ts
++++ b/apps/cli/test/helpers/workspace-daemon-persistent-pressure.ts
+@@ -1,4 +1,5 @@
+ import { appendFileSync, existsSync, writeFileSync } from "node:fs";
++import { DaemonPolicy } from "@symnav/daemon";
+ import { StateDirectoryResolver } from "../../src/state-directory-resolver.js";
+ import type {
+   CliExecutionRequest,
+@@ -133,6 +134,7 @@ class PressureNavigationWorker implements DaemonNavigationWorker {
+ const canonicalStateDirectory = StateDirectoryResolver.canonicalize(stateDirectory);
+ const identity = DaemonWorkspaceIdentity.from(workspaceRoot, canonicalStateDirectory);
+ const policy = DaemonResourcePolicy.fromSystemMemory(512 * 1024 * 1024);
++const daemonPolicy = DaemonPolicy.currentSystem();
+ writeFileSync(`${readyPath}.boot`, String(process.pid));
+ const daemon = new WorkspaceDaemon({
+   identity,
+@@ -140,7 +142,8 @@ const daemon = new WorkspaceDaemon({
+   processToken,
+   symnavVersion,
+   memoryCapBytes: policy.record.hardProcessRssBytes,
+-  dependencies: createDefaultDependencies(canonicalStateDirectory),
++  policy: daemonPolicy,
++  dependencies: createDefaultDependencies(canonicalStateDirectory, daemonPolicy),
+   registry: new DaemonRegistry(identity.registryDirectory),
+   transport: new LocalDaemonTransport(),
+   navigationWorkerFactory: (generation) =>
+diff --git a/apps/cli/test/helpers/workspace-daemon-stuck.ts b/apps/cli/test/helpers/workspace-daemon-stuck.ts
+index 4c733fc9a..4c8ece81b 100644
+--- a/apps/cli/test/helpers/workspace-daemon-stuck.ts
++++ b/apps/cli/test/helpers/workspace-daemon-stuck.ts
+@@ -1,4 +1,5 @@
+ import { existsSync, writeFileSync } from "node:fs";
++import { DaemonPolicy } from "@symnav/daemon";
+ import { StateDirectoryResolver } from "../../src/state-directory-resolver.js";
+ import type {
+   CliExecutionRequest,
+@@ -49,7 +50,8 @@ const releasePath =
+     : releasePathArgument;
+ const symnavVersion = configuredSymnavVersion ?? "test";
+ const canonicalStateDirectory = StateDirectoryResolver.canonicalize(stateDirectory);
+-const dependencies = createDefaultDependencies(canonicalStateDirectory);
++const daemonPolicy = DaemonPolicy.currentSystem();
++const dependencies = createDefaultDependencies(canonicalStateDirectory, daemonPolicy);
+ const retainedBackends = dependencies.backends();
+ const executor = new CliProgramExecutor({ ...dependencies, backends: () => retainedBackends });
+ let executionCount = 0;
+@@ -160,7 +162,10 @@ const workerExitReleasePath = `${acceptedRequestStartedPath}.release-worker-exit
+ const navigationWorker = workerExit
+   ? new NodeDaemonNavigationWorker({
+       generation: 7,
+-      configuration: { stateDirectory: canonicalStateDirectory },
++      configuration: {
++        stateDirectory: canonicalStateDirectory,
++        policy: dependencies.daemonPolicy.toSerialized(),
++      },
+       resourceLimits: { maxOldGenerationSizeMb: 4096 },
+       entryUrl: new URL("./daemon-navigation-worker-fixture.mjs", import.meta.url),
+       workerData: {
+@@ -173,7 +178,10 @@ const navigationWorker = workerExit
+   : releasePath === undefined && !oversizedResponse && !oversizedJsonResponse
+     ? new NodeDaemonNavigationWorker({
+         generation: 7,
+-        configuration: { stateDirectory: canonicalStateDirectory },
++        configuration: {
++          stateDirectory: canonicalStateDirectory,
++          policy: dependencies.daemonPolicy.toSerialized(),
++        },
+         resourceLimits: { maxOldGenerationSizeMb: 4096 },
+         entryUrl: new URL("./daemon-navigation-worker-fixture.mjs", import.meta.url),
+         workerData: {
+@@ -190,6 +198,7 @@ const daemon = new WorkspaceDaemon({
+   processToken,
+   symnavVersion,
+   memoryCapBytes: Number.MAX_SAFE_INTEGER,
++  policy: daemonPolicy,
+   dependencies,
+   registry: new DaemonRegistry(identity.registryDirectory),
+   transport: new LocalDaemonTransport(),
+diff --git a/apps/cli/test/integration/commands/helpers/fake-program-dependencies.ts b/apps/cli/test/integration/commands/helpers/fake-program-dependencies.ts
+index ee90ada44..049243045 100644
+--- a/apps/cli/test/integration/commands/helpers/fake-program-dependencies.ts
++++ b/apps/cli/test/integration/commands/helpers/fake-program-dependencies.ts
+@@ -1,5 +1,6 @@
+ import { InMemoryFileSystem } from "@symnav/core";
+ import type { GitHistory, HistoryEntry } from "@symnav/core";
++import { DaemonPolicy } from "@symnav/daemon";
+ import type { Clock, Recorder, UsageEventInput } from "@symnav/telemetry";
+ import type { ProgramDependencies } from "../../../../src/program-dependencies.js";
+ import type {
+@@ -16,6 +17,8 @@ export function fakeDependencies(
+ ): FakeProgramDependencies {
+   return {
+     stateDirectory: overrides.stateDirectory ?? "/state",
++    daemonPolicy:
++      overrides.daemonPolicy ?? DaemonPolicy.fromSystemMemory({ totalBytes: 8 * 1024 ** 3 }),
+     fs: overrides.fs ?? repoFs(),
+     backends: overrides.backends ?? (() => [new FakeLanguageBackend()]),
+     git: overrides.git ?? createFakeGitHistory(),
+diff --git a/apps/cli/tsconfig.json b/apps/cli/tsconfig.json
+index b5dda3fca..de055a2ab 100644
+--- a/apps/cli/tsconfig.json
++++ b/apps/cli/tsconfig.json
+@@ -5,6 +5,7 @@
+   "exclude": ["src/**/*.test.ts", "**/dist/**"],
+   "references": [
+     { "path": "../../packages/core" },
++    { "path": "../../packages/daemon" },
+     { "path": "../../packages/renderer" },
+     { "path": "../../packages/backend-typescript" },
+     { "path": "../../packages/telemetry" }
+diff --git a/eslint.config.mjs b/eslint.config.mjs
+index 2e4241bb4..725dc0f90 100644
+--- a/eslint.config.mjs
++++ b/eslint.config.mjs
+@@ -15,6 +15,7 @@ const pkg = (sub) => join(repoRoot, sub);
+ /** @type {{ name: string; type: string; dir: string }[]} */
+ const packages = [
+   { name: "@symnav/core", type: "core", dir: "packages/core" },
++  { name: "@symnav/daemon", type: "daemon", dir: "packages/daemon" },
+   { name: "@symnav/renderer", type: "renderer", dir: "packages/renderer" },
+   { name: "@symnav/backend-typescript", type: "backend", dir: "packages/backend-typescript" },
+   { name: "@symnav/telemetry", type: "telemetry", dir: "packages/telemetry" },
+@@ -26,17 +27,18 @@ const elements = [
+   { type: "cli", pattern: "apps/cli/**" },
+ ];
+ 
+-const aliasMap = packages.map(
+-  (p) => /** @type {[string, string]} */ ([p.name, pkg(`${p.dir}/src/index.ts`)]),
+-);
++const aliasMap = [
++  ...packages.map((p) => /** @type {[string, string]} */ ([p.name, pkg(`${p.dir}/src/index.ts`)])),
++  /** @type {[string, string]} */ (["symnav", pkg("apps/cli/src/index.ts")]),
++];
+ 
+ function productionRules() {
+   return [
+-    { from: { type: "renderer" }, allow: { to: { type: ["core"] } } },
++    { from: { type: "renderer" }, allow: { to: { type: ["core", "daemon"] } } },
+     { from: { type: "backend" }, allow: { to: { type: ["core"] } } },
+     {
+       from: { type: "cli" },
+-      allow: { to: { type: ["core", "renderer", "backend", "telemetry"] } },
++      allow: { to: { type: ["core", "daemon", "renderer", "backend", "telemetry"] } },
+     },
+   ];
+ }
+@@ -44,11 +46,15 @@ function productionRules() {
+ function testRules() {
+   return [
+     { from: { type: "core" }, allow: { to: { type: ["testing"] } } },
+-    { from: { type: "renderer" }, allow: { to: { type: ["core", "testing"] } } },
++    { from: { type: "daemon" }, allow: { to: { type: ["testing"] } } },
++    { from: { type: "renderer" }, allow: { to: { type: ["core", "daemon", "testing"] } } },
+     { from: { type: "backend" }, allow: { to: { type: ["core", "testing"] } } },
++    { from: { type: "telemetry" }, allow: { to: { type: ["testing"] } } },
+     {
+       from: { type: "cli" },
+-      allow: { to: { type: ["core", "renderer", "backend", "telemetry", "testing"] } },
++      allow: {
++        to: { type: ["core", "daemon", "renderer", "backend", "telemetry", "testing"] },
++      },
+     },
+   ];
+ }
+@@ -85,6 +91,17 @@ export default [
+     rules: {
+       ...prettierConfig.rules,
+       "prettier/prettier": "error",
++      "no-restricted-imports": [
++        "error",
++        {
++          paths: [
++            {
++              name: "@symnav/daemon/policy-testing",
++              message: "Daemon policy overrides are test-only.",
++            },
++          ],
++        },
++      ],
+       "no-restricted-syntax": [
+         "error",
+         {
+@@ -93,19 +110,14 @@ export default [
+             "Annotate object-literal declarations with a type (`const x: T = {…}`) or use `satisfies`.",
+         },
+       ],
+-      "boundaries/dependencies": [
+-        "error",
+-        { default: "disallow", rules: productionRules() },
+-      ],
++      "boundaries/dependencies": ["error", { default: "disallow", rules: productionRules() }],
+     },
+   },
+   {
+     files: ["**/*.test.ts", "**/test/**/*.ts"],
+     rules: {
+-      "boundaries/dependencies": [
+-        "error",
+-        { default: "disallow", rules: testRules() },
+-      ],
++      "no-restricted-imports": "off",
++      "boundaries/dependencies": ["error", { default: "disallow", rules: testRules() }],
+     },
+   },
+ ];
+diff --git a/meta-tests/src/daemon-package.test.ts b/meta-tests/src/daemon-package.test.ts
+new file mode 100644
+index 000000000..d47a979cb
+--- /dev/null
++++ b/meta-tests/src/daemon-package.test.ts
+@@ -0,0 +1,202 @@
++import { readFileSync, readdirSync, statSync } from "node:fs";
++import { dirname, join, resolve } from "node:path";
++import { fileURLToPath } from "node:url";
++
++import { describe, expect, it } from "vitest";
++
++interface DaemonPackageManifest {
++  readonly name: string;
++  readonly private: boolean;
++  readonly type: string;
++  readonly main: string;
++  readonly types: string;
++  readonly exports: Readonly<Record<string, unknown>>;
++  readonly dependencies?: Readonly<Record<string, string>>;
++  readonly optionalDependencies?: Readonly<Record<string, string>>;
++  readonly peerDependencies?: Readonly<Record<string, string>>;
++  readonly peerDependenciesMeta?: Readonly<Record<string, unknown>>;
++  readonly bundledDependencies?: readonly string[];
++  readonly bundleDependencies?: readonly string[];
++}
++
++class DaemonPackageMetadata {
++  public static readonly repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
++  public static readonly packageRoot = join(DaemonPackageMetadata.repoRoot, "packages/daemon");
++
++  public static manifest(): DaemonPackageManifest {
++    return JSON.parse(
++      readFileSync(join(DaemonPackageMetadata.packageRoot, "package.json"), "utf8"),
++    ) as DaemonPackageManifest;
++  }
++
++  public static productionDependencyNames(manifest: DaemonPackageManifest): readonly string[] {
++    return [
++      ...Object.keys(manifest.dependencies ?? {}),
++      ...Object.keys(manifest.optionalDependencies ?? {}),
++      ...Object.keys(manifest.peerDependencies ?? {}),
++      ...Object.keys(manifest.peerDependenciesMeta ?? {}),
++      ...(manifest.bundledDependencies ?? []),
++      ...(manifest.bundleDependencies ?? []),
++    ].sort();
++  }
++
++  public static policyDocument(): string {
++    return readFileSync(join(DaemonPackageMetadata.repoRoot, "plans/005/daemon-policy.md"), "utf8");
++  }
++
++  public static appProductionSources(): string {
++    const sourceRoot = join(DaemonPackageMetadata.repoRoot, "apps/cli/src");
++    return DaemonPackageMetadata.files(sourceRoot)
++      .filter((path) => path.endsWith(".ts") && !path.endsWith(".test.ts"))
++      .map((path) => readFileSync(path, "utf8"))
++      .join("\n");
++  }
++
++  private static files(directory: string): readonly string[] {
++    return readdirSync(directory).flatMap((name) => {
++      const path = join(directory, name);
++      return statSync(path).isDirectory() ? DaemonPackageMetadata.files(path) : [path];
++    });
++  }
++}
++
++describe("@symnav/daemon package boundary", () => {
++  it("has the exact private ESM root and temporary policy-testing exports", () => {
++    const manifest = DaemonPackageMetadata.manifest();
++    expect({
++      name: manifest.name,
++      private: manifest.private,
++      type: manifest.type,
++      main: manifest.main,
++      types: manifest.types,
++      exports: manifest.exports,
++    }).toEqual({
++      name: "@symnav/daemon",
++      private: true,
++      type: "module",
++      main: "./dist/index.js",
++      types: "./dist/index.d.ts",
++      exports: {
++        ".": {
++          types: "./dist/index.d.ts",
++          default: "./dist/index.js",
++        },
++        "./policy-testing": {
++          types: "./dist/policy-testing.d.ts",
++          default: "./dist/policy-testing.js",
++        },
++      },
++    });
++    expect(Object.keys(manifest.exports)).toEqual([".", "./policy-testing"]);
++  });
++
++  it("has zero internal packages in every production dependency field", () => {
++    const names = DaemonPackageMetadata.productionDependencyNames(DaemonPackageMetadata.manifest());
++    expect(names.filter((name) => name.startsWith("@symnav/"))).toEqual([]);
++  });
++
++  it("proves every supported production dependency field is inspected", () => {
++    const manifest: DaemonPackageManifest = {
++      name: "fixture",
++      private: true,
++      type: "module",
++      main: "index.js",
++      types: "index.d.ts",
++      exports: {},
++      dependencies: { "@symnav/dependency": "workspace:*" },
++      optionalDependencies: { "@symnav/optional": "workspace:*" },
++      peerDependencies: { "@symnav/peer": "workspace:*" },
++      peerDependenciesMeta: { "@symnav/peer-meta": {} },
++      bundledDependencies: ["@symnav/bundled"],
++      bundleDependencies: ["@symnav/bundle"],
++    };
++    expect(DaemonPackageMetadata.productionDependencyNames(manifest)).toEqual([
++      "@symnav/bundle",
++      "@symnav/bundled",
++      "@symnav/dependency",
++      "@symnav/optional",
++      "@symnav/peer",
++      "@symnav/peer-meta",
++    ]);
++  });
++
++  it("documents every policy leaf and derivation exactly once", () => {
++    const expectedRows = [
++      "delivery.postAcceptanceExecutionReattachmentLimit",
++      "delivery.resultTransferResumeLimitPerExecutionAttempt",
++      "diagnostics.disconnectedTraceRetentionMs",
++      "diagnostics.logBackupCount",
++      "diagnostics.logRotateBytes",
++      "diagnostics.maximumDisconnectedTraces",
++      "diagnostics.maximumQueuedEvents",
++      "output.inlineRawBytes",
++      "output.maximumAggregateSpoolRawBytes",
++      "output.maximumChunkRawBytes",
++      "output.maximumResultRawBytes",
++      "recipe.effectiveMemoryMiB",
++      "recipe.effectiveMemorySelection",
++      "recipe.forcedTerminationReserve",
++      "recipe.hardProcessRss",
++      "recipe.workerOldGeneration",
++      "resources.effectiveMemoryBytes",
++      "resources.hardProcessRssBytes",
++      "resources.replacementLimit",
++      "resources.replacementWindowMs",
++      "resources.resumeProcessRssBytes",
++      "resources.softProcessRssBytes",
++      "resources.supervisionIntervalMs",
++      "resources.workerHeapSampleIntervalMs",
++      "resources.workerMaxOldGenerationSizeMiB",
++      "shutdown.controllerPollIntervalMs",
++      "shutdown.forcedTerminationReserveMaximumMs",
++      "shutdown.idleTimeoutMs",
++      "shutdown.processExitPollIntervalMs",
++      "shutdown.processSignalExitTimeoutMs",
++      "shutdown.resourceDrainAcknowledgementGraceMs",
++      "shutdown.resourceDrainAcknowledgementPollIntervalMs",
++      "shutdown.stopTimeoutMs",
++      "startup.authorizationPollIntervalMs",
++      "startup.childFailureRetryLimit",
++      "startup.coordinationGraceMs",
++      "startup.heartbeatIntervalMs",
++      "startup.observationPollIntervalMs",
++      "startup.previousInstanceTerminationTimeoutMs",
++      "transport.executionAdmissionTimeoutMs",
++      "transport.maximumExecutionControlPayloadBytes",
++      "transport.maximumJsonPayloadBytes",
++      "transport.singleResponseTimeoutMs",
++      "transport.statusResponseTimeoutMs",
++    ];
++    const document = DaemonPackageMetadata.policyDocument();
++    const rows = [...document.matchAll(/^\| `([^`]+)` \|/gm)].map((match) => match[1]);
++    expect(rows.sort()).toEqual(expectedRows);
++    expect(document).toContain(
++      "| Policy path or recipe | Default or derivation | Applies to | Reason | Behavior oracle |",
++    );
++    expect(document).toContain("Phase 26 removes `@symnav/daemon/policy-testing`");
++  });
++
++  it("documents intentional deadline absences", () => {
++    const document = DaemonPackageMetadata.policyDocument();
++    for (const absence of [
++      "healthy startup",
++      "startup silence",
++      "post-accept completion",
++      "worker output acknowledgement",
++      "unacknowledged result",
++    ]) {
++      expect(document).toContain(`| ${absence} | None |`);
++    }
++  });
++
++  it("requires the composed daemon policy instead of reconstructing it", () => {
++    const sources = DaemonPackageMetadata.appProductionSources();
++    for (const retiredSeam of [
++      "daemonPolicy: DaemonPolicy =",
++      "readonly policy?: DaemonPolicy",
++      "readonly policy: DaemonPolicy =",
++    ]) {
++      expect(sources).not.toContain(retiredSeam);
++    }
++  });
++});
+diff --git a/meta-tests/src/lint-rule.test.ts b/meta-tests/src/lint-rule.test.ts
+index 4c5e7a7cd..2038da0e1 100644
+--- a/meta-tests/src/lint-rule.test.ts
++++ b/meta-tests/src/lint-rule.test.ts
+@@ -40,6 +40,111 @@ describe("ESLint workspace config", () => {
+     expect(result!.errorCount).toBe(0);
+   });
+ 
++  it("reports a boundaries violation when daemon imports @symnav/core", async () => {
++    const eslint = await makeESLint();
++    const code = `import type { Workspace } from "@symnav/core";\nexport type X = Workspace;\n`;
++    const [result] = await eslint.lintText(code, {
++      filePath: join(repoRoot, "packages/daemon/src/forbidden.ts"),
++    });
++    const boundaries = result!.messages.filter(
++      (message) => message.ruleId === "boundaries/dependencies",
++    );
++    expect(boundaries).toHaveLength(1);
++  });
++
++  it("reports a boundaries violation when daemon imports CLI", async () => {
++    const eslint = await makeESLint();
++    const code = `import type * as Cli from "symnav";\nexport type X = typeof Cli;\n`;
++    const [result] = await eslint.lintText(code, {
++      filePath: join(repoRoot, "packages/daemon/src/forbidden.ts"),
++    });
++    const boundaries = result!.messages.filter(
++      (message) => message.ruleId === "boundaries/dependencies",
++    );
++    expect(boundaries).toHaveLength(1);
++  });
++
++  it("reports a boundaries violation when backend imports @symnav/daemon", async () => {
++    const eslint = await makeESLint();
++    const code = `import type { DaemonExecutor } from "@symnav/daemon";\nexport type X = DaemonExecutor;\n`;
++    const [result] = await eslint.lintText(code, {
++      filePath: join(repoRoot, "packages/backend-typescript/src/forbidden.ts"),
++    });
++    const boundaries = result!.messages.filter(
++      (message) => message.ruleId === "boundaries/dependencies",
++    );
++    expect(boundaries).toHaveLength(1);
++  });
++
++  it("reports a boundaries violation when telemetry imports @symnav/daemon", async () => {
++    const eslint = await makeESLint();
++    const code = `import type { DaemonExecutor } from "@symnav/daemon";\nexport type X = DaemonExecutor;\n`;
++    const [result] = await eslint.lintText(code, {
++      filePath: join(repoRoot, "packages/telemetry/src/forbidden.ts"),
++    });
++    const boundaries = result!.messages.filter(
++      (message) => message.ruleId === "boundaries/dependencies",
++    );
++    expect(boundaries).toHaveLength(1);
++  });
++
++  it("allows renderer files to import @symnav/daemon", async () => {
++    const eslint = await makeESLint();
++    const code = `import type { DaemonStartResult } from "@symnav/daemon";\nexport type X = DaemonStartResult;\n`;
++    const [result] = await eslint.lintText(code, {
++      filePath: join(repoRoot, "packages/renderer/src/daemon.ts"),
++    });
++    expect(result!.errorCount).toBe(0);
++  });
++
++  it("allows CLI files to import @symnav/daemon", async () => {
++    const eslint = await makeESLint();
++    const code = `import type { DaemonExecutor } from "@symnav/daemon";\nexport type X = DaemonExecutor;\n`;
++    const [result] = await eslint.lintText(code, {
++      filePath: join(repoRoot, "apps/cli/src/daemon-contract.ts"),
++    });
++    expect(result!.errorCount).toBe(0);
++  });
++
++  it("allows CLI test files to import the temporary daemon policy factory", async () => {
++    const eslint = await makeESLint();
++    const code = `import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";\nexport const value = DaemonPolicyTestFactory;\n`;
++    const [result] = await eslint.lintText(code, {
++      filePath: join(repoRoot, "apps/cli/src/daemon/policy.test.ts"),
++    });
++    expect(result!.errorCount).toBe(0);
++  });
++
++  it("rejects production imports of the temporary daemon policy factory", async () => {
++    const eslint = await makeESLint();
++    const code = `import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";\nexport const value = DaemonPolicyTestFactory;\n`;
++    const [result] = await eslint.lintText(code, {
++      filePath: join(repoRoot, "apps/cli/src/daemon/policy.ts"),
++    });
++    const restricted = result!.messages.filter(
++      (message) => message.ruleId === "no-restricted-imports",
++    );
++    expect(restricted).toHaveLength(1);
++  });
++
++  it("allows daemon test files to import @symnav/testing", async () => {
++    const eslint = await makeESLint();
++    const code = `import { placeholder } from "@symnav/testing";\nexport const value = placeholder;\n`;
++    const [result] = await eslint.lintText(code, {
++      filePath: join(repoRoot, "packages/daemon/src/contract.test.ts"),
++    });
++    expect(result!.errorCount).toBe(0);
++  });
++
++  it("allows telemetry test files to import @symnav/testing", async () => {
++    const eslint = await makeESLint();
++    const code = `import { placeholder } from "@symnav/testing";\nexport const value = placeholder;\n`;
++    const [result] = await eslint.lintText(code, {
++      filePath: join(repoRoot, "packages/telemetry/src/usage.test.ts"),
++    });
++    expect(result!.errorCount).toBe(0);
++  });
++
+   it("reports a boundaries violation when renderer imports @symnav/telemetry", async () => {
+     const eslint = await makeESLint();
+     const code = `import type { UsageEvent } from "@symnav/telemetry";\nexport type X = UsageEvent;\n`;
+diff --git a/meta-tests/src/project-refs.test.ts b/meta-tests/src/project-refs.test.ts
+index 73be915a3..b8879bd25 100644
+--- a/meta-tests/src/project-refs.test.ts
++++ b/meta-tests/src/project-refs.test.ts
+@@ -12,12 +12,28 @@ function readReferences(tsconfigRelPath: string): string[] {
+ }
+ 
+ describe("tsconfig project references", () => {
++  it("root build references every production and testing project", () => {
++    expect(readReferences("tsconfig.json")).toEqual([
++      "./packages/core",
++      "./packages/daemon",
++      "./packages/renderer",
++      "./packages/backend-typescript",
++      "./packages/telemetry",
++      "./packages/testing",
++      "./apps/cli",
++    ]);
++  });
++
+   it("@symnav/core has no internal references", () => {
+     expect(readReferences("packages/core/tsconfig.json")).toEqual([]);
+   });
+ 
+-  it("@symnav/renderer references only @symnav/core", () => {
+-    expect(readReferences("packages/renderer/tsconfig.json")).toEqual(["../core"]);
++  it("@symnav/daemon has no internal references", () => {
++    expect(readReferences("packages/daemon/tsconfig.json")).toEqual([]);
++  });
++
++  it("@symnav/renderer references only @symnav/core and @symnav/daemon", () => {
++    expect(readReferences("packages/renderer/tsconfig.json")).toEqual(["../core", "../daemon"]);
+   });
+ 
+   it("@symnav/backend-typescript references only @symnav/core", () => {
+@@ -28,9 +44,14 @@ describe("tsconfig project references", () => {
+     expect(readReferences("packages/testing/tsconfig.json")).toEqual([]);
+   });
+ 
+-  it("apps/cli references all four production libs", () => {
++  it("@symnav/telemetry has no internal references", () => {
++    expect(readReferences("packages/telemetry/tsconfig.json")).toEqual([]);
++  });
++
++  it("apps/cli references all five production libraries", () => {
+     expect(readReferences("apps/cli/tsconfig.json")).toEqual([
+       "../../packages/core",
++      "../../packages/daemon",
+       "../../packages/renderer",
+       "../../packages/backend-typescript",
+       "../../packages/telemetry",
+@@ -40,6 +61,7 @@ describe("tsconfig project references", () => {
+   it("no production tsconfig.json references @symnav/testing", () => {
+     const productionConfigs = [
+       "packages/core/tsconfig.json",
++      "packages/daemon/tsconfig.json",
+       "packages/renderer/tsconfig.json",
+       "packages/backend-typescript/tsconfig.json",
+       "packages/telemetry/tsconfig.json",
+@@ -54,6 +76,7 @@ describe("tsconfig project references", () => {
+   it("each package's tsconfig.test.json references its production tsconfig.json and @symnav/testing", () => {
+     const testConfigs: { path: string; testingRef: string }[] = [
+       { path: "packages/core/tsconfig.test.json", testingRef: "../testing" },
++      { path: "packages/daemon/tsconfig.test.json", testingRef: "../testing" },
+       { path: "packages/renderer/tsconfig.test.json", testingRef: "../testing" },
+       { path: "packages/backend-typescript/tsconfig.test.json", testingRef: "../testing" },
+       { path: "packages/telemetry/tsconfig.test.json", testingRef: "../testing" },
+diff --git a/packages/daemon/package.json b/packages/daemon/package.json
+new file mode 100644
+index 000000000..ba92aacbb
+--- /dev/null
++++ b/packages/daemon/package.json
+@@ -0,0 +1,29 @@
++{
++  "name": "@symnav/daemon",
++  "version": "0.0.0",
++  "private": true,
++  "type": "module",
++  "main": "./dist/index.js",
++  "types": "./dist/index.d.ts",
++  "exports": {
++    ".": {
++      "types": "./dist/index.d.ts",
++      "default": "./dist/index.js"
++    },
++    "./policy-testing": {
++      "types": "./dist/policy-testing.d.ts",
++      "default": "./dist/policy-testing.js"
++    }
++  },
++  "files": ["dist"],
++  "scripts": {
++    "test": "vitest run",
++    "build": "tsc --build",
++    "typecheck": "tsc --build",
++    "lint": "eslint src",
++    "typecheck:test": "tsc -p tsconfig.test.json --noEmit"
++  },
++  "devDependencies": {
++    "@symnav/testing": "workspace:*"
++  }
++}
+diff --git a/packages/daemon/src/daemon-command-name.ts b/packages/daemon/src/daemon-command-name.ts
+new file mode 100644
+index 000000000..c9c0939b0
+--- /dev/null
++++ b/packages/daemon/src/daemon-command-name.ts
+@@ -0,0 +1,11 @@
++export type DaemonCommandName =
++  | "overview"
++  | "resolve"
++  | "def"
++  | "refs"
++  | "context"
++  | "graph"
++  | "stats"
++  | "help"
++  | "version"
++  | "unknown";
+diff --git a/packages/daemon/src/daemon-diagnostics.ts b/packages/daemon/src/daemon-diagnostics.ts
+new file mode 100644
+index 000000000..6c8b1b834
+--- /dev/null
++++ b/packages/daemon/src/daemon-diagnostics.ts
+@@ -0,0 +1,9 @@
++export type DaemonDiagnosticValue =
++  | null
++  | boolean
++  | number
++  | string
++  | readonly DaemonDiagnosticValue[]
++  | { readonly [key: string]: DaemonDiagnosticValue };
++
++export type DaemonDiagnostics = Readonly<Record<string, DaemonDiagnosticValue>>;
+diff --git a/packages/daemon/src/daemon-executor.ts b/packages/daemon/src/daemon-executor.ts
+new file mode 100644
+index 000000000..eaade6b1b
+--- /dev/null
++++ b/packages/daemon/src/daemon-executor.ts
+@@ -0,0 +1,53 @@
++import type { DaemonDiagnostics } from "./daemon-diagnostics.js";
++
++export type DaemonExecutionMode = "cold" | "warm" | "fallback";
++export type DaemonOutputStream = "stdout" | "stderr";
++
++export interface DaemonExecutorRequest {
++  readonly argv: readonly string[];
++  readonly cwd: string;
++  readonly telemetryEnabled: boolean;
++  readonly executionMode: DaemonExecutionMode;
++}
++
++export interface DaemonOutputRecord {
++  readonly stream: DaemonOutputStream;
++  readonly bytes: Uint8Array;
++}
++
++export interface DaemonExecutorOutput {
++  records(): AsyncIterable<DaemonOutputRecord>;
++  dispose(): Promise<void>;
++}
++
++export interface DaemonExecutorInitializationResult {
++  readonly fileCount: number;
++  readonly diagnostics?: DaemonDiagnostics;
++}
++
++export interface DaemonExecutorExecutionResult {
++  readonly exitCode: number;
++  readonly output: DaemonExecutorOutput;
++  readonly diagnostics?: DaemonDiagnostics;
++}
++
++export interface DaemonExecutor {
++  initialize(workspaceRoot: string): Promise<DaemonExecutorInitializationResult>;
++  execute(request: DaemonExecutorRequest): Promise<DaemonExecutorExecutionResult>;
++  releaseTransientResources(): Promise<void>;
++}
++
++export interface DaemonExecutorFactoryOptions {
++  readonly stateDirectory: string;
++  readonly productVersion: string;
++}
++
++export type DaemonExecutorFactory = (
++  options: DaemonExecutorFactoryOptions,
++) => DaemonExecutor | Promise<DaemonExecutor>;
++
++export interface DaemonExecutorModule {
++  readonly createDaemonExecutor: DaemonExecutorFactory;
++}
++
++export type DaemonExecutorModuleUrl = string;
+diff --git a/packages/daemon/src/daemon-lifecycle-report.ts b/packages/daemon/src/daemon-lifecycle-report.ts
+new file mode 100644
+index 000000000..8acbea073
+--- /dev/null
++++ b/packages/daemon/src/daemon-lifecycle-report.ts
+@@ -0,0 +1,92 @@
++import type { DaemonCommandName } from "./daemon-command-name.js";
++
++export interface DaemonActivitySnapshot {
++  readonly lifecycle: "starting" | "ready" | "busy" | "recovering" | "draining";
++  readonly recoveryDetail?: "resource-pressure" | "worker-replacement";
++  readonly pid: number;
++  readonly startedAt: number;
++  readonly startupElapsedMs: number;
++  readonly fileCount?: number;
++  readonly processRssBytes: number;
++  readonly hardProcessRssBytes: number;
++  readonly workerHeapUsedBytes?: number;
++  readonly workerGeneration: number;
++  readonly current?: {
++    readonly requestId: string;
++    readonly command: DaemonCommandName;
++    readonly elapsedMs: number;
++  };
++  readonly queued: number;
++  readonly lastCompletedAgoMs?: number;
++  readonly spoolBytes: number;
++}
++
++export type RunningDaemonStatus =
++  | {
++      readonly state: "starting";
++      readonly workspaceRoot: string;
++      readonly pid: number;
++      readonly startupElapsedMs: number;
++      readonly memoryBytes?: number;
++    }
++  | {
++      readonly state: "ready";
++      readonly workspaceRoot: string;
++      readonly pid: number;
++      readonly uptimeMs: number;
++      readonly fileCount: number;
++      readonly memoryBytes: number;
++      readonly lastRequestAgoMs?: number;
++    }
++  | {
++      readonly state: "busy";
++      readonly workspaceRoot: string;
++      readonly pid: number;
++      readonly uptimeMs: number;
++      readonly command: DaemonCommandName;
++      readonly elapsedMs: number;
++      readonly queued: number;
++      readonly memoryBytes: number;
++    }
++  | {
++      readonly state: "recovering";
++      readonly workspaceRoot: string;
++      readonly pid: number;
++      readonly uptimeMs: number;
++      readonly detail: "resource-pressure" | "worker-replacement" | "draining";
++      readonly queued: number;
++      readonly memoryBytes: number;
++    }
++  | {
++      readonly state: "unresponsive";
++      readonly workspaceRoot: string;
++      readonly pid: number;
++      readonly uptimeMs: number;
++      readonly lastResponseAgoMs?: number;
++      readonly lastKnown?: DaemonActivitySnapshot;
++    };
++
++export interface DaemonStatusEnvelope {
++  readonly schemaVersion: 1;
++  readonly daemons: readonly RunningDaemonStatus[];
++}
++
++export type DaemonStartResult =
++  | {
++      readonly status: "ready";
++      readonly workspaceRoot: string;
++      readonly fileCount: number;
++      readonly loadDurationMs: number;
++    }
++  | {
++      readonly status: "already-running";
++      readonly workspaceRoot: string;
++      readonly pid: number;
++      readonly uptimeMs: number;
++    }
++  | { readonly status: "disabled" };
++
++export type DaemonStopResult =
++  | { readonly status: "stopped"; readonly workspaceRoot: string; readonly pid: number }
++  | { readonly status: "killed"; readonly workspaceRoot: string; readonly pid: number }
++  | { readonly status: "not-running"; readonly workspaceRoot: string };
+diff --git a/packages/daemon/src/daemon-policy.test.ts b/packages/daemon/src/daemon-policy.test.ts
+new file mode 100644
+index 000000000..51fbbe2c8
+--- /dev/null
++++ b/packages/daemon/src/daemon-policy.test.ts
+@@ -0,0 +1,162 @@
++import { describe, expect, it } from "vitest";
++
++import { DaemonPolicy, type DaemonPolicyValues } from "./index.js";
++import { DaemonPolicyTestFactory } from "./policy-testing.js";
++
++const MEBIBYTE = 1024 * 1024;
++const GIBIBYTE = 1024 * MEBIBYTE;
++
++const expectedDefaults: DaemonPolicyValues = {
++  transport: {
++    singleResponseTimeoutMs: 250,
++    statusResponseTimeoutMs: 100,
++    executionAdmissionTimeoutMs: 5_000,
++    maximumJsonPayloadBytes: 8 * MEBIBYTE,
++    maximumExecutionControlPayloadBytes: 256 * 1024,
++  },
++  startup: {
++    coordinationGraceMs: 15_000,
++    heartbeatIntervalMs: 100,
++    authorizationPollIntervalMs: 10,
++    observationPollIntervalMs: 20,
++    previousInstanceTerminationTimeoutMs: 5 * 60_000,
++    childFailureRetryLimit: 1,
++  },
++  shutdown: {
++    idleTimeoutMs: 30 * 60_000,
++    stopTimeoutMs: 5_000,
++    forcedTerminationReserveMaximumMs: 500,
++    controllerPollIntervalMs: 20,
++    processSignalExitTimeoutMs: 500,
++    processExitPollIntervalMs: 20,
++    resourceDrainAcknowledgementGraceMs: 250,
++    resourceDrainAcknowledgementPollIntervalMs: 5,
++  },
++  delivery: {
++    postAcceptanceExecutionReattachmentLimit: 1,
++    resultTransferResumeLimitPerExecutionAttempt: 1,
++  },
++  output: {
++    maximumChunkRawBytes: 64 * 1024,
++    inlineRawBytes: 256 * 1024,
++    maximumResultRawBytes: 256 * MEBIBYTE,
++    maximumAggregateSpoolRawBytes: 512 * MEBIBYTE,
++  },
++  resources: {
++    effectiveMemoryBytes: GIBIBYTE,
++    hardProcessRssBytes: 512 * MEBIBYTE,
++    softProcessRssBytes: 409 * MEBIBYTE,
++    resumeProcessRssBytes: 358 * MEBIBYTE,
++    workerMaxOldGenerationSizeMiB: 256,
++    supervisionIntervalMs: 250,
++    replacementWindowMs: 10 * 60_000,
++    replacementLimit: 2,
++    workerHeapSampleIntervalMs: 25,
++  },
++  diagnostics: {
++    logRotateBytes: 10 * MEBIBYTE,
++    logBackupCount: 4,
++    maximumQueuedEvents: 1_024,
++    disconnectedTraceRetentionMs: 5 * 60_000,
++    maximumDisconnectedTraces: 1_024,
++  },
++};
++
++describe("DaemonPolicy", () => {
++  it("defines every default leaf in one complete snapshot", () => {
++    expect(DaemonPolicy.fromSystemMemory({ totalBytes: GIBIBYTE }).values).toEqual(
++      expectedDefaults,
++    );
++  });
++
++  it.each([
++    ["positive lower constraint", 64 * GIBIBYTE, GIBIBYTE, GIBIBYTE],
++    ["zero constraint", GIBIBYTE, 0, GIBIBYTE],
++    ["negative constraint", GIBIBYTE, -1, GIBIBYTE],
++    ["larger constraint", GIBIBYTE, 16 * GIBIBYTE, GIBIBYTE],
++    ["equal constraint", GIBIBYTE, GIBIBYTE, GIBIBYTE],
++    ["raw bytes", GIBIBYTE + 123, undefined, GIBIBYTE + 123],
++  ])("selects effective memory for %s", (_, totalBytes, constrainedBytes, expected) => {
++    const systemMemory =
++      constrainedBytes === undefined ? { totalBytes } : { totalBytes, constrainedBytes };
++    expect(DaemonPolicy.fromSystemMemory(systemMemory).values.resources).toMatchObject({
++      effectiveMemoryBytes: expected,
++    });
++  });
++
++  it.each([
++    [1, 256, 204, 179, 128],
++    [512 * MEBIBYTE, 256, 204, 179, 128],
++    [GIBIBYTE, 512, 409, 358, 256],
++    [16 * GIBIBYTE, 8_192, 6_553, 5_734, 4_096],
++    [64 * GIBIBYTE, 8_192, 6_553, 5_734, 4_096],
++  ])(
++    "derives memory thresholds from %i raw bytes",
++    (totalBytes, hardMiB, softMiB, resumeMiB, workerMiB) => {
++      const resources = DaemonPolicy.fromSystemMemory({ totalBytes }).values.resources;
++      expect(resources).toMatchObject({
++        hardProcessRssBytes: hardMiB * MEBIBYTE,
++        softProcessRssBytes: softMiB * MEBIBYTE,
++        resumeProcessRssBytes: resumeMiB * MEBIBYTE,
++        workerMaxOldGenerationSizeMiB: workerMiB,
++      });
++    },
++  );
++
++  it("freezes every snapshot level and keeps equal timings independently overrideable", () => {
++    const policy = DaemonPolicyTestFactory.withOverrides(
++      DaemonPolicy.fromSystemMemory({ totalBytes: GIBIBYTE }),
++      {
++        startup: { observationPollIntervalMs: 21 },
++        shutdown: { controllerPollIntervalMs: 22, processExitPollIntervalMs: 23 },
++      },
++    );
++    expect(policy.values.startup.observationPollIntervalMs).toBe(21);
++    expect(policy.values.shutdown.controllerPollIntervalMs).toBe(22);
++    expect(policy.values.shutdown.processExitPollIntervalMs).toBe(23);
++    expect(Object.isFrozen(policy.values)).toBe(true);
++    for (const section of Object.values(policy.values)) expect(Object.isFrozen(section)).toBe(true);
++  });
++
++  it("round-trips only one complete exact versioned snapshot", () => {
++    const policy = DaemonPolicyTestFactory.withOverrides(
++      DaemonPolicy.fromSystemMemory({ totalBytes: GIBIBYTE }),
++      { transport: { singleResponseTimeoutMs: 991 } },
++    );
++    const serialized = policy.toSerialized();
++    expect(DaemonPolicy.fromSerialized(serialized).values).toEqual(policy.values);
++    expect(Object.isFrozen(serialized)).toBe(true);
++    expect(Object.isFrozen(serialized.values)).toBe(true);
++  });
++
++  it.each([
++    ["missing key", (value: any) => delete value.values.transport.singleResponseTimeoutMs],
++    ["extra key", (value: any) => (value.values.transport.extra = 1)],
++    ["wrong schema", (value: any) => (value.schemaVersion = 2)],
++    ["NaN", (value: any) => (value.values.output.inlineRawBytes = Number.NaN)],
++    ["Infinity", (value: any) => (value.values.shutdown.stopTimeoutMs = Number.POSITIVE_INFINITY)],
++    ["unsafe count", (value: any) => (value.values.diagnostics.logBackupCount = 2 ** 53)],
++    [
++      "negative count",
++      (value: any) => (value.values.delivery.postAcceptanceExecutionReattachmentLimit = -1),
++    ],
++    ["zero poll interval", (value: any) => (value.values.resources.workerHeapSampleIntervalMs = 0)],
++    ["zero chunk capacity", (value: any) => (value.values.output.maximumChunkRawBytes = 0)],
++    [
++      "invalid hysteresis",
++      (value: any) =>
++        (value.values.resources.resumeProcessRssBytes = value.values.resources.softProcessRssBytes),
++    ],
++    [
++      "invalid output ordering",
++      (value: any) =>
++        (value.values.output.inlineRawBytes = value.values.output.maximumResultRawBytes + 1),
++    ],
++  ])("rejects %s", (_, mutate) => {
++    const value = structuredClone(
++      DaemonPolicy.fromSystemMemory({ totalBytes: GIBIBYTE }).toSerialized(),
++    );
++    mutate(value);
++    expect(() => DaemonPolicy.fromSerialized(value)).toThrow("Invalid daemon policy");
++  });
++});
+diff --git a/packages/daemon/src/daemon-policy.ts b/packages/daemon/src/daemon-policy.ts
+new file mode 100644
+index 000000000..746b7a148
+--- /dev/null
++++ b/packages/daemon/src/daemon-policy.ts
+@@ -0,0 +1,342 @@
++const MEBIBYTE = 1024 * 1024;
++
++interface DaemonRuntimeProcess {
++  constrainedMemory?: () => number | undefined;
++  binding(name: "os"): { getTotalMem(): number };
++}
++
++export interface DaemonSystemMemory {
++  readonly totalBytes: number;
++  readonly constrainedBytes?: number;
++}
++
++export interface DaemonPolicyValues {
++  readonly transport: {
++    readonly singleResponseTimeoutMs: number;
++    readonly statusResponseTimeoutMs: number;
++    readonly executionAdmissionTimeoutMs: number;
++    readonly maximumJsonPayloadBytes: number;
++    readonly maximumExecutionControlPayloadBytes: number;
++  };
++  readonly startup: {
++    readonly coordinationGraceMs: number;
++    readonly heartbeatIntervalMs: number;
++    readonly authorizationPollIntervalMs: number;
++    readonly observationPollIntervalMs: number;
++    readonly previousInstanceTerminationTimeoutMs: number;
++    readonly childFailureRetryLimit: number;
++  };
++  readonly shutdown: {
++    readonly idleTimeoutMs: number;
++    readonly stopTimeoutMs: number;
++    readonly forcedTerminationReserveMaximumMs: number;
++    readonly controllerPollIntervalMs: number;
++    readonly processSignalExitTimeoutMs: number;
++    readonly processExitPollIntervalMs: number;
++    readonly resourceDrainAcknowledgementGraceMs: number;
++    readonly resourceDrainAcknowledgementPollIntervalMs: number;
++  };
++  readonly delivery: {
++    readonly postAcceptanceExecutionReattachmentLimit: number;
++    readonly resultTransferResumeLimitPerExecutionAttempt: number;
++  };
++  readonly output: {
++    readonly maximumChunkRawBytes: number;
++    readonly inlineRawBytes: number;
++    readonly maximumResultRawBytes: number;
++    readonly maximumAggregateSpoolRawBytes: number;
++  };
++  readonly resources: {
++    readonly effectiveMemoryBytes: number;
++    readonly hardProcessRssBytes: number;
++    readonly softProcessRssBytes: number;
++    readonly resumeProcessRssBytes: number;
++    readonly workerMaxOldGenerationSizeMiB: number;
++    readonly supervisionIntervalMs: number;
++    readonly replacementWindowMs: number;
++    readonly replacementLimit: number;
++    readonly workerHeapSampleIntervalMs: number;
++  };
++  readonly diagnostics: {
++    readonly logRotateBytes: number;
++    readonly logBackupCount: number;
++    readonly maximumQueuedEvents: number;
++    readonly disconnectedTraceRetentionMs: number;
++    readonly maximumDisconnectedTraces: number;
++  };
++}
++
++interface SerializedDaemonPolicy {
++  readonly schemaVersion: 1;
++  readonly values: DaemonPolicyValues;
++}
++
++export class DaemonPolicy {
++  readonly values: DaemonPolicyValues;
++
++  private constructor(values: DaemonPolicyValues) {
++    this.values = DaemonPolicy.freeze(values);
++    Object.freeze(this);
++  }
++
++  static currentSystem(): DaemonPolicy {
++    const runtimeProcess = (globalThis as unknown as { process: DaemonRuntimeProcess }).process;
++    const constrainedBytes = runtimeProcess.constrainedMemory?.();
++    return DaemonPolicy.fromSystemMemory({
++      totalBytes: runtimeProcess.binding("os").getTotalMem(),
++      ...(constrainedBytes === undefined ? {} : { constrainedBytes }),
++    });
++  }
++
++  static fromSystemMemory(memory: DaemonSystemMemory): DaemonPolicy {
++    const effectiveMemoryBytes =
++      memory.constrainedBytes !== undefined &&
++      memory.constrainedBytes > 0 &&
++      memory.constrainedBytes < memory.totalBytes
++        ? memory.constrainedBytes
++        : memory.totalBytes;
++    const effectiveMemoryMiB = Math.max(1, Math.floor(effectiveMemoryBytes / MEBIBYTE));
++    const hardProcessRssMiB = DaemonPolicy.clamp(Math.floor(effectiveMemoryMiB / 2), 256, 8_192);
++    const workerMaxOldGenerationSizeMiB = DaemonPolicy.clamp(
++      Math.floor(effectiveMemoryMiB / 4),
++      128,
++      4_096,
++    );
++    return new DaemonPolicy({
++      transport: {
++        singleResponseTimeoutMs: 250,
++        statusResponseTimeoutMs: 100,
++        executionAdmissionTimeoutMs: 5_000,
++        maximumJsonPayloadBytes: 8 * MEBIBYTE,
++        maximumExecutionControlPayloadBytes: 256 * 1024,
++      },
++      startup: {
++        coordinationGraceMs: 15_000,
++        heartbeatIntervalMs: 100,
++        authorizationPollIntervalMs: 10,
++        observationPollIntervalMs: 20,
++        previousInstanceTerminationTimeoutMs: 5 * 60_000,
++        childFailureRetryLimit: 1,
++      },
++      shutdown: {
++        idleTimeoutMs: 30 * 60_000,
++        stopTimeoutMs: 5_000,
++        forcedTerminationReserveMaximumMs: 500,
++        controllerPollIntervalMs: 20,
++        processSignalExitTimeoutMs: 500,
++        processExitPollIntervalMs: 20,
++        resourceDrainAcknowledgementGraceMs: 250,
++        resourceDrainAcknowledgementPollIntervalMs: 5,
++      },
++      delivery: {
++        postAcceptanceExecutionReattachmentLimit: 1,
++        resultTransferResumeLimitPerExecutionAttempt: 1,
++      },
++      output: {
++        maximumChunkRawBytes: 64 * 1024,
++        inlineRawBytes: 256 * 1024,
++        maximumResultRawBytes: 256 * MEBIBYTE,
++        maximumAggregateSpoolRawBytes: 512 * MEBIBYTE,
++      },
++      resources: {
++        effectiveMemoryBytes,
++        hardProcessRssBytes: hardProcessRssMiB * MEBIBYTE,
++        softProcessRssBytes: Math.floor(hardProcessRssMiB * 0.8) * MEBIBYTE,
++        resumeProcessRssBytes: Math.floor(hardProcessRssMiB * 0.7) * MEBIBYTE,
++        workerMaxOldGenerationSizeMiB,
++        supervisionIntervalMs: 250,
++        replacementWindowMs: 10 * 60_000,
++        replacementLimit: 2,
++        workerHeapSampleIntervalMs: 25,
++      },
++      diagnostics: {
++        logRotateBytes: 10 * MEBIBYTE,
++        logBackupCount: 4,
++        maximumQueuedEvents: 1_024,
++        disconnectedTraceRetentionMs: 5 * 60_000,
++        maximumDisconnectedTraces: 1_024,
++      },
++    });
++  }
++
++  static fromSerialized(value: unknown): DaemonPolicy {
++    return new DaemonPolicy(DaemonPolicyCodec.parse(value));
++  }
++
++  toSerialized(): Readonly<SerializedDaemonPolicy> {
++    return DaemonPolicyCodec.serialize(this);
++  }
++
++  private static clamp(value: number, minimum: number, maximum: number): number {
++    return Math.max(minimum, Math.min(maximum, value));
++  }
++
++  private static freeze(values: DaemonPolicyValues): DaemonPolicyValues {
++    for (const section of Object.values(values)) Object.freeze(section);
++    return Object.freeze(values);
++  }
++}
++
++class DaemonPolicyCodec {
++  static serialize(policy: DaemonPolicy): SerializedDaemonPolicy {
++    return Object.freeze({ schemaVersion: 1, values: policy.values });
++  }
++
++  static parse(value: unknown): DaemonPolicyValues {
++    if (!DaemonPolicyCodec.isRecord(value)) throw new Error("Invalid daemon policy");
++    DaemonPolicyCodec.exactKeys(value, ["schemaVersion", "values"]);
++    if (value.schemaVersion !== 1 || !DaemonPolicyCodec.isRecord(value.values)) {
++      throw new Error("Invalid daemon policy");
++    }
++    const values = value.values;
++    DaemonPolicyCodec.validateValues(values);
++    return JSON.parse(JSON.stringify(values)) as DaemonPolicyValues;
++  }
++
++  private static validateValues(values: Record<string, unknown>): void {
++    DaemonPolicyCodec.exactKeys(values, [
++      "transport",
++      "startup",
++      "shutdown",
++      "delivery",
++      "output",
++      "resources",
++      "diagnostics",
++    ]);
++    const transport = DaemonPolicyCodec.section(values, "transport", [
++      "singleResponseTimeoutMs",
++      "statusResponseTimeoutMs",
++      "executionAdmissionTimeoutMs",
++      "maximumJsonPayloadBytes",
++      "maximumExecutionControlPayloadBytes",
++    ]);
++    const startup = DaemonPolicyCodec.section(values, "startup", [
++      "coordinationGraceMs",
++      "heartbeatIntervalMs",
++      "authorizationPollIntervalMs",
++      "observationPollIntervalMs",
++      "previousInstanceTerminationTimeoutMs",
++      "childFailureRetryLimit",
++    ]);
++    const shutdown = DaemonPolicyCodec.section(values, "shutdown", [
++      "idleTimeoutMs",
++      "stopTimeoutMs",
++      "forcedTerminationReserveMaximumMs",
++      "controllerPollIntervalMs",
++      "processSignalExitTimeoutMs",
++      "processExitPollIntervalMs",
++      "resourceDrainAcknowledgementGraceMs",
++      "resourceDrainAcknowledgementPollIntervalMs",
++    ]);
++    const delivery = DaemonPolicyCodec.section(values, "delivery", [
++      "postAcceptanceExecutionReattachmentLimit",
++      "resultTransferResumeLimitPerExecutionAttempt",
++    ]);
++    const output = DaemonPolicyCodec.section(values, "output", [
++      "maximumChunkRawBytes",
++      "inlineRawBytes",
++      "maximumResultRawBytes",
++      "maximumAggregateSpoolRawBytes",
++    ]);
++    const resources = DaemonPolicyCodec.section(values, "resources", [
++      "effectiveMemoryBytes",
++      "hardProcessRssBytes",
++      "softProcessRssBytes",
++      "resumeProcessRssBytes",
++      "workerMaxOldGenerationSizeMiB",
++      "supervisionIntervalMs",
++      "replacementWindowMs",
++      "replacementLimit",
++      "workerHeapSampleIntervalMs",
++    ]);
++    const diagnostics = DaemonPolicyCodec.section(values, "diagnostics", [
++      "logRotateBytes",
++      "logBackupCount",
++      "maximumQueuedEvents",
++      "disconnectedTraceRetentionMs",
++      "maximumDisconnectedTraces",
++    ]);
++    for (const section of [
++      transport,
++      startup,
++      shutdown,
++      delivery,
++      output,
++      resources,
++      diagnostics,
++    ]) {
++      for (const value of Object.values(section)) DaemonPolicyCodec.nonnegativeInteger(value);
++    }
++    for (const [section, key] of [
++      [startup, "heartbeatIntervalMs"],
++      [startup, "authorizationPollIntervalMs"],
++      [startup, "observationPollIntervalMs"],
++      [shutdown, "controllerPollIntervalMs"],
++      [shutdown, "processExitPollIntervalMs"],
++      [shutdown, "resourceDrainAcknowledgementPollIntervalMs"],
++      [resources, "supervisionIntervalMs"],
++      [resources, "workerHeapSampleIntervalMs"],
++    ] as const) {
++      if (DaemonPolicyCodec.integer(section, key) <= 0) throw new Error("Invalid daemon policy");
++    }
++    const hardProcessRssBytes = DaemonPolicyCodec.integer(resources, "hardProcessRssBytes");
++    const softProcessRssBytes = DaemonPolicyCodec.integer(resources, "softProcessRssBytes");
++    const resumeProcessRssBytes = DaemonPolicyCodec.integer(resources, "resumeProcessRssBytes");
++    if (
++      hardProcessRssBytes <= softProcessRssBytes ||
++      softProcessRssBytes <= resumeProcessRssBytes
++    ) {
++      throw new Error("Invalid daemon policy");
++    }
++    const maximumChunkRawBytes = DaemonPolicyCodec.integer(output, "maximumChunkRawBytes");
++    const inlineRawBytes = DaemonPolicyCodec.integer(output, "inlineRawBytes");
++    const maximumResultRawBytes = DaemonPolicyCodec.integer(output, "maximumResultRawBytes");
++    const maximumAggregateSpoolRawBytes = DaemonPolicyCodec.integer(
++      output,
++      "maximumAggregateSpoolRawBytes",
++    );
++    if (
++      maximumChunkRawBytes === 0 ||
++      maximumChunkRawBytes > inlineRawBytes ||
++      inlineRawBytes > maximumResultRawBytes ||
++      maximumResultRawBytes > maximumAggregateSpoolRawBytes
++    ) {
++      throw new Error("Invalid daemon policy");
++    }
++  }
++
++  private static section(
++    values: Record<string, unknown>,
++    name: string,
++    keys: readonly string[],
++  ): Record<string, unknown> {
++    const section = values[name];
++    if (!DaemonPolicyCodec.isRecord(section)) throw new Error("Invalid daemon policy");
++    DaemonPolicyCodec.exactKeys(section, keys);
++    return section;
++  }
++
++  private static exactKeys(value: Record<string, unknown>, keys: readonly string[]): void {
++    const actual = Object.keys(value).sort();
++    const expected = [...keys].sort();
++    if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
++      throw new Error("Invalid daemon policy");
++    }
++  }
++
++  private static nonnegativeInteger(value: unknown): asserts value is number {
++    if (!Number.isSafeInteger(value) || (value as number) < 0) {
++      throw new Error("Invalid daemon policy");
++    }
++  }
++
++  private static integer(section: Record<string, unknown>, key: string): number {
++    const value = section[key];
++    DaemonPolicyCodec.nonnegativeInteger(value);
++    return value;
++  }
++
++  private static isRecord(value: unknown): value is Record<string, unknown> {
++    return typeof value === "object" && value !== null && !Array.isArray(value);
++  }
++}
+diff --git a/packages/daemon/src/host-contract.test.ts b/packages/daemon/src/host-contract.test.ts
+new file mode 100644
+index 000000000..24979e03c
+--- /dev/null
++++ b/packages/daemon/src/host-contract.test.ts
+@@ -0,0 +1,627 @@
++import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { dirname, join, relative, sep } from "node:path";
++import { fileURLToPath, pathToFileURL } from "node:url";
++
++import { describe, expect, expectTypeOf, it } from "vitest";
++import ts from "typescript";
++
++import * as daemonRuntime from "./index.js";
++import * as policyTestingRuntime from "./policy-testing.js";
++import type {
++  DaemonActivitySnapshot,
++  DaemonCommandName,
++  DaemonDiagnostics,
++  DaemonDiagnosticValue,
++  DaemonExecutionMode,
++  DaemonExecutor,
++  DaemonExecutorExecutionResult,
++  DaemonExecutorFactory,
++  DaemonExecutorFactoryOptions,
++  DaemonExecutorInitializationResult,
++  DaemonExecutorModule,
++  DaemonExecutorModuleUrl,
++  DaemonExecutorOutput,
++  DaemonExecutorRequest,
++  DaemonOutputRecord,
++  DaemonOutputStream,
++  DaemonPolicyValues,
++  DaemonSystemMemory,
++  DaemonStartResult,
++  DaemonStatusEnvelope,
++  DaemonStopResult,
++  RunningDaemonStatus,
++} from "./index.js";
++import { DaemonPolicy } from "./index.js";
++
++type ExportKind = "runtime" | "type";
++
++interface ExportedSymbol {
++  readonly kind: ExportKind;
++  readonly name: string;
++}
++
++interface DeclarationCompilation {
++  readonly diagnostics: readonly ts.Diagnostic[];
++  readonly outputs: ReadonlyMap<string, string>;
++}
++
++class DaemonContractSourcePath {
++  public static root(moduleUrl: string): string {
++    return dirname(fileURLToPath(moduleUrl));
++  }
++}
++
++class DaemonContractExpectation {
++  public static readonly exports: readonly ExportedSymbol[] = [
++    { kind: "runtime", name: "DaemonPolicy" },
++    { kind: "type", name: "DaemonActivitySnapshot" },
++    { kind: "type", name: "DaemonCommandName" },
++    { kind: "type", name: "DaemonDiagnostics" },
++    { kind: "type", name: "DaemonDiagnosticValue" },
++    { kind: "type", name: "DaemonExecutionMode" },
++    { kind: "type", name: "DaemonExecutor" },
++    { kind: "type", name: "DaemonExecutorExecutionResult" },
++    { kind: "type", name: "DaemonExecutorFactory" },
++    { kind: "type", name: "DaemonExecutorFactoryOptions" },
++    { kind: "type", name: "DaemonExecutorInitializationResult" },
++    { kind: "type", name: "DaemonExecutorModule" },
++    { kind: "type", name: "DaemonExecutorModuleUrl" },
++    { kind: "type", name: "DaemonExecutorOutput" },
++    { kind: "type", name: "DaemonExecutorRequest" },
++    { kind: "type", name: "DaemonOutputRecord" },
++    { kind: "type", name: "DaemonOutputStream" },
++    { kind: "type", name: "DaemonPolicyValues" },
++    { kind: "type", name: "DaemonStartResult" },
++    { kind: "type", name: "DaemonStatusEnvelope" },
++    { kind: "type", name: "DaemonStopResult" },
++    { kind: "type", name: "DaemonSystemMemory" },
++    { kind: "type", name: "RunningDaemonStatus" },
++  ];
++
++  public static readonly policyMembers = [
++    "instance:toSerialized",
++    "instance:values",
++    "static:currentSystem",
++    "static:fromSerialized",
++    "static:fromSystemMemory",
++  ];
++
++  public static readonly policyTestingExports: readonly ExportedSymbol[] = [
++    { kind: "runtime", name: "DaemonPolicyTestFactory" },
++  ];
++
++  public static readonly productionSources: readonly string[] = [
++    "daemon-command-name.ts",
++    "daemon-diagnostics.ts",
++    "daemon-executor.ts",
++    "daemon-lifecycle-report.ts",
++    "daemon-policy.ts",
++    "index.ts",
++    "policy-testing.ts",
++  ];
++}
++
++class TypeScriptClassMemberInventory {
++  public static read(sourceText: string, className: string): readonly string[] {
++    const sourceFile = ts.createSourceFile(
++      "source.ts",
++      sourceText,
++      ts.ScriptTarget.Latest,
++      true,
++      ts.ScriptKind.TS,
++    );
++    const declaration = sourceFile.statements.find(
++      (statement): statement is ts.ClassDeclaration =>
++        ts.isClassDeclaration(statement) && statement.name?.text === className,
++    );
++    if (declaration === undefined) return [];
++
++    return declaration.members
++      .filter(
++        (member) =>
++          !TypeScriptClassMemberInventory.hasModifier(member, ts.SyntaxKind.PrivateKeyword),
++      )
++      .flatMap((member) => {
++        if (ts.isConstructorDeclaration(member) || member.name === undefined) return [];
++        const scope = TypeScriptClassMemberInventory.hasModifier(
++          member,
++          ts.SyntaxKind.StaticKeyword,
++        )
++          ? "static"
++          : "instance";
++        return [`${scope}:${member.name.getText(sourceFile)}`];
++      })
++      .sort();
++  }
++
++  private static hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
++    return ts.canHaveModifiers(node)
++      ? (ts.getModifiers(node)?.some((modifier) => modifier.kind === kind) ?? false)
++      : false;
++  }
++}
++
++class TypeScriptExportInventory {
++  public static read(sourceText: string): readonly ExportedSymbol[] {
++    const sourceFile = ts.createSourceFile(
++      "index.ts",
++      sourceText,
++      ts.ScriptTarget.Latest,
++      true,
++      ts.ScriptKind.TS,
++    );
++    const exportedSymbols: ExportedSymbol[] = [];
++
++    for (const statement of sourceFile.statements) {
++      TypeScriptExportInventory.collect(statement, exportedSymbols);
++    }
++
++    return exportedSymbols.sort((left, right) =>
++      `${left.kind}:${left.name}`.localeCompare(`${right.kind}:${right.name}`),
++    );
++  }
++
++  private static collect(statement: ts.Statement, output: ExportedSymbol[]): void {
++    if (ts.isExportDeclaration(statement)) {
++      TypeScriptExportInventory.collectExportDeclaration(statement, output);
++      return;
++    }
++
++    if (ts.isExportAssignment(statement)) {
++      output.push({ kind: "runtime", name: "default" });
++      return;
++    }
++
++    if (!TypeScriptExportInventory.hasModifier(statement, ts.SyntaxKind.ExportKeyword)) {
++      return;
++    }
++
++    const isDefault = TypeScriptExportInventory.hasModifier(
++      statement,
++      ts.SyntaxKind.DefaultKeyword,
++    );
++    if (isDefault) {
++      output.push({ kind: "runtime", name: "default" });
++      return;
++    }
++
++    if (ts.isVariableStatement(statement)) {
++      for (const declaration of statement.declarationList.declarations) {
++        TypeScriptExportInventory.collectBindingNames(declaration.name, output);
++      }
++      return;
++    }
++
++    if (ts.isImportEqualsDeclaration(statement)) {
++      output.push({ kind: statement.isTypeOnly ? "type" : "runtime", name: statement.name.text });
++      return;
++    }
++
++    const name = TypeScriptExportInventory.declarationName(statement);
++    if (name === undefined) {
++      return;
++    }
++    const kind =
++      ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)
++        ? "type"
++        : "runtime";
++    output.push({ kind, name });
++  }
++
++  private static collectExportDeclaration(
++    declaration: ts.ExportDeclaration,
++    output: ExportedSymbol[],
++  ): void {
++    if (declaration.exportClause === undefined) {
++      output.push({ kind: declaration.isTypeOnly ? "type" : "runtime", name: "*" });
++      return;
++    }
++    if (!ts.isNamedExports(declaration.exportClause)) {
++      output.push({ kind: "runtime", name: declaration.exportClause.name.text });
++      return;
++    }
++    for (const element of declaration.exportClause.elements) {
++      output.push({
++        kind: declaration.isTypeOnly || element.isTypeOnly ? "type" : "runtime",
++        name: element.name.text,
++      });
++    }
++  }
++
++  private static collectBindingNames(bindingName: ts.BindingName, output: ExportedSymbol[]): void {
++    if (ts.isIdentifier(bindingName)) {
++      output.push({ kind: "runtime", name: bindingName.text });
++      return;
++    }
++    for (const element of bindingName.elements) {
++      if (!ts.isOmittedExpression(element)) {
++        TypeScriptExportInventory.collectBindingNames(element.name, output);
++      }
++    }
++  }
++
++  private static declarationName(statement: ts.Statement): string | undefined {
++    if (
++      ts.isClassDeclaration(statement) ||
++      ts.isFunctionDeclaration(statement) ||
++      ts.isInterfaceDeclaration(statement) ||
++      ts.isTypeAliasDeclaration(statement) ||
++      ts.isEnumDeclaration(statement) ||
++      ts.isModuleDeclaration(statement)
++    ) {
++      return statement.name?.getText();
++    }
++    return undefined;
++  }
++
++  private static hasModifier(statement: ts.Statement, kind: ts.SyntaxKind): boolean {
++    return ts.canHaveModifiers(statement)
++      ? (ts.getModifiers(statement)?.some((modifier) => modifier.kind === kind) ?? false)
++      : false;
++  }
++}
++
++class DaemonProductionSourceInventory {
++  public static read(sourceRoot: string): readonly string[] {
++    return DaemonProductionSourceInventory.readDirectory(sourceRoot, sourceRoot).sort();
++  }
++
++  private static readDirectory(directory: string, sourceRoot: string): string[] {
++    const paths: string[] = [];
++    for (const entry of readdirSync(directory, { withFileTypes: true })) {
++      const absolutePath = join(directory, entry.name);
++      if (entry.isDirectory()) {
++        paths.push(...DaemonProductionSourceInventory.readDirectory(absolutePath, sourceRoot));
++      } else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")) {
++        paths.push(relative(sourceRoot, absolutePath).split(sep).join("/"));
++      }
++    }
++    return paths;
++  }
++}
++
++class NodeFreeDeclarationCompiler {
++  public static compile(rootNames: readonly string[]): DeclarationCompilation {
++    const outputs = new Map<string, string>();
++    const program = ts.createProgram([...rootNames], {
++      declaration: true,
++      emitDeclarationOnly: true,
++      exactOptionalPropertyTypes: true,
++      lib: ["lib.es2022.d.ts"],
++      module: ts.ModuleKind.NodeNext,
++      moduleResolution: ts.ModuleResolutionKind.NodeNext,
++      noEmitOnError: true,
++      skipLibCheck: false,
++      strict: true,
++      target: ts.ScriptTarget.ES2022,
++      types: [],
++    });
++    const emitResult = program.emit(undefined, (fileName, data) => outputs.set(fileName, data));
++    return {
++      diagnostics: [...ts.getPreEmitDiagnostics(program), ...emitResult.diagnostics],
++      outputs,
++    };
++  }
++}
++
++describe("daemon host contract", () => {
++  it("decodes source module URLs before filesystem access", () => {
++    const sourcePath = join(tmpdir(), "symnav contract path", "host-contract.test.ts");
++    expect(DaemonContractSourcePath.root(pathToFileURL(sourcePath).href)).toBe(dirname(sourcePath));
++  });
++
++  it("defines the exact daemon policy static and instance API", () => {
++    expectTypeOf<keyof typeof DaemonPolicy>().toEqualTypeOf<
++      "prototype" | "currentSystem" | "fromSystemMemory" | "fromSerialized"
++    >();
++    expectTypeOf<DaemonPolicy>().toEqualTypeOf<{
++      readonly values: DaemonPolicyValues;
++      toSerialized(): Readonly<{
++        readonly schemaVersion: 1;
++        readonly values: DaemonPolicyValues;
++      }>;
++    }>();
++    expectTypeOf<typeof DaemonPolicy.currentSystem>().returns.toEqualTypeOf<DaemonPolicy>();
++    expectTypeOf<typeof DaemonPolicy.fromSystemMemory>().parameters.toEqualTypeOf<
++      [DaemonSystemMemory]
++    >();
++    expectTypeOf<typeof DaemonPolicy.fromSerialized>().parameters.toEqualTypeOf<[unknown]>();
++
++    const sourceRoot = DaemonContractSourcePath.root(import.meta.url);
++    const policySource = ts.sys.readFile(join(sourceRoot, "daemon-policy.ts"));
++    expect(policySource).toBeDefined();
++    expect(TypeScriptClassMemberInventory.read(policySource ?? "", "DaemonPolicy")).toEqual(
++      DaemonContractExpectation.policyMembers,
++    );
++
++    const compilation = NodeFreeDeclarationCompiler.compile([join(sourceRoot, "daemon-policy.ts")]);
++    expect(compilation.diagnostics).toEqual([]);
++    const declaration = [...compilation.outputs].find(([path]) =>
++      path.endsWith("/daemon-policy.d.ts"),
++    );
++    expect(declaration).toBeDefined();
++    expect(TypeScriptClassMemberInventory.read(declaration?.[1] ?? "", "DaemonPolicy")).toEqual(
++      DaemonContractExpectation.policyMembers,
++    );
++  });
++
++  it("defines the exact portable execution contract", () => {
++    expectTypeOf<DaemonExecutionMode>().toEqualTypeOf<"cold" | "warm" | "fallback">();
++    expectTypeOf<DaemonOutputStream>().toEqualTypeOf<"stdout" | "stderr">();
++    expectTypeOf<DaemonExecutorRequest>().toEqualTypeOf<{
++      readonly argv: readonly string[];
++      readonly cwd: string;
++      readonly telemetryEnabled: boolean;
++      readonly executionMode: DaemonExecutionMode;
++    }>();
++    expectTypeOf<DaemonOutputRecord>().toEqualTypeOf<{
++      readonly stream: DaemonOutputStream;
++      readonly bytes: Uint8Array;
++    }>();
++    expectTypeOf<DaemonExecutorOutput>().toEqualTypeOf<{
++      records(): AsyncIterable<DaemonOutputRecord>;
++      dispose(): Promise<void>;
++    }>();
++    expectTypeOf<DaemonExecutorInitializationResult>().toEqualTypeOf<{
++      readonly fileCount: number;
++      readonly diagnostics?: DaemonDiagnostics;
++    }>();
++    expectTypeOf<DaemonExecutorExecutionResult>().toEqualTypeOf<{
++      readonly exitCode: number;
++      readonly output: DaemonExecutorOutput;
++      readonly diagnostics?: DaemonDiagnostics;
++    }>();
++    expectTypeOf<DaemonExecutor>().toEqualTypeOf<{
++      initialize(workspaceRoot: string): Promise<DaemonExecutorInitializationResult>;
++      execute(request: DaemonExecutorRequest): Promise<DaemonExecutorExecutionResult>;
++      releaseTransientResources(): Promise<void>;
++    }>();
++    expectTypeOf<DaemonExecutorFactoryOptions>().toEqualTypeOf<{
++      readonly stateDirectory: string;
++      readonly productVersion: string;
++    }>();
++    expectTypeOf<DaemonExecutorFactory>().toEqualTypeOf<
++      (options: DaemonExecutorFactoryOptions) => DaemonExecutor | Promise<DaemonExecutor>
++    >();
++    expectTypeOf<DaemonExecutorModule>().toEqualTypeOf<{
++      readonly createDaemonExecutor: DaemonExecutorFactory;
++    }>();
++    expectTypeOf<DaemonExecutorModuleUrl>().toEqualTypeOf<string>();
++    expectTypeOf<DaemonDiagnosticValue>().toEqualTypeOf<
++      | null
++      | boolean
++      | number
++      | string
++      | readonly DaemonDiagnosticValue[]
++      | { readonly [key: string]: DaemonDiagnosticValue }
++    >();
++    expectTypeOf<DaemonDiagnostics>().toEqualTypeOf<
++      Readonly<Record<string, DaemonDiagnosticValue>>
++    >();
++  });
++
++  it("defines the exact lifecycle, activity, status, start, and stop shapes", () => {
++    expectTypeOf<DaemonCommandName>().toEqualTypeOf<
++      | "overview"
++      | "resolve"
++      | "def"
++      | "refs"
++      | "context"
++      | "graph"
++      | "stats"
++      | "help"
++      | "version"
++      | "unknown"
++    >();
++    expectTypeOf<DaemonActivitySnapshot>().toEqualTypeOf<{
++      readonly lifecycle: "starting" | "ready" | "busy" | "recovering" | "draining";
++      readonly recoveryDetail?: "resource-pressure" | "worker-replacement";
++      readonly pid: number;
++      readonly startedAt: number;
++      readonly startupElapsedMs: number;
++      readonly fileCount?: number;
++      readonly processRssBytes: number;
++      readonly hardProcessRssBytes: number;
++      readonly workerHeapUsedBytes?: number;
++      readonly workerGeneration: number;
++      readonly current?: {
++        readonly requestId: string;
++        readonly command: DaemonCommandName;
++        readonly elapsedMs: number;
++      };
++      readonly queued: number;
++      readonly lastCompletedAgoMs?: number;
++      readonly spoolBytes: number;
++    }>();
++    expectTypeOf<RunningDaemonStatus>().toEqualTypeOf<
++      | {
++          readonly state: "starting";
++          readonly workspaceRoot: string;
++          readonly pid: number;
++          readonly startupElapsedMs: number;
++          readonly memoryBytes?: number;
++        }
++      | {
++          readonly state: "ready";
++          readonly workspaceRoot: string;
++          readonly pid: number;
++          readonly uptimeMs: number;
++          readonly fileCount: number;
++          readonly memoryBytes: number;
++          readonly lastRequestAgoMs?: number;
++        }
++      | {
++          readonly state: "busy";
++          readonly workspaceRoot: string;
++          readonly pid: number;
++          readonly uptimeMs: number;
++          readonly command: DaemonCommandName;
++          readonly elapsedMs: number;
++          readonly queued: number;
++          readonly memoryBytes: number;
++        }
++      | {
++          readonly state: "recovering";
++          readonly workspaceRoot: string;
++          readonly pid: number;
++          readonly uptimeMs: number;
++          readonly detail: "resource-pressure" | "worker-replacement" | "draining";
++          readonly queued: number;
++          readonly memoryBytes: number;
++        }
++      | {
++          readonly state: "unresponsive";
++          readonly workspaceRoot: string;
++          readonly pid: number;
++          readonly uptimeMs: number;
++          readonly lastResponseAgoMs?: number;
++          readonly lastKnown?: DaemonActivitySnapshot;
++        }
++    >();
++    expectTypeOf<DaemonStatusEnvelope>().toEqualTypeOf<{
++      readonly schemaVersion: 1;
++      readonly daemons: readonly RunningDaemonStatus[];
++    }>();
++    expectTypeOf<DaemonStartResult>().toEqualTypeOf<
++      | {
++          readonly status: "ready";
++          readonly workspaceRoot: string;
++          readonly fileCount: number;
++          readonly loadDurationMs: number;
++        }
++      | {
++          readonly status: "already-running";
++          readonly workspaceRoot: string;
++          readonly pid: number;
++          readonly uptimeMs: number;
++        }
++      | { readonly status: "disabled" }
++    >();
++    expectTypeOf<DaemonStopResult>().toEqualTypeOf<
++      | { readonly status: "stopped"; readonly workspaceRoot: string; readonly pid: number }
++      | { readonly status: "killed"; readonly workspaceRoot: string; readonly pid: number }
++      | { readonly status: "not-running"; readonly workspaceRoot: string }
++    >();
++  });
++
++  it("detects every TypeScript export form used to widen a barrel", () => {
++    const source = `
++      export const runtimeValue = 1;
++      export function runtimeFunction() {}
++      export class RuntimeClass {}
++      export default class DefaultClass {}
++      export interface PublicInterface {}
++      export type PublicType = string;
++      const local = 1; type LocalType = string;
++      export { local as renamed, type LocalType as RenamedType };
++      export type { ExternalType } from "external";
++      export * from "wildcard";
++      export import type ImportEqualsType = require("external");
++    `;
++    expect(TypeScriptExportInventory.read(source)).toEqual([
++      { kind: "runtime", name: "*" },
++      { kind: "runtime", name: "default" },
++      { kind: "runtime", name: "renamed" },
++      { kind: "runtime", name: "RuntimeClass" },
++      { kind: "runtime", name: "runtimeFunction" },
++      { kind: "runtime", name: "runtimeValue" },
++      { kind: "type", name: "ExternalType" },
++      { kind: "type", name: "ImportEqualsType" },
++      { kind: "type", name: "PublicInterface" },
++      { kind: "type", name: "PublicType" },
++      { kind: "type", name: "RenamedType" },
++    ]);
++  });
++
++  it("exports exactly the planned root types and runtime values", () => {
++    const sourceRoot = DaemonContractSourcePath.root(import.meta.url);
++    const indexSource = ts.sys.readFile(join(sourceRoot, "index.ts"));
++    expect(indexSource).toBeDefined();
++    expect(TypeScriptExportInventory.read(indexSource ?? "")).toEqual(
++      DaemonContractExpectation.exports,
++    );
++    expect(Object.keys(daemonRuntime)).toEqual(["DaemonPolicy"]);
++  });
++
++  it("detects a public member added to DaemonPolicy", () => {
++    const sourceRoot = DaemonContractSourcePath.root(import.meta.url);
++    const policySource = ts.sys.readFile(join(sourceRoot, "daemon-policy.ts")) ?? "";
++    const mutatedSource = policySource.replace(
++      "export class DaemonPolicy {",
++      "export class DaemonPolicy { public static withOverrides(): void {}",
++    );
++    expect(TypeScriptClassMemberInventory.read(mutatedSource, "DaemonPolicy")).not.toEqual(
++      DaemonContractExpectation.policyMembers,
++    );
++  });
++
++  it("exports exactly one policy-testing source and runtime symbol", () => {
++    const sourceRoot = DaemonContractSourcePath.root(import.meta.url);
++    const source = ts.sys.readFile(join(sourceRoot, "policy-testing.ts"));
++    expect(source).toBeDefined();
++    expect(TypeScriptExportInventory.read(source ?? "")).toEqual(
++      DaemonContractExpectation.policyTestingExports,
++    );
++    expect(Object.keys(policyTestingRuntime)).toEqual(["DaemonPolicyTestFactory"]);
++  });
++
++  it.each([
++    ["type", "export interface ExtraPolicyTestingType {}"],
++    ["runtime", "export const extraPolicyTestingRuntime = true;"],
++  ])("detects an extra policy-testing %s export", (_, addition) => {
++    const sourceRoot = DaemonContractSourcePath.root(import.meta.url);
++    const source = ts.sys.readFile(join(sourceRoot, "policy-testing.ts")) ?? "";
++    expect(TypeScriptExportInventory.read(`${source}\n${addition}\n`)).not.toEqual(
++      DaemonContractExpectation.policyTestingExports,
++    );
++  });
++
++  it("contains only the recursively allowlisted Phase 7 production sources", () => {
++    const sourceRoot = DaemonContractSourcePath.root(import.meta.url);
++    expect(DaemonProductionSourceInventory.read(sourceRoot)).toEqual(
++      DaemonContractExpectation.productionSources,
++    );
++  });
++
++  it("emits the exact declaration surface without Node ambient types", () => {
++    const sourceRoot = DaemonContractSourcePath.root(import.meta.url);
++    const compilation = NodeFreeDeclarationCompiler.compile([join(sourceRoot, "index.ts")]);
++    expect(compilation.diagnostics).toEqual([]);
++    const emittedIndex = [...compilation.outputs].find(([path]) => path.endsWith("/index.d.ts"));
++    expect(emittedIndex).toBeDefined();
++    expect(TypeScriptExportInventory.read(emittedIndex?.[1] ?? "")).toEqual(
++      DaemonContractExpectation.exports,
++    );
++  });
++
++  it("emits only the policy test factory from the temporary subpath", () => {
++    const sourceRoot = DaemonContractSourcePath.root(import.meta.url);
++    const compilation = NodeFreeDeclarationCompiler.compile([
++      join(sourceRoot, "policy-testing.ts"),
++    ]);
++    expect(compilation.diagnostics).toEqual([]);
++    const declaration = [...compilation.outputs].find(([path]) =>
++      path.endsWith("/policy-testing.d.ts"),
++    );
++    expect(declaration).toBeDefined();
++    expect(TypeScriptExportInventory.read(declaration?.[1] ?? "")).toEqual(
++      DaemonContractExpectation.policyTestingExports,
++    );
++  });
++
++  it("proves the Node-free compiler rejects a Buffer leak", () => {
++    const fixtureDirectory = mkdtempSync(join(tmpdir(), "symnav-daemon-contract-"));
++    const fixturePath = join(fixtureDirectory, "buffer-leak.ts");
++    try {
++      writeFileSync(fixturePath, "export type BufferLeak = Buffer;\n");
++      const compilation = NodeFreeDeclarationCompiler.compile([fixturePath]);
++      const messages = compilation.diagnostics.map((diagnostic) =>
++        ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
++      );
++      expect(messages.some((message) => message.includes("Cannot find name 'Buffer'"))).toBe(true);
++    } finally {
++      rmSync(fixtureDirectory, { force: true, recursive: true });
++    }
++  });
++});
+diff --git a/packages/daemon/src/index.ts b/packages/daemon/src/index.ts
+new file mode 100644
+index 000000000..0289fc305
+--- /dev/null
++++ b/packages/daemon/src/index.ts
+@@ -0,0 +1,25 @@
++export type { DaemonCommandName } from "./daemon-command-name.js";
++export type { DaemonDiagnosticValue, DaemonDiagnostics } from "./daemon-diagnostics.js";
++export type {
++  DaemonExecutionMode,
++  DaemonExecutor,
++  DaemonExecutorExecutionResult,
++  DaemonExecutorFactory,
++  DaemonExecutorFactoryOptions,
++  DaemonExecutorInitializationResult,
++  DaemonExecutorModule,
++  DaemonExecutorModuleUrl,
++  DaemonExecutorOutput,
++  DaemonExecutorRequest,
++  DaemonOutputRecord,
++  DaemonOutputStream,
++} from "./daemon-executor.js";
++export type {
++  DaemonActivitySnapshot,
++  DaemonStartResult,
++  DaemonStatusEnvelope,
++  DaemonStopResult,
++  RunningDaemonStatus,
++} from "./daemon-lifecycle-report.js";
++export { DaemonPolicy } from "./daemon-policy.js";
++export type { DaemonPolicyValues, DaemonSystemMemory } from "./daemon-policy.js";
+diff --git a/packages/daemon/src/policy-testing.ts b/packages/daemon/src/policy-testing.ts
+new file mode 100644
+index 000000000..8be1048e1
+--- /dev/null
++++ b/packages/daemon/src/policy-testing.ts
+@@ -0,0 +1,17 @@
++import { DaemonPolicy, type DaemonPolicyValues } from "./daemon-policy.js";
++
++type DaemonPolicyOverrides = {
++  readonly [Section in keyof DaemonPolicyValues]?: Partial<DaemonPolicyValues[Section]>;
++};
++
++export class DaemonPolicyTestFactory {
++  static withOverrides(base: DaemonPolicy, overrides: DaemonPolicyOverrides): DaemonPolicy {
++    const values = Object.fromEntries(
++      Object.entries(base.values).map(([section, sectionValues]) => [
++        section,
++        { ...sectionValues, ...overrides[section as keyof DaemonPolicyValues] },
++      ]),
++    ) as unknown as DaemonPolicyValues;
++    return DaemonPolicy.fromSerialized({ schemaVersion: 1, values });
++  }
++}
+diff --git a/packages/daemon/test/public-import.test.ts b/packages/daemon/test/public-import.test.ts
+new file mode 100644
+index 000000000..74e9eef5a
+--- /dev/null
++++ b/packages/daemon/test/public-import.test.ts
+@@ -0,0 +1,27 @@
++import { describe, expect, expectTypeOf, it } from "vitest";
++
++import * as daemonRuntime from "@symnav/daemon";
++import type {
++  DaemonActivitySnapshot,
++  DaemonExecutor,
++  DaemonPolicyValues,
++  DaemonStartResult,
++  DaemonStatusEnvelope,
++  DaemonStopResult,
++} from "@symnav/daemon";
++import { DaemonPolicy } from "@symnav/daemon";
++
++describe("@symnav/daemon public package import", () => {
++  it("resolves the root contract with only the policy runtime", () => {
++    expectTypeOf<DaemonExecutor>().toBeObject();
++    expectTypeOf<DaemonActivitySnapshot>().toBeObject();
++    expectTypeOf<DaemonStatusEnvelope>().toBeObject();
++    expectTypeOf<DaemonStartResult>().not.toBeNever();
++    expectTypeOf<DaemonStopResult>().not.toBeNever();
++    expectTypeOf<DaemonPolicyValues>().toBeObject();
++    expect(DaemonPolicy.fromSystemMemory({ totalBytes: 1024 * 1024 * 1024 })).toBeInstanceOf(
++      DaemonPolicy,
++    );
++    expect(Object.keys(daemonRuntime)).toEqual(["DaemonPolicy"]);
++  });
++});
+diff --git a/packages/daemon/tsconfig.json b/packages/daemon/tsconfig.json
+new file mode 100644
+index 000000000..2fa9e0fe6
+--- /dev/null
++++ b/packages/daemon/tsconfig.json
+@@ -0,0 +1,7 @@
++{
++  "extends": "../../tsconfig.base.json",
++  "compilerOptions": { "outDir": "./dist", "rootDir": "./src" },
++  "include": ["src/**/*.ts"],
++  "exclude": ["src/**/*.test.ts", "**/dist/**"],
++  "references": []
++}
+diff --git a/packages/daemon/tsconfig.test.json b/packages/daemon/tsconfig.test.json
+new file mode 100644
+index 000000000..3bb6279d3
+--- /dev/null
++++ b/packages/daemon/tsconfig.test.json
+@@ -0,0 +1,14 @@
++{
++  "extends": "./tsconfig.json",
++  "compilerOptions": {
++    "composite": false,
++    "noEmit": true,
++    "rootDir": "."
++  },
++  "include": ["src/**/*.ts", "test/**/*.ts"],
++  "references": [
++    { "path": "./tsconfig.json" },
++    { "path": "../testing" }
++  ],
++  "exclude": ["**/dist/**"]
++}
+diff --git a/packages/renderer/package.json b/packages/renderer/package.json
+index c68d72575..3920c7856 100644
+--- a/packages/renderer/package.json
++++ b/packages/renderer/package.json
+@@ -22,6 +22,7 @@
+     "typecheck:test": "tsc -p tsconfig.test.json --noEmit"
+   },
+   "dependencies": {
+-    "@symnav/core": "workspace:*"
++    "@symnav/core": "workspace:*",
++    "@symnav/daemon": "workspace:*"
+   }
+ }
+diff --git a/packages/renderer/tsconfig.json b/packages/renderer/tsconfig.json
+index e84950d19..89899a3b3 100644
+--- a/packages/renderer/tsconfig.json
++++ b/packages/renderer/tsconfig.json
+@@ -3,5 +3,5 @@
+   "compilerOptions": { "outDir": "./dist", "rootDir": "./src" },
+   "include": ["src/**/*.ts"],
+   "exclude": ["src/**/*.test.ts", "**/dist/**"],
+-  "references": [{ "path": "../core" }]
++  "references": [{ "path": "../core" }, { "path": "../daemon" }]
+ }
+diff --git a/plans/000/symnav-stages.md b/plans/000/symnav-stages.md
+index f1d186a9a..8ee6ac7c1 100644
+--- a/plans/000/symnav-stages.md
++++ b/plans/000/symnav-stages.md
+@@ -24,14 +24,19 @@ These principles override convenience at every stage. When a stage's scope and a
+ The architecture is locked. Stages are framed against it.
+ 
+ - **Repo:** pnpm workspace.
+-- **Deployable unit:** `apps/cli` — the `symnav` binary, published to npm. Pure composition; no business logic.
++- **Deployable unit:** `apps/cli` — the `symnav` binary, published to npm. It composes the production packages and owns command-line syntax, environment resolution, and printing.
+ - **Library packages:**
+   - `packages/core` — command logic, the in-memory result model (IR), workspace services, the language-backend interface. Owns the contracts other packages depend on. Depends on nothing internal.
+-  - `packages/renderer` — turns the IR into human-readable output (Unicode tree) and structured output (JSON). Depends only on `core`'s IR.
++  - `packages/daemon` — owns the portable host executor/output, diagnostic, command, and lifecycle report contracts. It has no internal dependencies. Process and transport mechanisms migrate behind this boundary only when their real implementations move.
++  - `packages/renderer` — turns core IR and daemon lifecycle reports into human-readable output (Unicode tree) and structured output (JSON). Depends only on `core` and `daemon`.
+   - `packages/backend-typescript` — the TypeScript implementation of the language-backend interface. The only package that knows about ts-morph, tsserver, or anything TypeScript-toolchain-specific.
+-- **Process model:** cold per invocation in v1. A daemon is a future wrapper, not a rewrite — command logic stays a pure function of (workspace, args).
++  - `packages/telemetry` — captures and aggregates shape-only usage data. Depends on nothing internal.
++  - `packages/testing` — private test utilities and fixtures. Depends on nothing internal and is available only to test code.
++- **Process model:** navigation can run cold per invocation or through a persistent daemon. The daemon wraps the same command logic through a portable host contract rather than reimplementing navigation.
+ - **Configuration:** none. Conventions and CLI flags only. `.gitignore` is honored as the workspace-ignore source of truth.
+ 
++The current daemon-architecture milestone establishes only the `@symnav/daemon` root contract and its dependency boundary. Process entries, worker entries, testing access, policy, and daemon mechanisms appear only when their owning implementations migrate in later milestones.
++
+ ---
+ 
+ ## Stage 0 — Project Foundations
+@@ -257,7 +262,7 @@ Doing `context` before `graph` is intentional. `context` only needs *direct* (on
+ 
+ These items are explicitly **not** part of the v1 plan. They are catalogued here so we don't quietly absorb them into earlier stages.
+ 
+-- **Daemon / persistent process.** A future performance optimization that wraps the existing pure command logic. Worth doing once v1 is in real use and warm-cache wins are measurable.
++- **Daemon / persistent process.** Persistent execution now wraps the existing command logic. The architecture refactor moves daemon policy and mechanisms behind the zero-internal-dependency `@symnav/daemon` boundary without changing command behavior.
+ - **Additional language backends.** Python (pyright), Go (gopls), Rust (rust-analyzer), etc. The `core` package's language-backend interface is the integration point. Adding a backend should not require touching `core`, `renderer`, or `apps/cli`.
+ - **Excluded commands.** `impact`, `history`, `diff`, `impls`, `search-text` are explicitly out of v1 per the functional spec.
+ - **Alternative renderers.** The `renderer` package's separation makes a future non-terminal consumer (IDE extension, web UI, alternative output format) a peer of the current renderer rather than a rewrite. We are not building one in v1.
+@@ -277,5 +282,6 @@ These items are explicitly **not** part of the v1 plan. They are catalogued here
+ | 4 | `context` | Composition + direct callers/callees + git history |
+ | 5 | `graph` | Multi-hop traversal and path-based pagination |
+ | 6 | Release | Distribution, documentation, performance baseline |
++| Post-v1 | Daemon architecture | Persistent execution with an enforced daemon package boundary |
+ 
+ Each stage is independently releasable. No stage's scope expands to anticipate a later stage's needs.
+diff --git a/plans/005/daemon-policy.md b/plans/005/daemon-policy.md
+new file mode 100644
+index 000000000..8f2114342
+--- /dev/null
++++ b/plans/005/daemon-policy.md
+@@ -0,0 +1,66 @@
++# Daemon policy
++
++`DaemonPolicy` is one immutable, complete snapshot. The CLI creates it from system memory and passes the same serialized values through daemon process and worker boundaries. Tests may replace individual values through `DaemonPolicyTestFactory`; users have no flag, environment variable, or configuration file for these values.
++
++| Policy path or recipe | Default or derivation | Applies to | Reason | Behavior oracle |
++| --- | --- | --- | --- | --- |
++| `transport.singleResponseTimeoutMs` | 250 ms | Ordinary lifecycle and execution-status exchanges | Bound one-response local socket waits | Transport timeout characterization |
++| `transport.statusResponseTimeoutMs` | 100 ms | Status observer lifecycle exchange | Keep status aggregation responsive independently of routing | Status timeout characterization |
++| `transport.executionAdmissionTimeoutMs` | 5 s | Execute submission until acceptance | Bound admission without timing accepted completion | Long-command transport characterization |
++| `transport.maximumJsonPayloadBytes` | 8 MiB | Ordinary JSON control frames | Bound decoded control input | Transport frame-cap tests |
++| `transport.maximumExecutionControlPayloadBytes` | 256 KiB | Execution transfer control frames | Keep binary-transfer control bounded separately | Transfer codec tests |
++| `startup.coordinationGraceMs` | 15 s | Startup ownership and missing-owner observation | Preserve election recovery grace | Registry/startup suites |
++| `startup.heartbeatIntervalMs` | 100 ms | Startup-owner heartbeat | Maintain live ownership while warming | Startup heartbeat tests |
++| `startup.authorizationPollIntervalMs` | 10 ms | Process authorization wait | Preserve the distinct fast authorization cadence | Authorization cadence characterization |
++| `startup.observationPollIntervalMs` | 20 ms | Launcher readiness observation | Preserve current readiness polling cadence | Startup observation tests |
++| `startup.previousInstanceTerminationTimeoutMs` | 5 min | Replacement of a previous instance | Allow controlled termination before new ownership proceeds | Startup replacement tests |
++| `startup.childFailureRetryLimit` | 1 retry | Explicit startup child failure | Preserve one fresh launch after a failed child | Startup retry tests |
++| `shutdown.idleTimeoutMs` | 30 min | Warm daemon idle lifetime | Release retained resources after inactivity | Lifetime tests |
++| `shutdown.stopTimeoutMs` | 5 s | User-requested stop | Bound graceful stop and forced escalation together | Controller stop tests |
++| `shutdown.forcedTerminationReserveMaximumMs` | 500 ms | Stop escalation reserve | Leave bounded time for authenticated force termination | Controller deadline tests |
++| `recipe.forcedTerminationReserve` | `min(forcedTerminationReserveMaximumMs, floor(stopTimeoutMs / 2))` | Effective stop escalation reserve | Preserve small overridden stop windows | Controller deadline tests |
++| `shutdown.controllerPollIntervalMs` | 20 ms | Controller process/registry observation | Preserve control-plane polling cadence | Controller polling tests |
++| `shutdown.processSignalExitTimeoutMs` | 500 ms after SIGTERM and 500 ms after SIGKILL | Direct process termination | Give each signal a bounded exit interval | Process terminator tests |
++| `shutdown.processExitPollIntervalMs` | 20 ms | Direct process termination | Preserve process-exit polling cadence independently | Process terminator tests |
++| `shutdown.resourceDrainAcknowledgementGraceMs` | 250 ms | Completion acknowledgement during drain | Permit an attached client to acknowledge before cleanup | Shutdown acknowledgement tests |
++| `shutdown.resourceDrainAcknowledgementPollIntervalMs` | 5 ms | Completion acknowledgement during drain | Preserve the distinct fast acknowledgement cadence | Acknowledgement cadence characterization |
++| `delivery.postAcceptanceExecutionReattachmentLimit` | 1 reattachment | Authenticated close after acceptance | Recover the accepted request without local replay | Reattachment tests |
++| `delivery.resultTransferResumeLimitPerExecutionAttempt` | 1 fetch resume per execute attempt | Interrupted manifest transfer | Resume one transfer independently for each execute attempt | Two-scope resume tests |
++| `output.maximumChunkRawBytes` | 64 KiB | Worker and result chunks | Bound one raw output record | Chunk codec and spool tests |
++| `output.inlineRawBytes` | 256 KiB | Inline result storage | Avoid files for small results | Spool threshold tests |
++| `output.maximumResultRawBytes` | 256 MiB | One completed result | Bound retained output for one request | Result-cap tests |
++| `output.maximumAggregateSpoolRawBytes` | 512 MiB | All retained completions for one daemon | Bound aggregate spool pressure | Aggregate-cap tests |
++| `recipe.effectiveMemorySelection` | Use constrained bytes only when positive and smaller than total bytes; preserve selected raw bytes | Memory derivation input | Respect real lower constraints without rounding identity | Policy derivation table |
++| `resources.effectiveMemoryBytes` | Selected raw effective bytes | Resource reports and derived thresholds | Preserve non-MiB-aligned system information exactly | Policy derivation table |
++| `recipe.effectiveMemoryMiB` | `max(1, floor(effectiveMemoryBytes / MiB))` | Memory threshold derivation | Give sub-MiB inputs a stable minimum | Policy boundary tests |
++| `recipe.hardProcessRss` | `clamp(floor(effectiveMemoryMiB / 2), 256, 8192) * MiB` | Hard daemon RSS limit | Reserve memory for the host while bounding small and large systems | Policy boundary tests |
++| `resources.hardProcessRssBytes` | Hard-process-RSS recipe | Process replacement and worker launch | Trigger controlled replacement before OOM | Resource supervision tests |
++| `resources.softProcessRssBytes` | `floor(hardProcessRssMiB * 0.8) * MiB` | Transient resource shedding | Shed before hard replacement | Resource hysteresis tests |
++| `resources.resumeProcessRssBytes` | `floor(hardProcessRssMiB * 0.7) * MiB` | Admission resumption | Require lower RSS before resuming work | Resource hysteresis tests |
++| `recipe.workerOldGeneration` | `clamp(floor(effectiveMemoryMiB / 4), 128, 4096)` MiB | Worker V8 old generation | Bound worker heap within process budget | Worker launch tests |
++| `resources.workerMaxOldGenerationSizeMiB` | Worker-old-generation recipe | Worker resource limits | Pass the derived V8 limit unchanged | Process/worker snapshot test |
++| `resources.supervisionIntervalMs` | 250 ms | Process RSS and spool sampling | Detect sustained pressure without per-operation overhead | Resource cadence tests |
++| `resources.replacementWindowMs` | 10 min | Replacement circuit | Count only recent replacements | Replacement-window tests |
++| `resources.replacementLimit` | 2 replacements; third drains | Replacement circuit | Stop persistent replacement churn | Persistent-pressure tests |
++| `resources.workerHeapSampleIntervalMs` | 25 ms | Active worker heap high-water sampling | Observe short-lived heap peaks | Worker cadence characterization |
++| `diagnostics.logRotateBytes` | 10 MiB | Diagnostic log rotation | Bound active diagnostic file size | Logger rotation tests |
++| `diagnostics.logBackupCount` | 4 backups plus active log | Diagnostic log rotation | Retain a bounded diagnostic history | Logger backup tests |
++| `diagnostics.maximumQueuedEvents` | 1,024 | Pending diagnostic writes | Bound memory when storage is slow | Logger queue tests |
++| `diagnostics.disconnectedTraceRetentionMs` | 5 min | Disconnected operation traces | Retain reconnect evidence without changing result retention | Trace expiry tests |
++| `diagnostics.maximumDisconnectedTraces` | 1,024 with effective minimum 1 | Disconnected operation traces | Bound diagnostic-only retention | Trace capacity tests |
++
++## Intentional absences
++
++| Deadline | Value | Reason |
++| --- | --- | --- |
++| healthy startup | None | Progressing warm-up has no project-size deadline. |
++| startup silence | None | Silence handling is deferred to the daemon follow-up contract. |
++| post-accept completion | None | Accepted work is not replayed or failed because it runs long. |
++| worker output acknowledgement | None | Backpressure waits for durable consumption without a timer. |
++| unacknowledged result | None | Retention eviction is deferred to the daemon follow-up contract. |
++
++## Migration access
++
++`DaemonPolicy.fromSerialized` and `DaemonPolicy.toSerialized` are temporary public root methods while app-owned process and worker entries require a complete-snapshot bridge. Phase 29 removes them after those entries move into the daemon package.
++
++Phase 26 removes `@symnav/daemon/policy-testing` after app-owned mechanism tests move package-local. The subpath exports only `DaemonPolicyTestFactory` and production imports are rejected by lint and meta-tests.
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 48995cff3..bba65849e 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -50,6 +50,9 @@ importers:
+       '@symnav/core':
+         specifier: workspace:*
+         version: link:../../packages/core
++      '@symnav/daemon':
++        specifier: workspace:*
++        version: link:../../packages/daemon
+       '@symnav/renderer':
+         specifier: workspace:*
+         version: link:../../packages/renderer
+@@ -98,11 +101,20 @@ importers:
+         specifier: workspace:*
+         version: link:../testing
+ 
++  packages/daemon:
++    devDependencies:
++      '@symnav/testing':
++        specifier: workspace:*
++        version: link:../testing
++
+   packages/renderer:
+     dependencies:
+       '@symnav/core':
+         specifier: workspace:*
+         version: link:../core
++      '@symnav/daemon':
++        specifier: workspace:*
++        version: link:../daemon
+ 
+   packages/telemetry:
+     devDependencies:
+diff --git a/tsconfig.json b/tsconfig.json
+index d74cf3e3b..32f561118 100644
+--- a/tsconfig.json
++++ b/tsconfig.json
+@@ -2,6 +2,7 @@
+   "files": [],
+   "references": [
+     { "path": "./packages/core" },
++    { "path": "./packages/daemon" },
+     { "path": "./packages/renderer" },
+     { "path": "./packages/backend-typescript" },
+     { "path": "./packages/telemetry" },

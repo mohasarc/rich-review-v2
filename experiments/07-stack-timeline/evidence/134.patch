@@ -1,0 +1,1161 @@
+diff --git a/apps/cli/src/daemon/accepted-request-ledger.test.ts b/apps/cli/src/daemon/accepted-request-ledger.test.ts
+index 27138f756..29eb5d7b4 100644
+--- a/apps/cli/src/daemon/accepted-request-ledger.test.ts
++++ b/apps/cli/src/daemon/accepted-request-ledger.test.ts
+@@ -15,6 +15,27 @@ const request: CliExecutionRequest = {
+ };
+ 
+ describe("AcceptedRequestLedger", () => {
++  it("classifies request compatibility without accepting work", () => {
++    const ledger = new AcceptedRequestLedger(() => 10);
++
++    expect(ledger.compatibilityFor("request", "overview", request)).toBe("unseen");
++    expect(ledger.size).toBe(0);
++
++    ledger.accept("request", "overview", request);
++
++    expect(
++      ledger.compatibilityFor("request", "overview", { ...request, argv: [...request.argv] }),
++    ).toBe("matching");
++    expect(
++      ledger.compatibilityFor("request", "overview", {
++        ...request,
++        argv: ["overview", "src/b.ts"],
++      }),
++    ).toBe("conflicting");
++    expect(ledger.compatibilityFor("request", "refs", request)).toBe("conflicting");
++    expect(ledger.size).toBe(1);
++  });
++
+   it("atomically inserts one queued owner and attaches an identical duplicate", () => {
+     const ledger = new AcceptedRequestLedger(() => 10);
+ 
+diff --git a/apps/cli/src/daemon/accepted-request-ledger.ts b/apps/cli/src/daemon/accepted-request-ledger.ts
+index adc0b40f1..c7f9482cf 100644
+--- a/apps/cli/src/daemon/accepted-request-ledger.ts
++++ b/apps/cli/src/daemon/accepted-request-ledger.ts
+@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
+ import type { CliExecutionRequest } from "../command-execution-result.js";
+ import {
+   DaemonExecutionFailures,
++  type AcceptedRequestCompatibility,
+   type DaemonCommandName,
+   type DaemonExecutionFailureCode,
+ } from "@symnav/daemon";
+@@ -53,6 +54,17 @@ export class AcceptedRequestLedger {
+     return false;
+   }
+ 
++  compatibilityFor(
++    requestId: string,
++    commandName: DaemonCommandName,
++    request: CliExecutionRequest,
++  ): AcceptedRequestCompatibility {
++    const existing = this.entries.get(requestId);
++    if (existing === undefined) return "unseen";
++    const requestFingerprint = AcceptedRequestLedger.fingerprint(commandName, request);
++    return existing.requestFingerprint === requestFingerprint ? "matching" : "conflicting";
++  }
++
+   accept(
+     requestId: string,
+     commandName: DaemonCommandName,
+diff --git a/apps/cli/src/daemon/daemon-command-dispatcher.test.ts b/apps/cli/src/daemon/daemon-command-dispatcher.test.ts
+index 6c2822d76..163f7a378 100644
+--- a/apps/cli/src/daemon/daemon-command-dispatcher.test.ts
++++ b/apps/cli/src/daemon/daemon-command-dispatcher.test.ts
+@@ -117,7 +117,7 @@ describe("DaemonCommandDispatcher", () => {
+       "submitted-unconfirmed",
+       "non-retry rejection",
+       "instance-1",
+-      false,
++      "incompatible",
+     ),
+     new Error("malformed accepted completion"),
+   ])(
+@@ -154,7 +154,7 @@ describe("DaemonCommandDispatcher", () => {
+         "submitted-unconfirmed",
+         "not ready",
+         "instance-1",
+-        true,
++        "not-ready",
+       ),
+     );
+ 
+diff --git a/apps/cli/src/daemon/daemon-protocol.ts b/apps/cli/src/daemon/daemon-protocol.ts
+index 4cb77732e..466538b62 100644
+--- a/apps/cli/src/daemon/daemon-protocol.ts
++++ b/apps/cli/src/daemon/daemon-protocol.ts
+@@ -1,5 +1,9 @@
+ import type { CliExecutionRequest } from "../command-execution-result.js";
+-import type { DaemonCommandName, DaemonExecutionFailureCode } from "@symnav/daemon";
++import type {
++  DaemonCommandName,
++  DaemonExecutionFailureCode,
++  DaemonRejectedExecutionFrame,
++} from "@symnav/daemon";
+ import type { CompletionSpoolManifest } from "./completion-spool.js";
+ import type { CommandOutputStream } from "../command-execution-result.js";
+ import type { BackendRefreshSummary } from "@symnav/core";
+@@ -32,8 +36,6 @@ export interface DaemonRecord extends DaemonIdentityCoordinates {
+   readonly memoryCapBytes: number;
+ }
+ 
+-export type WorkspaceRequestQueueState = "accepting" | "draining" | "closed";
+-
+ export interface DaemonActivitySnapshot {
+   readonly lifecycle: "starting" | "ready" | "busy" | "recovering" | "draining";
+   readonly recoveryDetail?: "resource-pressure" | "worker-replacement";
+@@ -112,12 +114,6 @@ export type DaemonStopResult =
+ 
+ export type DaemonStopReason = "graceful" | "idle" | "resource" | "workspace-deleted";
+ 
+-export type DaemonExecuteRejectionCode =
+-  | "not-ready"
+-  | "draining"
+-  | "resource-pressure"
+-  | "incompatible";
+-
+ export interface DaemonExecuteRequest {
+   readonly kind: "execute";
+   readonly protocolVersion: number;
+@@ -137,14 +133,7 @@ export type DaemonExecutionServerFrame =
+       readonly acceptedAt: number;
+       readonly queuePosition: number;
+     }
+-  | {
+-      readonly kind: "rejected";
+-      readonly instanceId: string;
+-      readonly processToken: string;
+-      readonly requestId: string;
+-      readonly code: DaemonExecuteRejectionCode;
+-      readonly retrySafe: boolean;
+-    }
++  | DaemonRejectedExecutionFrame
+   | {
+       readonly kind: "result-manifest";
+       readonly instanceId: string;
+diff --git a/apps/cli/src/daemon/local-daemon-transport-execution.test.ts b/apps/cli/src/daemon/local-daemon-transport-execution.test.ts
+index 70dcfb35e..4b44a7843 100644
+--- a/apps/cli/src/daemon/local-daemon-transport-execution.test.ts
++++ b/apps/cli/src/daemon/local-daemon-transport-execution.test.ts
+@@ -111,6 +111,36 @@ describe("LocalDaemonTransport execution delivery", () => {
+     } satisfies Partial<DaemonTransportError>);
+   });
+ 
++  it.each([
++    ["not-ready", false],
++    ["resource-pressure", false],
++    ["draining", false],
++    ["incompatible", true],
++  ] as const)("rejects contradictory %s retry safety", async (code, retrySafe) => {
++    const endpoint = await rawExecutionServer(servers, sockets, directories, (socket) => {
++      socket.once("data", () =>
++        socket.end(
++          frame({
++            kind: "rejected",
++            instanceId: request.instanceId,
++            processToken: request.processToken,
++            requestId: request.requestId,
++            code,
++            retrySafe,
++          } satisfies DaemonExecutionServerFrame),
++        ),
++      );
++    });
++
++    await expect(
++      new LocalDaemonTransport({ requestTimeoutMs: 100 }).execute(endpoint, request),
++    ).rejects.toMatchObject({
++      code: "corrupt",
++      delivery: "submitted-unconfirmed",
++      retrySafe: false,
++    } satisfies Partial<DaemonTransportError>);
++  });
++
+   it("allows execution admission beyond the lifecycle request timeout", async () => {
+     const endpoint = await rawExecutionServer(servers, sockets, directories, (socket) => {
+       socket.once("data", () => {
+diff --git a/apps/cli/src/daemon/local-daemon-transport.ts b/apps/cli/src/daemon/local-daemon-transport.ts
+index 105144321..5336861bd 100644
+--- a/apps/cli/src/daemon/local-daemon-transport.ts
++++ b/apps/cli/src/daemon/local-daemon-transport.ts
+@@ -2,9 +2,12 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
+ import { createConnection, createServer, type Server, type Socket } from "node:net";
+ import { dirname } from "node:path";
+ import {
++  DaemonAdmissionRejections,
+   DaemonExecutionFailures,
++  type DaemonExecuteRejectionCode,
+   type DaemonExecutionFailureCode,
+   type DaemonPolicyValues,
++  type DaemonRejectedExecutionFrame,
+ } from "@symnav/daemon";
+ import { OrderedCommandOutput, type CommandExecutionResult } from "../command-execution-result.js";
+ import type {
+@@ -77,14 +80,20 @@ export class DaemonTransportError extends Error {
+     readonly delivery: DaemonDeliveryState,
+     message: string,
+     authenticatedInstanceId?: string,
+-    retrySafe = delivery === "not-submitted",
++    authenticatedRejectionCode?: DaemonExecuteRejectionCode,
+   ) {
+     super(message);
+     this.name = "DaemonTransportError";
+     if (authenticatedInstanceId !== undefined) {
+       this.authenticatedInstanceId = authenticatedInstanceId;
+     }
+-    this.retrySafe = retrySafe;
++    this.retrySafe =
++      delivery === "not-submitted" ||
++      (code === "rejected" &&
++        delivery === "submitted-unconfirmed" &&
++        authenticatedInstanceId !== undefined &&
++        authenticatedRejectionCode !== undefined &&
++        DaemonAdmissionRejections.retrySafe(authenticatedRejectionCode));
+   }
+ }
+ 
+@@ -550,7 +559,7 @@ export class LocalDaemonTransport {
+               "submitted-unconfirmed",
+               `Daemon rejected execution: ${frame.code}`,
+               frame.instanceId,
+-              frame.retrySafe,
++              frame.code,
+             );
+           }
+           if (frame.kind === "accepted") {
+@@ -1291,11 +1300,17 @@ export class LocalDaemonTransport {
+           "code",
+           "retrySafe",
+         ]) ||
+-        !LocalDaemonTransport.isExecuteRejectionCode(value.code) ||
+         typeof value.retrySafe !== "boolean"
+       ) {
+         throw new Error("Malformed daemon execution rejection");
+       }
++      try {
++        DaemonAdmissionRejections.assertConsistent(
++          value as unknown as DaemonRejectedExecutionFrame,
++        );
++      } catch {
++        throw new Error("Malformed daemon execution rejection");
++      }
+       return;
+     }
+     if (value.kind === "result-manifest") {
+@@ -1378,15 +1393,6 @@ export class LocalDaemonTransport {
+     return typeof value === "string" && /^[a-f\d]{64}$/.test(value);
+   }
+ 
+-  private static isExecuteRejectionCode(value: unknown): boolean {
+-    return (
+-      value === "not-ready" ||
+-      value === "draining" ||
+-      value === "resource-pressure" ||
+-      value === "incompatible"
+-    );
+-  }
+-
+   private static isExecutionStatus(value: unknown): value is DaemonExecutionStatus {
+     if (!LocalDaemonTransport.isRecord(value)) return false;
+     if (value.state === "unknown" || value.state === "completed") return true;
+diff --git a/apps/cli/src/daemon/workspace-daemon-requests.test.ts b/apps/cli/src/daemon/workspace-daemon-requests.test.ts
+index 844f44968..ac705371d 100644
+--- a/apps/cli/src/daemon/workspace-daemon-requests.test.ts
++++ b/apps/cli/src/daemon/workspace-daemon-requests.test.ts
+@@ -28,6 +28,7 @@ import {
+ import { TestDaemonRegistry as DaemonRegistry } from "../../test/helpers/daemon-registry.js";
+ import { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
+ import type { LocalDaemonTransport } from "./local-daemon-transport.js";
++import type { AcceptedRequestLedger } from "./accepted-request-ledger.js";
+ import type {
+   DaemonNavigationWorker,
+   DaemonNavigationWorkerExit,
+@@ -37,6 +38,11 @@ import {
+   NodeDaemonNavigationWorker,
+ } from "./daemon-navigation-worker.js";
+ import type { DaemonNavigationWorkerResponse } from "./daemon-navigation-worker-protocol.js";
++import type {
++  DaemonResourceSnapshot,
++  DaemonResourceSupervisor,
++} from "./daemon-resource-monitor.js";
++import type { WorkspaceRequestQueue } from "./workspace-request-queue.js";
+ import { TestDaemonResourcePolicy as DaemonResourcePolicy } from "../../test/helpers/daemon-resource-policy.js";
+ import {
+   TestWorkspaceDaemon as WorkspaceDaemon,
+@@ -264,6 +270,92 @@ describe("WorkspaceDaemon requests", () => {
+     expect(executor.requests).toHaveLength(1);
+   });
+ 
++  it("disconnects unauthenticated execution before admission has an effect", async () => {
++    const harness = await RequestHarness.start(new ImmediateExecutor());
++    harnesses.push(harness);
++    const sample = harness.observeAdmissionSamples();
++
++    await expect(harness.admitWithToken("unauthenticated", "wrong-token")).rejects.toThrow(
++      "process instance",
++    );
++
++    expect(harness.transport.sentFrames).toEqual([]);
++    expect(harness.acceptedRequestCount()).toBe(0);
++    expect(sample).not.toHaveBeenCalled();
++  });
++
++  it("checks worker readiness before resource admission", async () => {
++    const harness = await RequestHarness.start(new ImmediateExecutor());
++    harnesses.push(harness);
++    harness.setWorkerReady(false);
++    harness.setResourceAdmissionPaused(true);
++
++    const connection = await harness.admit("worker-before-resource");
++
++    await expect(connection.terminal).resolves.toMatchObject({
++      kind: "rejected",
++      code: "not-ready",
++    });
++    expect(harness.acceptedRequestCount()).toBe(0);
++  });
++
++  it("checks resource admission before queue draining", async () => {
++    const harness = await RequestHarness.start(new ImmediateExecutor());
++    harnesses.push(harness);
++    harness.setResourceAdmissionPaused(true);
++    await harness.closeAdmission();
++
++    const connection = await harness.admit("resource-before-draining");
++
++    await expect(connection.terminal).resolves.toMatchObject({
++      kind: "rejected",
++      code: "resource-pressure",
++    });
++    expect(harness.acceptedRequestCount()).toBe(0);
++  });
++
++  it("checks queue draining before conflicting duplicate payloads", async () => {
++    const executor = new SerializedExecutor();
++    const harness = await RequestHarness.start(executor);
++    harnesses.push(harness);
++    const accepted = await harness.admit("draining-before-conflict", ["overview", "input.ts"]);
++    await executor.started(1);
++    const drained = harness.closeAdmission();
++
++    const connection = await harness.admit("draining-before-conflict", ["overview", "other.ts"]);
++
++    await expect(connection.terminal).resolves.toMatchObject({
++      kind: "rejected",
++      code: "draining",
++    });
++    expect(harness.acceptedRequestCount()).toBe(1);
++    executor.complete(0);
++    await accepted.terminal;
++    await drained;
++  });
++
++  it("starts admission resource sampling without awaiting it", async () => {
++    const harness = await RequestHarness.start(new ImmediateExecutor());
++    harnesses.push(harness);
++    const sample = harness.blockAdmissionSample();
++
++    const connection = await Promise.race([
++      harness.admit("nonawaited-sample"),
++      new Promise<never>((_resolve, reject) =>
++        setTimeout(() => reject(new Error("Admission waited for resource sampling")), 50),
++      ),
++    ]);
++
++    expect(sample).toHaveBeenCalledWith("admission");
++    expect(connection.frames[0]).toEqual(
++      expect.objectContaining({ kind: "accepted", requestId: "nonawaited-sample" }),
++    );
++    await expect(connection.terminal).resolves.toMatchObject({
++      kind: "result-end",
++      requestId: "nonawaited-sample",
++    });
++  });
++
+   it("rejects the prior execute-envelope generation before command execution", async () => {
+     const executor = new RecordingExecutor();
+     const harness = await RequestHarness.start(executor);
+@@ -1660,6 +1752,75 @@ class RequestHarness {
+     });
+   }
+ 
++  admitWithToken(requestId: string, processToken: string): Promise<RequestConnection> {
++    return this.transport.connect({
++      kind: "execute",
++      protocolVersion: DAEMON_PROTOCOL_VERSION,
++      instanceId: this.instanceId,
++      processToken,
++      requestId,
++      commandName: "version",
++      request: { argv: ["--version"], cwd: this.workspaceRoot, telemetryEnabled: false },
++    });
++  }
++
++  acceptedRequestCount(): number {
++    return this.daemonInternals.acceptedRequests.size;
++  }
++
++  setWorkerReady(workerReady: boolean): void {
++    this.daemonInternals.workerReady = workerReady;
++  }
++
++  setResourceAdmissionPaused(admissionPaused: boolean): void {
++    const resourceSupervisor = this.daemonInternals.resourceSupervisor;
++    const snapshot = resourceSupervisor.snapshot;
++    vi.spyOn(resourceSupervisor, "snapshot", "get").mockReturnValue({
++      ...snapshot,
++      admissionPaused,
++    });
++  }
++
++  closeAdmission(): Promise<void> {
++    return this.daemonInternals.requestQueue.drain();
++  }
++
++  observeAdmissionSamples(): ReturnType<typeof vi.fn> {
++    const resourceSupervisor = this.daemonInternals.resourceSupervisor;
++    const sample = vi.fn(resourceSupervisor.sample.bind(resourceSupervisor));
++    resourceSupervisor.sample = sample;
++    return sample;
++  }
++
++  blockAdmissionSample(): ReturnType<typeof vi.fn> {
++    const resourceSupervisor = this.daemonInternals.resourceSupervisor;
++    const originalSample = resourceSupervisor.sample.bind(resourceSupervisor);
++    const sample = vi.fn((reason: "warmup" | "interval" | "admission" | "turn-complete") =>
++      reason === "admission" ? new Promise<void>(() => {}) : originalSample(reason),
++    );
++    resourceSupervisor.sample = sample;
++    return sample;
++  }
++
++  private get daemonInternals(): {
++    workerReady: boolean;
++    readonly acceptedRequests: AcceptedRequestLedger;
++    readonly requestQueue: WorkspaceRequestQueue;
++    readonly resourceSupervisor: DaemonResourceSupervisor & {
++      readonly snapshot: DaemonResourceSnapshot;
++    };
++  } {
++    if (this.daemon === undefined) throw new Error("Workspace daemon is unavailable");
++    return this.daemon as unknown as {
++      workerReady: boolean;
++      readonly acceptedRequests: AcceptedRequestLedger;
++      readonly requestQueue: WorkspaceRequestQueue;
++      readonly resourceSupervisor: DaemonResourceSupervisor & {
++        readonly snapshot: DaemonResourceSnapshot;
++      };
++    };
++  }
++
+   private commandName(argv: readonly string[]): DaemonCommandName {
+     return new InvocationWorkspaceSelector().select(argv, this.workspaceRoot).commandName;
+   }
+@@ -1775,6 +1936,7 @@ class RequestTransport {
+     | undefined;
+   listenError: Error | undefined;
+   closeError: Error | undefined;
++  readonly sentFrames: DaemonServerMessage[] = [];
+   private resultChunkGate:
+     | {
+         readonly started: () => void;
+@@ -1822,6 +1984,7 @@ class RequestTransport {
+       resolveTerminal = resolve;
+     });
+     const receive = async (response: DaemonServerMessage): Promise<void> => {
++      this.sentFrames.push(response);
+       if (!("kind" in response) && this.resultChunkGate !== undefined) {
+         this.resultChunksInFlight += 1;
+         this.maximumResultChunksInFlight = Math.max(
+diff --git a/apps/cli/src/daemon/workspace-daemon.ts b/apps/cli/src/daemon/workspace-daemon.ts
+index 1af20a957..e226379ea 100644
+--- a/apps/cli/src/daemon/workspace-daemon.ts
++++ b/apps/cli/src/daemon/workspace-daemon.ts
+@@ -1,15 +1,16 @@
+ import type { ProgramDependencies } from "../program-dependencies.js";
+ import {
++  DaemonAdmissionPolicy,
++  DaemonAdmissionRejections,
+   DaemonExecutionFailures,
++  type DaemonAdmissionDecision,
++  type DaemonExecuteRejectionCode,
+   type DaemonExecutionFailureCode,
+   type DaemonPolicy,
+   type DaemonPolicyValues,
+ } from "@symnav/daemon";
+ import type { CommandExecutionResult, CommandOutputRecord } from "../command-execution-result.js";
+-import {
+-  AcceptedRequestCorruptionError,
+-  AcceptedRequestLedger,
+-} from "./accepted-request-ledger.js";
++import { AcceptedRequestLedger } from "./accepted-request-ledger.js";
+ import type {
+   DaemonActivitySnapshot,
+   DaemonDeliveryOutcome,
+@@ -89,6 +90,7 @@ export class WorkspaceDaemon {
+   private readonly policy: DaemonPolicy;
+   private readonly operationObserver: DaemonOperationObserver;
+   private readonly acceptedRequests: AcceptedRequestLedger;
++  private readonly admissionPolicy = new DaemonAdmissionPolicy();
+   private readonly completionSpools: DaemonCompletionSpoolStore;
+   private readonly acceptances = new Map<
+     string,
+@@ -333,8 +335,8 @@ export class WorkspaceDaemon {
+       throw new Error("Daemon request does not match protocol or instance");
+     }
+     if (request.kind === "ping") return this.pong();
++    if (request.kind === "execute") return this.acceptExecution(request, send);
+     if (
+-      request.kind === "execute" ||
+       request.kind === "execution-status" ||
+       request.kind === "result-fetch" ||
+       request.kind === "result-ack"
+@@ -343,7 +345,6 @@ export class WorkspaceDaemon {
+         throw new Error("Daemon execution request does not match process instance");
+       }
+     }
+-    if (request.kind === "execute") return this.acceptExecution(request, send);
+     if (request.kind === "result-fetch") {
+       let disconnectTraceConnection: (() => void) | undefined;
+       if (this.acceptedRequests.entryFor(request.requestId)?.state.state === "completed") {
+@@ -472,31 +473,17 @@ export class WorkspaceDaemon {
+     request: Extract<DaemonRequest, { kind: "execute" }>,
+     send: DaemonServerSend,
+   ): Promise<DaemonResponse | void> {
+-    void this.resourceSupervisor.sample("admission").catch((error) => {
+-      this.logger.record({
+-        kind: "failure",
+-        operation: "resource-sample",
+-        failureCode: "operation-failed",
+-        errorName: DaemonLogger.errorName(error),
+-      });
+-    });
+-    if (!this.workerReady) return this.rejection(request, "not-ready", true);
+-    if (this.resourceSupervisor.snapshot.admissionPaused) {
+-      return this.rejection(request, "resource-pressure", true);
+-    }
+-    if (this.requestQueue.state !== "accepting") {
+-      return this.rejection(request, "draining", true);
++    const decision = this.decideAdmission(request);
++    if (decision.kind === "disconnect") {
++      throw new Error("Daemon execution request does not match process instance");
+     }
++    if (decision.kind === "reject") return this.rejection(request, decision.code);
+     const existing = this.acceptedRequests.entryFor(request.requestId);
+-    let entry;
+-    try {
+-      entry = this.acceptedRequests.accept(request.requestId, request.commandName, request.request);
+-    } catch (error) {
+-      if (error instanceof AcceptedRequestCorruptionError) {
+-        return this.rejection(request, "incompatible", false);
+-      }
+-      throw error;
+-    }
++    const entry = this.acceptedRequests.accept(
++      request.requestId,
++      request.commandName,
++      request.request,
++    );
+     if (entry.state.state === "queued") {
+       this.acceptances.set(request.requestId, {
+         acceptedAt: entry.state.acceptedAt,
+@@ -566,6 +553,42 @@ export class WorkspaceDaemon {
+     });
+   }
+ 
++  private decideAdmission(
++    request: Extract<DaemonRequest, { kind: "execute" }>,
++  ): DaemonAdmissionDecision {
++    const authenticated = request.processToken === this.options.processToken;
++    if (!authenticated) {
++      return this.admissionPolicy.decide({
++        request,
++        authenticated,
++        workerReady: true,
++        resourceAdmissionPaused: false,
++        queueState: "accepting",
++        compatibility: "unseen",
++      });
++    }
++    void this.resourceSupervisor.sample("admission").catch((error) => {
++      this.logger.record({
++        kind: "failure",
++        operation: "resource-sample",
++        failureCode: "operation-failed",
++        errorName: DaemonLogger.errorName(error),
++      });
++    });
++    return this.admissionPolicy.decide({
++      request,
++      authenticated,
++      workerReady: this.workerReady,
++      resourceAdmissionPaused: this.resourceSupervisor.snapshot.admissionPaused,
++      queueState: this.requestQueue.state,
++      compatibility: this.acceptedRequests.compatibilityFor(
++        request.requestId,
++        request.commandName,
++        request.request,
++      ),
++    });
++  }
++
+   private async executeAccepted(
+     request: Extract<DaemonRequest, { kind: "execute" }>,
+   ): Promise<void> {
+@@ -684,17 +707,13 @@ export class WorkspaceDaemon {
+ 
+   private rejection(
+     request: Extract<DaemonRequest, { kind: "execute" }>,
+-    code: "not-ready" | "draining" | "resource-pressure" | "incompatible",
+-    retrySafe: boolean,
++    code: DaemonExecuteRejectionCode,
+   ): DaemonExecutionServerFrame {
+-    return {
+-      kind: "rejected",
++    return DaemonAdmissionRejections.frame(code, {
+       instanceId: this.options.instanceId,
+       processToken: this.options.processToken,
+       requestId: request.requestId,
+-      code,
+-      retrySafe,
+-    };
++    });
+   }
+ 
+   private failedFrame(
+diff --git a/apps/cli/src/daemon/workspace-request-queue.ts b/apps/cli/src/daemon/workspace-request-queue.ts
+index f3885149c..f51da05ac 100644
+--- a/apps/cli/src/daemon/workspace-request-queue.ts
++++ b/apps/cli/src/daemon/workspace-request-queue.ts
+@@ -1,5 +1,4 @@
+-import type { DaemonCommandName } from "@symnav/daemon";
+-import type { WorkspaceRequestQueueState } from "./daemon-protocol.js";
++import type { DaemonCommandName, WorkspaceRequestQueueState } from "@symnav/daemon";
+ 
+ export interface WorkspaceQueuedRequest {
+   readonly requestId: string;
+diff --git a/packages/daemon/src/daemon-admission.test.ts b/packages/daemon/src/daemon-admission.test.ts
+new file mode 100644
+index 000000000..459f13a15
+--- /dev/null
++++ b/packages/daemon/src/daemon-admission.test.ts
+@@ -0,0 +1,150 @@
++import { describe, expect, expectTypeOf, it } from "vitest";
++
++import {
++  DaemonAdmissionPolicy,
++  DaemonAdmissionRejections,
++  type AcceptedRequestCompatibility,
++  type DaemonAdmissionContext,
++  type DaemonAdmissionDecision,
++  type DaemonAdmissionGuard,
++  type DaemonAdmissionRejectionCode,
++  type DaemonExecuteRejectionCode,
++  type DaemonExecutionCoordinates,
++  type DaemonRejectedExecutionFrame,
++  type WorkspaceRequestQueueState,
++} from "./daemon-admission.js";
++
++describe("DaemonAdmissionPolicy", () => {
++  it("defines the closed admission contracts", () => {
++    expectTypeOf<AcceptedRequestCompatibility>().toEqualTypeOf<
++      "unseen" | "matching" | "conflicting"
++    >();
++    expectTypeOf<WorkspaceRequestQueueState>().toEqualTypeOf<"accepting" | "draining" | "closed">();
++    expectTypeOf<DaemonAdmissionRejectionCode>().toEqualTypeOf<
++      "authentication" | "not-ready" | "draining" | "resource-pressure" | "incompatible"
++    >();
++    expectTypeOf<DaemonAdmissionDecision>().toEqualTypeOf<
++      | { readonly kind: "accept" }
++      | { readonly kind: "disconnect"; readonly code: "authentication" }
++      | { readonly kind: "reject"; readonly code: DaemonExecuteRejectionCode }
++    >();
++    expectTypeOf<DaemonAdmissionGuard>().toEqualTypeOf<{
++      rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined;
++    }>();
++  });
++
++  it.each([
++    ["authentication before readiness", ["authentication", "worker"]],
++    ["authentication before resources", ["authentication", "resource"]],
++    ["authentication before draining", ["authentication", "queue"]],
++    ["authentication before conflicts", ["authentication", "compatibility"]],
++    ["readiness before resources", ["worker", "resource"]],
++    ["readiness before draining", ["worker", "queue"]],
++    ["readiness before conflicts", ["worker", "compatibility"]],
++    ["resources before draining", ["resource", "queue"]],
++    ["resources before conflicts", ["resource", "compatibility"]],
++    ["draining before conflicts", ["queue", "compatibility"]],
++  ] as const)("selects %s", (_name, failures) => {
++    const context = AdmissionContexts.create();
++    for (const failure of failures) AdmissionContexts.applyFailure(context, failure);
++
++    expect(new DaemonAdmissionPolicy().decide(context)).toEqual(
++      AdmissionContexts.decisionFor(failures[0]),
++    );
++  });
++
++  it.each(["draining", "closed"] as const)("rejects a %s queue as draining", (queueState) => {
++    expect(new DaemonAdmissionPolicy().decide(AdmissionContexts.create({ queueState }))).toEqual({
++      kind: "reject",
++      code: "draining",
++    });
++  });
++
++  it.each(["unseen", "matching"] as const)("accepts %s compatible work", (compatibility) => {
++    expect(new DaemonAdmissionPolicy().decide(AdmissionContexts.create({ compatibility }))).toEqual(
++      { kind: "accept" },
++    );
++  });
++});
++
++describe("DaemonAdmissionRejections", () => {
++  const retrySafety = [
++    ["not-ready", true],
++    ["resource-pressure", true],
++    ["draining", true],
++    ["incompatible", false],
++  ] as const satisfies readonly (readonly [DaemonExecuteRejectionCode, boolean])[];
++
++  it.each(retrySafety)("derives %s retry safety", (code, retrySafe) => {
++    expect(DaemonAdmissionRejections.retrySafe(code)).toBe(retrySafe);
++  });
++
++  it.each(retrySafety)("constructs and validates %s frames", (code, retrySafe) => {
++    const coordinates: DaemonExecutionCoordinates = {
++      instanceId: "instance",
++      processToken: "token",
++      requestId: "request",
++    };
++
++    const frame = DaemonAdmissionRejections.frame(code, coordinates);
++
++    expect(frame).toEqual({ kind: "rejected", ...coordinates, code, retrySafe });
++    expect(() => DaemonAdmissionRejections.assertConsistent(frame)).not.toThrow();
++  });
++
++  it.each(retrySafety)("rejects contradictory %s wire retry safety", (code, retrySafe) => {
++    const frame: DaemonRejectedExecutionFrame = {
++      kind: "rejected",
++      instanceId: "instance",
++      processToken: "token",
++      requestId: "request",
++      code,
++      retrySafe: !retrySafe,
++    };
++
++    expect(() => DaemonAdmissionRejections.assertConsistent(frame)).toThrow(
++      "Inconsistent daemon execution rejection",
++    );
++  });
++});
++
++type AdmissionFailure = "authentication" | "worker" | "resource" | "queue" | "compatibility";
++
++interface MutableAdmissionContext {
++  request: unknown;
++  authenticated: boolean;
++  workerReady: boolean;
++  resourceAdmissionPaused: boolean;
++  queueState: WorkspaceRequestQueueState;
++  compatibility: AcceptedRequestCompatibility;
++}
++
++class AdmissionContexts {
++  static create(overrides: Partial<DaemonAdmissionContext> = {}): MutableAdmissionContext {
++    return {
++      request: {},
++      authenticated: true,
++      workerReady: true,
++      resourceAdmissionPaused: false,
++      queueState: "accepting",
++      compatibility: "unseen",
++      ...overrides,
++    };
++  }
++
++  static applyFailure(context: MutableAdmissionContext, failure: AdmissionFailure): void {
++    if (failure === "authentication") context.authenticated = false;
++    if (failure === "worker") context.workerReady = false;
++    if (failure === "resource") context.resourceAdmissionPaused = true;
++    if (failure === "queue") context.queueState = "draining";
++    if (failure === "compatibility") context.compatibility = "conflicting";
++  }
++
++  static decisionFor(failure: AdmissionFailure): DaemonAdmissionDecision {
++    if (failure === "authentication") return { kind: "disconnect", code: "authentication" };
++    if (failure === "worker") return { kind: "reject", code: "not-ready" };
++    if (failure === "resource") return { kind: "reject", code: "resource-pressure" };
++    if (failure === "queue") return { kind: "reject", code: "draining" };
++    return { kind: "reject", code: "incompatible" };
++  }
++}
+diff --git a/packages/daemon/src/daemon-admission.ts b/packages/daemon/src/daemon-admission.ts
+new file mode 100644
+index 000000000..bd5e636e5
+--- /dev/null
++++ b/packages/daemon/src/daemon-admission.ts
+@@ -0,0 +1,129 @@
++export type DaemonExecuteRejectionCode =
++  | "not-ready"
++  | "draining"
++  | "resource-pressure"
++  | "incompatible";
++
++export type AcceptedRequestCompatibility = "unseen" | "matching" | "conflicting";
++
++export type WorkspaceRequestQueueState = "accepting" | "draining" | "closed";
++
++export type DaemonExecutionCoordinates = {
++  readonly instanceId: string;
++  readonly processToken: string;
++  readonly requestId: string;
++};
++
++export type DaemonRejectedExecutionFrame = {
++  readonly kind: "rejected";
++  readonly instanceId: string;
++  readonly processToken: string;
++  readonly requestId: string;
++  readonly code: DaemonExecuteRejectionCode;
++  readonly retrySafe: boolean;
++};
++
++export interface DaemonAdmissionContext {
++  readonly request: unknown;
++  readonly authenticated: boolean;
++  readonly workerReady: boolean;
++  readonly resourceAdmissionPaused: boolean;
++  readonly queueState: WorkspaceRequestQueueState;
++  readonly compatibility: AcceptedRequestCompatibility;
++}
++
++export interface DaemonAdmissionGuard {
++  rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined;
++}
++
++export type DaemonAdmissionRejectionCode = "authentication" | DaemonExecuteRejectionCode;
++
++export type DaemonAdmissionDecision =
++  | { readonly kind: "accept" }
++  | { readonly kind: "disconnect"; readonly code: "authentication" }
++  | { readonly kind: "reject"; readonly code: DaemonExecuteRejectionCode };
++
++class AuthenticationAdmissionGuard implements DaemonAdmissionGuard {
++  rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {
++    return context.authenticated ? undefined : "authentication";
++  }
++}
++
++class WorkerReadinessAdmissionGuard implements DaemonAdmissionGuard {
++  rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {
++    return context.workerReady ? undefined : "not-ready";
++  }
++}
++
++class ResourceAdmissionGuard implements DaemonAdmissionGuard {
++  rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {
++    return context.resourceAdmissionPaused ? "resource-pressure" : undefined;
++  }
++}
++
++class QueueAdmissionGuard implements DaemonAdmissionGuard {
++  rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {
++    return context.queueState === "accepting" ? undefined : "draining";
++  }
++}
++
++class CompatibilityAdmissionGuard implements DaemonAdmissionGuard {
++  rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {
++    return context.compatibility === "conflicting" ? "incompatible" : undefined;
++  }
++}
++
++export class DaemonAdmissionPolicy {
++  private readonly guards: readonly DaemonAdmissionGuard[] = [
++    new AuthenticationAdmissionGuard(),
++    new WorkerReadinessAdmissionGuard(),
++    new ResourceAdmissionGuard(),
++    new QueueAdmissionGuard(),
++    new CompatibilityAdmissionGuard(),
++  ];
++
++  decide(context: DaemonAdmissionContext): DaemonAdmissionDecision {
++    for (const guard of this.guards) {
++      const rejection = guard.rejectionFor(context);
++      if (rejection === undefined) continue;
++      if (rejection === "authentication") return { kind: "disconnect", code: rejection };
++      return { kind: "reject", code: rejection };
++    }
++    return { kind: "accept" };
++  }
++}
++
++export class DaemonAdmissionRejections {
++  private static readonly retrySafety: Readonly<Record<DaemonExecuteRejectionCode, boolean>> =
++    Object.freeze({
++      "not-ready": true,
++      draining: true,
++      "resource-pressure": true,
++      incompatible: false,
++    });
++
++  static retrySafe(code: DaemonExecuteRejectionCode): boolean {
++    return DaemonAdmissionRejections.retrySafety[code];
++  }
++
++  static frame(
++    code: DaemonExecuteRejectionCode,
++    coordinates: DaemonExecutionCoordinates,
++  ): DaemonRejectedExecutionFrame {
++    return {
++      kind: "rejected",
++      ...coordinates,
++      code,
++      retrySafe: DaemonAdmissionRejections.retrySafe(code),
++    };
++  }
++
++  static assertConsistent(frame: DaemonRejectedExecutionFrame): void {
++    if (
++      !Object.hasOwn(DaemonAdmissionRejections.retrySafety, frame.code) ||
++      frame.retrySafe !== DaemonAdmissionRejections.retrySafety[frame.code]
++    ) {
++      throw new Error("Inconsistent daemon execution rejection");
++    }
++  }
++}
+diff --git a/packages/daemon/src/host-contract.test.ts b/packages/daemon/src/host-contract.test.ts
+index 5c7d04296..722a8e8f5 100644
+--- a/packages/daemon/src/host-contract.test.ts
++++ b/packages/daemon/src/host-contract.test.ts
+@@ -10,7 +10,14 @@ import * as daemonRuntime from "./index.js";
+ import * as policyTestingRuntime from "./policy-testing.js";
+ import type {
+   DaemonActivitySnapshot,
++  AcceptedRequestCompatibility,
++  DaemonAdmissionContext,
++  DaemonAdmissionDecision,
++  DaemonAdmissionGuard,
++  DaemonAdmissionRejectionCode,
+   DaemonCommandName,
++  DaemonExecuteRejectionCode,
++  DaemonExecutionCoordinates,
+   DaemonDiagnostics,
+   DaemonDiagnosticValue,
+   DaemonExecutionFailureCode,
+@@ -31,12 +38,20 @@ import type {
+   DaemonReadinessProbe,
+   DaemonSystemMemory,
+   DaemonWorkerFailureCode,
++  DaemonRejectedExecutionFrame,
+   DaemonStartResult,
+   DaemonStatusEnvelope,
+   DaemonStopResult,
+   RunningDaemonStatus,
++  WorkspaceRequestQueueState,
++} from "./index.js";
++import {
++  DAEMON_COMMAND_NAMES,
++  DaemonAdmissionPolicy,
++  DaemonAdmissionRejections,
++  DaemonExecutionFailures,
++  DaemonPolicy,
+ } from "./index.js";
+-import { DAEMON_COMMAND_NAMES, DaemonExecutionFailures, DaemonPolicy } from "./index.js";
+ 
+ type ExportKind = "runtime" | "type";
+ 
+@@ -59,12 +74,21 @@ class DaemonContractSourcePath {
+ class DaemonContractExpectation {
+   public static readonly exports: readonly ExportedSymbol[] = [
+     { kind: "runtime", name: "DAEMON_COMMAND_NAMES" },
++    { kind: "runtime", name: "DaemonAdmissionPolicy" },
++    { kind: "runtime", name: "DaemonAdmissionRejections" },
+     { kind: "runtime", name: "DaemonExecutionFailures" },
+     { kind: "runtime", name: "DaemonPolicy" },
++    { kind: "type", name: "AcceptedRequestCompatibility" },
+     { kind: "type", name: "DaemonActivitySnapshot" },
++    { kind: "type", name: "DaemonAdmissionContext" },
++    { kind: "type", name: "DaemonAdmissionDecision" },
++    { kind: "type", name: "DaemonAdmissionGuard" },
++    { kind: "type", name: "DaemonAdmissionRejectionCode" },
+     { kind: "type", name: "DaemonCommandName" },
+     { kind: "type", name: "DaemonDiagnostics" },
+     { kind: "type", name: "DaemonDiagnosticValue" },
++    { kind: "type", name: "DaemonExecuteRejectionCode" },
++    { kind: "type", name: "DaemonExecutionCoordinates" },
+     { kind: "type", name: "DaemonExecutionFailureCode" },
+     { kind: "type", name: "DaemonExecutionFailureContext" },
+     { kind: "type", name: "DaemonExecutionMode" },
+@@ -81,12 +105,14 @@ class DaemonContractExpectation {
+     { kind: "type", name: "DaemonOutputStream" },
+     { kind: "type", name: "DaemonPolicyValues" },
+     { kind: "type", name: "DaemonReadinessProbe" },
++    { kind: "type", name: "DaemonRejectedExecutionFrame" },
+     { kind: "type", name: "DaemonStartResult" },
+     { kind: "type", name: "DaemonStatusEnvelope" },
+     { kind: "type", name: "DaemonStopResult" },
+     { kind: "type", name: "DaemonSystemMemory" },
+     { kind: "type", name: "DaemonWorkerFailureCode" },
+     { kind: "type", name: "RunningDaemonStatus" },
++    { kind: "type", name: "WorkspaceRequestQueueState" },
+   ];
+ 
+   public static readonly policyMembers = [
+@@ -101,11 +127,20 @@ class DaemonContractExpectation {
+ 
+   public static readonly executionFailureMembers = ["static:classify", "static:isCode"];
+ 
++  public static readonly admissionPolicyMembers = ["instance:decide"];
++
++  public static readonly admissionRejectionMembers = [
++    "static:assertConsistent",
++    "static:frame",
++    "static:retrySafe",
++  ];
++
+   public static readonly policyTestingExports: readonly ExportedSymbol[] = [
+     { kind: "runtime", name: "DaemonPolicyTestFactory" },
+   ];
+ 
+   public static readonly productionSources: readonly string[] = [
++    "daemon-admission.ts",
+     "daemon-command-name.ts",
+     "daemon-diagnostics.ts",
+     "daemon-execution-failure.ts",
+@@ -326,6 +361,43 @@ describe("daemon host contract", () => {
+     expect(DaemonContractSourcePath.root(pathToFileURL(sourcePath).href)).toBe(dirname(sourcePath));
+   });
+ 
++  it("defines the exact admission authority", () => {
++    expectTypeOf<DaemonExecuteRejectionCode>().toEqualTypeOf<
++      "not-ready" | "draining" | "resource-pressure" | "incompatible"
++    >();
++    expectTypeOf<DaemonExecutionCoordinates>().toEqualTypeOf<{
++      readonly instanceId: string;
++      readonly processToken: string;
++      readonly requestId: string;
++    }>();
++    expectTypeOf<DaemonRejectedExecutionFrame>().toEqualTypeOf<{
++      readonly kind: "rejected";
++      readonly instanceId: string;
++      readonly processToken: string;
++      readonly requestId: string;
++      readonly code: DaemonExecuteRejectionCode;
++      readonly retrySafe: boolean;
++    }>();
++    expectTypeOf<DaemonAdmissionContext>().toEqualTypeOf<{
++      readonly request: unknown;
++      readonly authenticated: boolean;
++      readonly workerReady: boolean;
++      readonly resourceAdmissionPaused: boolean;
++      readonly queueState: WorkspaceRequestQueueState;
++      readonly compatibility: AcceptedRequestCompatibility;
++    }>();
++
++    const sourceRoot = DaemonContractSourcePath.root(import.meta.url);
++    const source = ts.sys.readFile(join(sourceRoot, "daemon-admission.ts"));
++    expect(source).toBeDefined();
++    expect(TypeScriptClassMemberInventory.read(source ?? "", "DaemonAdmissionPolicy")).toEqual(
++      DaemonContractExpectation.admissionPolicyMembers,
++    );
++    expect(TypeScriptClassMemberInventory.read(source ?? "", "DaemonAdmissionRejections")).toEqual(
++      DaemonContractExpectation.admissionRejectionMembers,
++    );
++  });
++
+   it("defines the exact execution failure contract", () => {
+     expectTypeOf<DaemonExecutionFailureCode>().toEqualTypeOf<
+       "worker-exit" | "controlled-resource" | "response-capacity" | "stopping" | "internal"
+@@ -633,6 +705,8 @@ describe("daemon host contract", () => {
+       DaemonContractExpectation.exports,
+     );
+     expect(Object.keys(daemonRuntime)).toEqual([
++      "DaemonAdmissionPolicy",
++      "DaemonAdmissionRejections",
+       "DAEMON_COMMAND_NAMES",
+       "DaemonExecutionFailures",
+       "DaemonPolicy",
+diff --git a/packages/daemon/src/index.ts b/packages/daemon/src/index.ts
+index 21a66640c..346962ef8 100644
+--- a/packages/daemon/src/index.ts
++++ b/packages/daemon/src/index.ts
+@@ -1,3 +1,15 @@
++export { DaemonAdmissionPolicy, DaemonAdmissionRejections } from "./daemon-admission.js";
++export type {
++  AcceptedRequestCompatibility,
++  DaemonAdmissionContext,
++  DaemonAdmissionDecision,
++  DaemonAdmissionGuard,
++  DaemonAdmissionRejectionCode,
++  DaemonExecuteRejectionCode,
++  DaemonExecutionCoordinates,
++  DaemonRejectedExecutionFrame,
++  WorkspaceRequestQueueState,
++} from "./daemon-admission.js";
+ export { DAEMON_COMMAND_NAMES } from "./daemon-command-name.js";
+ export type { DaemonCommandName, DaemonReadinessProbe } from "./daemon-command-name.js";
+ export type { DaemonDiagnosticValue, DaemonDiagnostics } from "./daemon-diagnostics.js";
+diff --git a/packages/daemon/test/public-import.test.ts b/packages/daemon/test/public-import.test.ts
+index 4353a0411..a505280f6 100644
+--- a/packages/daemon/test/public-import.test.ts
++++ b/packages/daemon/test/public-import.test.ts
+@@ -3,6 +3,8 @@ import { describe, expect, expectTypeOf, it } from "vitest";
+ import * as daemonRuntime from "@symnav/daemon";
+ import type {
+   DaemonActivitySnapshot,
++  DaemonAdmissionContext,
++  DaemonExecuteRejectionCode,
+   DaemonExecutionFailureCode,
+   DaemonExecutionFailureContext,
+   DaemonExecutor,
+@@ -13,10 +15,16 @@ import type {
+   DaemonStopResult,
+   DaemonWorkerFailureCode,
+ } from "@symnav/daemon";
+-import { DAEMON_COMMAND_NAMES, DaemonExecutionFailures, DaemonPolicy } from "@symnav/daemon";
++import {
++  DAEMON_COMMAND_NAMES,
++  DaemonAdmissionPolicy,
++  DaemonAdmissionRejections,
++  DaemonExecutionFailures,
++  DaemonPolicy,
++} from "@symnav/daemon";
+ 
+ describe("@symnav/daemon public package import", () => {
+-  it("resolves the root contract with only the policy runtime", () => {
++  it("resolves the root contract", () => {
+     expectTypeOf<DaemonExecutor>().toBeObject();
+     expectTypeOf<DaemonActivitySnapshot>().toBeObject();
+     expectTypeOf<DaemonStatusEnvelope>().toBeObject();
+@@ -27,12 +35,27 @@ describe("@symnav/daemon public package import", () => {
+     expectTypeOf<DaemonExecutionFailureCode>().not.toBeNever();
+     expectTypeOf<DaemonExecutionFailureContext>().toBeObject();
+     expectTypeOf<DaemonWorkerFailureCode>().not.toBeNever();
++    expectTypeOf<DaemonAdmissionContext>().toBeObject();
++    expectTypeOf<DaemonExecuteRejectionCode>().not.toBeNever();
++    expect(
++      new DaemonAdmissionPolicy().decide({
++        request: {},
++        authenticated: true,
++        workerReady: true,
++        resourceAdmissionPaused: false,
++        queueState: "accepting",
++        compatibility: "unseen",
++      }),
++    ).toEqual({ kind: "accept" });
++    expect(DaemonAdmissionRejections.retrySafe("not-ready")).toBe(true);
+     expect(DaemonExecutionFailures.isCode("internal")).toBe(true);
+     expect(DAEMON_COMMAND_NAMES).toHaveLength(10);
+     expect(DaemonPolicy.fromSystemMemory({ totalBytes: 1024 * 1024 * 1024 })).toBeInstanceOf(
+       DaemonPolicy,
+     );
+     expect(Object.keys(daemonRuntime)).toEqual([
++      "DaemonAdmissionPolicy",
++      "DaemonAdmissionRejections",
+       "DAEMON_COMMAND_NAMES",
+       "DaemonExecutionFailures",
+       "DaemonPolicy",

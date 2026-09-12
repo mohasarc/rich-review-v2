@@ -54,3 +54,6 @@ BUILD OK stack-head
 - 2026-09-13 02:13:40 +03: MONITOR OK supervisor=1153, finished=3, running=5, queued=32, dirty-worktrees=0, missing-readmes=0, free-disk=37.3GiB
 - 2026-09-13 02:28:47 +03: MONITOR OK supervisor=1153, finished=3, running=5, queued=32, dirty-worktrees=0, missing-readmes=0, free-disk=35.9GiB
 - 2026-09-13 02:29:46 +03: FINISH 04-textbook-chapter via claude-opus, exit 0, README present
+- 2026-09-13 02:29:46 +03: COMMIT OK 04-textbook-chapter: [main 37a5420] Add experiment 04 textbook-chapter
+- 2026-09-13 02:29:46 +03: START 09-diff-of-intent attempt 1 via codex, pid 38374
+- 2026-09-13 02:41:26 +03: FINISH 07-stack-timeline via codex, exit 0, README present
