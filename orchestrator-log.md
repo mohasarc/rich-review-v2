@@ -49,3 +49,8 @@ BUILD OK stack-head
 - 2026-09-13 02:10:14 +03: COMMIT OK 03-unconstrained-c: [main 6cb15c6] Add experiment 03 unconstrained-c
 - 2026-09-13 02:10:15 +03: START 07-stack-timeline attempt 1 via codex, pid 24677
 - 2026-09-13 02:10:35 +03: FINISH 05-boxes-static-vs-runtime via codex, exit 0, README present
+- 2026-09-13 02:10:35 +03: COMMIT OK 05-boxes-static-vs-runtime: [main 4309c3d] Add experiment 05 boxes-static-vs-runtime
+- 2026-09-13 02:10:35 +03: START 08-adversarial attempt 1 via claude-opus, pid 25438
+- 2026-09-13 02:13:40 +03: MONITOR OK supervisor=1153, finished=3, running=5, queued=32, dirty-worktrees=0, missing-readmes=0, free-disk=37.3GiB
+- 2026-09-13 02:28:47 +03: MONITOR OK supervisor=1153, finished=3, running=5, queued=32, dirty-worktrees=0, missing-readmes=0, free-disk=35.9GiB
+- 2026-09-13 02:29:46 +03: FINISH 04-textbook-chapter via claude-opus, exit 0, README present
