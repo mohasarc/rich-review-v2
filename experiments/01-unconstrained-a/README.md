@@ -1,47 +1,4 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>rich-review v2 experiments</title>
-<style>
-:root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif; }
-body { margin: 2rem; line-height: 1.4; }
-a { color: #4f8cff; }
-.status { display: flex; gap: 1rem; flex-wrap: wrap; margin: 1rem 0; }
-.pill { border: 1px solid #7778; border-radius: 999px; padding: .35rem .8rem; }
-.table-wrap { overflow-x: auto; }
-table { border-collapse: collapse; min-width: 1200px; width: 100%; }
-th, td { border: 1px solid #7776; padding: .55rem; text-align: left; vertical-align: top; }
-th { position: sticky; top: 0; background: Canvas; }
-img { max-width: 220px; max-height: 130px; object-fit: contain; }
-small { opacity: .72; }
-details pre { max-width: 72ch; white-space: pre-wrap; }
-</style>
-</head>
-<body>
-<h1>rich-review v2</h1>
-<p>Updated 2026-09-13 02:08:54 +03 · <a href="orchestrator-log.md">orchestrator log</a></p>
-<div class="status">
-  <span class="pill">1 finished</span>
-  <span class="pill">0 failed/incomplete</span>
-  <span class="pill">4 running</span>
-  <span class="pill">35 queued</span>
-</div>
-<p><strong>Latest critique and recall checks:</strong> None finished yet</p>
-<div class="table-wrap"><table>
-<thead><tr><th>NN</th><th>Experiment / harness</th><th>Kind</th><th>Subjects</th><th>Declared angle</th><th>Screenshot</th><th>Time</th><th>Would drop</th><th>README</th></tr></thead>
-<tbody>
-        <tr>
-          <td><strong>01</strong></td>
-          <td><a href="experiments/01-unconstrained-a/index.html">unconstrained-a</a><br><small>attempt 1: codex → attempt 2: codex</small></td>
-          <td>page</td>
-          <td>pr-127`: its immediate base `a1e325a` → head `64919bc`.</td>
-          <td>Role framing: learner who traces ownership and then inspects the author&#x27;s decisions. · Box lenses: static package ownership; runtime process/thread topology; state lifetime within those processes. · Opening style: a deliberately lossy workshop/scratch-paper analogy followed by an ownership diptych. · Shape: two linked pyramids. The stack has a boundary map, six entrances, a complete surface of recovered decisions, then reasons and source. #127 has a smaller map and ten decision records, followed by a recorded run and the handle mechanism. · Navigation: linear reading route; box → decision group; decision → modal reason → local source line. Escape/Close returns focus to the originating choice. Subject and section links work with browser history. The source shelf also allows independent browsing. · Trust posture: compare intent with implementation and test boundaries. Preserve stated reasons verbatim; mark additional choices unexplained when no reason was found. No correctness verdict, approval, comment collection or scoring. · Persona: a teammate who knows symnav but not the daemon&#x27;s internals. · Representations used: before/after package boxes, a process/thread request path, a six-handle cache diagram, an interactive replay of actual observations, a before/after behavior table, a grouped decision inventory, a full policy table, and line-addressed source snapshots. · Importance rule: moved ownership first; asynchronous barriers and decisions without reasons next; test deletions, test budget changes and unrelated work receive the same decision-card treatment. No numeric ranking. · Inputs used (beyond bundle): the four assigned worktrees&#x27; source and relevant tests; their contributor guides; the architecture, policy and follow-up plans; individual commit diffs for test budgets, synchronization and relative `--cwd`; existing compiled #127 backend/core modules; a new read-only observation probe; a focused run of the two affected #127 suites. The supplied overview files were inspected but contained no useful symbol output, so the artifact does not rely on them. · Tech: plain HTML/CSS/JavaScript; Python standard library for extraction and snapshot packaging; Node for the probe; Playwright for browser verification. No CDN, application framework, raster assets, or runtime dependencies for reading. · Built on earlier experiment(s): none. Other experiment folders and prior worker-attempt logs were ignored. This attempt used Codex and no delegated agents.</td>
-          <td><a href="experiments/01-unconstrained-a/screenshots/01-stack.png"><img src="experiments/01-unconstrained-a/screenshots/01-stack.png" loading="lazy" alt="unconstrained-a screenshot"></a></td>
-          <td>About 30 minutes for this completed attempt, including research, implementation, browser checks and documentation. Earlier harness logs already in the folder were preserved.</td>
-          <td>The five muted “unprobed” cache cells in the recorded run are mostly a reminder of the six-handle shape; the other diagrams already supply that. The 26-PR grouping also partly repeats the six ownership groups. It helps provenance, but it costs reading space.</td>
-          <td><details><summary><a href="experiments/01-unconstrained-a/README.md">README</a></summary><pre># unconstrained-a
+# unconstrained-a
 
 ## Entry point
 
@@ -66,16 +23,16 @@ With a reproducible observation probe and a data-building method.
 
 ## Declared choices
 
-- Role framing: learner who traces ownership and then inspects the author&#x27;s decisions.
+- Role framing: learner who traces ownership and then inspects the author's decisions.
 - Box lenses: static package ownership; runtime process/thread topology; state lifetime within those processes.
 - Opening style: a deliberately lossy workshop/scratch-paper analogy followed by an ownership diptych.
 - Shape: two linked pyramids. The stack has a boundary map, six entrances, a complete surface of recovered decisions, then reasons and source. #127 has a smaller map and ten decision records, followed by a recorded run and the handle mechanism.
 - Navigation: linear reading route; box → decision group; decision → modal reason → local source line. Escape/Close returns focus to the originating choice. Subject and section links work with browser history. The source shelf also allows independent browsing.
 - Trust posture: compare intent with implementation and test boundaries. Preserve stated reasons verbatim; mark additional choices unexplained when no reason was found. No correctness verdict, approval, comment collection or scoring.
-- Persona: a teammate who knows symnav but not the daemon&#x27;s internals.
+- Persona: a teammate who knows symnav but not the daemon's internals.
 - Representations used: before/after package boxes, a process/thread request path, a six-handle cache diagram, an interactive replay of actual observations, a before/after behavior table, a grouped decision inventory, a full policy table, and line-addressed source snapshots.
 - Importance rule: moved ownership first; asynchronous barriers and decisions without reasons next; test deletions, test budget changes and unrelated work receive the same decision-card treatment. No numeric ranking.
-- Inputs used (beyond bundle): the four assigned worktrees&#x27; source and relevant tests; their contributor guides; the architecture, policy and follow-up plans; individual commit diffs for test budgets, synchronization and relative `--cwd`; existing compiled #127 backend/core modules; a new read-only observation probe; a focused run of the two affected #127 suites. The supplied overview files were inspected but contained no useful symbol output, so the artifact does not rely on them.
+- Inputs used (beyond bundle): the four assigned worktrees' source and relevant tests; their contributor guides; the architecture, policy and follow-up plans; individual commit diffs for test budgets, synchronization and relative `--cwd`; existing compiled #127 backend/core modules; a new read-only observation probe; a focused run of the two affected #127 suites. The supplied overview files were inspected but contained no useful symbol output, so the artifact does not rely on them.
 - Tech: plain HTML/CSS/JavaScript; Python standard library for extraction and snapshot packaging; Node for the probe; Playwright for browser verification. No CDN, application framework, raster assets, or runtime dependencies for reading.
 - Built on earlier experiment(s): none. Other experiment folders and prior worker-attempt logs were ignored. This attempt used Codex and no delegated agents.
 
@@ -103,9 +60,9 @@ About 30 minutes for this completed attempt, including research, implementation,
 
 ## Evidence and limits
 
-The page contains **141 decision records**, **44 policy records**, **five intentional deadline absences**, and **94 local evidence documents**. Every decision record is present on the stack&#x27;s default sheet; #127&#x27;s ten records precede its mechanism and trace. All decisions carry `stated` or `unexplained`. Every record has a source trail. This is structural coverage of the recovered inventory, not a proof that a large diff contains no further implicit decision.
+The page contains **141 decision records**, **44 policy records**, **five intentional deadline absences**, and **94 local evidence documents**. Every decision record is present on the stack's default sheet; #127's ten records precede its mechanism and trace. All decisions carry `stated` or `unexplained`. Every record has a source trail. This is structural coverage of the recovered inventory, not a proof that a large diff contains no further implicit decision.
 
-The strongest result is small and concrete: both compiled #127 versions clear caches before project cleanup settles. With asynchronous cleanup held open, base backend release fulfills while head remains pending; with cleanup rejection, only head&#x27;s backend release rejects. The PR explicitly describes an awaited barrier but does not reconcile that observable difference with its preservation framing. The artifact presents the boundary for the human to assess; it does not diagnose a production failure.
+The strongest result is small and concrete: both compiled #127 versions clear caches before project cleanup settles. With asynchronous cleanup held open, base backend release fulfills while head remains pending; with cleanup rejection, only head's backend release rejects. The PR explicitly describes an awaited barrier but does not reconcile that observable difference with its preservation framing. The artifact presents the boundary for the human to assess; it does not diagnose a production failure.
 
 The probes use actual compiled classes with explicit test doubles. They do not run a daemon, execute an entire navigation command, measure performance or prove all six semantic algorithms equivalent. Their module hashes and commit IDs are recorded. Object letters denote identity of empty definition-result arrays, not source revisions. The separate generic-scope probe is head-only because the base had no core scope.
 
@@ -115,7 +72,7 @@ The stack PR bodies report broad passing suites; those are author reports. This 
 
 ## Reproduce or inspect
 
-- [probe.mjs](probe.mjs): run `node probe.mjs` from this folder to record both existing compiled #127 worktrees again. It writes only this experiment&#x27;s `evidence/probe.json` and `probe-data.js`.
+- [probe.mjs](probe.mjs): run `node probe.mjs` from this folder to record both existing compiled #127 worktrees again. It writes only this experiment's `evidence/probe.json` and `probe-data.js`.
 - [build.py](build.py): run `python3 build.py` to rebuild the offline inventory and source shelf from the input bundles/worktrees. It writes only this experiment folder and does not build or alter symnav.
 - [evidence/probe.json](evidence/probe.json): raw captured events, test-double scope, versions and compiled-module hashes.
 - [evidence/focused-tests.txt](evidence/focused-tests.txt): actual focused Vitest output.
@@ -131,8 +88,3 @@ The checked-in experiment assets are enough to read the page elsewhere. Reproduc
 The decision IDs are the spine. A detail dialog elaborates an ID already visible on the parent sheet. The #127 run and mechanism explicitly point back to those same ten IDs. Policy values and absent deadlines are visible at the decision level, not first revealed in source. Additional work and removed test boundaries have full cards alongside architecture.
 
 The remaining tension is that the first screen is an intuition, not the entire top layer. A reader who stops at the six entrances has the structure, but not every decision; the page explicitly identifies the decision sheet as the complete recovered top layer. I did not claim that six cards alone satisfy completeness.
-</pre></details></td>
-        </tr></tbody>
-</table></div>
-</body>
-</html>
