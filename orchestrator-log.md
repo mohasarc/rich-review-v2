@@ -168,3 +168,26 @@ BUILD OK stack-head
 - 2026-09-13 04:30:46 +03: Generated brief 44-fresh-reader-refresh-20: recurring brief 39 after 20 completions
 - 2026-09-13 04:30:46 +03: START 25-reader-sketch attempt 1 via codex, pid 91520
 - 2026-09-13 04:40:57 +03: FINISH 21-narrated-top via codex, exit 0, README present
+- 2026-09-13 04:40:57 +03: COMMIT OK 21-narrated-top: [main 96b69d6] Add experiment 21 narrated-top
+- 2026-09-13 04:40:57 +03: START 26-physical-analogy attempt 1 via claude-opus, pid 16318
+- 2026-09-13 04:44:51 +03: MONITOR OK supervisor=1153, finished=21, running=5, queued=18, dirty-worktrees=0, missing-readmes=0, free-disk=32.8GiB
+- 2026-09-13 04:45:08 +03: README MISSING 26-physical-analogy after worker exit 1
+- 2026-09-13 04:45:08 +03: REQUEUE 26-physical-analogy after attempt 1: worker exited 1 without README
+- 2026-09-13 04:45:08 +03: START 26-physical-analogy attempt 2 via claude-opus, pid 25129
+- 2026-09-13 04:45:18 +03: README MISSING 26-physical-analogy after worker exit 1
+- 2026-09-13 04:45:18 +03: REQUEUE 26-physical-analogy after attempt 2: worker exited 1 without README
+- 2026-09-13 04:45:18 +03: START 26-physical-analogy attempt 3 via codex, pid 25206
+- 2026-09-13 04:45:38 +03: README MISSING 22-game-any after worker exit 1
+- 2026-09-13 04:45:38 +03: REQUEUE 22-game-any after attempt 1: worker exited 1 without README
+- 2026-09-13 04:45:38 +03: START 22-game-any attempt 2 via claude-opus, pid 25740
+- 2026-09-13 04:45:48 +03: README MISSING 22-game-any after worker exit 1
+- 2026-09-13 04:45:48 +03: REQUEUE 22-game-any after attempt 2: worker exited 1 without README
+- 2026-09-13 04:45:48 +03: START 22-game-any attempt 3 via codex, pid 25800
+- 2026-09-13 04:47:08 +03: README MISSING 24-question-driven-nav after worker exit 1
+- 2026-09-13 04:47:08 +03: REQUEUE 24-question-driven-nav after attempt 1: worker exited 1 without README
+- 2026-09-13 04:47:08 +03: START 24-question-driven-nav attempt 2 via claude-opus, pid 26805
+- 2026-09-13 04:47:18 +03: README MISSING 24-question-driven-nav after worker exit 1
+- 2026-09-13 04:47:18 +03: REQUEUE 24-question-driven-nav after attempt 2: worker exited 1 without README
+- 2026-09-13 04:47:18 +03: START 24-question-driven-nav attempt 3 via codex, pid 27028
+- 2026-09-13 04:59:58 +03: MONITOR OK supervisor=1153, finished=21, running=5, queued=18, dirty-worktrees=0, missing-readmes=0, free-disk=32.7GiB
+- 2026-09-13 05:00:08 +03: FINISH 25-reader-sketch via codex, exit 0, README present
