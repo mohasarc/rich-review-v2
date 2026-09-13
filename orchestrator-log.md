@@ -229,3 +229,6 @@ BUILD OK stack-head
 - 2026-09-13 05:35:52 +03: REQUEUE 32-kit after attempt 2: worker exited 1 without README
 - 2026-09-13 05:35:52 +03: START 32-kit attempt 3 via codex, pid 40852
 - 2026-09-13 05:36:12 +03: FINISH 22-game-any via codex, exit 0, README present
+- 2026-09-13 05:36:12 +03: COMMIT OK 22-game-any: [main 49bdd85] Add experiment 22 game-any
+- 2026-09-13 05:36:12 +03: START 33-pair-one-variable attempt 1 via codex, pid 41533
+- 2026-09-13 05:40:23 +03: FINISH 29-refusal via codex, exit 0, README present
