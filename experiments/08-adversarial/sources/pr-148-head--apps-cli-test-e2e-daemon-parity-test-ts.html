@@ -1,0 +1,934 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>pr-148-head: apps/cli/test/e2e/daemon/parity.test.ts</title><link rel="stylesheet" href="../styles.css"><body class="source-page"><a href="../index.html">← Decision record</a><h1>apps/cli/test/e2e/daemon/parity.test.ts</h1><p class="meta">pr-148-head · 20838f8dbf413e04767543eb2380d0d114da6c60<br>Verbatim local snapshot. Line links are permanent within this artifact.</p><div class="source-code"><span class="source-line" id="L1"><a class="line-link" href="#L1" aria-label="Line 1">1</a>import {</span>
+<span class="source-line" id="L2"><a class="line-link" href="#L2" aria-label="Line 2">2</a>  cpSync,</span>
+<span class="source-line" id="L3"><a class="line-link" href="#L3" aria-label="Line 3">3</a>  existsSync,</span>
+<span class="source-line" id="L4"><a class="line-link" href="#L4" aria-label="Line 4">4</a>  mkdirSync,</span>
+<span class="source-line" id="L5"><a class="line-link" href="#L5" aria-label="Line 5">5</a>  mkdtempSync,</span>
+<span class="source-line" id="L6"><a class="line-link" href="#L6" aria-label="Line 6">6</a>  readdirSync,</span>
+<span class="source-line" id="L7"><a class="line-link" href="#L7" aria-label="Line 7">7</a>  readFileSync,</span>
+<span class="source-line" id="L8"><a class="line-link" href="#L8" aria-label="Line 8">8</a>  realpathSync,</span>
+<span class="source-line" id="L9"><a class="line-link" href="#L9" aria-label="Line 9">9</a>  renameSync,</span>
+<span class="source-line" id="L10"><a class="line-link" href="#L10" aria-label="Line 10">10</a>  rmSync,</span>
+<span class="source-line" id="L11"><a class="line-link" href="#L11" aria-label="Line 11">11</a>  statSync,</span>
+<span class="source-line" id="L12"><a class="line-link" href="#L12" aria-label="Line 12">12</a>  unlinkSync,</span>
+<span class="source-line" id="L13"><a class="line-link" href="#L13" aria-label="Line 13">13</a>  utimesSync,</span>
+<span class="source-line" id="L14"><a class="line-link" href="#L14" aria-label="Line 14">14</a>  writeFileSync,</span>
+<span class="source-line" id="L15"><a class="line-link" href="#L15" aria-label="Line 15">15</a>} from &quot;node:fs&quot;;</span>
+<span class="source-line" id="L16"><a class="line-link" href="#L16" aria-label="Line 16">16</a>import { tmpdir } from &quot;node:os&quot;;</span>
+<span class="source-line" id="L17"><a class="line-link" href="#L17" aria-label="Line 17">17</a>import { dirname, join, resolve } from &quot;node:path&quot;;</span>
+<span class="source-line" id="L18"><a class="line-link" href="#L18" aria-label="Line 18">18</a>import { fileURLToPath } from &quot;node:url&quot;;</span>
+<span class="source-line" id="L19"><a class="line-link" href="#L19" aria-label="Line 19">19</a>import { spawn } from &quot;node:child_process&quot;;</span>
+<span class="source-line" id="L20"><a class="line-link" href="#L20" aria-label="Line 20">20</a>import { createHash } from &quot;node:crypto&quot;;</span>
+<span class="source-line" id="L21"><a class="line-link" href="#L21" aria-label="Line 21">21</a>import { afterEach, describe, expect, it } from &quot;vitest&quot;;</span>
+<span class="source-line" id="L22"><a class="line-link" href="#L22" aria-label="Line 22">22</a>import { DaemonPolicy, type DaemonExecutorRequest } from &quot;@symnav/daemon&quot;;</span>
+<span class="source-line" id="L23"><a class="line-link" href="#L23" aria-label="Line 23">23</a>import { fixturePath, runSymnavBinary, type RunSymnavBinaryResult } from &quot;@symnav/testing&quot;;</span>
+<span class="source-line" id="L24"><a class="line-link" href="#L24" aria-label="Line 24">24</a>import type { ChildProcess } from &quot;node:child_process&quot;;</span>
+<span class="source-line" id="L25"><a class="line-link" href="#L25" aria-label="Line 25">25</a>import {</span>
+<span class="source-line" id="L26"><a class="line-link" href="#L26" aria-label="Line 26">26</a>  DAEMON_PROTOCOL_VERSION,</span>
+<span class="source-line" id="L27"><a class="line-link" href="#L27" aria-label="Line 27">27</a>  DAEMON_RECORD_SCHEMA_VERSION,</span>
+<span class="source-line" id="L28"><a class="line-link" href="#L28" aria-label="Line 28">28</a>  type DaemonRecord,</span>
+<span class="source-line" id="L29"><a class="line-link" href="#L29" aria-label="Line 29">29</a>} from &quot;../../../src/daemon/daemon-protocol.js&quot;;</span>
+<span class="source-line" id="L30"><a class="line-link" href="#L30" aria-label="Line 30">30</a>import { TestDaemonRegistry as DaemonRegistry } from &quot;../../helpers/daemon-registry.js&quot;;</span>
+<span class="source-line" id="L31"><a class="line-link" href="#L31" aria-label="Line 31">31</a>import { DaemonWorkspaceIdentity } from &quot;../../../src/daemon/daemon-workspace-identity.js&quot;;</span>
+<span class="source-line" id="L32"><a class="line-link" href="#L32" aria-label="Line 32">32</a>import { StateDirectoryResolver } from &quot;../../../src/state-directory-resolver.js&quot;;</span>
+<span class="source-line" id="L33"><a class="line-link" href="#L33" aria-label="Line 33">33</a>import { TestLocalDaemonTransport as LocalDaemonTransport } from &quot;../../helpers/local-daemon-transport.js&quot;;</span>
+<span class="source-line" id="L34"><a class="line-link" href="#L34" aria-label="Line 34">34</a>import { createDefaultDependencies } from &quot;../../../src/program.js&quot;;</span>
+<span class="source-line" id="L35"><a class="line-link" href="#L35" aria-label="Line 35">35</a>import { canonicalWorkspaceRoot } from &quot;../../helpers/canonical-workspace-root.js&quot;;</span>
+<span class="source-line" id="L36"><a class="line-link" href="#L36" aria-label="Line 36">36</a>import { E2eProcessCleanup } from &quot;../../helpers/e2e-process-cleanup.js&quot;;</span>
+<span class="source-line" id="L37"><a class="line-link" href="#L37" aria-label="Line 37">37</a>import { DaemonStateFiles } from &quot;../../helpers/daemon-state-files.js&quot;;</span>
+<span class="source-line" id="L38"><a class="line-link" href="#L38" aria-label="Line 38">38</a></span>
+<span class="source-line" id="L39"><a class="line-link" href="#L39" aria-label="Line 39">39</a>describe(&quot;symnav daemon parity&quot;, () =&gt; {</span>
+<span class="source-line" id="L40"><a class="line-link" href="#L40" aria-label="Line 40">40</a>  const harnesses: DaemonParityHarness[] = [];</span>
+<span class="source-line" id="L41"><a class="line-link" href="#L41" aria-label="Line 41">41</a></span>
+<span class="source-line" id="L42"><a class="line-link" href="#L42" aria-label="Line 42">42</a>  afterEach(async () =&gt; {</span>
+<span class="source-line" id="L43"><a class="line-link" href="#L43" aria-label="Line 43">43</a>    for (const harness of harnesses) await harness.dispose();</span>
+<span class="source-line" id="L44"><a class="line-link" href="#L44" aria-label="Line 44">44</a>    harnesses.length = 0;</span>
+<span class="source-line" id="L45"><a class="line-link" href="#L45" aria-label="Line 45">45</a>  });</span>
+<span class="source-line" id="L46"><a class="line-link" href="#L46" aria-label="Line 46">46</a></span>
+<span class="source-line" id="L47"><a class="line-link" href="#L47" aria-label="Line 47">47</a>  it.each([</span>
+<span class="source-line" id="L48"><a class="line-link" href="#L48" aria-label="Line 48">48</a>    [&quot;text success&quot;, [&quot;overview&quot;, &quot;input.ts&quot;]],</span>
+<span class="source-line" id="L49"><a class="line-link" href="#L49" aria-label="Line 49">49</a>    [&quot;json success&quot;, [&quot;overview&quot;, &quot;input.ts&quot;, &quot;--json&quot;]],</span>
+<span class="source-line" id="L50"><a class="line-link" href="#L50" aria-label="Line 50">50</a>    [&quot;resolve&quot;, [&quot;resolve&quot;, &quot;target&quot;]],</span>
+<span class="source-line" id="L51"><a class="line-link" href="#L51" aria-label="Line 51">51</a>    [&quot;definition&quot;, [&quot;def&quot;, &quot;input.ts::target&quot;]],</span>
+<span class="source-line" id="L52"><a class="line-link" href="#L52" aria-label="Line 52">52</a>    [&quot;references&quot;, [&quot;refs&quot;, &quot;input.ts::target&quot;, &quot;--all&quot;]],</span>
+<span class="source-line" id="L53"><a class="line-link" href="#L53" aria-label="Line 53">53</a>    [&quot;context&quot;, [&quot;context&quot;, &quot;input.ts::target&quot;]],</span>
+<span class="source-line" id="L54"><a class="line-link" href="#L54" aria-label="Line 54">54</a>    [&quot;graph&quot;, [&quot;graph&quot;, &quot;input.ts::target&quot;]],</span>
+<span class="source-line" id="L55"><a class="line-link" href="#L55" aria-label="Line 55">55</a>    [&quot;extraction warning&quot;, [&quot;overview&quot;, &quot;warning.ts&quot;]],</span>
+<span class="source-line" id="L56"><a class="line-link" href="#L56" aria-label="Line 56">56</a>    [&quot;command usage error&quot;, [&quot;def&quot;]],</span>
+<span class="source-line" id="L57"><a class="line-link" href="#L57" aria-label="Line 57">57</a>    [&quot;user error&quot;, [&quot;overview&quot;, &quot;missing.ts&quot;]],</span>
+<span class="source-line" id="L58"><a class="line-link" href="#L58" aria-label="Line 58">58</a>    [&quot;not found&quot;, [&quot;resolve&quot;, &quot;unknown&quot;]],</span>
+<span class="source-line" id="L59"><a class="line-link" href="#L59" aria-label="Line 59">59</a>    [&quot;cwd-shaped target after separator&quot;, [&quot;resolve&quot;, &quot;--&quot;, &quot;--cwd=target&quot;]],</span>
+<span class="source-line" id="L60"><a class="line-link" href="#L60" aria-label="Line 60">60</a>    [&quot;help-shaped target after separator&quot;, [&quot;resolve&quot;, &quot;--&quot;, &quot;--help&quot;]],</span>
+<span class="source-line" id="L61"><a class="line-link" href="#L61" aria-label="Line 61">61</a>    [&quot;version-shaped target after separator&quot;, [&quot;resolve&quot;, &quot;--&quot;, &quot;--version&quot;]],</span>
+<span class="source-line" id="L62"><a class="line-link" href="#L62" aria-label="Line 62">62</a>    [&quot;help&quot;, [&quot;--help&quot;]],</span>
+<span class="source-line" id="L63"><a class="line-link" href="#L63" aria-label="Line 63">63</a>    [&quot;version&quot;, [&quot;--version&quot;]],</span>
+<span class="source-line" id="L64"><a class="line-link" href="#L64" aria-label="Line 64">64</a>    [&quot;stats&quot;, [&quot;stats&quot;, &quot;--json&quot;]],</span>
+<span class="source-line" id="L65"><a class="line-link" href="#L65" aria-label="Line 65">65</a>  ])(&quot;keeps %s bytes and status identical&quot;, (_name, args) =&gt; {</span>
+<span class="source-line" id="L66"><a class="line-link" href="#L66" aria-label="Line 66">66</a>    const harness = new DaemonParityHarness();</span>
+<span class="source-line" id="L67"><a class="line-link" href="#L67" aria-label="Line 67">67</a>    harnesses.push(harness);</span>
+<span class="source-line" id="L68"><a class="line-link" href="#L68" aria-label="Line 68">68</a></span>
+<span class="source-line" id="L69"><a class="line-link" href="#L69" aria-label="Line 69">69</a>    expect(harness.warm(args)).toEqual(harness.cold(args));</span>
+<span class="source-line" id="L70"><a class="line-link" href="#L70" aria-label="Line 70">70</a>  });</span>
+<span class="source-line" id="L71"><a class="line-link" href="#L71" aria-label="Line 71">71</a></span>
+<span class="source-line" id="L72"><a class="line-link" href="#L72" aria-label="Line 72">72</a>  it(&quot;resolves relative --cwd from the requesting client directory&quot;, () =&gt; {</span>
+<span class="source-line" id="L73"><a class="line-link" href="#L73" aria-label="Line 73">73</a>    const harness = new DaemonParityHarness();</span>
+<span class="source-line" id="L74"><a class="line-link" href="#L74" aria-label="Line 74">74</a>    harnesses.push(harness);</span>
+<span class="source-line" id="L75"><a class="line-link" href="#L75" aria-label="Line 75">75</a>    harness.warm([&quot;overview&quot;, &quot;input.ts&quot;]);</span>
+<span class="source-line" id="L76"><a class="line-link" href="#L76" aria-label="Line 76">76</a>    const nestedDirectory = join(harness.workspaceRoot, &quot;nested&quot;);</span>
+<span class="source-line" id="L77"><a class="line-link" href="#L77" aria-label="Line 77">77</a>    mkdirSync(nestedDirectory);</span>
+<span class="source-line" id="L78"><a class="line-link" href="#L78" aria-label="Line 78">78</a>    const args = [&quot;--cwd&quot;, &quot;..&quot;, &quot;overview&quot;, &quot;input.ts&quot;];</span>
+<span class="source-line" id="L79"><a class="line-link" href="#L79" aria-label="Line 79">79</a></span>
+<span class="source-line" id="L80"><a class="line-link" href="#L80" aria-label="Line 80">80</a>    expect(harness.warmFrom(nestedDirectory, args)).toEqual(</span>
+<span class="source-line" id="L81"><a class="line-link" href="#L81" aria-label="Line 81">81</a>      harness.coldFrom(nestedDirectory, args),</span>
+<span class="source-line" id="L82"><a class="line-link" href="#L82" aria-label="Line 82">82</a>    );</span>
+<span class="source-line" id="L83"><a class="line-link" href="#L83" aria-label="Line 83">83</a>  });</span>
+<span class="source-line" id="L84"><a class="line-link" href="#L84" aria-label="Line 84">84</a></span>
+<span class="source-line" id="L85"><a class="line-link" href="#L85" aria-label="Line 85">85</a>  it(&quot;uses the final repeated cwd from a client directory different from daemon launch&quot;, () =&gt; {</span>
+<span class="source-line" id="L86"><a class="line-link" href="#L86" aria-label="Line 86">86</a>    const harness = new DaemonParityHarness();</span>
+<span class="source-line" id="L87"><a class="line-link" href="#L87" aria-label="Line 87">87</a>    harnesses.push(harness);</span>
+<span class="source-line" id="L88"><a class="line-link" href="#L88" aria-label="Line 88">88</a>    const launcherDirectory = join(harness.workspaceRoot, &quot;launcher&quot;);</span>
+<span class="source-line" id="L89"><a class="line-link" href="#L89" aria-label="Line 89">89</a>    const clientDirectory = join(harness.workspaceRoot, &quot;client&quot;);</span>
+<span class="source-line" id="L90"><a class="line-link" href="#L90" aria-label="Line 90">90</a>    mkdirSync(launcherDirectory);</span>
+<span class="source-line" id="L91"><a class="line-link" href="#L91" aria-label="Line 91">91</a>    mkdirSync(clientDirectory);</span>
+<span class="source-line" id="L92"><a class="line-link" href="#L92" aria-label="Line 92">92</a>    harness.warmFrom(launcherDirectory, [&quot;--cwd&quot;, &quot;..&quot;, &quot;overview&quot;, &quot;input.ts&quot;]);</span>
+<span class="source-line" id="L93"><a class="line-link" href="#L93" aria-label="Line 93">93</a>    const daemonPid = harness.onlyDaemonPid();</span>
+<span class="source-line" id="L94"><a class="line-link" href="#L94" aria-label="Line 94">94</a>    const args = [&quot;--cwd=../ignored&quot;, &quot;--cwd&quot;, &quot;..&quot;, &quot;overview&quot;, &quot;input.ts&quot;];</span>
+<span class="source-line" id="L95"><a class="line-link" href="#L95" aria-label="Line 95">95</a></span>
+<span class="source-line" id="L96"><a class="line-link" href="#L96" aria-label="Line 96">96</a>    expect(harness.warmFrom(clientDirectory, args)).toEqual(</span>
+<span class="source-line" id="L97"><a class="line-link" href="#L97" aria-label="Line 97">97</a>      harness.coldFrom(clientDirectory, args),</span>
+<span class="source-line" id="L98"><a class="line-link" href="#L98" aria-label="Line 98">98</a>    );</span>
+<span class="source-line" id="L99"><a class="line-link" href="#L99" aria-label="Line 99">99</a>    expect(harness.onlyDaemonPid()).toBe(daemonPid);</span>
+<span class="source-line" id="L100"><a class="line-link" href="#L100" aria-label="Line 100">100</a>  });</span>
+<span class="source-line" id="L101"><a class="line-link" href="#L101" aria-label="Line 101">101</a>  it(&quot;elects one daemon when two commands start together&quot;, async () =&gt; {</span>
+<span class="source-line" id="L102"><a class="line-link" href="#L102" aria-label="Line 102">102</a>    const harness = new DaemonParityHarness();</span>
+<span class="source-line" id="L103"><a class="line-link" href="#L103" aria-label="Line 103">103</a>    harnesses.push(harness);</span>
+<span class="source-line" id="L104"><a class="line-link" href="#L104" aria-label="Line 104">104</a>    const expected = harness.cold([&quot;overview&quot;, &quot;input.ts&quot;]);</span>
+<span class="source-line" id="L105"><a class="line-link" href="#L105" aria-label="Line 105">105</a></span>
+<span class="source-line" id="L106"><a class="line-link" href="#L106" aria-label="Line 106">106</a>    const results = await Promise.all([</span>
+<span class="source-line" id="L107"><a class="line-link" href="#L107" aria-label="Line 107">107</a>      harness.warmAsync([&quot;overview&quot;, &quot;input.ts&quot;]),</span>
+<span class="source-line" id="L108"><a class="line-link" href="#L108" aria-label="Line 108">108</a>      harness.warmAsync([&quot;overview&quot;, &quot;input.ts&quot;]),</span>
+<span class="source-line" id="L109"><a class="line-link" href="#L109" aria-label="Line 109">109</a>    ]);</span>
+<span class="source-line" id="L110"><a class="line-link" href="#L110" aria-label="Line 110">110</a></span>
+<span class="source-line" id="L111"><a class="line-link" href="#L111" aria-label="Line 111">111</a>    expect(results).toEqual([expected, expected]);</span>
+<span class="source-line" id="L112"><a class="line-link" href="#L112" aria-label="Line 112">112</a>    expect(harness.onlyDaemonPid()).toBeGreaterThan(0);</span>
+<span class="source-line" id="L113"><a class="line-link" href="#L113" aria-label="Line 113">113</a>  }, 15_000);</span>
+<span class="source-line" id="L114"><a class="line-link" href="#L114" aria-label="Line 114">114</a>  it(&quot;streams a formerly oversized response without replay or daemon invalidation&quot;, async () =&gt; {</span>
+<span class="source-line" id="L115"><a class="line-link" href="#L115" aria-label="Line 115">115</a>    const harness = new DaemonParityHarness();</span>
+<span class="source-line" id="L116"><a class="line-link" href="#L116" aria-label="Line 116">116</a>    harnesses.push(harness);</span>
+<span class="source-line" id="L117"><a class="line-link" href="#L117" aria-label="Line 117">117</a>    const controlled = await harness.startControlledDaemon(&quot;--oversized-response&quot;);</span>
+<span class="source-line" id="L118"><a class="line-link" href="#L118" aria-label="Line 118">118</a></span>
+<span class="source-line" id="L119"><a class="line-link" href="#L119" aria-label="Line 119">119</a>    const result = await harness.warmAsync([&quot;overview&quot;, &quot;input.ts&quot;], &quot;1&quot;);</span>
+<span class="source-line" id="L120"><a class="line-link" href="#L120" aria-label="Line 120">120</a>    const cold = harness.cold([&quot;overview&quot;, &quot;input.ts&quot;]);</span>
+<span class="source-line" id="L121"><a class="line-link" href="#L121" aria-label="Line 121">121</a></span>
+<span class="source-line" id="L122"><a class="line-link" href="#L122" aria-label="Line 122">122</a>    expect(result).toMatchObject({ status: 0, stderr: cold.stderr });</span>
+<span class="source-line" id="L123"><a class="line-link" href="#L123" aria-label="Line 123">123</a>    expect(result.stdout.startsWith(cold.stdout)).toBe(true);</span>
+<span class="source-line" id="L124"><a class="line-link" href="#L124" aria-label="Line 124">124</a>    expect(Buffer.byteLength(result.stdout)).toBe(Buffer.byteLength(cold.stdout) + 9 * 1024 * 1024);</span>
+<span class="source-line" id="L125"><a class="line-link" href="#L125" aria-label="Line 125">125</a>    expect(result.stdout.slice(cold.stdout.length)).toBe(&quot;x&quot;.repeat(9 * 1024 * 1024));</span>
+<span class="source-line" id="L126"><a class="line-link" href="#L126" aria-label="Line 126">126</a>    expect(existsSync(`${controlled.requestStartedPath}.1`)).toBe(true);</span>
+<span class="source-line" id="L127"><a class="line-link" href="#L127" aria-label="Line 127">127</a>    expect(harness.telemetryModes()).toEqual([&quot;warm&quot;]);</span>
+<span class="source-line" id="L128"><a class="line-link" href="#L128" aria-label="Line 128">128</a>    expect(harness.daemonRecordCount()).toBe(1);</span>
+<span class="source-line" id="L129"><a class="line-link" href="#L129" aria-label="Line 129">129</a>    expect(harness.onlyDaemonPid()).toBe(controlled.record.pid);</span>
+<span class="source-line" id="L130"><a class="line-link" href="#L130" aria-label="Line 130">130</a>    expect(harness.completionSpoolFileCount()).toBe(0);</span>
+<span class="source-line" id="L131"><a class="line-link" href="#L131" aria-label="Line 131">131</a>    const next = await harness.warmAsync([&quot;overview&quot;, &quot;input.ts&quot;]);</span>
+<span class="source-line" id="L132"><a class="line-link" href="#L132" aria-label="Line 132">132</a>    expect(next).toMatchObject({ status: 0, stderr: cold.stderr });</span>
+<span class="source-line" id="L133"><a class="line-link" href="#L133" aria-label="Line 133">133</a>    expect(next.stdout.startsWith(cold.stdout)).toBe(true);</span>
+<span class="source-line" id="L134"><a class="line-link" href="#L134" aria-label="Line 134">134</a>    expect(existsSync(`${controlled.requestStartedPath}.2`)).toBe(true);</span>
+<span class="source-line" id="L135"><a class="line-link" href="#L135" aria-label="Line 135">135</a>    expect(harness.onlyDaemonPid()).toBe(controlled.record.pid);</span>
+<span class="source-line" id="L136"><a class="line-link" href="#L136" aria-label="Line 136">136</a>  }, 15_000);</span>
+<span class="source-line" id="L137"><a class="line-link" href="#L137" aria-label="Line 137">137</a></span>
+<span class="source-line" id="L138"><a class="line-link" href="#L138" aria-label="Line 138">138</a>  it(&quot;streams a valid JSON response larger than the former frame limit&quot;, async () =&gt; {</span>
+<span class="source-line" id="L139"><a class="line-link" href="#L139" aria-label="Line 139">139</a>    const harness = new DaemonParityHarness();</span>
+<span class="source-line" id="L140"><a class="line-link" href="#L140" aria-label="Line 140">140</a>    harnesses.push(harness);</span>
+<span class="source-line" id="L141"><a class="line-link" href="#L141" aria-label="Line 141">141</a>    const controlled = await harness.startControlledDaemon(&quot;--oversized-json-response&quot;);</span>
+<span class="source-line" id="L142"><a class="line-link" href="#L142" aria-label="Line 142">142</a></span>
+<span class="source-line" id="L143"><a class="line-link" href="#L143" aria-label="Line 143">143</a>    const result = await harness.warmAsync([&quot;overview&quot;, &quot;input.ts&quot;, &quot;--json&quot;], &quot;1&quot;);</span>
+<span class="source-line" id="L144"><a class="line-link" href="#L144" aria-label="Line 144">144</a></span>
+<span class="source-line" id="L145"><a class="line-link" href="#L145" aria-label="Line 145">145</a>    expect(result).toMatchObject({ status: 0, stderr: &quot;&quot; });</span>
+<span class="source-line" id="L146"><a class="line-link" href="#L146" aria-label="Line 146">146</a>    expect((JSON.parse(result.stdout) as { data: string }).data).toBe(&quot;x&quot;.repeat(9 * 1024 * 1024));</span>
+<span class="source-line" id="L147"><a class="line-link" href="#L147" aria-label="Line 147">147</a>    expect(Buffer.byteLength(result.stdout)).toBeGreaterThan(8 * 1024 * 1024);</span>
+<span class="source-line" id="L148"><a class="line-link" href="#L148" aria-label="Line 148">148</a>    expect(existsSync(`${controlled.requestStartedPath}.1`)).toBe(true);</span>
+<span class="source-line" id="L149"><a class="line-link" href="#L149" aria-label="Line 149">149</a>    expect(harness.telemetryModes()).toEqual([&quot;warm&quot;]);</span>
+<span class="source-line" id="L150"><a class="line-link" href="#L150" aria-label="Line 150">150</a>    expect(harness.daemonRecordCount()).toBe(1);</span>
+<span class="source-line" id="L151"><a class="line-link" href="#L151" aria-label="Line 151">151</a>    expect(harness.onlyDaemonPid()).toBe(controlled.record.pid);</span>
+<span class="source-line" id="L152"><a class="line-link" href="#L152" aria-label="Line 152">152</a>    expect(harness.completionSpoolFileCount()).toBe(0);</span>
+<span class="source-line" id="L153"><a class="line-link" href="#L153" aria-label="Line 153">153</a>  }, 15_000);</span>
+<span class="source-line" id="L154"><a class="line-link" href="#L154" aria-label="Line 154">154</a></span>
+<span class="source-line" id="L155"><a class="line-link" href="#L155" aria-label="Line 155">155</a>  it.each([</span>
+<span class="source-line" id="L156"><a class="line-link" href="#L156" aria-label="Line 156">156</a>    [&quot;text&quot;, [&quot;overview&quot;, &quot;large.ts&quot;]],</span>
+<span class="source-line" id="L157"><a class="line-link" href="#L157" aria-label="Line 157">157</a>    [&quot;JSON&quot;, [&quot;overview&quot;, &quot;large.ts&quot;, &quot;--json&quot;]],</span>
+<span class="source-line" id="L158"><a class="line-link" href="#L158" aria-label="Line 158">158</a>  ] as const)(</span>
+<span class="source-line" id="L159"><a class="line-link" href="#L159" aria-label="Line 159">159</a>    &quot;keeps a real &gt;8 MiB %s result byte-identical between cold and warm&quot;,</span>
+<span class="source-line" id="L160"><a class="line-link" href="#L160" aria-label="Line 160">160</a>    async (_name, args) =&gt; {</span>
+<span class="source-line" id="L161"><a class="line-link" href="#L161" aria-label="Line 161">161</a>      const harness = new DaemonParityHarness();</span>
+<span class="source-line" id="L162"><a class="line-link" href="#L162" aria-label="Line 162">162</a>      harnesses.push(harness);</span>
+<span class="source-line" id="L163"><a class="line-link" href="#L163" aria-label="Line 163">163</a>      harness.writeLargeOverviewFile();</span>
+<span class="source-line" id="L164"><a class="line-link" href="#L164" aria-label="Line 164">164</a>      const cold = await harness.coldAsync(args);</span>
+<span class="source-line" id="L165"><a class="line-link" href="#L165" aria-label="Line 165">165</a>      expect(cold.status).toBe(0);</span>
+<span class="source-line" id="L166"><a class="line-link" href="#L166" aria-label="Line 166">166</a>      expect(Buffer.byteLength(cold.stdout)).toBeGreaterThan(8 * 1024 * 1024);</span>
+<span class="source-line" id="L167"><a class="line-link" href="#L167" aria-label="Line 167">167</a>      expect(harness.daemonStart()).toMatchObject({ status: 0, stderr: &quot;&quot; });</span>
+<span class="source-line" id="L168"><a class="line-link" href="#L168" aria-label="Line 168">168</a>      const daemonPid = harness.onlyDaemonPid();</span>
+<span class="source-line" id="L169"><a class="line-link" href="#L169" aria-label="Line 169">169</a></span>
+<span class="source-line" id="L170"><a class="line-link" href="#L170" aria-label="Line 170">170</a>      const warm = await harness.warmAsync(args, &quot;1&quot;);</span>
+<span class="source-line" id="L171"><a class="line-link" href="#L171" aria-label="Line 171">171</a></span>
+<span class="source-line" id="L172"><a class="line-link" href="#L172" aria-label="Line 172">172</a>      expect(warm.status).toBe(cold.status);</span>
+<span class="source-line" id="L173"><a class="line-link" href="#L173" aria-label="Line 173">173</a>      expect(digest(warm.stdout)).toBe(digest(cold.stdout));</span>
+<span class="source-line" id="L174"><a class="line-link" href="#L174" aria-label="Line 174">174</a>      expect(digest(warm.stderr)).toBe(digest(cold.stderr));</span>
+<span class="source-line" id="L175"><a class="line-link" href="#L175" aria-label="Line 175">175</a>      expect(warm.stderr).not.toContain(&quot;frame&quot;);</span>
+<span class="source-line" id="L176"><a class="line-link" href="#L176" aria-label="Line 176">176</a>      expect(harness.onlyDaemonPid()).toBe(daemonPid);</span>
+<span class="source-line" id="L177"><a class="line-link" href="#L177" aria-label="Line 177">177</a>      expect(harness.completionSpoolFileCount()).toBe(0);</span>
+<span class="source-line" id="L178"><a class="line-link" href="#L178" aria-label="Line 178">178</a>      expect(harness.telemetryModes()).toEqual([&quot;warm&quot;]);</span>
+<span class="source-line" id="L179"><a class="line-link" href="#L179" aria-label="Line 179">179</a>    },</span>
+<span class="source-line" id="L180"><a class="line-link" href="#L180" aria-label="Line 180">180</a>    60_000,</span>
+<span class="source-line" id="L181"><a class="line-link" href="#L181" aria-label="Line 181">181</a>  );</span>
+<span class="source-line" id="L182"><a class="line-link" href="#L182" aria-label="Line 182">182</a></span>
+<span class="source-line" id="L183"><a class="line-link" href="#L183" aria-label="Line 183">183</a>  it(&quot;refreshes filesystem and ownership mutations before the next warm request&quot;, () =&gt; {</span>
+<span class="source-line" id="L184"><a class="line-link" href="#L184" aria-label="Line 184">184</a>    const harness = new DaemonParityHarness();</span>
+<span class="source-line" id="L185"><a class="line-link" href="#L185" aria-label="Line 185">185</a>    harnesses.push(harness);</span>
+<span class="source-line" id="L186"><a class="line-link" href="#L186" aria-label="Line 186">186</a>    harness.warm([&quot;overview&quot;, &quot;input.ts&quot;]);</span>
+<span class="source-line" id="L187"><a class="line-link" href="#L187" aria-label="Line 187">187</a>    const daemonPid = harness.onlyDaemonPid();</span>
+<span class="source-line" id="L188"><a class="line-link" href="#L188" aria-label="Line 188">188</a>    const inputPath = join(harness.workspaceRoot, &quot;input.ts&quot;);</span>
+<span class="source-line" id="L189"><a class="line-link" href="#L189" aria-label="Line 189">189</a>    const originalTimes = statSync(inputPath);</span>
+<span class="source-line" id="L190"><a class="line-link" href="#L190" aria-label="Line 190">190</a>    const originalSource = readFileSync(inputPath, &quot;utf8&quot;);</span>
+<span class="source-line" id="L191"><a class="line-link" href="#L191" aria-label="Line 191">191</a>    const equalSizeEdit =</span>
+<span class="source-line" id="L192"><a class="line-link" href="#L192" aria-label="Line 192">192</a>      &#x27;export function edited(value: string): string { return value; }\nexport function caller(): string { return edited(&quot;x&quot;); }\n&#x27;;</span>
+<span class="source-line" id="L193"><a class="line-link" href="#L193" aria-label="Line 193">193</a></span>
+<span class="source-line" id="L194"><a class="line-link" href="#L194" aria-label="Line 194">194</a>    expect(Buffer.byteLength(equalSizeEdit)).toBe(Buffer.byteLength(originalSource));</span>
+<span class="source-line" id="L195"><a class="line-link" href="#L195" aria-label="Line 195">195</a>    writeFileSync(inputPath, equalSizeEdit);</span>
+<span class="source-line" id="L196"><a class="line-link" href="#L196" aria-label="Line 196">196</a>    utimesSync(inputPath, originalTimes.atime, originalTimes.mtime);</span>
+<span class="source-line" id="L197"><a class="line-link" href="#L197" aria-label="Line 197">197</a>    const equalSizeWarmResult = harness.warm([&quot;overview&quot;, &quot;input.ts&quot;]);</span>
+<span class="source-line" id="L198"><a class="line-link" href="#L198" aria-label="Line 198">198</a>    expect(equalSizeWarmResult).toEqual(harness.cold([&quot;overview&quot;, &quot;input.ts&quot;]));</span>
+<span class="source-line" id="L199"><a class="line-link" href="#L199" aria-label="Line 199">199</a>    expect(equalSizeWarmResult.stdout).toContain(&quot;edited&quot;);</span>
+<span class="source-line" id="L200"><a class="line-link" href="#L200" aria-label="Line 200">200</a></span>
+<span class="source-line" id="L201"><a class="line-link" href="#L201" aria-label="Line 201">201</a>    writeFileSync(join(harness.workspaceRoot, &quot;added.ts&quot;), &quot;export const added = 3;\n&quot;);</span>
+<span class="source-line" id="L202"><a class="line-link" href="#L202" aria-label="Line 202">202</a>    expect(harness.warm([&quot;overview&quot;, &quot;added.ts&quot;])).toEqual(harness.cold([&quot;overview&quot;, &quot;added.ts&quot;]));</span>
+<span class="source-line" id="L203"><a class="line-link" href="#L203" aria-label="Line 203">203</a></span>
+<span class="source-line" id="L204"><a class="line-link" href="#L204" aria-label="Line 204">204</a>    unlinkSync(join(harness.workspaceRoot, &quot;added.ts&quot;));</span>
+<span class="source-line" id="L205"><a class="line-link" href="#L205" aria-label="Line 205">205</a>    expect(harness.warm([&quot;overview&quot;, &quot;added.ts&quot;])).toEqual(harness.cold([&quot;overview&quot;, &quot;added.ts&quot;]));</span>
+<span class="source-line" id="L206"><a class="line-link" href="#L206" aria-label="Line 206">206</a></span>
+<span class="source-line" id="L207"><a class="line-link" href="#L207" aria-label="Line 207">207</a>    renameSync(join(harness.workspaceRoot, &quot;input.ts&quot;), join(harness.workspaceRoot, &quot;renamed.ts&quot;));</span>
+<span class="source-line" id="L208"><a class="line-link" href="#L208" aria-label="Line 208">208</a>    expect(harness.warm([&quot;overview&quot;, &quot;renamed.ts&quot;])).toEqual(</span>
+<span class="source-line" id="L209"><a class="line-link" href="#L209" aria-label="Line 209">209</a>      harness.cold([&quot;overview&quot;, &quot;renamed.ts&quot;]),</span>
+<span class="source-line" id="L210"><a class="line-link" href="#L210" aria-label="Line 210">210</a>    );</span>
+<span class="source-line" id="L211"><a class="line-link" href="#L211" aria-label="Line 211">211</a></span>
+<span class="source-line" id="L212"><a class="line-link" href="#L212" aria-label="Line 212">212</a>    writeFileSync(join(harness.workspaceRoot, &quot;.gitignore&quot;), &quot;renamed.ts\n&quot;);</span>
+<span class="source-line" id="L213"><a class="line-link" href="#L213" aria-label="Line 213">213</a>    expect(harness.warm([&quot;overview&quot;, &quot;renamed.ts&quot;])).toEqual(</span>
+<span class="source-line" id="L214"><a class="line-link" href="#L214" aria-label="Line 214">214</a>      harness.cold([&quot;overview&quot;, &quot;renamed.ts&quot;]),</span>
+<span class="source-line" id="L215"><a class="line-link" href="#L215" aria-label="Line 215">215</a>    );</span>
+<span class="source-line" id="L216"><a class="line-link" href="#L216" aria-label="Line 216">216</a>    writeFileSync(join(harness.workspaceRoot, &quot;.gitignore&quot;), &quot;&quot;);</span>
+<span class="source-line" id="L217"><a class="line-link" href="#L217" aria-label="Line 217">217</a>    expect(harness.warm([&quot;overview&quot;, &quot;renamed.ts&quot;])).toEqual(</span>
+<span class="source-line" id="L218"><a class="line-link" href="#L218" aria-label="Line 218">218</a>      harness.cold([&quot;overview&quot;, &quot;renamed.ts&quot;]),</span>
+<span class="source-line" id="L219"><a class="line-link" href="#L219" aria-label="Line 219">219</a>    );</span>
+<span class="source-line" id="L220"><a class="line-link" href="#L220" aria-label="Line 220">220</a></span>
+<span class="source-line" id="L221"><a class="line-link" href="#L221" aria-label="Line 221">221</a>    const nestedRoot = join(harness.workspaceRoot, &quot;nested-owner&quot;);</span>
+<span class="source-line" id="L222"><a class="line-link" href="#L222" aria-label="Line 222">222</a>    mkdirSync(nestedRoot);</span>
+<span class="source-line" id="L223"><a class="line-link" href="#L223" aria-label="Line 223">223</a>    writeFileSync(join(nestedRoot, &quot;source.ts&quot;), &quot;export const nested = true;\n&quot;);</span>
+<span class="source-line" id="L224"><a class="line-link" href="#L224" aria-label="Line 224">224</a>    expect(harness.warm([&quot;overview&quot;, &quot;nested-owner/source.ts&quot;])).toEqual(</span>
+<span class="source-line" id="L225"><a class="line-link" href="#L225" aria-label="Line 225">225</a>      harness.cold([&quot;overview&quot;, &quot;nested-owner/source.ts&quot;]),</span>
+<span class="source-line" id="L226"><a class="line-link" href="#L226" aria-label="Line 226">226</a>    );</span>
+<span class="source-line" id="L227"><a class="line-link" href="#L227" aria-label="Line 227">227</a>    mkdirSync(join(nestedRoot, &quot;.git&quot;));</span>
+<span class="source-line" id="L228"><a class="line-link" href="#L228" aria-label="Line 228">228</a>    expect(harness.warm([&quot;overview&quot;, &quot;nested-owner/source.ts&quot;])).toEqual(</span>
+<span class="source-line" id="L229"><a class="line-link" href="#L229" aria-label="Line 229">229</a>      harness.cold([&quot;overview&quot;, &quot;nested-owner/source.ts&quot;]),</span>
+<span class="source-line" id="L230"><a class="line-link" href="#L230" aria-label="Line 230">230</a>    );</span>
+<span class="source-line" id="L231"><a class="line-link" href="#L231" aria-label="Line 231">231</a>    rmSync(join(nestedRoot, &quot;.git&quot;), { recursive: true });</span>
+<span class="source-line" id="L232"><a class="line-link" href="#L232" aria-label="Line 232">232</a>    expect(harness.warm([&quot;overview&quot;, &quot;nested-owner/source.ts&quot;])).toEqual(</span>
+<span class="source-line" id="L233"><a class="line-link" href="#L233" aria-label="Line 233">233</a>      harness.cold([&quot;overview&quot;, &quot;nested-owner/source.ts&quot;]),</span>
+<span class="source-line" id="L234"><a class="line-link" href="#L234" aria-label="Line 234">234</a>    );</span>
+<span class="source-line" id="L235"><a class="line-link" href="#L235" aria-label="Line 235">235</a>    expect(harness.onlyDaemonPid()).toBe(daemonPid);</span>
+<span class="source-line" id="L236"><a class="line-link" href="#L236" aria-label="Line 236">236</a>  });</span>
+<span class="source-line" id="L237"><a class="line-link" href="#L237" aria-label="Line 237">237</a></span>
+<span class="source-line" id="L238"><a class="line-link" href="#L238" aria-label="Line 238">238</a>  it(&quot;executes distinguishable queued requests FIFO and refreshes at queue-turn start&quot;, async () =&gt; {</span>
+<span class="source-line" id="L239"><a class="line-link" href="#L239" aria-label="Line 239">239</a>    const harness = new DaemonParityHarness();</span>
+<span class="source-line" id="L240"><a class="line-link" href="#L240" aria-label="Line 240">240</a>    harnesses.push(harness);</span>
+<span class="source-line" id="L241"><a class="line-link" href="#L241" aria-label="Line 241">241</a>    const releasePath = join(harness.root, &quot;release-first-request&quot;);</span>
+<span class="source-line" id="L242"><a class="line-link" href="#L242" aria-label="Line 242">242</a>    const controlled = await harness.startControlledDaemon(releasePath);</span>
+<span class="source-line" id="L243"><a class="line-link" href="#L243" aria-label="Line 243">243</a>    const transport = new LocalDaemonTransport({ requestTimeoutMs: 10_000 });</span>
+<span class="source-line" id="L244"><a class="line-link" href="#L244" aria-label="Line 244">244</a>    const first = transport.execute(controlled.record.endpoint, {</span>
+<span class="source-line" id="L245"><a class="line-link" href="#L245" aria-label="Line 245">245</a>      kind: &quot;execute&quot;,</span>
+<span class="source-line" id="L246"><a class="line-link" href="#L246" aria-label="Line 246">246</a>      protocolVersion: DAEMON_PROTOCOL_VERSION,</span>
+<span class="source-line" id="L247"><a class="line-link" href="#L247" aria-label="Line 247">247</a>      instanceId: controlled.record.instanceId,</span>
+<span class="source-line" id="L248"><a class="line-link" href="#L248" aria-label="Line 248">248</a>      processToken: controlled.record.processToken,</span>
+<span class="source-line" id="L249"><a class="line-link" href="#L249" aria-label="Line 249">249</a>      requestId: &quot;fifo-first&quot;,</span>
+<span class="source-line" id="L250"><a class="line-link" href="#L250" aria-label="Line 250">250</a>      commandName: &quot;overview&quot;,</span>
+<span class="source-line" id="L251"><a class="line-link" href="#L251" aria-label="Line 251">251</a>      request: {</span>
+<span class="source-line" id="L252"><a class="line-link" href="#L252" aria-label="Line 252">252</a>        argv: [&quot;--version&quot;],</span>
+<span class="source-line" id="L253"><a class="line-link" href="#L253" aria-label="Line 253">253</a>        cwd: controlled.record.workspaceRoot,</span>
+<span class="source-line" id="L254"><a class="line-link" href="#L254" aria-label="Line 254">254</a>        telemetryEnabled: false,</span>
+<span class="source-line" id="L255"><a class="line-link" href="#L255" aria-label="Line 255">255</a>        executionMode: &quot;warm&quot;,</span>
+<span class="source-line" id="L256"><a class="line-link" href="#L256" aria-label="Line 256">256</a>      },</span>
+<span class="source-line" id="L257"><a class="line-link" href="#L257" aria-label="Line 257">257</a>    });</span>
+<span class="source-line" id="L258"><a class="line-link" href="#L258" aria-label="Line 258">258</a>    await waitUntil(() =&gt; existsSync(`${controlled.requestStartedPath}.1`));</span>
+<span class="source-line" id="L259"><a class="line-link" href="#L259" aria-label="Line 259">259</a>    const second = harness.warmAsync([&quot;overview&quot;, &quot;input.ts&quot;]);</span>
+<span class="source-line" id="L260"><a class="line-link" href="#L260" aria-label="Line 260">260</a>    await new Promise((resolve) =&gt; setTimeout(resolve, 100));</span>
+<span class="source-line" id="L261"><a class="line-link" href="#L261" aria-label="Line 261">261</a>    expect(existsSync(`${controlled.requestStartedPath}.2`)).toBe(false);</span>
+<span class="source-line" id="L262"><a class="line-link" href="#L262" aria-label="Line 262">262</a>    writeFileSync(join(harness.workspaceRoot, &quot;input.ts&quot;), &quot;export const queuedEdit = 3;\n&quot;);</span>
+<span class="source-line" id="L263"><a class="line-link" href="#L263" aria-label="Line 263">263</a>    writeFileSync(releasePath, &quot;release&quot;);</span>
+<span class="source-line" id="L264"><a class="line-link" href="#L264" aria-label="Line 264">264</a></span>
+<span class="source-line" id="L265"><a class="line-link" href="#L265" aria-label="Line 265">265</a>    const firstResponse = await (await first).completion;</span>
+<span class="source-line" id="L266"><a class="line-link" href="#L266" aria-label="Line 266">266</a>    const secondResult = await second;</span>
+<span class="source-line" id="L267"><a class="line-link" href="#L267" aria-label="Line 267">267</a></span>
+<span class="source-line" id="L268"><a class="line-link" href="#L268" aria-label="Line 268">268</a>    expect(firstResponse).toMatchObject({ status: &quot;completed&quot;, result: { exitCode: 0 } });</span>
+<span class="source-line" id="L269"><a class="line-link" href="#L269" aria-label="Line 269">269</a>    await waitUntil(() =&gt; existsSync(`${controlled.requestStartedPath}.2`));</span>
+<span class="source-line" id="L270"><a class="line-link" href="#L270" aria-label="Line 270">270</a>    expect(secondResult).toEqual(harness.cold([&quot;overview&quot;, &quot;input.ts&quot;]));</span>
+<span class="source-line" id="L271"><a class="line-link" href="#L271" aria-label="Line 271">271</a>    if (firstResponse.status !== &quot;completed&quot;) throw new Error(&quot;Expected first FIFO result&quot;);</span>
+<span class="source-line" id="L272"><a class="line-link" href="#L272" aria-label="Line 272">272</a>    expect(await decodeOutput(firstResponse.result.output)).toMatch(/^\d+\.\d+\.\d+/);</span>
+<span class="source-line" id="L273"><a class="line-link" href="#L273" aria-label="Line 273">273</a>    expect(secondResult.stdout).toContain(&quot;queuedEdit&quot;);</span>
+<span class="source-line" id="L274"><a class="line-link" href="#L274" aria-label="Line 274">274</a>  }, 15_000);</span>
+<span class="source-line" id="L275"><a class="line-link" href="#L275" aria-label="Line 275">275</a></span>
+<span class="source-line" id="L276"><a class="line-link" href="#L276" aria-label="Line 276">276</a>  it(&quot;finishes an accepted request after its caller exits and keeps the daemon warm&quot;, async () =&gt; {</span>
+<span class="source-line" id="L277"><a class="line-link" href="#L277" aria-label="Line 277">277</a>    const harness = new DaemonParityHarness();</span>
+<span class="source-line" id="L278"><a class="line-link" href="#L278" aria-label="Line 278">278</a>    harnesses.push(harness);</span>
+<span class="source-line" id="L279"><a class="line-link" href="#L279" aria-label="Line 279">279</a>    const releasePath = join(harness.root, &quot;release-disconnected-request&quot;);</span>
+<span class="source-line" id="L280"><a class="line-link" href="#L280" aria-label="Line 280">280</a>    const acceptedPath = join(harness.root, &quot;accepted-disconnected-request&quot;);</span>
+<span class="source-line" id="L281"><a class="line-link" href="#L281" aria-label="Line 281">281</a>    const controlled = await harness.startControlledDaemon(releasePath);</span>
+<span class="source-line" id="L282"><a class="line-link" href="#L282" aria-label="Line 282">282</a>    const caller = spawn(</span>
+<span class="source-line" id="L283"><a class="line-link" href="#L283" aria-label="Line 283">283</a>      process.execPath,</span>
+<span class="source-line" id="L284"><a class="line-link" href="#L284" aria-label="Line 284">284</a>      [</span>
+<span class="source-line" id="L285"><a class="line-link" href="#L285" aria-label="Line 285">285</a>        fileURLToPath(new URL(&quot;../../../node_modules/tsx/dist/cli.mjs&quot;, import.meta.url)),</span>
+<span class="source-line" id="L286"><a class="line-link" href="#L286" aria-label="Line 286">286</a>        fileURLToPath(new URL(&quot;../../helpers/daemon-accepted-caller.ts&quot;, import.meta.url)),</span>
+<span class="source-line" id="L287"><a class="line-link" href="#L287" aria-label="Line 287">287</a>        controlled.record.endpoint,</span>
+<span class="source-line" id="L288"><a class="line-link" href="#L288" aria-label="Line 288">288</a>        controlled.record.instanceId,</span>
+<span class="source-line" id="L289"><a class="line-link" href="#L289" aria-label="Line 289">289</a>        controlled.record.processToken,</span>
+<span class="source-line" id="L290"><a class="line-link" href="#L290" aria-label="Line 290">290</a>        harness.workspaceRoot,</span>
+<span class="source-line" id="L291"><a class="line-link" href="#L291" aria-label="Line 291">291</a>        acceptedPath,</span>
+<span class="source-line" id="L292"><a class="line-link" href="#L292" aria-label="Line 292">292</a>      ],</span>
+<span class="source-line" id="L293"><a class="line-link" href="#L293" aria-label="Line 293">293</a>      { stdio: &quot;ignore&quot; },</span>
+<span class="source-line" id="L294"><a class="line-link" href="#L294" aria-label="Line 294">294</a>    );</span>
+<span class="source-line" id="L295"><a class="line-link" href="#L295" aria-label="Line 295">295</a></span>
+<span class="source-line" id="L296"><a class="line-link" href="#L296" aria-label="Line 296">296</a>    await waitUntil(() =&gt; existsSync(acceptedPath));</span>
+<span class="source-line" id="L297"><a class="line-link" href="#L297" aria-label="Line 297">297</a>    caller.kill(&quot;SIGKILL&quot;);</span>
+<span class="source-line" id="L298"><a class="line-link" href="#L298" aria-label="Line 298">298</a>    await waitForProcess(caller);</span>
+<span class="source-line" id="L299"><a class="line-link" href="#L299" aria-label="Line 299">299</a>    writeFileSync(releasePath, &quot;release&quot;);</span>
+<span class="source-line" id="L300"><a class="line-link" href="#L300" aria-label="Line 300">300</a>    const transport = new LocalDaemonTransport({ requestTimeoutMs: 5_000 });</span>
+<span class="source-line" id="L301"><a class="line-link" href="#L301" aria-label="Line 301">301</a>    await waitUntil(async () =&gt; {</span>
+<span class="source-line" id="L302"><a class="line-link" href="#L302" aria-label="Line 302">302</a>      const status = await transport.executionStatus(controlled.record.endpoint, {</span>
+<span class="source-line" id="L303"><a class="line-link" href="#L303" aria-label="Line 303">303</a>        kind: &quot;execution-status&quot;,</span>
+<span class="source-line" id="L304"><a class="line-link" href="#L304" aria-label="Line 304">304</a>        protocolVersion: DAEMON_PROTOCOL_VERSION,</span>
+<span class="source-line" id="L305"><a class="line-link" href="#L305" aria-label="Line 305">305</a>        instanceId: controlled.record.instanceId,</span>
+<span class="source-line" id="L306"><a class="line-link" href="#L306" aria-label="Line 306">306</a>        processToken: controlled.record.processToken,</span>
+<span class="source-line" id="L307"><a class="line-link" href="#L307" aria-label="Line 307">307</a>        requestId: &quot;accepted-disconnect&quot;,</span>
+<span class="source-line" id="L308"><a class="line-link" href="#L308" aria-label="Line 308">308</a>      });</span>
+<span class="source-line" id="L309"><a class="line-link" href="#L309" aria-label="Line 309">309</a>      return status.state === &quot;completed&quot;;</span>
+<span class="source-line" id="L310"><a class="line-link" href="#L310" aria-label="Line 310">310</a>    });</span>
+<span class="source-line" id="L311"><a class="line-link" href="#L311" aria-label="Line 311">311</a></span>
+<span class="source-line" id="L312"><a class="line-link" href="#L312" aria-label="Line 312">312</a>    expect(harness.onlyDaemonPid()).toBe(controlled.record.pid);</span>
+<span class="source-line" id="L313"><a class="line-link" href="#L313" aria-label="Line 313">313</a>    await waitUntil(() =&gt; harness.telemetryModes().length === 1);</span>
+<span class="source-line" id="L314"><a class="line-link" href="#L314" aria-label="Line 314">314</a>    expect(harness.telemetryModes()).toEqual([&quot;warm&quot;]);</span>
+<span class="source-line" id="L315"><a class="line-link" href="#L315" aria-label="Line 315">315</a>    expect(harness.warm([&quot;overview&quot;, &quot;input.ts&quot;])).toEqual(harness.cold([&quot;overview&quot;, &quot;input.ts&quot;]));</span>
+<span class="source-line" id="L316"><a class="line-link" href="#L316" aria-label="Line 316">316</a>    expect(harness.onlyDaemonPid()).toBe(controlled.record.pid);</span>
+<span class="source-line" id="L317"><a class="line-link" href="#L317" aria-label="Line 317">317</a>    expect(harness.telemetryModes()).toEqual([&quot;warm&quot;]);</span>
+<span class="source-line" id="L318"><a class="line-link" href="#L318" aria-label="Line 318">318</a>  }, 15_000);</span>
+<span class="source-line" id="L319"><a class="line-link" href="#L319" aria-label="Line 319">319</a></span>
+<span class="source-line" id="L320"><a class="line-link" href="#L320" aria-label="Line 320">320</a>  it(&quot;routes stats through and reuses the workspace daemon&quot;, () =&gt; {</span>
+<span class="source-line" id="L321"><a class="line-link" href="#L321" aria-label="Line 321">321</a>    const harness = new DaemonParityHarness();</span>
+<span class="source-line" id="L322"><a class="line-link" href="#L322" aria-label="Line 322">322</a>    harnesses.push(harness);</span>
+<span class="source-line" id="L323"><a class="line-link" href="#L323" aria-label="Line 323">323</a>    harness.warm([&quot;overview&quot;, &quot;input.ts&quot;]);</span>
+<span class="source-line" id="L324"><a class="line-link" href="#L324" aria-label="Line 324">324</a>    const daemonPid = harness.onlyDaemonPid();</span>
+<span class="source-line" id="L325"><a class="line-link" href="#L325" aria-label="Line 325">325</a></span>
+<span class="source-line" id="L326"><a class="line-link" href="#L326" aria-label="Line 326">326</a>    expect(harness.warm([&quot;stats&quot;, &quot;--json&quot;])).toEqual(harness.cold([&quot;stats&quot;, &quot;--json&quot;]));</span>
+<span class="source-line" id="L327"><a class="line-link" href="#L327" aria-label="Line 327">327</a>    expect(harness.onlyDaemonPid()).toBe(daemonPid);</span>
+<span class="source-line" id="L328"><a class="line-link" href="#L328" aria-label="Line 328">328</a>  });</span>
+<span class="source-line" id="L329"><a class="line-link" href="#L329" aria-label="Line 329">329</a></span>
+<span class="source-line" id="L330"><a class="line-link" href="#L330" aria-label="Line 330">330</a>  it(&quot;falls back after a confirmed crash while an independent replacement warms&quot;, async () =&gt; {</span>
+<span class="source-line" id="L331"><a class="line-link" href="#L331" aria-label="Line 331">331</a>    const harness = new DaemonParityHarness();</span>
+<span class="source-line" id="L332"><a class="line-link" href="#L332" aria-label="Line 332">332</a>    harnesses.push(harness);</span>
+<span class="source-line" id="L333"><a class="line-link" href="#L333" aria-label="Line 333">333</a>    expect(harness.daemonStart()).toMatchObject({ status: 0, stderr: &quot;&quot; });</span>
+<span class="source-line" id="L334"><a class="line-link" href="#L334" aria-label="Line 334">334</a>    const first = harness.warmWithTelemetry([&quot;overview&quot;, &quot;input.ts&quot;]);</span>
+<span class="source-line" id="L335"><a class="line-link" href="#L335" aria-label="Line 335">335</a>    const firstPid = harness.onlyDaemonPid();</span>
+<span class="source-line" id="L336"><a class="line-link" href="#L336" aria-label="Line 336">336</a>    process.kill(firstPid, &quot;SIGKILL&quot;);</span>
+<span class="source-line" id="L337"><a class="line-link" href="#L337" aria-label="Line 337">337</a>    await waitUntil(() =&gt; !processIsAlive(firstPid));</span>
+<span class="source-line" id="L338"><a class="line-link" href="#L338" aria-label="Line 338">338</a></span>
+<span class="source-line" id="L339"><a class="line-link" href="#L339" aria-label="Line 339">339</a>    expect(harness.warmWithTelemetry([&quot;overview&quot;, &quot;input.ts&quot;])).toEqual(first);</span>
+<span class="source-line" id="L340"><a class="line-link" href="#L340" aria-label="Line 340">340</a>    expect(harness.telemetryModes()).toEqual([&quot;warm&quot;, &quot;fallback&quot;]);</span>
+<span class="source-line" id="L341"><a class="line-link" href="#L341" aria-label="Line 341">341</a></span>
+<span class="source-line" id="L342"><a class="line-link" href="#L342" aria-label="Line 342">342</a>    expect(harness.daemonStart()).toMatchObject({ status: 0, stderr: &quot;&quot; });</span>
+<span class="source-line" id="L343"><a class="line-link" href="#L343" aria-label="Line 343">343</a>    expect(harness.warmWithTelemetry([&quot;overview&quot;, &quot;input.ts&quot;])).toEqual(first);</span>
+<span class="source-line" id="L344"><a class="line-link" href="#L344" aria-label="Line 344">344</a>    expect(harness.telemetryModes()).toEqual([&quot;warm&quot;, &quot;fallback&quot;, &quot;warm&quot;]);</span>
+<span class="source-line" id="L345"><a class="line-link" href="#L345" aria-label="Line 345">345</a>    expect(harness.onlyDaemonPid()).not.toBe(firstPid);</span>
+<span class="source-line" id="L346"><a class="line-link" href="#L346" aria-label="Line 346">346</a>  });</span>
+<span class="source-line" id="L347"><a class="line-link" href="#L347" aria-label="Line 347">347</a></span>
+<span class="source-line" id="L348"><a class="line-link" href="#L348" aria-label="Line 348">348</a>  it(&quot;recovers an orphaned startup mutation and keeps the next eligible command warm&quot;, async () =&gt; {</span>
+<span class="source-line" id="L349"><a class="line-link" href="#L349" aria-label="Line 349">349</a>    const harness = new DaemonParityHarness();</span>
+<span class="source-line" id="L350"><a class="line-link" href="#L350" aria-label="Line 350">350</a>    harnesses.push(harness);</span>
+<span class="source-line" id="L351"><a class="line-link" href="#L351" aria-label="Line 351">351</a>    await harness.orphanStartupMutation();</span>
+<span class="source-line" id="L352"><a class="line-link" href="#L352" aria-label="Line 352">352</a></span>
+<span class="source-line" id="L353"><a class="line-link" href="#L353" aria-label="Line 353">353</a>    expect(harness.daemonStatus()).toMatchObject({ status: 0, stderr: &quot;&quot; });</span>
+<span class="source-line" id="L354"><a class="line-link" href="#L354" aria-label="Line 354">354</a>    expect(harness.daemonRecordCount()).toBe(0);</span>
+<span class="source-line" id="L355"><a class="line-link" href="#L355" aria-label="Line 355">355</a>    expect(harness.warmWithTelemetry([&quot;overview&quot;, &quot;input.ts&quot;])).toMatchObject({</span>
+<span class="source-line" id="L356"><a class="line-link" href="#L356" aria-label="Line 356">356</a>      status: 0,</span>
+<span class="source-line" id="L357"><a class="line-link" href="#L357" aria-label="Line 357">357</a>      stderr: &quot;&quot;,</span>
+<span class="source-line" id="L358"><a class="line-link" href="#L358" aria-label="Line 358">358</a>    });</span>
+<span class="source-line" id="L359"><a class="line-link" href="#L359" aria-label="Line 359">359</a>    expect(harness.telemetryModes()).toEqual([&quot;cold&quot;]);</span>
+<span class="source-line" id="L360"><a class="line-link" href="#L360" aria-label="Line 360">360</a>    expect(harness.daemonStart()).toMatchObject({ status: 0, stderr: &quot;&quot; });</span>
+<span class="source-line" id="L361"><a class="line-link" href="#L361" aria-label="Line 361">361</a>    const daemonPid = harness.onlyDaemonPid();</span>
+<span class="source-line" id="L362"><a class="line-link" href="#L362" aria-label="Line 362">362</a>    expect(harness.daemonRecordCount()).toBe(1);</span>
+<span class="source-line" id="L363"><a class="line-link" href="#L363" aria-label="Line 363">363</a>    expect(harness.warmWithTelemetry([&quot;overview&quot;, &quot;input.ts&quot;])).toMatchObject({</span>
+<span class="source-line" id="L364"><a class="line-link" href="#L364" aria-label="Line 364">364</a>      status: 0,</span>
+<span class="source-line" id="L365"><a class="line-link" href="#L365" aria-label="Line 365">365</a>      stderr: &quot;&quot;,</span>
+<span class="source-line" id="L366"><a class="line-link" href="#L366" aria-label="Line 366">366</a>    });</span>
+<span class="source-line" id="L367"><a class="line-link" href="#L367" aria-label="Line 367">367</a>    expect(harness.onlyDaemonPid()).toBe(daemonPid);</span>
+<span class="source-line" id="L368"><a class="line-link" href="#L368" aria-label="Line 368">368</a>    expect(harness.telemetryModes()).toEqual([&quot;cold&quot;, &quot;warm&quot;]);</span>
+<span class="source-line" id="L369"><a class="line-link" href="#L369" aria-label="Line 369">369</a>  }, 15_000);</span>
+<span class="source-line" id="L370"><a class="line-link" href="#L370" aria-label="Line 370">370</a></span>
+<span class="source-line" id="L371"><a class="line-link" href="#L371" aria-label="Line 371">371</a>  it(&quot;returns one complete controlled result without replay after an accepted worker exit&quot;, async () =&gt; {</span>
+<span class="source-line" id="L372"><a class="line-link" href="#L372" aria-label="Line 372">372</a>    const harness = new DaemonParityHarness();</span>
+<span class="source-line" id="L373"><a class="line-link" href="#L373" aria-label="Line 373">373</a>    harnesses.push(harness);</span>
+<span class="source-line" id="L374"><a class="line-link" href="#L374" aria-label="Line 374">374</a>    const controlled = await harness.startControlledDaemon(&quot;--worker-exit&quot;);</span>
+<span class="source-line" id="L375"><a class="line-link" href="#L375" aria-label="Line 375">375</a>    const execution = harness.warmAsync([&quot;overview&quot;, &quot;input.ts&quot;], &quot;1&quot;);</span>
+<span class="source-line" id="L376"><a class="line-link" href="#L376" aria-label="Line 376">376</a>    await waitUntil(</span>
+<span class="source-line" id="L377"><a class="line-link" href="#L377" aria-label="Line 377">377</a>      () =&gt;</span>
+<span class="source-line" id="L378"><a class="line-link" href="#L378" aria-label="Line 378">378</a>        existsSync(controlled.requestStartedPath) &amp;&amp;</span>
+<span class="source-line" id="L379"><a class="line-link" href="#L379" aria-label="Line 379">379</a>        existsSync(controlled.requestIdPath) &amp;&amp;</span>
+<span class="source-line" id="L380"><a class="line-link" href="#L380" aria-label="Line 380">380</a>        existsSync(controlled.requestPayloadPath),</span>
+<span class="source-line" id="L381"><a class="line-link" href="#L381" aria-label="Line 381">381</a>    );</span>
+<span class="source-line" id="L382"><a class="line-link" href="#L382" aria-label="Line 382">382</a>    const requestId = readFileSync(controlled.requestIdPath, &quot;utf8&quot;);</span>
+<span class="source-line" id="L383"><a class="line-link" href="#L383" aria-label="Line 383">383</a>    const acceptedRequest = JSON.parse(</span>
+<span class="source-line" id="L384"><a class="line-link" href="#L384" aria-label="Line 384">384</a>      readFileSync(controlled.requestPayloadPath, &quot;utf8&quot;),</span>
+<span class="source-line" id="L385"><a class="line-link" href="#L385" aria-label="Line 385">385</a>    ) as DaemonExecutorRequest;</span>
+<span class="source-line" id="L386"><a class="line-link" href="#L386" aria-label="Line 386">386</a>    const transport = new LocalDaemonTransport({ requestTimeoutMs: 5_000 });</span>
+<span class="source-line" id="L387"><a class="line-link" href="#L387" aria-label="Line 387">387</a>    const duplicate = await transport.execute(controlled.record.endpoint, {</span>
+<span class="source-line" id="L388"><a class="line-link" href="#L388" aria-label="Line 388">388</a>      kind: &quot;execute&quot;,</span>
+<span class="source-line" id="L389"><a class="line-link" href="#L389" aria-label="Line 389">389</a>      protocolVersion: DAEMON_PROTOCOL_VERSION,</span>
+<span class="source-line" id="L390"><a class="line-link" href="#L390" aria-label="Line 390">390</a>      instanceId: controlled.record.instanceId,</span>
+<span class="source-line" id="L391"><a class="line-link" href="#L391" aria-label="Line 391">391</a>      processToken: controlled.record.processToken,</span>
+<span class="source-line" id="L392"><a class="line-link" href="#L392" aria-label="Line 392">392</a>      requestId,</span>
+<span class="source-line" id="L393"><a class="line-link" href="#L393" aria-label="Line 393">393</a>      commandName: &quot;overview&quot;,</span>
+<span class="source-line" id="L394"><a class="line-link" href="#L394" aria-label="Line 394">394</a>      request: acceptedRequest,</span>
+<span class="source-line" id="L395"><a class="line-link" href="#L395" aria-label="Line 395">395</a>    });</span>
+<span class="source-line" id="L396"><a class="line-link" href="#L396" aria-label="Line 396">396</a>    writeFileSync(controlled.workerExitReleasePath, &quot;release&quot;);</span>
+<span class="source-line" id="L397"><a class="line-link" href="#L397" aria-label="Line 397">397</a></span>
+<span class="source-line" id="L398"><a class="line-link" href="#L398" aria-label="Line 398">398</a>    await expect(duplicate.completion).resolves.toEqual({ status: &quot;failed&quot;, code: &quot;worker-exit&quot; });</span>
+<span class="source-line" id="L399"><a class="line-link" href="#L399" aria-label="Line 399">399</a>    const controlledResult = await execution;</span>
+<span class="source-line" id="L400"><a class="line-link" href="#L400" aria-label="Line 400">400</a></span>
+<span class="source-line" id="L401"><a class="line-link" href="#L401" aria-label="Line 401">401</a>    expect(controlledResult).toEqual({</span>
+<span class="source-line" id="L402"><a class="line-link" href="#L402" aria-label="Line 402">402</a>      status: 1,</span>
+<span class="source-line" id="L403"><a class="line-link" href="#L403" aria-label="Line 403">403</a>      stdout: &quot;&quot;,</span>
+<span class="source-line" id="L404"><a class="line-link" href="#L404" aria-label="Line 404">404</a>      stderr: &quot;Cannot answer: accepted daemon request did not complete.\n&quot;,</span>
+<span class="source-line" id="L405"><a class="line-link" href="#L405" aria-label="Line 405">405</a>    });</span>
+<span class="source-line" id="L406"><a class="line-link" href="#L406" aria-label="Line 406">406</a>    expect(existsSync(`${controlled.requestStartedPath}.1`)).toBe(true);</span>
+<span class="source-line" id="L407"><a class="line-link" href="#L407" aria-label="Line 407">407</a>    expect(existsSync(`${controlled.requestStartedPath}.2`)).toBe(false);</span>
+<span class="source-line" id="L408"><a class="line-link" href="#L408" aria-label="Line 408">408</a>    expect(harness.telemetryModes()).toEqual([]);</span>
+<span class="source-line" id="L409"><a class="line-link" href="#L409" aria-label="Line 409">409</a>    expect(harness.daemonRecordCount()).toBe(1);</span>
+<span class="source-line" id="L410"><a class="line-link" href="#L410" aria-label="Line 410">410</a>    await waitForProcess(controlled.child);</span>
+<span class="source-line" id="L411"><a class="line-link" href="#L411" aria-label="Line 411">411</a>    expect(processIsAlive(controlled.record.pid)).toBe(false);</span>
+<span class="source-line" id="L412"><a class="line-link" href="#L412" aria-label="Line 412">412</a>  }, 15_000);</span>
+<span class="source-line" id="L413"><a class="line-link" href="#L413" aria-label="Line 413">413</a></span>
+<span class="source-line" id="L414"><a class="line-link" href="#L414" aria-label="Line 414">414</a>  it(&quot;keeps cold bytes and status when daemon state path is an existing file&quot;, () =&gt; {</span>
+<span class="source-line" id="L415"><a class="line-link" href="#L415" aria-label="Line 415">415</a>    const harness = new DaemonParityHarness();</span>
+<span class="source-line" id="L416"><a class="line-link" href="#L416" aria-label="Line 416">416</a>    harnesses.push(harness);</span>
+<span class="source-line" id="L417"><a class="line-link" href="#L417" aria-label="Line 417">417</a>    harness.replaceStateDirectoryWithFile();</span>
+<span class="source-line" id="L418"><a class="line-link" href="#L418" aria-label="Line 418">418</a></span>
+<span class="source-line" id="L419"><a class="line-link" href="#L419" aria-label="Line 419">419</a>    const fallback = harness.warm([&quot;overview&quot;, &quot;input.ts&quot;]);</span>
+<span class="source-line" id="L420"><a class="line-link" href="#L420" aria-label="Line 420">420</a></span>
+<span class="source-line" id="L421"><a class="line-link" href="#L421" aria-label="Line 421">421</a>    expect(fallback).toEqual(harness.cold([&quot;overview&quot;, &quot;input.ts&quot;]));</span>
+<span class="source-line" id="L422"><a class="line-link" href="#L422" aria-label="Line 422">422</a>    expect(fallback).toMatchObject({ status: 0, stderr: &quot;&quot; });</span>
+<span class="source-line" id="L423"><a class="line-link" href="#L423" aria-label="Line 423">423</a>    expect(harness.daemonRecordCount()).toBe(0);</span>
+<span class="source-line" id="L424"><a class="line-link" href="#L424" aria-label="Line 424">424</a>  });</span>
+<span class="source-line" id="L425"><a class="line-link" href="#L425" aria-label="Line 425">425</a></span>
+<span class="source-line" id="L426"><a class="line-link" href="#L426" aria-label="Line 426">426</a>  it(&quot;keeps stats cold when workspace discovery fails&quot;, () =&gt; {</span>
+<span class="source-line" id="L427"><a class="line-link" href="#L427" aria-label="Line 427">427</a>    const harness = new DaemonParityHarness();</span>
+<span class="source-line" id="L428"><a class="line-link" href="#L428" aria-label="Line 428">428</a>    harnesses.push(harness);</span>
+<span class="source-line" id="L429"><a class="line-link" href="#L429" aria-label="Line 429">429</a>    const outsideWorkspace = join(harness.root, &quot;outside&quot;);</span>
+<span class="source-line" id="L430"><a class="line-link" href="#L430" aria-label="Line 430">430</a>    mkdirSync(outsideWorkspace);</span>
+<span class="source-line" id="L431"><a class="line-link" href="#L431" aria-label="Line 431">431</a></span>
+<span class="source-line" id="L432"><a class="line-link" href="#L432" aria-label="Line 432">432</a>    expect(harness.warmFrom(outsideWorkspace, [&quot;stats&quot;, &quot;--json&quot;])).toEqual(</span>
+<span class="source-line" id="L433"><a class="line-link" href="#L433" aria-label="Line 433">433</a>      harness.coldFrom(outsideWorkspace, [&quot;stats&quot;, &quot;--json&quot;]),</span>
+<span class="source-line" id="L434"><a class="line-link" href="#L434" aria-label="Line 434">434</a>    );</span>
+<span class="source-line" id="L435"><a class="line-link" href="#L435" aria-label="Line 435">435</a>    expect(harness.daemonRecordCount()).toBe(0);</span>
+<span class="source-line" id="L436"><a class="line-link" href="#L436" aria-label="Line 436">436</a>  });</span>
+<span class="source-line" id="L437"><a class="line-link" href="#L437" aria-label="Line 437">437</a></span>
+<span class="source-line" id="L438"><a class="line-link" href="#L438" aria-label="Line 438">438</a>  it.each([</span>
+<span class="source-line" id="L439"><a class="line-link" href="#L439" aria-label="Line 439">439</a>    [&quot;resolve through path alias&quot;, [&quot;resolve&quot;, &quot;pathTarget&quot;], &quot;pathTarget&quot;],</span>
+<span class="source-line" id="L440"><a class="line-link" href="#L440" aria-label="Line 440">440</a>    [&quot;resolve through workspace import&quot;, [&quot;resolve&quot;, &quot;workspaceTarget&quot;], &quot;workspaceTarget&quot;],</span>
+<span class="source-line" id="L441"><a class="line-link" href="#L441" aria-label="Line 441">441</a>    [&quot;def through path alias&quot;, [&quot;def&quot;, &quot;packages/domain/src/index.ts::pathTarget&quot;], &quot;pathTarget&quot;],</span>
+<span class="source-line" id="L442"><a class="line-link" href="#L442" aria-label="Line 442">442</a>    [</span>
+<span class="source-line" id="L443"><a class="line-link" href="#L443" aria-label="Line 443">443</a>      &quot;def through workspace import&quot;,</span>
+<span class="source-line" id="L444"><a class="line-link" href="#L444" aria-label="Line 444">444</a>      [&quot;def&quot;, &quot;packages/domain/src/index.ts::workspaceTarget&quot;],</span>
+<span class="source-line" id="L445"><a class="line-link" href="#L445" aria-label="Line 445">445</a>      &quot;workspaceTarget&quot;,</span>
+<span class="source-line" id="L446"><a class="line-link" href="#L446" aria-label="Line 446">446</a>    ],</span>
+<span class="source-line" id="L447"><a class="line-link" href="#L447" aria-label="Line 447">447</a>    [</span>
+<span class="source-line" id="L448"><a class="line-link" href="#L448" aria-label="Line 448">448</a>      &quot;refs through path alias&quot;,</span>
+<span class="source-line" id="L449"><a class="line-link" href="#L449" aria-label="Line 449">449</a>      [&quot;refs&quot;, &quot;packages/domain/src/index.ts::pathTarget&quot;, &quot;--all&quot;],</span>
+<span class="source-line" id="L450"><a class="line-link" href="#L450" aria-label="Line 450">450</a>      &quot;@domain/index&quot;,</span>
+<span class="source-line" id="L451"><a class="line-link" href="#L451" aria-label="Line 451">451</a>    ],</span>
+<span class="source-line" id="L452"><a class="line-link" href="#L452" aria-label="Line 452">452</a>    [</span>
+<span class="source-line" id="L453"><a class="line-link" href="#L453" aria-label="Line 453">453</a>      &quot;refs through workspace import&quot;,</span>
+<span class="source-line" id="L454"><a class="line-link" href="#L454" aria-label="Line 454">454</a>      [&quot;refs&quot;, &quot;packages/domain/src/index.ts::workspaceTarget&quot;, &quot;--all&quot;],</span>
+<span class="source-line" id="L455"><a class="line-link" href="#L455" aria-label="Line 455">455</a>      &quot;@configured/domain&quot;,</span>
+<span class="source-line" id="L456"><a class="line-link" href="#L456" aria-label="Line 456">456</a>    ],</span>
+<span class="source-line" id="L457"><a class="line-link" href="#L457" aria-label="Line 457">457</a>    [</span>
+<span class="source-line" id="L458"><a class="line-link" href="#L458" aria-label="Line 458">458</a>      &quot;context through path alias&quot;,</span>
+<span class="source-line" id="L459"><a class="line-link" href="#L459" aria-label="Line 459">459</a>      [&quot;context&quot;, &quot;packages/domain/src/index.ts::pathTarget&quot;],</span>
+<span class="source-line" id="L460"><a class="line-link" href="#L460" aria-label="Line 460">460</a>      &quot;useConfiguredImports&quot;,</span>
+<span class="source-line" id="L461"><a class="line-link" href="#L461" aria-label="Line 461">461</a>    ],</span>
+<span class="source-line" id="L462"><a class="line-link" href="#L462" aria-label="Line 462">462</a>    [</span>
+<span class="source-line" id="L463"><a class="line-link" href="#L463" aria-label="Line 463">463</a>      &quot;context through workspace import&quot;,</span>
+<span class="source-line" id="L464"><a class="line-link" href="#L464" aria-label="Line 464">464</a>      [&quot;context&quot;, &quot;packages/domain/src/index.ts::workspaceTarget&quot;],</span>
+<span class="source-line" id="L465"><a class="line-link" href="#L465" aria-label="Line 465">465</a>      &quot;useConfiguredImports&quot;,</span>
+<span class="source-line" id="L466"><a class="line-link" href="#L466" aria-label="Line 466">466</a>    ],</span>
+<span class="source-line" id="L467"><a class="line-link" href="#L467" aria-label="Line 467">467</a>    [</span>
+<span class="source-line" id="L468"><a class="line-link" href="#L468" aria-label="Line 468">468</a>      &quot;depth-one graph through path alias&quot;,</span>
+<span class="source-line" id="L469"><a class="line-link" href="#L469" aria-label="Line 469">469</a>      [&quot;graph&quot;, &quot;packages/app/src/index.ts::useConfiguredImports&quot;, &quot;--depth&quot;, &quot;1&quot;],</span>
+<span class="source-line" id="L470"><a class="line-link" href="#L470" aria-label="Line 470">470</a>      &quot;pathTarget&quot;,</span>
+<span class="source-line" id="L471"><a class="line-link" href="#L471" aria-label="Line 471">471</a>    ],</span>
+<span class="source-line" id="L472"><a class="line-link" href="#L472" aria-label="Line 472">472</a>    [</span>
+<span class="source-line" id="L473"><a class="line-link" href="#L473" aria-label="Line 473">473</a>      &quot;depth-one graph through workspace import&quot;,</span>
+<span class="source-line" id="L474"><a class="line-link" href="#L474" aria-label="Line 474">474</a>      [&quot;graph&quot;, &quot;packages/app/src/index.ts::useConfiguredImports&quot;, &quot;--depth&quot;, &quot;1&quot;],</span>
+<span class="source-line" id="L475"><a class="line-link" href="#L475" aria-label="Line 475">475</a>      &quot;workspaceTarget&quot;,</span>
+<span class="source-line" id="L476"><a class="line-link" href="#L476" aria-label="Line 476">476</a>    ],</span>
+<span class="source-line" id="L477"><a class="line-link" href="#L477" aria-label="Line 477">477</a>    [</span>
+<span class="source-line" id="L478"><a class="line-link" href="#L478" aria-label="Line 478">478</a>      &quot;refs through a project-owned repeated alias&quot;,</span>
+<span class="source-line" id="L479"><a class="line-link" href="#L479" aria-label="Line 479">479</a>      [&quot;refs&quot;, &quot;packages/domain/src/local.ts::domainLocalTarget&quot;, &quot;--all&quot;],</span>
+<span class="source-line" id="L480"><a class="line-link" href="#L480" aria-label="Line 480">480</a>      &quot;@local/local&quot;,</span>
+<span class="source-line" id="L481"><a class="line-link" href="#L481" aria-label="Line 481">481</a>    ],</span>
+<span class="source-line" id="L482"><a class="line-link" href="#L482" aria-label="Line 482">482</a>    [</span>
+<span class="source-line" id="L483"><a class="line-link" href="#L483" aria-label="Line 483">483</a>      &quot;depth-one graph through a project-owned repeated alias&quot;,</span>
+<span class="source-line" id="L484"><a class="line-link" href="#L484" aria-label="Line 484">484</a>      [&quot;graph&quot;, &quot;packages/domain/src/index.ts::useDomainLocal&quot;, &quot;--depth&quot;, &quot;1&quot;],</span>
+<span class="source-line" id="L485"><a class="line-link" href="#L485" aria-label="Line 485">485</a>      &quot;domainLocalTarget&quot;,</span>
+<span class="source-line" id="L486"><a class="line-link" href="#L486" aria-label="Line 486">486</a>    ],</span>
+<span class="source-line" id="L487"><a class="line-link" href="#L487" aria-label="Line 487">487</a>    [</span>
+<span class="source-line" id="L488"><a class="line-link" href="#L488" aria-label="Line 488">488</a>      &quot;refs through extended compiler options&quot;,</span>
+<span class="source-line" id="L489"><a class="line-link" href="#L489" aria-label="Line 489">489</a>      [&quot;refs&quot;, &quot;packages/domain/src/inherited.ts::inheritedTarget&quot;, &quot;--all&quot;],</span>
+<span class="source-line" id="L490"><a class="line-link" href="#L490" aria-label="Line 490">490</a>      &quot;@inherited/inherited&quot;,</span>
+<span class="source-line" id="L491"><a class="line-link" href="#L491" aria-label="Line 491">491</a>    ],</span>
+<span class="source-line" id="L492"><a class="line-link" href="#L492" aria-label="Line 492">492</a>    [</span>
+<span class="source-line" id="L493"><a class="line-link" href="#L493" aria-label="Line 493">493</a>      &quot;depth-one graph through extended compiler options&quot;,</span>
+<span class="source-line" id="L494"><a class="line-link" href="#L494" aria-label="Line 494">494</a>      [&quot;graph&quot;, &quot;packages/app/src/index.ts::useInheritedConfiguration&quot;, &quot;--depth&quot;, &quot;1&quot;],</span>
+<span class="source-line" id="L495"><a class="line-link" href="#L495" aria-label="Line 495">495</a>      &quot;inheritedTarget&quot;,</span>
+<span class="source-line" id="L496"><a class="line-link" href="#L496" aria-label="Line 496">496</a>    ],</span>
+<span class="source-line" id="L497"><a class="line-link" href="#L497" aria-label="Line 497">497</a>    [</span>
+<span class="source-line" id="L498"><a class="line-link" href="#L498" aria-label="Line 498">498</a>      &quot;refs through a workspace subpath export&quot;,</span>
+<span class="source-line" id="L499"><a class="line-link" href="#L499" aria-label="Line 499">499</a>      [&quot;refs&quot;, &quot;packages/domain/src/feature.ts::subpathTarget&quot;, &quot;--all&quot;],</span>
+<span class="source-line" id="L500"><a class="line-link" href="#L500" aria-label="Line 500">500</a>      &quot;@configured/domain/feature&quot;,</span>
+<span class="source-line" id="L501"><a class="line-link" href="#L501" aria-label="Line 501">501</a>    ],</span>
+<span class="source-line" id="L502"><a class="line-link" href="#L502" aria-label="Line 502">502</a>    [</span>
+<span class="source-line" id="L503"><a class="line-link" href="#L503" aria-label="Line 503">503</a>      &quot;context through a workspace subpath export&quot;,</span>
+<span class="source-line" id="L504"><a class="line-link" href="#L504" aria-label="Line 504">504</a>      [&quot;context&quot;, &quot;packages/domain/src/feature.ts::subpathTarget&quot;],</span>
+<span class="source-line" id="L505"><a class="line-link" href="#L505" aria-label="Line 505">505</a>      &quot;useWorkspaceSubpaths&quot;,</span>
+<span class="source-line" id="L506"><a class="line-link" href="#L506" aria-label="Line 506">506</a>    ],</span>
+<span class="source-line" id="L507"><a class="line-link" href="#L507" aria-label="Line 507">507</a>    [</span>
+<span class="source-line" id="L508"><a class="line-link" href="#L508" aria-label="Line 508">508</a>      &quot;depth-one graph through a workspace subpath export&quot;,</span>
+<span class="source-line" id="L509"><a class="line-link" href="#L509" aria-label="Line 509">509</a>      [&quot;graph&quot;, &quot;packages/app/src/index.ts::useWorkspaceSubpaths&quot;, &quot;--depth&quot;, &quot;1&quot;],</span>
+<span class="source-line" id="L510"><a class="line-link" href="#L510" aria-label="Line 510">510</a>      &quot;subpathTarget&quot;,</span>
+<span class="source-line" id="L511"><a class="line-link" href="#L511" aria-label="Line 511">511</a>    ],</span>
+<span class="source-line" id="L512"><a class="line-link" href="#L512" aria-label="Line 512">512</a>    [</span>
+<span class="source-line" id="L513"><a class="line-link" href="#L513" aria-label="Line 513">513</a>      &quot;refs through a patterned workspace subpath export&quot;,</span>
+<span class="source-line" id="L514"><a class="line-link" href="#L514" aria-label="Line 514">514</a>      [&quot;refs&quot;, &quot;packages/domain/src/features/patterned.ts::patternedSubpathTarget&quot;, &quot;--all&quot;],</span>
+<span class="source-line" id="L515"><a class="line-link" href="#L515" aria-label="Line 515">515</a>      &quot;@configured/domain/features/patterned&quot;,</span>
+<span class="source-line" id="L516"><a class="line-link" href="#L516" aria-label="Line 516">516</a>    ],</span>
+<span class="source-line" id="L517"><a class="line-link" href="#L517" aria-label="Line 517">517</a>    [</span>
+<span class="source-line" id="L518"><a class="line-link" href="#L518" aria-label="Line 518">518</a>      &quot;refs through an inferred workspace import&quot;,</span>
+<span class="source-line" id="L519"><a class="line-link" href="#L519" aria-label="Line 519">519</a>      [&quot;refs&quot;, &quot;packages/domain/src/index.ts::workspaceTarget&quot;, &quot;--all&quot;],</span>
+<span class="source-line" id="L520"><a class="line-link" href="#L520" aria-label="Line 520">520</a>      &quot;scratch/outside.ts&quot;,</span>
+<span class="source-line" id="L521"><a class="line-link" href="#L521" aria-label="Line 521">521</a>    ],</span>
+<span class="source-line" id="L522"><a class="line-link" href="#L522" aria-label="Line 522">522</a>    [</span>
+<span class="source-line" id="L523"><a class="line-link" href="#L523" aria-label="Line 523">523</a>      &quot;context through an inferred workspace import&quot;,</span>
+<span class="source-line" id="L524"><a class="line-link" href="#L524" aria-label="Line 524">524</a>      [&quot;context&quot;, &quot;packages/domain/src/feature.ts::subpathTarget&quot;],</span>
+<span class="source-line" id="L525"><a class="line-link" href="#L525" aria-label="Line 525">525</a>      &quot;useWorkspacePackagesFromInferred&quot;,</span>
+<span class="source-line" id="L526"><a class="line-link" href="#L526" aria-label="Line 526">526</a>    ],</span>
+<span class="source-line" id="L527"><a class="line-link" href="#L527" aria-label="Line 527">527</a>    [</span>
+<span class="source-line" id="L528"><a class="line-link" href="#L528" aria-label="Line 528">528</a>      &quot;depth-one graph through inferred workspace imports&quot;,</span>
+<span class="source-line" id="L529"><a class="line-link" href="#L529" aria-label="Line 529">529</a>      [&quot;graph&quot;, &quot;scratch/outside.ts::useWorkspacePackagesFromInferred&quot;, &quot;--depth&quot;, &quot;1&quot;],</span>
+<span class="source-line" id="L530"><a class="line-link" href="#L530" aria-label="Line 530">530</a>      &quot;patternedSubpathTarget&quot;,</span>
+<span class="source-line" id="L531"><a class="line-link" href="#L531" aria-label="Line 531">531</a>    ],</span>
+<span class="source-line" id="L532"><a class="line-link" href="#L532" aria-label="Line 532">532</a>  ])(</span>
+<span class="source-line" id="L533"><a class="line-link" href="#L533" aria-label="Line 533">533</a>    &quot;keeps configured project %s non-empty and byte-identical&quot;,</span>
+<span class="source-line" id="L534"><a class="line-link" href="#L534" aria-label="Line 534">534</a>    (_name, args, expected) =&gt; {</span>
+<span class="source-line" id="L535"><a class="line-link" href="#L535" aria-label="Line 535">535</a>      const harness = new DaemonParityHarness(&quot;configured-project-cases&quot;);</span>
+<span class="source-line" id="L536"><a class="line-link" href="#L536" aria-label="Line 536">536</a>      harnesses.push(harness);</span>
+<span class="source-line" id="L537"><a class="line-link" href="#L537" aria-label="Line 537">537</a></span>
+<span class="source-line" id="L538"><a class="line-link" href="#L538" aria-label="Line 538">538</a>      const warm = harness.warm(args);</span>
+<span class="source-line" id="L539"><a class="line-link" href="#L539" aria-label="Line 539">539</a></span>
+<span class="source-line" id="L540"><a class="line-link" href="#L540" aria-label="Line 540">540</a>      expect(warm).toEqual(harness.cold(args));</span>
+<span class="source-line" id="L541"><a class="line-link" href="#L541" aria-label="Line 541">541</a>      expect(warm).toMatchObject({ status: 0, stderr: &quot;&quot; });</span>
+<span class="source-line" id="L542"><a class="line-link" href="#L542" aria-label="Line 542">542</a>      expect(warm.stdout).toContain(expected);</span>
+<span class="source-line" id="L543"><a class="line-link" href="#L543" aria-label="Line 543">543</a>    },</span>
+<span class="source-line" id="L544"><a class="line-link" href="#L544" aria-label="Line 544">544</a>    20_000,</span>
+<span class="source-line" id="L545"><a class="line-link" href="#L545" aria-label="Line 545">545</a>  );</span>
+<span class="source-line" id="L546"><a class="line-link" href="#L546" aria-label="Line 546">546</a></span>
+<span class="source-line" id="L547"><a class="line-link" href="#L547" aria-label="Line 547">547</a>  it(&quot;keeps configured aliases out of cold and warm inferred semantics&quot;, () =&gt; {</span>
+<span class="source-line" id="L548"><a class="line-link" href="#L548" aria-label="Line 548">548</a>    const harness = new DaemonParityHarness(&quot;configured-project-cases&quot;);</span>
+<span class="source-line" id="L549"><a class="line-link" href="#L549" aria-label="Line 549">549</a>    harnesses.push(harness);</span>
+<span class="source-line" id="L550"><a class="line-link" href="#L550" aria-label="Line 550">550</a>    const args = [&quot;refs&quot;, &quot;packages/app/src/local.ts::appLocalTarget&quot;, &quot;--all&quot;];</span>
+<span class="source-line" id="L551"><a class="line-link" href="#L551" aria-label="Line 551">551</a></span>
+<span class="source-line" id="L552"><a class="line-link" href="#L552" aria-label="Line 552">552</a>    const warm = harness.warm(args);</span>
+<span class="source-line" id="L553"><a class="line-link" href="#L553" aria-label="Line 553">553</a></span>
+<span class="source-line" id="L554"><a class="line-link" href="#L554" aria-label="Line 554">554</a>    expect(warm).toEqual(harness.cold(args));</span>
+<span class="source-line" id="L555"><a class="line-link" href="#L555" aria-label="Line 555">555</a>    expect(warm).toMatchObject({ status: 0, stderr: &quot;&quot; });</span>
+<span class="source-line" id="L556"><a class="line-link" href="#L556" aria-label="Line 556">556</a>    expect(warm.stdout).toContain(&quot;packages/app/src/index.ts&quot;);</span>
+<span class="source-line" id="L557"><a class="line-link" href="#L557" aria-label="Line 557">557</a>    expect(warm.stdout).not.toContain(&quot;scratch/outside.ts&quot;);</span>
+<span class="source-line" id="L558"><a class="line-link" href="#L558" aria-label="Line 558">558</a>  }, 20_000);</span>
+<span class="source-line" id="L559"><a class="line-link" href="#L559" aria-label="Line 559">559</a></span>
+<span class="source-line" id="L560"><a class="line-link" href="#L560" aria-label="Line 560">560</a>  it.each([</span>
+<span class="source-line" id="L561"><a class="line-link" href="#L561" aria-label="Line 561">561</a>    [&quot;malformed&quot;, &quot;{ malformed&quot;],</span>
+<span class="source-line" id="L562"><a class="line-link" href="#L562" aria-label="Line 562">562</a>    [&quot;missing&quot;, undefined],</span>
+<span class="source-line" id="L563"><a class="line-link" href="#L563" aria-label="Line 563">563</a>  ])(</span>
+<span class="source-line" id="L564"><a class="line-link" href="#L564" aria-label="Line 564">564</a>    &quot;falls back without raw failures when root tsconfig is %s&quot;,</span>
+<span class="source-line" id="L565"><a class="line-link" href="#L565" aria-label="Line 565">565</a>    (_name, config) =&gt; {</span>
+<span class="source-line" id="L566"><a class="line-link" href="#L566" aria-label="Line 566">566</a>      const harness = new DaemonParityHarness(&quot;configured-project-cases&quot;);</span>
+<span class="source-line" id="L567"><a class="line-link" href="#L567" aria-label="Line 567">567</a>      harnesses.push(harness);</span>
+<span class="source-line" id="L568"><a class="line-link" href="#L568" aria-label="Line 568">568</a>      if (config === undefined) {</span>
+<span class="source-line" id="L569"><a class="line-link" href="#L569" aria-label="Line 569">569</a>        harness.removeWorkspaceFile(&quot;tsconfig.json&quot;);</span>
+<span class="source-line" id="L570"><a class="line-link" href="#L570" aria-label="Line 570">570</a>      } else {</span>
+<span class="source-line" id="L571"><a class="line-link" href="#L571" aria-label="Line 571">571</a>        harness.writeWorkspaceFile(&quot;tsconfig.json&quot;, config);</span>
+<span class="source-line" id="L572"><a class="line-link" href="#L572" aria-label="Line 572">572</a>      }</span>
+<span class="source-line" id="L573"><a class="line-link" href="#L573" aria-label="Line 573">573</a>      const cases = [</span>
+<span class="source-line" id="L574"><a class="line-link" href="#L574" aria-label="Line 574">574</a>        {</span>
+<span class="source-line" id="L575"><a class="line-link" href="#L575" aria-label="Line 575">575</a>          args: [&quot;refs&quot;, &quot;packages/domain/src/index.ts::workspaceTarget&quot;, &quot;--all&quot;],</span>
+<span class="source-line" id="L576"><a class="line-link" href="#L576" aria-label="Line 576">576</a>          expected: &quot;scratch/outside.ts&quot;,</span>
+<span class="source-line" id="L577"><a class="line-link" href="#L577" aria-label="Line 577">577</a>        },</span>
+<span class="source-line" id="L578"><a class="line-link" href="#L578" aria-label="Line 578">578</a>        {</span>
+<span class="source-line" id="L579"><a class="line-link" href="#L579" aria-label="Line 579">579</a>          args: [&quot;context&quot;, &quot;packages/domain/src/feature.ts::subpathTarget&quot;],</span>
+<span class="source-line" id="L580"><a class="line-link" href="#L580" aria-label="Line 580">580</a>          expected: &quot;useWorkspacePackagesFromInferred&quot;,</span>
+<span class="source-line" id="L581"><a class="line-link" href="#L581" aria-label="Line 581">581</a>        },</span>
+<span class="source-line" id="L582"><a class="line-link" href="#L582" aria-label="Line 582">582</a>        {</span>
+<span class="source-line" id="L583"><a class="line-link" href="#L583" aria-label="Line 583">583</a>          args: [&quot;graph&quot;, &quot;scratch/outside.ts::useWorkspacePackagesFromInferred&quot;, &quot;--depth&quot;, &quot;1&quot;],</span>
+<span class="source-line" id="L584"><a class="line-link" href="#L584" aria-label="Line 584">584</a>          expected: &quot;patternedSubpathTarget&quot;,</span>
+<span class="source-line" id="L585"><a class="line-link" href="#L585" aria-label="Line 585">585</a>        },</span>
+<span class="source-line" id="L586"><a class="line-link" href="#L586" aria-label="Line 586">586</a>      ];</span>
+<span class="source-line" id="L587"><a class="line-link" href="#L587" aria-label="Line 587">587</a></span>
+<span class="source-line" id="L588"><a class="line-link" href="#L588" aria-label="Line 588">588</a>      for (const { args, expected } of cases) {</span>
+<span class="source-line" id="L589"><a class="line-link" href="#L589" aria-label="Line 589">589</a>        const warm = harness.warm(args);</span>
+<span class="source-line" id="L590"><a class="line-link" href="#L590" aria-label="Line 590">590</a>        expect(warm).toEqual(harness.cold(args));</span>
+<span class="source-line" id="L591"><a class="line-link" href="#L591" aria-label="Line 591">591</a>        expect(warm).toMatchObject({ status: 0, stderr: &quot;&quot; });</span>
+<span class="source-line" id="L592"><a class="line-link" href="#L592" aria-label="Line 592">592</a>        expect(warm.stdout).toContain(expected);</span>
+<span class="source-line" id="L593"><a class="line-link" href="#L593" aria-label="Line 593">593</a>      }</span>
+<span class="source-line" id="L594"><a class="line-link" href="#L594" aria-label="Line 594">594</a>    },</span>
+<span class="source-line" id="L595"><a class="line-link" href="#L595" aria-label="Line 595">595</a>    40_000,</span>
+<span class="source-line" id="L596"><a class="line-link" href="#L596" aria-label="Line 596">596</a>  );</span>
+<span class="source-line" id="L597"><a class="line-link" href="#L597" aria-label="Line 597">597</a>});</span>
+<span class="source-line" id="L598"><a class="line-link" href="#L598" aria-label="Line 598">598</a></span>
+<span class="source-line" id="L599"><a class="line-link" href="#L599" aria-label="Line 599">599</a>class DaemonParityHarness {</span>
+<span class="source-line" id="L600"><a class="line-link" href="#L600" aria-label="Line 600">600</a>  readonly root = mkdtempSync(join(tmpdir(), &quot;symnav-daemon-parity-&quot;));</span>
+<span class="source-line" id="L601"><a class="line-link" href="#L601" aria-label="Line 601">601</a>  readonly workspaceRoot = join(this.root, &quot;workspace&quot;);</span>
+<span class="source-line" id="L602"><a class="line-link" href="#L602" aria-label="Line 602">602</a>  private readonly stateDirectory = join(this.root, &quot;state&quot;);</span>
+<span class="source-line" id="L603"><a class="line-link" href="#L603" aria-label="Line 603">603</a>  private readonly helperProcesses: ChildProcess[] = [];</span>
+<span class="source-line" id="L604"><a class="line-link" href="#L604" aria-label="Line 604">604</a></span>
+<span class="source-line" id="L605"><a class="line-link" href="#L605" aria-label="Line 605">605</a>  constructor(fixtureName?: string) {</span>
+<span class="source-line" id="L606"><a class="line-link" href="#L606" aria-label="Line 606">606</a>    if (fixtureName) {</span>
+<span class="source-line" id="L607"><a class="line-link" href="#L607" aria-label="Line 607">607</a>      cpSync(fixturePath(fixtureName), this.workspaceRoot, { recursive: true });</span>
+<span class="source-line" id="L608"><a class="line-link" href="#L608" aria-label="Line 608">608</a>    }</span>
+<span class="source-line" id="L609"><a class="line-link" href="#L609" aria-label="Line 609">609</a>    mkdirSync(join(this.workspaceRoot, &quot;.git&quot;), { recursive: true });</span>
+<span class="source-line" id="L610"><a class="line-link" href="#L610" aria-label="Line 610">610</a>    if (!fixtureName) {</span>
+<span class="source-line" id="L611"><a class="line-link" href="#L611" aria-label="Line 611">611</a>      writeFileSync(</span>
+<span class="source-line" id="L612"><a class="line-link" href="#L612" aria-label="Line 612">612</a>        join(this.workspaceRoot, &quot;input.ts&quot;),</span>
+<span class="source-line" id="L613"><a class="line-link" href="#L613" aria-label="Line 613">613</a>        &#x27;export function target(value: string): string { return value; }\nexport function caller(): string { return target(&quot;x&quot;); }\n&#x27;,</span>
+<span class="source-line" id="L614"><a class="line-link" href="#L614" aria-label="Line 614">614</a>      );</span>
+<span class="source-line" id="L615"><a class="line-link" href="#L615" aria-label="Line 615">615</a>      writeFileSync(</span>
+<span class="source-line" id="L616"><a class="line-link" href="#L616" aria-label="Line 616">616</a>        join(this.workspaceRoot, &quot;warning.ts&quot;),</span>
+<span class="source-line" id="L617"><a class="line-link" href="#L617" aria-label="Line 617">617</a>        &#x27;export function stillVisible(): string { return &quot;ok&quot;; }\n\n@orphaned\n&#x27;,</span>
+<span class="source-line" id="L618"><a class="line-link" href="#L618" aria-label="Line 618">618</a>      );</span>
+<span class="source-line" id="L619"><a class="line-link" href="#L619" aria-label="Line 619">619</a>    }</span>
+<span class="source-line" id="L620"><a class="line-link" href="#L620" aria-label="Line 620">620</a>  }</span>
+<span class="source-line" id="L621"><a class="line-link" href="#L621" aria-label="Line 621">621</a></span>
+<span class="source-line" id="L622"><a class="line-link" href="#L622" aria-label="Line 622">622</a>  writeWorkspaceFile(relativePath: string, content: string): void {</span>
+<span class="source-line" id="L623"><a class="line-link" href="#L623" aria-label="Line 623">623</a>    writeFileSync(join(this.workspaceRoot, relativePath), content);</span>
+<span class="source-line" id="L624"><a class="line-link" href="#L624" aria-label="Line 624">624</a>  }</span>
+<span class="source-line" id="L625"><a class="line-link" href="#L625" aria-label="Line 625">625</a></span>
+<span class="source-line" id="L626"><a class="line-link" href="#L626" aria-label="Line 626">626</a>  writeLargeOverviewFile(): void {</span>
+<span class="source-line" id="L627"><a class="line-link" href="#L627" aria-label="Line 627">627</a>    const longType = `&quot;${&quot;x&quot;.repeat(90_000)}&quot;`;</span>
+<span class="source-line" id="L628"><a class="line-link" href="#L628" aria-label="Line 628">628</a>    const declarations = Array.from(</span>
+<span class="source-line" id="L629"><a class="line-link" href="#L629" aria-label="Line 629">629</a>      { length: 100 },</span>
+<span class="source-line" id="L630"><a class="line-link" href="#L630" aria-label="Line 630">630</a>      (_, index) =&gt;</span>
+<span class="source-line" id="L631"><a class="line-link" href="#L631" aria-label="Line 631">631</a>        `export function symbol${String(index).padStart(5, &quot;0&quot;)}(value: ${longType}): string { return value; }\n`,</span>
+<span class="source-line" id="L632"><a class="line-link" href="#L632" aria-label="Line 632">632</a>    );</span>
+<span class="source-line" id="L633"><a class="line-link" href="#L633" aria-label="Line 633">633</a>    writeFileSync(join(this.workspaceRoot, &quot;large.ts&quot;), declarations.join(&quot;&quot;));</span>
+<span class="source-line" id="L634"><a class="line-link" href="#L634" aria-label="Line 634">634</a>  }</span>
+<span class="source-line" id="L635"><a class="line-link" href="#L635" aria-label="Line 635">635</a></span>
+<span class="source-line" id="L636"><a class="line-link" href="#L636" aria-label="Line 636">636</a>  removeWorkspaceFile(relativePath: string): void {</span>
+<span class="source-line" id="L637"><a class="line-link" href="#L637" aria-label="Line 637">637</a>    unlinkSync(join(this.workspaceRoot, relativePath));</span>
+<span class="source-line" id="L638"><a class="line-link" href="#L638" aria-label="Line 638">638</a>  }</span>
+<span class="source-line" id="L639"><a class="line-link" href="#L639" aria-label="Line 639">639</a></span>
+<span class="source-line" id="L640"><a class="line-link" href="#L640" aria-label="Line 640">640</a>  warm(args: readonly string[]): RunSymnavBinaryResult {</span>
+<span class="source-line" id="L641"><a class="line-link" href="#L641" aria-label="Line 641">641</a>    return this.run(args, &quot;1&quot;);</span>
+<span class="source-line" id="L642"><a class="line-link" href="#L642" aria-label="Line 642">642</a>  }</span>
+<span class="source-line" id="L643"><a class="line-link" href="#L643" aria-label="Line 643">643</a></span>
+<span class="source-line" id="L644"><a class="line-link" href="#L644" aria-label="Line 644">644</a>  cold(args: readonly string[]): RunSymnavBinaryResult {</span>
+<span class="source-line" id="L645"><a class="line-link" href="#L645" aria-label="Line 645">645</a>    return this.run(args, &quot;0&quot;);</span>
+<span class="source-line" id="L646"><a class="line-link" href="#L646" aria-label="Line 646">646</a>  }</span>
+<span class="source-line" id="L647"><a class="line-link" href="#L647" aria-label="Line 647">647</a></span>
+<span class="source-line" id="L648"><a class="line-link" href="#L648" aria-label="Line 648">648</a>  warmWithTelemetry(args: readonly string[]): RunSymnavBinaryResult {</span>
+<span class="source-line" id="L649"><a class="line-link" href="#L649" aria-label="Line 649">649</a>    return this.run(args, &quot;1&quot;, this.workspaceRoot, &quot;1&quot;);</span>
+<span class="source-line" id="L650"><a class="line-link" href="#L650" aria-label="Line 650">650</a>  }</span>
+<span class="source-line" id="L651"><a class="line-link" href="#L651" aria-label="Line 651">651</a></span>
+<span class="source-line" id="L652"><a class="line-link" href="#L652" aria-label="Line 652">652</a>  warmFrom(cwd: string, args: readonly string[]): RunSymnavBinaryResult {</span>
+<span class="source-line" id="L653"><a class="line-link" href="#L653" aria-label="Line 653">653</a>    return this.run(args, &quot;1&quot;, cwd);</span>
+<span class="source-line" id="L654"><a class="line-link" href="#L654" aria-label="Line 654">654</a>  }</span>
+<span class="source-line" id="L655"><a class="line-link" href="#L655" aria-label="Line 655">655</a></span>
+<span class="source-line" id="L656"><a class="line-link" href="#L656" aria-label="Line 656">656</a>  coldFrom(cwd: string, args: readonly string[]): RunSymnavBinaryResult {</span>
+<span class="source-line" id="L657"><a class="line-link" href="#L657" aria-label="Line 657">657</a>    return this.run(args, &quot;0&quot;, cwd);</span>
+<span class="source-line" id="L658"><a class="line-link" href="#L658" aria-label="Line 658">658</a>  }</span>
+<span class="source-line" id="L659"><a class="line-link" href="#L659" aria-label="Line 659">659</a></span>
+<span class="source-line" id="L660"><a class="line-link" href="#L660" aria-label="Line 660">660</a>  warmAsync(args: readonly string[], telemetry = &quot;0&quot;): Promise&lt;RunSymnavBinaryResult&gt; {</span>
+<span class="source-line" id="L661"><a class="line-link" href="#L661" aria-label="Line 661">661</a>    return this.runAsync(args, &quot;1&quot;, telemetry);</span>
+<span class="source-line" id="L662"><a class="line-link" href="#L662" aria-label="Line 662">662</a>  }</span>
+<span class="source-line" id="L663"><a class="line-link" href="#L663" aria-label="Line 663">663</a></span>
+<span class="source-line" id="L664"><a class="line-link" href="#L664" aria-label="Line 664">664</a>  coldAsync(args: readonly string[]): Promise&lt;RunSymnavBinaryResult&gt; {</span>
+<span class="source-line" id="L665"><a class="line-link" href="#L665" aria-label="Line 665">665</a>    return this.runAsync(args, &quot;0&quot;, &quot;0&quot;);</span>
+<span class="source-line" id="L666"><a class="line-link" href="#L666" aria-label="Line 666">666</a>  }</span>
+<span class="source-line" id="L667"><a class="line-link" href="#L667" aria-label="Line 667">667</a></span>
+<span class="source-line" id="L668"><a class="line-link" href="#L668" aria-label="Line 668">668</a>  private runAsync(</span>
+<span class="source-line" id="L669"><a class="line-link" href="#L669" aria-label="Line 669">669</a>    args: readonly string[],</span>
+<span class="source-line" id="L670"><a class="line-link" href="#L670" aria-label="Line 670">670</a>    daemon: string,</span>
+<span class="source-line" id="L671"><a class="line-link" href="#L671" aria-label="Line 671">671</a>    telemetry: string,</span>
+<span class="source-line" id="L672"><a class="line-link" href="#L672" aria-label="Line 672">672</a>  ): Promise&lt;RunSymnavBinaryResult&gt; {</span>
+<span class="source-line" id="L673"><a class="line-link" href="#L673" aria-label="Line 673">673</a>    const cliBinPath = resolve(</span>
+<span class="source-line" id="L674"><a class="line-link" href="#L674" aria-label="Line 674">674</a>      dirname(fileURLToPath(import.meta.url)),</span>
+<span class="source-line" id="L675"><a class="line-link" href="#L675" aria-label="Line 675">675</a>      &quot;..&quot;,</span>
+<span class="source-line" id="L676"><a class="line-link" href="#L676" aria-label="Line 676">676</a>      &quot;..&quot;,</span>
+<span class="source-line" id="L677"><a class="line-link" href="#L677" aria-label="Line 677">677</a>      &quot;..&quot;,</span>
+<span class="source-line" id="L678"><a class="line-link" href="#L678" aria-label="Line 678">678</a>      &quot;dist&quot;,</span>
+<span class="source-line" id="L679"><a class="line-link" href="#L679" aria-label="Line 679">679</a>      &quot;cli.js&quot;,</span>
+<span class="source-line" id="L680"><a class="line-link" href="#L680" aria-label="Line 680">680</a>    );</span>
+<span class="source-line" id="L681"><a class="line-link" href="#L681" aria-label="Line 681">681</a>    return new Promise((resolveResult, reject) =&gt; {</span>
+<span class="source-line" id="L682"><a class="line-link" href="#L682" aria-label="Line 682">682</a>      const child = spawn(process.execPath, [cliBinPath, ...args], {</span>
+<span class="source-line" id="L683"><a class="line-link" href="#L683" aria-label="Line 683">683</a>        cwd: this.workspaceRoot,</span>
+<span class="source-line" id="L684"><a class="line-link" href="#L684" aria-label="Line 684">684</a>        env: this.environment(daemon, telemetry),</span>
+<span class="source-line" id="L685"><a class="line-link" href="#L685" aria-label="Line 685">685</a>      });</span>
+<span class="source-line" id="L686"><a class="line-link" href="#L686" aria-label="Line 686">686</a>      let stdout = &quot;&quot;;</span>
+<span class="source-line" id="L687"><a class="line-link" href="#L687" aria-label="Line 687">687</a>      let stderr = &quot;&quot;;</span>
+<span class="source-line" id="L688"><a class="line-link" href="#L688" aria-label="Line 688">688</a>      child.stdout.setEncoding(&quot;utf8&quot;).on(&quot;data&quot;, (chunk: string) =&gt; (stdout += chunk));</span>
+<span class="source-line" id="L689"><a class="line-link" href="#L689" aria-label="Line 689">689</a>      child.stderr.setEncoding(&quot;utf8&quot;).on(&quot;data&quot;, (chunk: string) =&gt; (stderr += chunk));</span>
+<span class="source-line" id="L690"><a class="line-link" href="#L690" aria-label="Line 690">690</a>      child.once(&quot;error&quot;, reject);</span>
+<span class="source-line" id="L691"><a class="line-link" href="#L691" aria-label="Line 691">691</a>      child.once(&quot;close&quot;, (status) =&gt; resolveResult({ status, stdout, stderr }));</span>
+<span class="source-line" id="L692"><a class="line-link" href="#L692" aria-label="Line 692">692</a>    });</span>
+<span class="source-line" id="L693"><a class="line-link" href="#L693" aria-label="Line 693">693</a>  }</span>
+<span class="source-line" id="L694"><a class="line-link" href="#L694" aria-label="Line 694">694</a></span>
+<span class="source-line" id="L695"><a class="line-link" href="#L695" aria-label="Line 695">695</a>  daemonStatus(): RunSymnavBinaryResult {</span>
+<span class="source-line" id="L696"><a class="line-link" href="#L696" aria-label="Line 696">696</a>    return this.run([&quot;daemon&quot;, &quot;status&quot;], &quot;1&quot;);</span>
+<span class="source-line" id="L697"><a class="line-link" href="#L697" aria-label="Line 697">697</a>  }</span>
+<span class="source-line" id="L698"><a class="line-link" href="#L698" aria-label="Line 698">698</a></span>
+<span class="source-line" id="L699"><a class="line-link" href="#L699" aria-label="Line 699">699</a>  daemonStart(): RunSymnavBinaryResult {</span>
+<span class="source-line" id="L700"><a class="line-link" href="#L700" aria-label="Line 700">700</a>    return this.run([&quot;daemon&quot;, &quot;start&quot;], &quot;1&quot;);</span>
+<span class="source-line" id="L701"><a class="line-link" href="#L701" aria-label="Line 701">701</a>  }</span>
+<span class="source-line" id="L702"><a class="line-link" href="#L702" aria-label="Line 702">702</a></span>
+<span class="source-line" id="L703"><a class="line-link" href="#L703" aria-label="Line 703">703</a>  async orphanStartupMutation(): Promise&lt;void&gt; {</span>
+<span class="source-line" id="L704"><a class="line-link" href="#L704" aria-label="Line 704">704</a>    const controlledWorkspaceRoot = canonicalWorkspaceRoot(realpathSync(this.workspaceRoot));</span>
+<span class="source-line" id="L705"><a class="line-link" href="#L705" aria-label="Line 705">705</a>    const child = spawn(</span>
+<span class="source-line" id="L706"><a class="line-link" href="#L706" aria-label="Line 706">706</a>      process.execPath,</span>
+<span class="source-line" id="L707"><a class="line-link" href="#L707" aria-label="Line 707">707</a>      [</span>
+<span class="source-line" id="L708"><a class="line-link" href="#L708" aria-label="Line 708">708</a>        fileURLToPath(new URL(&quot;../../../node_modules/tsx/dist/cli.mjs&quot;, import.meta.url)),</span>
+<span class="source-line" id="L709"><a class="line-link" href="#L709" aria-label="Line 709">709</a>        fileURLToPath(new URL(&quot;../../helpers/daemon-startup-mutation-owner.ts&quot;, import.meta.url)),</span>
+<span class="source-line" id="L710"><a class="line-link" href="#L710" aria-label="Line 710">710</a>        controlledWorkspaceRoot,</span>
+<span class="source-line" id="L711"><a class="line-link" href="#L711" aria-label="Line 711">711</a>        this.stateDirectory,</span>
+<span class="source-line" id="L712"><a class="line-link" href="#L712" aria-label="Line 712">712</a>        &quot;0&quot;,</span>
+<span class="source-line" id="L713"><a class="line-link" href="#L713" aria-label="Line 713">713</a>      ],</span>
+<span class="source-line" id="L714"><a class="line-link" href="#L714" aria-label="Line 714">714</a>      { stdio: [&quot;ignore&quot;, &quot;ignore&quot;, &quot;ignore&quot;, &quot;ipc&quot;] },</span>
+<span class="source-line" id="L715"><a class="line-link" href="#L715" aria-label="Line 715">715</a>    );</span>
+<span class="source-line" id="L716"><a class="line-link" href="#L716" aria-label="Line 716">716</a>    this.helperProcesses.push(child);</span>
+<span class="source-line" id="L717"><a class="line-link" href="#L717" aria-label="Line 717">717</a>    const mutationOwnerPid = await new Promise&lt;number&gt;((resolve, reject) =&gt; {</span>
+<span class="source-line" id="L718"><a class="line-link" href="#L718" aria-label="Line 718">718</a>      child.once(&quot;error&quot;, reject);</span>
+<span class="source-line" id="L719"><a class="line-link" href="#L719" aria-label="Line 719">719</a>      child.once(&quot;exit&quot;, (code, signal) =&gt; {</span>
+<span class="source-line" id="L720"><a class="line-link" href="#L720" aria-label="Line 720">720</a>        reject(new Error(`Mutation owner exited before readiness: code=${code} signal=${signal}`));</span>
+<span class="source-line" id="L721"><a class="line-link" href="#L721" aria-label="Line 721">721</a>      });</span>
+<span class="source-line" id="L722"><a class="line-link" href="#L722" aria-label="Line 722">722</a>      child.once(&quot;message&quot;, (message) =&gt; {</span>
+<span class="source-line" id="L723"><a class="line-link" href="#L723" aria-label="Line 723">723</a>        if (typeof message !== &quot;number&quot; || !Number.isSafeInteger(message) || message &lt;= 0) {</span>
+<span class="source-line" id="L724"><a class="line-link" href="#L724" aria-label="Line 724">724</a>          reject(new Error(`Mutation owner published invalid pid: ${String(message)}`));</span>
+<span class="source-line" id="L725"><a class="line-link" href="#L725" aria-label="Line 725">725</a>          return;</span>
+<span class="source-line" id="L726"><a class="line-link" href="#L726" aria-label="Line 726">726</a>        }</span>
+<span class="source-line" id="L727"><a class="line-link" href="#L727" aria-label="Line 727">727</a>        resolve(message);</span>
+<span class="source-line" id="L728"><a class="line-link" href="#L728" aria-label="Line 728">728</a>      });</span>
+<span class="source-line" id="L729"><a class="line-link" href="#L729" aria-label="Line 729">729</a>    });</span>
+<span class="source-line" id="L730"><a class="line-link" href="#L730" aria-label="Line 730">730</a>    process.kill(mutationOwnerPid, &quot;SIGKILL&quot;);</span>
+<span class="source-line" id="L731"><a class="line-link" href="#L731" aria-label="Line 731">731</a>    child.kill(&quot;SIGKILL&quot;);</span>
+<span class="source-line" id="L732"><a class="line-link" href="#L732" aria-label="Line 732">732</a>    await waitUntil(() =&gt; !processIsAlive(mutationOwnerPid));</span>
+<span class="source-line" id="L733"><a class="line-link" href="#L733" aria-label="Line 733">733</a>  }</span>
+<span class="source-line" id="L734"><a class="line-link" href="#L734" aria-label="Line 734">734</a></span>
+<span class="source-line" id="L735"><a class="line-link" href="#L735" aria-label="Line 735">735</a>  async startControlledDaemon(releaseArgument = &quot;--no-release&quot;): Promise&lt;ControlledDaemon&gt; {</span>
+<span class="source-line" id="L736"><a class="line-link" href="#L736" aria-label="Line 736">736</a>    const controlledWorkspaceRoot = canonicalWorkspaceRoot(realpathSync(this.workspaceRoot));</span>
+<span class="source-line" id="L737"><a class="line-link" href="#L737" aria-label="Line 737">737</a>    const identity = DaemonWorkspaceIdentity.from(</span>
+<span class="source-line" id="L738"><a class="line-link" href="#L738" aria-label="Line 738">738</a>      controlledWorkspaceRoot,</span>
+<span class="source-line" id="L739"><a class="line-link" href="#L739" aria-label="Line 739">739</a>      StateDirectoryResolver.canonicalize(this.stateDirectory),</span>
+<span class="source-line" id="L740"><a class="line-link" href="#L740" aria-label="Line 740">740</a>    );</span>
+<span class="source-line" id="L741"><a class="line-link" href="#L741" aria-label="Line 741">741</a>    const registry = new DaemonRegistry(identity.registryDirectory);</span>
+<span class="source-line" id="L742"><a class="line-link" href="#L742" aria-label="Line 742">742</a>    const instanceId = &quot;controlled-crash&quot;;</span>
+<span class="source-line" id="L743"><a class="line-link" href="#L743" aria-label="Line 743">743</a>    const processToken = `${instanceId}-token`;</span>
+<span class="source-line" id="L744"><a class="line-link" href="#L744" aria-label="Line 744">744</a>    const readyPath = join(this.stateDirectory, `${instanceId}-ready`);</span>
+<span class="source-line" id="L745"><a class="line-link" href="#L745" aria-label="Line 745">745</a>    const requestStartedPath = join(this.stateDirectory, `${instanceId}-request`);</span>
+<span class="source-line" id="L746"><a class="line-link" href="#L746" aria-label="Line 746">746</a>    const symnavVersion = createDefaultDependencies(</span>
+<span class="source-line" id="L747"><a class="line-link" href="#L747" aria-label="Line 747">747</a>      identity.stateDirectory,</span>
+<span class="source-line" id="L748"><a class="line-link" href="#L748" aria-label="Line 748">748</a>      DaemonPolicy.currentSystem(),</span>
+<span class="source-line" id="L749"><a class="line-link" href="#L749" aria-label="Line 749">749</a>    ).symnavVersion;</span>
+<span class="source-line" id="L750"><a class="line-link" href="#L750" aria-label="Line 750">750</a>    const lease = registry.acquireStartup(identity, instanceId);</span>
+<span class="source-line" id="L751"><a class="line-link" href="#L751" aria-label="Line 751">751</a>    if (lease === undefined) throw new Error(&quot;Expected controlled daemon startup ownership&quot;);</span>
+<span class="source-line" id="L752"><a class="line-link" href="#L752" aria-label="Line 752">752</a>    const child = spawn(</span>
+<span class="source-line" id="L753"><a class="line-link" href="#L753" aria-label="Line 753">753</a>      process.execPath,</span>
+<span class="source-line" id="L754"><a class="line-link" href="#L754" aria-label="Line 754">754</a>      [</span>
+<span class="source-line" id="L755"><a class="line-link" href="#L755" aria-label="Line 755">755</a>        fileURLToPath(new URL(&quot;../../../node_modules/tsx/dist/cli.mjs&quot;, import.meta.url)),</span>
+<span class="source-line" id="L756"><a class="line-link" href="#L756" aria-label="Line 756">756</a>        fileURLToPath(</span>
+<span class="source-line" id="L757"><a class="line-link" href="#L757" aria-label="Line 757">757</a>          new URL(&quot;../../helpers/daemon-process-coordinator-stuck.ts&quot;, import.meta.url),</span>
+<span class="source-line" id="L758"><a class="line-link" href="#L758" aria-label="Line 758">758</a>        ),</span>
+<span class="source-line" id="L759"><a class="line-link" href="#L759" aria-label="Line 759">759</a>        controlledWorkspaceRoot,</span>
+<span class="source-line" id="L760"><a class="line-link" href="#L760" aria-label="Line 760">760</a>        this.stateDirectory,</span>
+<span class="source-line" id="L761"><a class="line-link" href="#L761" aria-label="Line 761">761</a>        instanceId,</span>
+<span class="source-line" id="L762"><a class="line-link" href="#L762" aria-label="Line 762">762</a>        processToken,</span>
+<span class="source-line" id="L763"><a class="line-link" href="#L763" aria-label="Line 763">763</a>        readyPath,</span>
+<span class="source-line" id="L764"><a class="line-link" href="#L764" aria-label="Line 764">764</a>        requestStartedPath,</span>
+<span class="source-line" id="L765"><a class="line-link" href="#L765" aria-label="Line 765">765</a>        releaseArgument,</span>
+<span class="source-line" id="L766"><a class="line-link" href="#L766" aria-label="Line 766">766</a>        symnavVersion,</span>
+<span class="source-line" id="L767"><a class="line-link" href="#L767" aria-label="Line 767">767</a>      ],</span>
+<span class="source-line" id="L768"><a class="line-link" href="#L768" aria-label="Line 768">768</a>      {</span>
+<span class="source-line" id="L769"><a class="line-link" href="#L769" aria-label="Line 769">769</a>        stdio: &quot;ignore&quot;,</span>
+<span class="source-line" id="L770"><a class="line-link" href="#L770" aria-label="Line 770">770</a>        env: {</span>
+<span class="source-line" id="L771"><a class="line-link" href="#L771" aria-label="Line 771">771</a>          ...process.env,</span>
+<span class="source-line" id="L772"><a class="line-link" href="#L772" aria-label="Line 772">772</a>          SYMNAV_STATE_DIR: this.stateDirectory,</span>
+<span class="source-line" id="L773"><a class="line-link" href="#L773" aria-label="Line 773">773</a>          SYMNAV_TELEMETRY: &quot;1&quot;,</span>
+<span class="source-line" id="L774"><a class="line-link" href="#L774" aria-label="Line 774">774</a>        },</span>
+<span class="source-line" id="L775"><a class="line-link" href="#L775" aria-label="Line 775">775</a>      },</span>
+<span class="source-line" id="L776"><a class="line-link" href="#L776" aria-label="Line 776">776</a>    );</span>
+<span class="source-line" id="L777"><a class="line-link" href="#L777" aria-label="Line 777">777</a>    this.helperProcesses.push(child);</span>
+<span class="source-line" id="L778"><a class="line-link" href="#L778" aria-label="Line 778">778</a>    await waitUntil(() =&gt; existsSync(`${readyPath}.boot`));</span>
+<span class="source-line" id="L779"><a class="line-link" href="#L779" aria-label="Line 779">779</a>    const daemonPid = Number(readFileSync(`${readyPath}.boot`, &quot;utf8&quot;));</span>
+<span class="source-line" id="L780"><a class="line-link" href="#L780" aria-label="Line 780">780</a>    const record: DaemonRecord = {</span>
+<span class="source-line" id="L781"><a class="line-link" href="#L781" aria-label="Line 781">781</a>      schemaVersion: DAEMON_RECORD_SCHEMA_VERSION,</span>
+<span class="source-line" id="L782"><a class="line-link" href="#L782" aria-label="Line 782">782</a>      protocolVersion: DAEMON_PROTOCOL_VERSION,</span>
+<span class="source-line" id="L783"><a class="line-link" href="#L783" aria-label="Line 783">783</a>      symnavVersion,</span>
+<span class="source-line" id="L784"><a class="line-link" href="#L784" aria-label="Line 784">784</a>      workspaceRoot: controlledWorkspaceRoot,</span>
+<span class="source-line" id="L785"><a class="line-link" href="#L785" aria-label="Line 785">785</a>      workspaceKey: identity.workspaceKey,</span>
+<span class="source-line" id="L786"><a class="line-link" href="#L786" aria-label="Line 786">786</a>      stateKey: identity.stateKey,</span>
+<span class="source-line" id="L787"><a class="line-link" href="#L787" aria-label="Line 787">787</a>      identityKey: identity.identityKey,</span>
+<span class="source-line" id="L788"><a class="line-link" href="#L788" aria-label="Line 788">788</a>      instanceId,</span>
+<span class="source-line" id="L789"><a class="line-link" href="#L789" aria-label="Line 789">789</a>      processToken,</span>
+<span class="source-line" id="L790"><a class="line-link" href="#L790" aria-label="Line 790">790</a>      endpoint: identity.endpoint(instanceId),</span>
+<span class="source-line" id="L791"><a class="line-link" href="#L791" aria-label="Line 791">791</a>      pid: daemonPid,</span>
+<span class="source-line" id="L792"><a class="line-link" href="#L792" aria-label="Line 792">792</a>      state: &quot;starting&quot;,</span>
+<span class="source-line" id="L793"><a class="line-link" href="#L793" aria-label="Line 793">793</a>      startedAt: Date.now(),</span>
+<span class="source-line" id="L794"><a class="line-link" href="#L794" aria-label="Line 794">794</a>      memoryCapBytes: Number.MAX_SAFE_INTEGER,</span>
+<span class="source-line" id="L795"><a class="line-link" href="#L795" aria-label="Line 795">795</a>    };</span>
+<span class="source-line" id="L796"><a class="line-link" href="#L796" aria-label="Line 796">796</a>    if (!registry.writeStartingIfStartupOwner(identity, record)) {</span>
+<span class="source-line" id="L797"><a class="line-link" href="#L797" aria-label="Line 797">797</a>      throw new Error(&quot;Controlled daemon lost startup ownership&quot;);</span>
+<span class="source-line" id="L798"><a class="line-link" href="#L798" aria-label="Line 798">798</a>    }</span>
+<span class="source-line" id="L799"><a class="line-link" href="#L799" aria-label="Line 799">799</a>    await waitUntil(() =&gt; existsSync(readyPath));</span>
+<span class="source-line" id="L800"><a class="line-link" href="#L800" aria-label="Line 800">800</a>    lease.release();</span>
+<span class="source-line" id="L801"><a class="line-link" href="#L801" aria-label="Line 801">801</a>    const readyRecord = registry.read(identity);</span>
+<span class="source-line" id="L802"><a class="line-link" href="#L802" aria-label="Line 802">802</a>    if (readyRecord?.state !== &quot;ready&quot;) throw new Error(&quot;Controlled daemon did not become ready&quot;);</span>
+<span class="source-line" id="L803"><a class="line-link" href="#L803" aria-label="Line 803">803</a>    return {</span>
+<span class="source-line" id="L804"><a class="line-link" href="#L804" aria-label="Line 804">804</a>      child,</span>
+<span class="source-line" id="L805"><a class="line-link" href="#L805" aria-label="Line 805">805</a>      record: readyRecord,</span>
+<span class="source-line" id="L806"><a class="line-link" href="#L806" aria-label="Line 806">806</a>      requestPayloadPath: `${requestStartedPath}.payload`,</span>
+<span class="source-line" id="L807"><a class="line-link" href="#L807" aria-label="Line 807">807</a>      requestStartedPath,</span>
+<span class="source-line" id="L808"><a class="line-link" href="#L808" aria-label="Line 808">808</a>      requestIdPath: `${requestStartedPath}.request-id`,</span>
+<span class="source-line" id="L809"><a class="line-link" href="#L809" aria-label="Line 809">809</a>      workerExitReleasePath: `${requestStartedPath}.release-worker-exit`,</span>
+<span class="source-line" id="L810"><a class="line-link" href="#L810" aria-label="Line 810">810</a>    };</span>
+<span class="source-line" id="L811"><a class="line-link" href="#L811" aria-label="Line 811">811</a>  }</span>
+<span class="source-line" id="L812"><a class="line-link" href="#L812" aria-label="Line 812">812</a></span>
+<span class="source-line" id="L813"><a class="line-link" href="#L813" aria-label="Line 813">813</a>  onlyDaemonPid(): number {</span>
+<span class="source-line" id="L814"><a class="line-link" href="#L814" aria-label="Line 814">814</a>    const records = DaemonStateFiles.matchingPaths(this.stateDirectory, &quot;.json&quot;);</span>
+<span class="source-line" id="L815"><a class="line-link" href="#L815" aria-label="Line 815">815</a>    expect(records).toHaveLength(1);</span>
+<span class="source-line" id="L816"><a class="line-link" href="#L816" aria-label="Line 816">816</a>    const record = JSON.parse(readFileSync(records[0]!, &quot;utf8&quot;)) as {</span>
+<span class="source-line" id="L817"><a class="line-link" href="#L817" aria-label="Line 817">817</a>      pid: number;</span>
+<span class="source-line" id="L818"><a class="line-link" href="#L818" aria-label="Line 818">818</a>    };</span>
+<span class="source-line" id="L819"><a class="line-link" href="#L819" aria-label="Line 819">819</a>    return record.pid;</span>
+<span class="source-line" id="L820"><a class="line-link" href="#L820" aria-label="Line 820">820</a>  }</span>
+<span class="source-line" id="L821"><a class="line-link" href="#L821" aria-label="Line 821">821</a></span>
+<span class="source-line" id="L822"><a class="line-link" href="#L822" aria-label="Line 822">822</a>  daemonRecordCount(): number {</span>
+<span class="source-line" id="L823"><a class="line-link" href="#L823" aria-label="Line 823">823</a>    return DaemonStateFiles.matchingPaths(this.stateDirectory, &quot;.json&quot;).length;</span>
+<span class="source-line" id="L824"><a class="line-link" href="#L824" aria-label="Line 824">824</a>  }</span>
+<span class="source-line" id="L825"><a class="line-link" href="#L825" aria-label="Line 825">825</a></span>
+<span class="source-line" id="L826"><a class="line-link" href="#L826" aria-label="Line 826">826</a>  completionSpoolFileCount(): number {</span>
+<span class="source-line" id="L827"><a class="line-link" href="#L827" aria-label="Line 827">827</a>    const identity = DaemonWorkspaceIdentity.from(</span>
+<span class="source-line" id="L828"><a class="line-link" href="#L828" aria-label="Line 828">828</a>      canonicalWorkspaceRoot(realpathSync(this.workspaceRoot)),</span>
+<span class="source-line" id="L829"><a class="line-link" href="#L829" aria-label="Line 829">829</a>      StateDirectoryResolver.canonicalize(this.stateDirectory),</span>
+<span class="source-line" id="L830"><a class="line-link" href="#L830" aria-label="Line 830">830</a>    );</span>
+<span class="source-line" id="L831"><a class="line-link" href="#L831" aria-label="Line 831">831</a>    if (!existsSync(identity.spoolDirectory)) return 0;</span>
+<span class="source-line" id="L832"><a class="line-link" href="#L832" aria-label="Line 832">832</a>    return readdirSync(identity.spoolDirectory, { recursive: true }).filter((entry) =&gt;</span>
+<span class="source-line" id="L833"><a class="line-link" href="#L833" aria-label="Line 833">833</a>      String(entry).endsWith(&quot;.spool&quot;),</span>
+<span class="source-line" id="L834"><a class="line-link" href="#L834" aria-label="Line 834">834</a>    ).length;</span>
+<span class="source-line" id="L835"><a class="line-link" href="#L835" aria-label="Line 835">835</a>  }</span>
+<span class="source-line" id="L836"><a class="line-link" href="#L836" aria-label="Line 836">836</a></span>
+<span class="source-line" id="L837"><a class="line-link" href="#L837" aria-label="Line 837">837</a>  replaceStateDirectoryWithFile(): void {</span>
+<span class="source-line" id="L838"><a class="line-link" href="#L838" aria-label="Line 838">838</a>    writeFileSync(this.stateDirectory, &quot;invalid daemon state path&quot;);</span>
+<span class="source-line" id="L839"><a class="line-link" href="#L839" aria-label="Line 839">839</a>  }</span>
+<span class="source-line" id="L840"><a class="line-link" href="#L840" aria-label="Line 840">840</a></span>
+<span class="source-line" id="L841"><a class="line-link" href="#L841" aria-label="Line 841">841</a>  telemetryModes(): readonly string[] {</span>
+<span class="source-line" id="L842"><a class="line-link" href="#L842" aria-label="Line 842">842</a>    const usagePath = join(this.stateDirectory, &quot;usage.jsonl&quot;);</span>
+<span class="source-line" id="L843"><a class="line-link" href="#L843" aria-label="Line 843">843</a>    if (!existsSync(usagePath)) return [];</span>
+<span class="source-line" id="L844"><a class="line-link" href="#L844" aria-label="Line 844">844</a>    return readFileSync(usagePath, &quot;utf8&quot;)</span>
+<span class="source-line" id="L845"><a class="line-link" href="#L845" aria-label="Line 845">845</a>      .trimEnd()</span>
+<span class="source-line" id="L846"><a class="line-link" href="#L846" aria-label="Line 846">846</a>      .split(&quot;\n&quot;)</span>
+<span class="source-line" id="L847"><a class="line-link" href="#L847" aria-label="Line 847">847</a>      .map((line) =&gt; (JSON.parse(line) as { executionMode: string }).executionMode);</span>
+<span class="source-line" id="L848"><a class="line-link" href="#L848" aria-label="Line 848">848</a>  }</span>
+<span class="source-line" id="L849"><a class="line-link" href="#L849" aria-label="Line 849">849</a></span>
+<span class="source-line" id="L850"><a class="line-link" href="#L850" aria-label="Line 850">850</a>  async dispose(): Promise&lt;void&gt; {</span>
+<span class="source-line" id="L851"><a class="line-link" href="#L851" aria-label="Line 851">851</a>    await E2eProcessCleanup.terminateAndRemoveDirectories(</span>
+<span class="source-line" id="L852"><a class="line-link" href="#L852" aria-label="Line 852">852</a>      [this.root],</span>
+<span class="source-line" id="L853"><a class="line-link" href="#L853" aria-label="Line 853">853</a>      () =&gt; this.daemonProcessIds(),</span>
+<span class="source-line" id="L854"><a class="line-link" href="#L854" aria-label="Line 854">854</a>      { children: this.helperProcesses },</span>
+<span class="source-line" id="L855"><a class="line-link" href="#L855" aria-label="Line 855">855</a>    );</span>
+<span class="source-line" id="L856"><a class="line-link" href="#L856" aria-label="Line 856">856</a>    this.helperProcesses.length = 0;</span>
+<span class="source-line" id="L857"><a class="line-link" href="#L857" aria-label="Line 857">857</a>  }</span>
+<span class="source-line" id="L858"><a class="line-link" href="#L858" aria-label="Line 858">858</a></span>
+<span class="source-line" id="L859"><a class="line-link" href="#L859" aria-label="Line 859">859</a>  private daemonProcessIds(): readonly number[] {</span>
+<span class="source-line" id="L860"><a class="line-link" href="#L860" aria-label="Line 860">860</a>    return DaemonStateFiles.matchingPaths(this.stateDirectory, &quot;.json&quot;).map((path) =&gt; {</span>
+<span class="source-line" id="L861"><a class="line-link" href="#L861" aria-label="Line 861">861</a>      const record = JSON.parse(readFileSync(path, &quot;utf8&quot;)) as { readonly pid: number };</span>
+<span class="source-line" id="L862"><a class="line-link" href="#L862" aria-label="Line 862">862</a>      return record.pid;</span>
+<span class="source-line" id="L863"><a class="line-link" href="#L863" aria-label="Line 863">863</a>    });</span>
+<span class="source-line" id="L864"><a class="line-link" href="#L864" aria-label="Line 864">864</a>  }</span>
+<span class="source-line" id="L865"><a class="line-link" href="#L865" aria-label="Line 865">865</a></span>
+<span class="source-line" id="L866"><a class="line-link" href="#L866" aria-label="Line 866">866</a>  private run(</span>
+<span class="source-line" id="L867"><a class="line-link" href="#L867" aria-label="Line 867">867</a>    args: readonly string[],</span>
+<span class="source-line" id="L868"><a class="line-link" href="#L868" aria-label="Line 868">868</a>    daemon: string,</span>
+<span class="source-line" id="L869"><a class="line-link" href="#L869" aria-label="Line 869">869</a>    cwd = this.workspaceRoot,</span>
+<span class="source-line" id="L870"><a class="line-link" href="#L870" aria-label="Line 870">870</a>    telemetry = &quot;0&quot;,</span>
+<span class="source-line" id="L871"><a class="line-link" href="#L871" aria-label="Line 871">871</a>  ): RunSymnavBinaryResult {</span>
+<span class="source-line" id="L872"><a class="line-link" href="#L872" aria-label="Line 872">872</a>    return runSymnavBinary(args, {</span>
+<span class="source-line" id="L873"><a class="line-link" href="#L873" aria-label="Line 873">873</a>      cwd,</span>
+<span class="source-line" id="L874"><a class="line-link" href="#L874" aria-label="Line 874">874</a>      env: this.environment(daemon, telemetry),</span>
+<span class="source-line" id="L875"><a class="line-link" href="#L875" aria-label="Line 875">875</a>    });</span>
+<span class="source-line" id="L876"><a class="line-link" href="#L876" aria-label="Line 876">876</a>  }</span>
+<span class="source-line" id="L877"><a class="line-link" href="#L877" aria-label="Line 877">877</a></span>
+<span class="source-line" id="L878"><a class="line-link" href="#L878" aria-label="Line 878">878</a>  private environment(daemon: string, telemetry = &quot;0&quot;): NodeJS.ProcessEnv {</span>
+<span class="source-line" id="L879"><a class="line-link" href="#L879" aria-label="Line 879">879</a>    return {</span>
+<span class="source-line" id="L880"><a class="line-link" href="#L880" aria-label="Line 880">880</a>      ...process.env,</span>
+<span class="source-line" id="L881"><a class="line-link" href="#L881" aria-label="Line 881">881</a>      SYMNAV_DAEMON: daemon,</span>
+<span class="source-line" id="L882"><a class="line-link" href="#L882" aria-label="Line 882">882</a>      SYMNAV_STATE_DIR: this.stateDirectory,</span>
+<span class="source-line" id="L883"><a class="line-link" href="#L883" aria-label="Line 883">883</a>      SYMNAV_TELEMETRY: telemetry,</span>
+<span class="source-line" id="L884"><a class="line-link" href="#L884" aria-label="Line 884">884</a>    };</span>
+<span class="source-line" id="L885"><a class="line-link" href="#L885" aria-label="Line 885">885</a>  }</span>
+<span class="source-line" id="L886"><a class="line-link" href="#L886" aria-label="Line 886">886</a>}</span>
+<span class="source-line" id="L887"><a class="line-link" href="#L887" aria-label="Line 887">887</a></span>
+<span class="source-line" id="L888"><a class="line-link" href="#L888" aria-label="Line 888">888</a>function processIsAlive(pid: number): boolean {</span>
+<span class="source-line" id="L889"><a class="line-link" href="#L889" aria-label="Line 889">889</a>  try {</span>
+<span class="source-line" id="L890"><a class="line-link" href="#L890" aria-label="Line 890">890</a>    process.kill(pid, 0);</span>
+<span class="source-line" id="L891"><a class="line-link" href="#L891" aria-label="Line 891">891</a>    return true;</span>
+<span class="source-line" id="L892"><a class="line-link" href="#L892" aria-label="Line 892">892</a>  } catch {</span>
+<span class="source-line" id="L893"><a class="line-link" href="#L893" aria-label="Line 893">893</a>    return false;</span>
+<span class="source-line" id="L894"><a class="line-link" href="#L894" aria-label="Line 894">894</a>  }</span>
+<span class="source-line" id="L895"><a class="line-link" href="#L895" aria-label="Line 895">895</a>}</span>
+<span class="source-line" id="L896"><a class="line-link" href="#L896" aria-label="Line 896">896</a></span>
+<span class="source-line" id="L897"><a class="line-link" href="#L897" aria-label="Line 897">897</a>function waitForProcess(child: ChildProcess): Promise&lt;void&gt; {</span>
+<span class="source-line" id="L898"><a class="line-link" href="#L898" aria-label="Line 898">898</a>  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();</span>
+<span class="source-line" id="L899"><a class="line-link" href="#L899" aria-label="Line 899">899</a>  return new Promise((resolve, reject) =&gt; {</span>
+<span class="source-line" id="L900"><a class="line-link" href="#L900" aria-label="Line 900">900</a>    child.once(&quot;error&quot;, reject);</span>
+<span class="source-line" id="L901"><a class="line-link" href="#L901" aria-label="Line 901">901</a>    child.once(&quot;close&quot;, () =&gt; resolve());</span>
+<span class="source-line" id="L902"><a class="line-link" href="#L902" aria-label="Line 902">902</a>  });</span>
+<span class="source-line" id="L903"><a class="line-link" href="#L903" aria-label="Line 903">903</a>}</span>
+<span class="source-line" id="L904"><a class="line-link" href="#L904" aria-label="Line 904">904</a></span>
+<span class="source-line" id="L905"><a class="line-link" href="#L905" aria-label="Line 905">905</a>async function decodeOutput(</span>
+<span class="source-line" id="L906"><a class="line-link" href="#L906" aria-label="Line 906">906</a>  output: import(&quot;@symnav/daemon&quot;).DaemonExecutorOutput,</span>
+<span class="source-line" id="L907"><a class="line-link" href="#L907" aria-label="Line 907">907</a>): Promise&lt;string&gt; {</span>
+<span class="source-line" id="L908"><a class="line-link" href="#L908" aria-label="Line 908">908</a>  const chunks = [];</span>
+<span class="source-line" id="L909"><a class="line-link" href="#L909" aria-label="Line 909">909</a>  for await (const record of output.records()) chunks.push(Buffer.from(record.bytes));</span>
+<span class="source-line" id="L910"><a class="line-link" href="#L910" aria-label="Line 910">910</a>  await output.dispose();</span>
+<span class="source-line" id="L911"><a class="line-link" href="#L911" aria-label="Line 911">911</a>  return Buffer.concat(chunks).toString();</span>
+<span class="source-line" id="L912"><a class="line-link" href="#L912" aria-label="Line 912">912</a>}</span>
+<span class="source-line" id="L913"><a class="line-link" href="#L913" aria-label="Line 913">913</a></span>
+<span class="source-line" id="L914"><a class="line-link" href="#L914" aria-label="Line 914">914</a>function digest(value: string): string {</span>
+<span class="source-line" id="L915"><a class="line-link" href="#L915" aria-label="Line 915">915</a>  return createHash(&quot;sha256&quot;).update(value).digest(&quot;hex&quot;);</span>
+<span class="source-line" id="L916"><a class="line-link" href="#L916" aria-label="Line 916">916</a>}</span>
+<span class="source-line" id="L917"><a class="line-link" href="#L917" aria-label="Line 917">917</a></span>
+<span class="source-line" id="L918"><a class="line-link" href="#L918" aria-label="Line 918">918</a>interface ControlledDaemon {</span>
+<span class="source-line" id="L919"><a class="line-link" href="#L919" aria-label="Line 919">919</a>  readonly child: ChildProcess;</span>
+<span class="source-line" id="L920"><a class="line-link" href="#L920" aria-label="Line 920">920</a>  readonly record: DaemonRecord;</span>
+<span class="source-line" id="L921"><a class="line-link" href="#L921" aria-label="Line 921">921</a>  readonly requestPayloadPath: string;</span>
+<span class="source-line" id="L922"><a class="line-link" href="#L922" aria-label="Line 922">922</a>  readonly requestStartedPath: string;</span>
+<span class="source-line" id="L923"><a class="line-link" href="#L923" aria-label="Line 923">923</a>  readonly requestIdPath: string;</span>
+<span class="source-line" id="L924"><a class="line-link" href="#L924" aria-label="Line 924">924</a>  readonly workerExitReleasePath: string;</span>
+<span class="source-line" id="L925"><a class="line-link" href="#L925" aria-label="Line 925">925</a>}</span>
+<span class="source-line" id="L926"><a class="line-link" href="#L926" aria-label="Line 926">926</a></span>
+<span class="source-line" id="L927"><a class="line-link" href="#L927" aria-label="Line 927">927</a>async function waitUntil(predicate: () =&gt; boolean | Promise&lt;boolean&gt;): Promise&lt;void&gt; {</span>
+<span class="source-line" id="L928"><a class="line-link" href="#L928" aria-label="Line 928">928</a>  const deadline = Date.now() + 5_000;</span>
+<span class="source-line" id="L929"><a class="line-link" href="#L929" aria-label="Line 929">929</a>  while (Date.now() &lt;= deadline) {</span>
+<span class="source-line" id="L930"><a class="line-link" href="#L930" aria-label="Line 930">930</a>    if (await predicate()) return;</span>
+<span class="source-line" id="L931"><a class="line-link" href="#L931" aria-label="Line 931">931</a>    await new Promise((resolve) =&gt; setTimeout(resolve, 10));</span>
+<span class="source-line" id="L932"><a class="line-link" href="#L932" aria-label="Line 932">932</a>  }</span>
+<span class="source-line" id="L933"><a class="line-link" href="#L933" aria-label="Line 933">933</a>  throw new Error(&quot;Timed out waiting for controlled daemon state&quot;);</span>
+<span class="source-line" id="L934"><a class="line-link" href="#L934" aria-label="Line 934">934</a>}</span></div></body></html>

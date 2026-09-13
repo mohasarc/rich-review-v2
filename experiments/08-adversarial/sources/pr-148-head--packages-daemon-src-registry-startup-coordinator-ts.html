@@ -1,0 +1,501 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>pr-148-head: packages/daemon/src/registry/startup-coordinator.ts</title><link rel="stylesheet" href="../styles.css"><body class="source-page"><a href="../index.html">← Decision record</a><h1>packages/daemon/src/registry/startup-coordinator.ts</h1><p class="meta">pr-148-head · 20838f8dbf413e04767543eb2380d0d114da6c60<br>Verbatim local snapshot. Line links are permanent within this artifact.</p><div class="source-code"><span class="source-line" id="L1"><a class="line-link" href="#L1" aria-label="Line 1">1</a>import { randomUUID } from &quot;node:crypto&quot;;</span>
+<span class="source-line" id="L2"><a class="line-link" href="#L2" aria-label="Line 2">2</a>import type { DaemonPolicyValues, DaemonReadinessProbe } from &quot;@symnav/daemon&quot;;</span>
+<span class="source-line" id="L3"><a class="line-link" href="#L3" aria-label="Line 3">3</a>import {</span>
+<span class="source-line" id="L4"><a class="line-link" href="#L4" aria-label="Line 4">4</a>  DaemonProcessTerminationError,</span>
+<span class="source-line" id="L5"><a class="line-link" href="#L5" aria-label="Line 5">5</a>  NodeDaemonProcessTerminator,</span>
+<span class="source-line" id="L6"><a class="line-link" href="#L6" aria-label="Line 6">6</a>  type DaemonProcess,</span>
+<span class="source-line" id="L7"><a class="line-link" href="#L7" aria-label="Line 7">7</a>  type DaemonProcessExit,</span>
+<span class="source-line" id="L8"><a class="line-link" href="#L8" aria-label="Line 8">8</a>  type DaemonProcessLauncher,</span>
+<span class="source-line" id="L9"><a class="line-link" href="#L9" aria-label="Line 9">9</a>  type DaemonProcessTerminator,</span>
+<span class="source-line" id="L10"><a class="line-link" href="#L10" aria-label="Line 10">10</a>} from &quot;../process/process-launcher.js&quot;;</span>
+<span class="source-line" id="L11"><a class="line-link" href="#L11" aria-label="Line 11">11</a>import type { DaemonRecord, DaemonStartResult } from &quot;../transport/protocol.js&quot;;</span>
+<span class="source-line" id="L12"><a class="line-link" href="#L12" aria-label="Line 12">12</a>import { DAEMON_PROTOCOL_VERSION, DAEMON_RECORD_SCHEMA_VERSION } from &quot;../transport/protocol.js&quot;;</span>
+<span class="source-line" id="L13"><a class="line-link" href="#L13" aria-label="Line 13">13</a>import type { DaemonRegistry, StartupOwner } from &quot;./registry.js&quot;;</span>
+<span class="source-line" id="L14"><a class="line-link" href="#L14" aria-label="Line 14">14</a>import { DaemonRecordObserver } from &quot;./record-observer.js&quot;;</span>
+<span class="source-line" id="L15"><a class="line-link" href="#L15" aria-label="Line 15">15</a>import type { DaemonWorkspaceIdentity } from &quot;./workspace-identity.js&quot;;</span>
+<span class="source-line" id="L16"><a class="line-link" href="#L16" aria-label="Line 16">16</a>import type {</span>
+<span class="source-line" id="L17"><a class="line-link" href="#L17" aria-label="Line 17">17</a>  DaemonExecutionRequester,</span>
+<span class="source-line" id="L18"><a class="line-link" href="#L18" aria-label="Line 18">18</a>  DaemonLifecycleRequestSender,</span>
+<span class="source-line" id="L19"><a class="line-link" href="#L19" aria-label="Line 19">19</a>} from &quot;../transport/contracts.js&quot;;</span>
+<span class="source-line" id="L20"><a class="line-link" href="#L20" aria-label="Line 20">20</a>import { NodeDaemonClock, type DaemonClock } from &quot;../lifecycle/daemon-clock.js&quot;;</span>
+<span class="source-line" id="L21"><a class="line-link" href="#L21" aria-label="Line 21">21</a></span>
+<span class="source-line" id="L22"><a class="line-link" href="#L22" aria-label="Line 22">22</a>export type DaemonWarmupTriggerResult =</span>
+<span class="source-line" id="L23"><a class="line-link" href="#L23" aria-label="Line 23">23</a>  | { readonly status: &quot;launched&quot;; readonly instanceId: string; readonly pid: number }</span>
+<span class="source-line" id="L24"><a class="line-link" href="#L24" aria-label="Line 24">24</a>  | { readonly status: &quot;starting&quot;; readonly instanceId: string; readonly pid: number }</span>
+<span class="source-line" id="L25"><a class="line-link" href="#L25" aria-label="Line 25">25</a>  | { readonly status: &quot;ready&quot;; readonly instanceId: string; readonly pid: number };</span>
+<span class="source-line" id="L26"><a class="line-link" href="#L26" aria-label="Line 26">26</a></span>
+<span class="source-line" id="L27"><a class="line-link" href="#L27" aria-label="Line 27">27</a>interface DaemonStartupCoordinatorOptions {</span>
+<span class="source-line" id="L28"><a class="line-link" href="#L28" aria-label="Line 28">28</a>  readonly policy: Pick&lt;DaemonPolicyValues, &quot;startup&quot; | &quot;shutdown&quot;&gt;;</span>
+<span class="source-line" id="L29"><a class="line-link" href="#L29" aria-label="Line 29">29</a>  readonly clock?: Pick&lt;DaemonClock, &quot;wallNowMs&quot;&gt;;</span>
+<span class="source-line" id="L30"><a class="line-link" href="#L30" aria-label="Line 30">30</a>  readonly instanceId?: () =&gt; string;</span>
+<span class="source-line" id="L31"><a class="line-link" href="#L31" aria-label="Line 31">31</a>  readonly processTerminator?: DaemonProcessTerminator;</span>
+<span class="source-line" id="L32"><a class="line-link" href="#L32" aria-label="Line 32">32</a>  readonly readinessProbe?: DaemonReadinessProbe;</span>
+<span class="source-line" id="L33"><a class="line-link" href="#L33" aria-label="Line 33">33</a>}</span>
+<span class="source-line" id="L34"><a class="line-link" href="#L34" aria-label="Line 34">34</a></span>
+<span class="source-line" id="L35"><a class="line-link" href="#L35" aria-label="Line 35">35</a>class DaemonChildExitError extends Error {</span>
+<span class="source-line" id="L36"><a class="line-link" href="#L36" aria-label="Line 36">36</a>  constructor(readonly exit: DaemonProcessExit) {</span>
+<span class="source-line" id="L37"><a class="line-link" href="#L37" aria-label="Line 37">37</a>    super(</span>
+<span class="source-line" id="L38"><a class="line-link" href="#L38" aria-label="Line 38">38</a>      exit.cause === &quot;spawn-error&quot;</span>
+<span class="source-line" id="L39"><a class="line-link" href="#L39" aria-label="Line 39">39</a>        ? `Daemon child failed after spawn (${exit.errorName ?? &quot;Error&quot;})`</span>
+<span class="source-line" id="L40"><a class="line-link" href="#L40" aria-label="Line 40">40</a>        : `Daemon child exited before readiness (code ${String(exit.code)}, signal ${String(exit.signal)})`,</span>
+<span class="source-line" id="L41"><a class="line-link" href="#L41" aria-label="Line 41">41</a>    );</span>
+<span class="source-line" id="L42"><a class="line-link" href="#L42" aria-label="Line 42">42</a>  }</span>
+<span class="source-line" id="L43"><a class="line-link" href="#L43" aria-label="Line 43">43</a>}</span>
+<span class="source-line" id="L44"><a class="line-link" href="#L44" aria-label="Line 44">44</a></span>
+<span class="source-line" id="L45"><a class="line-link" href="#L45" aria-label="Line 45">45</a>class DaemonWarmupLostError extends Error {}</span>
+<span class="source-line" id="L46"><a class="line-link" href="#L46" aria-label="Line 46">46</a></span>
+<span class="source-line" id="L47"><a class="line-link" href="#L47" aria-label="Line 47">47</a>class DaemonOwnedButUnresponsiveError extends Error {}</span>
+<span class="source-line" id="L48"><a class="line-link" href="#L48" aria-label="Line 48">48</a></span>
+<span class="source-line" id="L49"><a class="line-link" href="#L49" aria-label="Line 49">49</a>export class DaemonStartupCoordinator {</span>
+<span class="source-line" id="L50"><a class="line-link" href="#L50" aria-label="Line 50">50</a>  private readonly coordinationGraceMs: number;</span>
+<span class="source-line" id="L51"><a class="line-link" href="#L51" aria-label="Line 51">51</a>  private readonly childFailureRetryLimit: number;</span>
+<span class="source-line" id="L52"><a class="line-link" href="#L52" aria-label="Line 52">52</a>  private readonly terminationTimeoutMs: number;</span>
+<span class="source-line" id="L53"><a class="line-link" href="#L53" aria-label="Line 53">53</a>  private readonly pollIntervalMs: number;</span>
+<span class="source-line" id="L54"><a class="line-link" href="#L54" aria-label="Line 54">54</a>  private readonly clock: Pick&lt;DaemonClock, &quot;wallNowMs&quot;&gt;;</span>
+<span class="source-line" id="L55"><a class="line-link" href="#L55" aria-label="Line 55">55</a>  private readonly nextInstanceId: () =&gt; string;</span>
+<span class="source-line" id="L56"><a class="line-link" href="#L56" aria-label="Line 56">56</a>  private readonly processTerminator: DaemonProcessTerminator;</span>
+<span class="source-line" id="L57"><a class="line-link" href="#L57" aria-label="Line 57">57</a>  private readonly readinessProbe: DaemonReadinessProbe;</span>
+<span class="source-line" id="L58"><a class="line-link" href="#L58" aria-label="Line 58">58</a>  private readonly observer: DaemonRecordObserver;</span>
+<span class="source-line" id="L59"><a class="line-link" href="#L59" aria-label="Line 59">59</a>  private readonly launchedInstances = new Set&lt;string&gt;();</span>
+<span class="source-line" id="L60"><a class="line-link" href="#L60" aria-label="Line 60">60</a>  private readonly launchedProcesses = new Map&lt;string, DaemonProcess&gt;();</span>
+<span class="source-line" id="L61"><a class="line-link" href="#L61" aria-label="Line 61">61</a>  private readonly launchedExits = new Map&lt;string, DaemonProcessExit&gt;();</span>
+<span class="source-line" id="L62"><a class="line-link" href="#L62" aria-label="Line 62">62</a>  private readonly launchedInstanceIdsByIdentity = new Map&lt;string, string&gt;();</span>
+<span class="source-line" id="L63"><a class="line-link" href="#L63" aria-label="Line 63">63</a></span>
+<span class="source-line" id="L64"><a class="line-link" href="#L64" aria-label="Line 64">64</a>  constructor(</span>
+<span class="source-line" id="L65"><a class="line-link" href="#L65" aria-label="Line 65">65</a>    private readonly registry: DaemonRegistry,</span>
+<span class="source-line" id="L66"><a class="line-link" href="#L66" aria-label="Line 66">66</a>    private readonly launcher: DaemonProcessLauncher,</span>
+<span class="source-line" id="L67"><a class="line-link" href="#L67" aria-label="Line 67">67</a>    private readonly transport: DaemonLifecycleRequestSender &amp; DaemonExecutionRequester,</span>
+<span class="source-line" id="L68"><a class="line-link" href="#L68" aria-label="Line 68">68</a>    options: DaemonStartupCoordinatorOptions,</span>
+<span class="source-line" id="L69"><a class="line-link" href="#L69" aria-label="Line 69">69</a>  ) {</span>
+<span class="source-line" id="L70"><a class="line-link" href="#L70" aria-label="Line 70">70</a>    const policy = options.policy;</span>
+<span class="source-line" id="L71"><a class="line-link" href="#L71" aria-label="Line 71">71</a>    this.coordinationGraceMs = policy.startup.coordinationGraceMs;</span>
+<span class="source-line" id="L72"><a class="line-link" href="#L72" aria-label="Line 72">72</a>    this.childFailureRetryLimit = policy.startup.childFailureRetryLimit;</span>
+<span class="source-line" id="L73"><a class="line-link" href="#L73" aria-label="Line 73">73</a>    this.terminationTimeoutMs = policy.startup.previousInstanceTerminationTimeoutMs;</span>
+<span class="source-line" id="L74"><a class="line-link" href="#L74" aria-label="Line 74">74</a>    this.pollIntervalMs = policy.startup.observationPollIntervalMs;</span>
+<span class="source-line" id="L75"><a class="line-link" href="#L75" aria-label="Line 75">75</a>    this.clock = options.clock ?? new NodeDaemonClock();</span>
+<span class="source-line" id="L76"><a class="line-link" href="#L76" aria-label="Line 76">76</a>    this.nextInstanceId = options.instanceId ?? randomUUID;</span>
+<span class="source-line" id="L77"><a class="line-link" href="#L77" aria-label="Line 77">77</a>    this.processTerminator =</span>
+<span class="source-line" id="L78"><a class="line-link" href="#L78" aria-label="Line 78">78</a>      options.processTerminator ?? new NodeDaemonProcessTerminator(policy.shutdown, this.clock);</span>
+<span class="source-line" id="L79"><a class="line-link" href="#L79" aria-label="Line 79">79</a>    this.readinessProbe = options.readinessProbe ?? {</span>
+<span class="source-line" id="L80"><a class="line-link" href="#L80" aria-label="Line 80">80</a>      commandName: &quot;version&quot;,</span>
+<span class="source-line" id="L81"><a class="line-link" href="#L81" aria-label="Line 81">81</a>      argv: [&quot;--version&quot;],</span>
+<span class="source-line" id="L82"><a class="line-link" href="#L82" aria-label="Line 82">82</a>    };</span>
+<span class="source-line" id="L83"><a class="line-link" href="#L83" aria-label="Line 83">83</a>    this.observer = new DaemonRecordObserver(this.transport, this.processTerminator);</span>
+<span class="source-line" id="L84"><a class="line-link" href="#L84" aria-label="Line 84">84</a>  }</span>
+<span class="source-line" id="L85"><a class="line-link" href="#L85" aria-label="Line 85">85</a></span>
+<span class="source-line" id="L86"><a class="line-link" href="#L86" aria-label="Line 86">86</a>  async ensureRunning(identity: DaemonWorkspaceIdentity): Promise&lt;DaemonStartResult&gt; {</span>
+<span class="source-line" id="L87"><a class="line-link" href="#L87" aria-label="Line 87">87</a>    let failureCount = 0;</span>
+<span class="source-line" id="L88"><a class="line-link" href="#L88" aria-label="Line 88">88</a>    while (true) {</span>
+<span class="source-line" id="L89"><a class="line-link" href="#L89" aria-label="Line 89">89</a>      try {</span>
+<span class="source-line" id="L90"><a class="line-link" href="#L90" aria-label="Line 90">90</a>        return await this.triggerAndWait(identity);</span>
+<span class="source-line" id="L91"><a class="line-link" href="#L91" aria-label="Line 91">91</a>      } catch (error) {</span>
+<span class="source-line" id="L92"><a class="line-link" href="#L92" aria-label="Line 92">92</a>        if (</span>
+<span class="source-line" id="L93"><a class="line-link" href="#L93" aria-label="Line 93">93</a>          !(error instanceof DaemonChildExitError || error instanceof DaemonWarmupLostError) ||</span>
+<span class="source-line" id="L94"><a class="line-link" href="#L94" aria-label="Line 94">94</a>          failureCount &gt;= this.childFailureRetryLimit</span>
+<span class="source-line" id="L95"><a class="line-link" href="#L95" aria-label="Line 95">95</a>        ) {</span>
+<span class="source-line" id="L96"><a class="line-link" href="#L96" aria-label="Line 96">96</a>          throw error;</span>
+<span class="source-line" id="L97"><a class="line-link" href="#L97" aria-label="Line 97">97</a>        }</span>
+<span class="source-line" id="L98"><a class="line-link" href="#L98" aria-label="Line 98">98</a>        failureCount += 1;</span>
+<span class="source-line" id="L99"><a class="line-link" href="#L99" aria-label="Line 99">99</a>      }</span>
+<span class="source-line" id="L100"><a class="line-link" href="#L100" aria-label="Line 100">100</a>    }</span>
+<span class="source-line" id="L101"><a class="line-link" href="#L101" aria-label="Line 101">101</a>  }</span>
+<span class="source-line" id="L102"><a class="line-link" href="#L102" aria-label="Line 102">102</a></span>
+<span class="source-line" id="L103"><a class="line-link" href="#L103" aria-label="Line 103">103</a>  private async triggerAndWait(identity: DaemonWorkspaceIdentity): Promise&lt;DaemonStartResult&gt; {</span>
+<span class="source-line" id="L104"><a class="line-link" href="#L104" aria-label="Line 104">104</a>    const trigger = await this.trigger(identity);</span>
+<span class="source-line" id="L105"><a class="line-link" href="#L105" aria-label="Line 105">105</a>    return this.waitUntilReady(identity, trigger.instanceId);</span>
+<span class="source-line" id="L106"><a class="line-link" href="#L106" aria-label="Line 106">106</a>  }</span>
+<span class="source-line" id="L107"><a class="line-link" href="#L107" aria-label="Line 107">107</a></span>
+<span class="source-line" id="L108"><a class="line-link" href="#L108" aria-label="Line 108">108</a>  async trigger(identity: DaemonWorkspaceIdentity): Promise&lt;DaemonWarmupTriggerResult&gt; {</span>
+<span class="source-line" id="L109"><a class="line-link" href="#L109" aria-label="Line 109">109</a>    const readyRecord = await this.validatedReadyRecord(identity);</span>
+<span class="source-line" id="L110"><a class="line-link" href="#L110" aria-label="Line 110">110</a>    if (readyRecord?.symnavVersion === this.launcher.symnavVersion) {</span>
+<span class="source-line" id="L111"><a class="line-link" href="#L111" aria-label="Line 111">111</a>      return {</span>
+<span class="source-line" id="L112"><a class="line-link" href="#L112" aria-label="Line 112">112</a>        status: &quot;ready&quot;,</span>
+<span class="source-line" id="L113"><a class="line-link" href="#L113" aria-label="Line 113">113</a>        instanceId: readyRecord.instanceId,</span>
+<span class="source-line" id="L114"><a class="line-link" href="#L114" aria-label="Line 114">114</a>        pid: readyRecord.pid,</span>
+<span class="source-line" id="L115"><a class="line-link" href="#L115" aria-label="Line 115">115</a>      };</span>
+<span class="source-line" id="L116"><a class="line-link" href="#L116" aria-label="Line 116">116</a>    }</span>
+<span class="source-line" id="L117"><a class="line-link" href="#L117" aria-label="Line 117">117</a></span>
+<span class="source-line" id="L118"><a class="line-link" href="#L118" aria-label="Line 118">118</a>    const instanceId = this.nextInstanceId();</span>
+<span class="source-line" id="L119"><a class="line-link" href="#L119" aria-label="Line 119">119</a>    const processToken = randomUUID();</span>
+<span class="source-line" id="L120"><a class="line-link" href="#L120" aria-label="Line 120">120</a>    const lease = this.registry.acquireStartup(identity, {</span>
+<span class="source-line" id="L121"><a class="line-link" href="#L121" aria-label="Line 121">121</a>      identityKey: identity.identityKey,</span>
+<span class="source-line" id="L122"><a class="line-link" href="#L122" aria-label="Line 122">122</a>      instanceId,</span>
+<span class="source-line" id="L123"><a class="line-link" href="#L123" aria-label="Line 123">123</a>      processToken,</span>
+<span class="source-line" id="L124"><a class="line-link" href="#L124" aria-label="Line 124">124</a>      ownerPid: process.pid,</span>
+<span class="source-line" id="L125"><a class="line-link" href="#L125" aria-label="Line 125">125</a>      ownerKind: &quot;launcher&quot;,</span>
+<span class="source-line" id="L126"><a class="line-link" href="#L126" aria-label="Line 126">126</a>      heartbeatAt: this.clock.wallNowMs(),</span>
+<span class="source-line" id="L127"><a class="line-link" href="#L127" aria-label="Line 127">127</a>    });</span>
+<span class="source-line" id="L128"><a class="line-link" href="#L128" aria-label="Line 128">128</a>    if (lease === undefined) return this.observeElectedWarmup(identity);</span>
+<span class="source-line" id="L129"><a class="line-link" href="#L129" aria-label="Line 129">129</a>    try {</span>
+<span class="source-line" id="L130"><a class="line-link" href="#L130" aria-label="Line 130">130</a>      const currentRecord = await this.validatedReadyRecord(identity);</span>
+<span class="source-line" id="L131"><a class="line-link" href="#L131" aria-label="Line 131">131</a>      if (currentRecord?.symnavVersion === this.launcher.symnavVersion) {</span>
+<span class="source-line" id="L132"><a class="line-link" href="#L132" aria-label="Line 132">132</a>        lease.release();</span>
+<span class="source-line" id="L133"><a class="line-link" href="#L133" aria-label="Line 133">133</a>        return {</span>
+<span class="source-line" id="L134"><a class="line-link" href="#L134" aria-label="Line 134">134</a>          status: &quot;ready&quot;,</span>
+<span class="source-line" id="L135"><a class="line-link" href="#L135" aria-label="Line 135">135</a>          instanceId: currentRecord.instanceId,</span>
+<span class="source-line" id="L136"><a class="line-link" href="#L136" aria-label="Line 136">136</a>          pid: currentRecord.pid,</span>
+<span class="source-line" id="L137"><a class="line-link" href="#L137" aria-label="Line 137">137</a>        };</span>
+<span class="source-line" id="L138"><a class="line-link" href="#L138" aria-label="Line 138">138</a>      }</span>
+<span class="source-line" id="L139"><a class="line-link" href="#L139" aria-label="Line 139">139</a>      const storedRecord = this.registry.readStored(identity);</span>
+<span class="source-line" id="L140"><a class="line-link" href="#L140" aria-label="Line 140">140</a>      if (storedRecord !== undefined) await this.replaceStoredRecord(identity, storedRecord);</span>
+<span class="source-line" id="L141"><a class="line-link" href="#L141" aria-label="Line 141">141</a>      return await this.launch(identity, instanceId, processToken, lease);</span>
+<span class="source-line" id="L142"><a class="line-link" href="#L142" aria-label="Line 142">142</a>    } catch (error) {</span>
+<span class="source-line" id="L143"><a class="line-link" href="#L143" aria-label="Line 143">143</a>      lease.release();</span>
+<span class="source-line" id="L144"><a class="line-link" href="#L144" aria-label="Line 144">144</a>      throw error;</span>
+<span class="source-line" id="L145"><a class="line-link" href="#L145" aria-label="Line 145">145</a>    }</span>
+<span class="source-line" id="L146"><a class="line-link" href="#L146" aria-label="Line 146">146</a>  }</span>
+<span class="source-line" id="L147"><a class="line-link" href="#L147" aria-label="Line 147">147</a></span>
+<span class="source-line" id="L148"><a class="line-link" href="#L148" aria-label="Line 148">148</a>  async waitUntilReady(</span>
+<span class="source-line" id="L149"><a class="line-link" href="#L149" aria-label="Line 149">149</a>    identity: DaemonWorkspaceIdentity,</span>
+<span class="source-line" id="L150"><a class="line-link" href="#L150" aria-label="Line 150">150</a>    expectedInstanceId?: string,</span>
+<span class="source-line" id="L151"><a class="line-link" href="#L151" aria-label="Line 151">151</a>  ): Promise&lt;DaemonStartResult&gt; {</span>
+<span class="source-line" id="L152"><a class="line-link" href="#L152" aria-label="Line 152">152</a>    let missingOwner: { readonly instanceId: string; readonly firstObservedAt: number } | undefined;</span>
+<span class="source-line" id="L153"><a class="line-link" href="#L153" aria-label="Line 153">153</a>    while (true) {</span>
+<span class="source-line" id="L154"><a class="line-link" href="#L154" aria-label="Line 154">154</a>      const record = this.registry.read(identity);</span>
+<span class="source-line" id="L155"><a class="line-link" href="#L155" aria-label="Line 155">155</a>      if (record?.state === &quot;ready&quot; &amp;&amp; record.symnavVersion === this.launcher.symnavVersion) {</span>
+<span class="source-line" id="L156"><a class="line-link" href="#L156" aria-label="Line 156">156</a>        const validated = await this.validatedChildRecord(identity);</span>
+<span class="source-line" id="L157"><a class="line-link" href="#L157" aria-label="Line 157">157</a>        if (validated?.instanceId === record.instanceId) {</span>
+<span class="source-line" id="L158"><a class="line-link" href="#L158" aria-label="Line 158">158</a>          await this.probeExecution(validated);</span>
+<span class="source-line" id="L159"><a class="line-link" href="#L159" aria-label="Line 159">159</a>          return this.launchedInstances.has(record.instanceId)</span>
+<span class="source-line" id="L160"><a class="line-link" href="#L160" aria-label="Line 160">160</a>            ? {</span>
+<span class="source-line" id="L161"><a class="line-link" href="#L161" aria-label="Line 161">161</a>                status: &quot;ready&quot;,</span>
+<span class="source-line" id="L162"><a class="line-link" href="#L162" aria-label="Line 162">162</a>                workspaceRoot: record.workspaceRoot,</span>
+<span class="source-line" id="L163"><a class="line-link" href="#L163" aria-label="Line 163">163</a>                fileCount: record.fileCount ?? 0,</span>
+<span class="source-line" id="L164"><a class="line-link" href="#L164" aria-label="Line 164">164</a>                loadDurationMs: (record.readyAt ?? this.clock.wallNowMs()) - record.startedAt,</span>
+<span class="source-line" id="L165"><a class="line-link" href="#L165" aria-label="Line 165">165</a>              }</span>
+<span class="source-line" id="L166"><a class="line-link" href="#L166" aria-label="Line 166">166</a>            : this.alreadyRunning(record);</span>
+<span class="source-line" id="L167"><a class="line-link" href="#L167" aria-label="Line 167">167</a>        }</span>
+<span class="source-line" id="L168"><a class="line-link" href="#L168" aria-label="Line 168">168</a>      }</span>
+<span class="source-line" id="L169"><a class="line-link" href="#L169" aria-label="Line 169">169</a>      const storedRecord = this.registry.readStored(identity);</span>
+<span class="source-line" id="L170"><a class="line-link" href="#L170" aria-label="Line 170">170</a>      const observedInstanceId =</span>
+<span class="source-line" id="L171"><a class="line-link" href="#L171" aria-label="Line 171">171</a>        storedRecord?.instanceId ?? this.launchedInstanceIdsByIdentity.get(identity.identityKey);</span>
+<span class="source-line" id="L172"><a class="line-link" href="#L172" aria-label="Line 172">172</a>      const launchedExit =</span>
+<span class="source-line" id="L173"><a class="line-link" href="#L173" aria-label="Line 173">173</a>        observedInstanceId === undefined ? undefined : this.launchedExits.get(observedInstanceId);</span>
+<span class="source-line" id="L174"><a class="line-link" href="#L174" aria-label="Line 174">174</a>      if (launchedExit !== undefined) throw new DaemonChildExitError(launchedExit);</span>
+<span class="source-line" id="L175"><a class="line-link" href="#L175" aria-label="Line 175">175</a>      const owner = this.registry.startupOwner(identity);</span>
+<span class="source-line" id="L176"><a class="line-link" href="#L176" aria-label="Line 176">176</a>      if (owner !== undefined) missingOwner = undefined;</span>
+<span class="source-line" id="L177"><a class="line-link" href="#L177" aria-label="Line 177">177</a>      if (</span>
+<span class="source-line" id="L178"><a class="line-link" href="#L178" aria-label="Line 178">178</a>        storedRecord?.state === &quot;ready&quot; &amp;&amp;</span>
+<span class="source-line" id="L179"><a class="line-link" href="#L179" aria-label="Line 179">179</a>        storedRecord.symnavVersion === this.launcher.symnavVersion</span>
+<span class="source-line" id="L180"><a class="line-link" href="#L180" aria-label="Line 180">180</a>      ) {</span>
+<span class="source-line" id="L181"><a class="line-link" href="#L181" aria-label="Line 181">181</a>        await this.pause();</span>
+<span class="source-line" id="L182"><a class="line-link" href="#L182" aria-label="Line 182">182</a>        continue;</span>
+<span class="source-line" id="L183"><a class="line-link" href="#L183" aria-label="Line 183">183</a>      }</span>
+<span class="source-line" id="L184"><a class="line-link" href="#L184" aria-label="Line 184">184</a>      if (storedRecord?.state === &quot;starting&quot;) {</span>
+<span class="source-line" id="L185"><a class="line-link" href="#L185" aria-label="Line 185">185</a>        if (owner !== undefined &amp;&amp; this.startupOwnerIsAbandoned(identity, owner)) {</span>
+<span class="source-line" id="L186"><a class="line-link" href="#L186" aria-label="Line 186">186</a>          if (this.cleanupAbandonedStartup(identity, owner)) {</span>
+<span class="source-line" id="L187"><a class="line-link" href="#L187" aria-label="Line 187">187</a>            throw new DaemonWarmupLostError(&quot;Daemon child exited before readiness&quot;);</span>
+<span class="source-line" id="L188"><a class="line-link" href="#L188" aria-label="Line 188">188</a>          }</span>
+<span class="source-line" id="L189"><a class="line-link" href="#L189" aria-label="Line 189">189</a>          await this.pause();</span>
+<span class="source-line" id="L190"><a class="line-link" href="#L190" aria-label="Line 190">190</a>          continue;</span>
+<span class="source-line" id="L191"><a class="line-link" href="#L191" aria-label="Line 191">191</a>        }</span>
+<span class="source-line" id="L192"><a class="line-link" href="#L192" aria-label="Line 192">192</a>        const daemonProcess = this.launchedProcesses.get(storedRecord.instanceId);</span>
+<span class="source-line" id="L193"><a class="line-link" href="#L193" aria-label="Line 193">193</a>        if (daemonProcess !== undefined) {</span>
+<span class="source-line" id="L194"><a class="line-link" href="#L194" aria-label="Line 194">194</a>          const childExit = await Promise.race([</span>
+<span class="source-line" id="L195"><a class="line-link" href="#L195" aria-label="Line 195">195</a>            this.pause().then(() =&gt; undefined),</span>
+<span class="source-line" id="L196"><a class="line-link" href="#L196" aria-label="Line 196">196</a>            daemonProcess.exited,</span>
+<span class="source-line" id="L197"><a class="line-link" href="#L197" aria-label="Line 197">197</a>          ]);</span>
+<span class="source-line" id="L198"><a class="line-link" href="#L198" aria-label="Line 198">198</a>          if (childExit !== undefined) throw new DaemonChildExitError(childExit);</span>
+<span class="source-line" id="L199"><a class="line-link" href="#L199" aria-label="Line 199">199</a>          continue;</span>
+<span class="source-line" id="L200"><a class="line-link" href="#L200" aria-label="Line 200">200</a>        }</span>
+<span class="source-line" id="L201"><a class="line-link" href="#L201" aria-label="Line 201">201</a>        if (owner !== undefined) {</span>
+<span class="source-line" id="L202"><a class="line-link" href="#L202" aria-label="Line 202">202</a>          await this.pause();</span>
+<span class="source-line" id="L203"><a class="line-link" href="#L203" aria-label="Line 203">203</a>          continue;</span>
+<span class="source-line" id="L204"><a class="line-link" href="#L204" aria-label="Line 204">204</a>        }</span>
+<span class="source-line" id="L205"><a class="line-link" href="#L205" aria-label="Line 205">205</a>        if (missingOwner?.instanceId !== storedRecord.instanceId) {</span>
+<span class="source-line" id="L206"><a class="line-link" href="#L206" aria-label="Line 206">206</a>          missingOwner = {</span>
+<span class="source-line" id="L207"><a class="line-link" href="#L207" aria-label="Line 207">207</a>            instanceId: storedRecord.instanceId,</span>
+<span class="source-line" id="L208"><a class="line-link" href="#L208" aria-label="Line 208">208</a>            firstObservedAt: this.clock.wallNowMs(),</span>
+<span class="source-line" id="L209"><a class="line-link" href="#L209" aria-label="Line 209">209</a>          };</span>
+<span class="source-line" id="L210"><a class="line-link" href="#L210" aria-label="Line 210">210</a>          await this.pause();</span>
+<span class="source-line" id="L211"><a class="line-link" href="#L211" aria-label="Line 211">211</a>          continue;</span>
+<span class="source-line" id="L212"><a class="line-link" href="#L212" aria-label="Line 212">212</a>        }</span>
+<span class="source-line" id="L213"><a class="line-link" href="#L213" aria-label="Line 213">213</a>        if (this.clock.wallNowMs() - missingOwner.firstObservedAt &lt;= this.coordinationGraceMs) {</span>
+<span class="source-line" id="L214"><a class="line-link" href="#L214" aria-label="Line 214">214</a>          await this.pause();</span>
+<span class="source-line" id="L215"><a class="line-link" href="#L215" aria-label="Line 215">215</a>          continue;</span>
+<span class="source-line" id="L216"><a class="line-link" href="#L216" aria-label="Line 216">216</a>        }</span>
+<span class="source-line" id="L217"><a class="line-link" href="#L217" aria-label="Line 217">217</a>      }</span>
+<span class="source-line" id="L218"><a class="line-link" href="#L218" aria-label="Line 218">218</a>      if (owner !== undefined) {</span>
+<span class="source-line" id="L219"><a class="line-link" href="#L219" aria-label="Line 219">219</a>        await this.pause();</span>
+<span class="source-line" id="L220"><a class="line-link" href="#L220" aria-label="Line 220">220</a>        continue;</span>
+<span class="source-line" id="L221"><a class="line-link" href="#L221" aria-label="Line 221">221</a>      }</span>
+<span class="source-line" id="L222"><a class="line-link" href="#L222" aria-label="Line 222">222</a>      if (expectedInstanceId !== undefined) {</span>
+<span class="source-line" id="L223"><a class="line-link" href="#L223" aria-label="Line 223">223</a>        throw new DaemonWarmupLostError(</span>
+<span class="source-line" id="L224"><a class="line-link" href="#L224" aria-label="Line 224">224</a>          `Daemon startup ${expectedInstanceId} ended before readiness`,</span>
+<span class="source-line" id="L225"><a class="line-link" href="#L225" aria-label="Line 225">225</a>        );</span>
+<span class="source-line" id="L226"><a class="line-link" href="#L226" aria-label="Line 226">226</a>      }</span>
+<span class="source-line" id="L227"><a class="line-link" href="#L227" aria-label="Line 227">227</a>      throw new Error(&quot;Daemon startup failed before readiness&quot;);</span>
+<span class="source-line" id="L228"><a class="line-link" href="#L228" aria-label="Line 228">228</a>    }</span>
+<span class="source-line" id="L229"><a class="line-link" href="#L229" aria-label="Line 229">229</a>  }</span>
+<span class="source-line" id="L230"><a class="line-link" href="#L230" aria-label="Line 230">230</a></span>
+<span class="source-line" id="L231"><a class="line-link" href="#L231" aria-label="Line 231">231</a>  private async launch(</span>
+<span class="source-line" id="L232"><a class="line-link" href="#L232" aria-label="Line 232">232</a>    identity: DaemonWorkspaceIdentity,</span>
+<span class="source-line" id="L233"><a class="line-link" href="#L233" aria-label="Line 233">233</a>    instanceId: string,</span>
+<span class="source-line" id="L234"><a class="line-link" href="#L234" aria-label="Line 234">234</a>    processToken: string,</span>
+<span class="source-line" id="L235"><a class="line-link" href="#L235" aria-label="Line 235">235</a>    lease: NonNullable&lt;ReturnType&lt;DaemonRegistry[&quot;acquireStartup&quot;]&gt;&gt;,</span>
+<span class="source-line" id="L236"><a class="line-link" href="#L236" aria-label="Line 236">236</a>  ): Promise&lt;DaemonWarmupTriggerResult&gt; {</span>
+<span class="source-line" id="L237"><a class="line-link" href="#L237" aria-label="Line 237">237</a>    const startedAt = this.clock.wallNowMs();</span>
+<span class="source-line" id="L238"><a class="line-link" href="#L238" aria-label="Line 238">238</a>    const startingRecord: DaemonRecord = {</span>
+<span class="source-line" id="L239"><a class="line-link" href="#L239" aria-label="Line 239">239</a>      schemaVersion: DAEMON_RECORD_SCHEMA_VERSION,</span>
+<span class="source-line" id="L240"><a class="line-link" href="#L240" aria-label="Line 240">240</a>      protocolVersion: DAEMON_PROTOCOL_VERSION,</span>
+<span class="source-line" id="L241"><a class="line-link" href="#L241" aria-label="Line 241">241</a>      symnavVersion: this.launcher.symnavVersion,</span>
+<span class="source-line" id="L242"><a class="line-link" href="#L242" aria-label="Line 242">242</a>      workspaceRoot: identity.workspaceRoot,</span>
+<span class="source-line" id="L243"><a class="line-link" href="#L243" aria-label="Line 243">243</a>      workspaceKey: identity.workspaceKey,</span>
+<span class="source-line" id="L244"><a class="line-link" href="#L244" aria-label="Line 244">244</a>      stateKey: identity.stateKey,</span>
+<span class="source-line" id="L245"><a class="line-link" href="#L245" aria-label="Line 245">245</a>      identityKey: identity.identityKey,</span>
+<span class="source-line" id="L246"><a class="line-link" href="#L246" aria-label="Line 246">246</a>      instanceId,</span>
+<span class="source-line" id="L247"><a class="line-link" href="#L247" aria-label="Line 247">247</a>      processToken,</span>
+<span class="source-line" id="L248"><a class="line-link" href="#L248" aria-label="Line 248">248</a>      endpoint: identity.endpoint(instanceId),</span>
+<span class="source-line" id="L249"><a class="line-link" href="#L249" aria-label="Line 249">249</a>      pid: 0,</span>
+<span class="source-line" id="L250"><a class="line-link" href="#L250" aria-label="Line 250">250</a>      state: &quot;starting&quot;,</span>
+<span class="source-line" id="L251"><a class="line-link" href="#L251" aria-label="Line 251">251</a>      startedAt,</span>
+<span class="source-line" id="L252"><a class="line-link" href="#L252" aria-label="Line 252">252</a>      memoryCapBytes: this.launcher.memoryCapBytes,</span>
+<span class="source-line" id="L253"><a class="line-link" href="#L253" aria-label="Line 253">253</a>    };</span>
+<span class="source-line" id="L254"><a class="line-link" href="#L254" aria-label="Line 254">254</a>    if (!this.registry.writeStartingIfStartupOwner(identity, startingRecord)) {</span>
+<span class="source-line" id="L255"><a class="line-link" href="#L255" aria-label="Line 255">255</a>      throw new Error(&quot;Daemon startup ownership changed before process launch&quot;);</span>
+<span class="source-line" id="L256"><a class="line-link" href="#L256" aria-label="Line 256">256</a>    }</span>
+<span class="source-line" id="L257"><a class="line-link" href="#L257" aria-label="Line 257">257</a>    let daemonProcess: DaemonProcess | undefined;</span>
+<span class="source-line" id="L258"><a class="line-link" href="#L258" aria-label="Line 258">258</a>    try {</span>
+<span class="source-line" id="L259"><a class="line-link" href="#L259" aria-label="Line 259">259</a>      daemonProcess = await this.launcher.launch(identity, instanceId, processToken);</span>
+<span class="source-line" id="L260"><a class="line-link" href="#L260" aria-label="Line 260">260</a>      const transferred = lease.transferToDaemon(daemonProcess.pid, processToken);</span>
+<span class="source-line" id="L261"><a class="line-link" href="#L261" aria-label="Line 261">261</a>      if (</span>
+<span class="source-line" id="L262"><a class="line-link" href="#L262" aria-label="Line 262">262</a>        !transferred &amp;&amp;</span>
+<span class="source-line" id="L263"><a class="line-link" href="#L263" aria-label="Line 263">263</a>        !this.registry.daemonOwnsStartupProcess(</span>
+<span class="source-line" id="L264"><a class="line-link" href="#L264" aria-label="Line 264">264</a>          identity,</span>
+<span class="source-line" id="L265"><a class="line-link" href="#L265" aria-label="Line 265">265</a>          instanceId,</span>
+<span class="source-line" id="L266"><a class="line-link" href="#L266" aria-label="Line 266">266</a>          processToken,</span>
+<span class="source-line" id="L267"><a class="line-link" href="#L267" aria-label="Line 267">267</a>          daemonProcess.pid,</span>
+<span class="source-line" id="L268"><a class="line-link" href="#L268" aria-label="Line 268">268</a>        )</span>
+<span class="source-line" id="L269"><a class="line-link" href="#L269" aria-label="Line 269">269</a>      ) {</span>
+<span class="source-line" id="L270"><a class="line-link" href="#L270" aria-label="Line 270">270</a>        throw new Error(&quot;Daemon startup ownership changed after process launch&quot;);</span>
+<span class="source-line" id="L271"><a class="line-link" href="#L271" aria-label="Line 271">271</a>      }</span>
+<span class="source-line" id="L272"><a class="line-link" href="#L272" aria-label="Line 272">272</a>      if (</span>
+<span class="source-line" id="L273"><a class="line-link" href="#L273" aria-label="Line 273">273</a>        !this.registry.writeStartingIfStartupOwner(identity, {</span>
+<span class="source-line" id="L274"><a class="line-link" href="#L274" aria-label="Line 274">274</a>          ...startingRecord,</span>
+<span class="source-line" id="L275"><a class="line-link" href="#L275" aria-label="Line 275">275</a>          pid: daemonProcess.pid,</span>
+<span class="source-line" id="L276"><a class="line-link" href="#L276" aria-label="Line 276">276</a>        })</span>
+<span class="source-line" id="L277"><a class="line-link" href="#L277" aria-label="Line 277">277</a>      ) {</span>
+<span class="source-line" id="L278"><a class="line-link" href="#L278" aria-label="Line 278">278</a>        throw new Error(&quot;Daemon startup ownership changed after process launch&quot;);</span>
+<span class="source-line" id="L279"><a class="line-link" href="#L279" aria-label="Line 279">279</a>      }</span>
+<span class="source-line" id="L280"><a class="line-link" href="#L280" aria-label="Line 280">280</a>      this.launchedInstances.add(instanceId);</span>
+<span class="source-line" id="L281"><a class="line-link" href="#L281" aria-label="Line 281">281</a>      this.launchedProcesses.set(instanceId, daemonProcess);</span>
+<span class="source-line" id="L282"><a class="line-link" href="#L282" aria-label="Line 282">282</a>      this.launchedInstanceIdsByIdentity.set(identity.identityKey, instanceId);</span>
+<span class="source-line" id="L283"><a class="line-link" href="#L283" aria-label="Line 283">283</a>      this.observeLaunchedProcess(identity, instanceId, processToken, daemonProcess);</span>
+<span class="source-line" id="L284"><a class="line-link" href="#L284" aria-label="Line 284">284</a>      return {</span>
+<span class="source-line" id="L285"><a class="line-link" href="#L285" aria-label="Line 285">285</a>        status: &quot;launched&quot;,</span>
+<span class="source-line" id="L286"><a class="line-link" href="#L286" aria-label="Line 286">286</a>        instanceId,</span>
+<span class="source-line" id="L287"><a class="line-link" href="#L287" aria-label="Line 287">287</a>        pid: daemonProcess.pid,</span>
+<span class="source-line" id="L288"><a class="line-link" href="#L288" aria-label="Line 288">288</a>      };</span>
+<span class="source-line" id="L289"><a class="line-link" href="#L289" aria-label="Line 289">289</a>    } catch (error) {</span>
+<span class="source-line" id="L290"><a class="line-link" href="#L290" aria-label="Line 290">290</a>      if (error instanceof DaemonChildExitError) {</span>
+<span class="source-line" id="L291"><a class="line-link" href="#L291" aria-label="Line 291">291</a>        this.cleanupLaunchedProcess(identity, instanceId, processToken);</span>
+<span class="source-line" id="L292"><a class="line-link" href="#L292" aria-label="Line 292">292</a>        throw error;</span>
+<span class="source-line" id="L293"><a class="line-link" href="#L293" aria-label="Line 293">293</a>      }</span>
+<span class="source-line" id="L294"><a class="line-link" href="#L294" aria-label="Line 294">294</a>      if (daemonProcess !== undefined) {</span>
+<span class="source-line" id="L295"><a class="line-link" href="#L295" aria-label="Line 295">295</a>        try {</span>
+<span class="source-line" id="L296"><a class="line-link" href="#L296" aria-label="Line 296">296</a>          await daemonProcess.terminate();</span>
+<span class="source-line" id="L297"><a class="line-link" href="#L297" aria-label="Line 297">297</a>        } catch (terminationError) {</span>
+<span class="source-line" id="L298"><a class="line-link" href="#L298" aria-label="Line 298">298</a>          if (terminationError instanceof DaemonProcessTerminationError) throw terminationError;</span>
+<span class="source-line" id="L299"><a class="line-link" href="#L299" aria-label="Line 299">299</a>          throw new DaemonProcessTerminationError(String(terminationError));</span>
+<span class="source-line" id="L300"><a class="line-link" href="#L300" aria-label="Line 300">300</a>        }</span>
+<span class="source-line" id="L301"><a class="line-link" href="#L301" aria-label="Line 301">301</a>      }</span>
+<span class="source-line" id="L302"><a class="line-link" href="#L302" aria-label="Line 302">302</a>      this.cleanupLaunchedProcess(identity, instanceId, processToken);</span>
+<span class="source-line" id="L303"><a class="line-link" href="#L303" aria-label="Line 303">303</a>      throw error;</span>
+<span class="source-line" id="L304"><a class="line-link" href="#L304" aria-label="Line 304">304</a>    }</span>
+<span class="source-line" id="L305"><a class="line-link" href="#L305" aria-label="Line 305">305</a>  }</span>
+<span class="source-line" id="L306"><a class="line-link" href="#L306" aria-label="Line 306">306</a></span>
+<span class="source-line" id="L307"><a class="line-link" href="#L307" aria-label="Line 307">307</a>  private observeLaunchedProcess(</span>
+<span class="source-line" id="L308"><a class="line-link" href="#L308" aria-label="Line 308">308</a>    identity: DaemonWorkspaceIdentity,</span>
+<span class="source-line" id="L309"><a class="line-link" href="#L309" aria-label="Line 309">309</a>    instanceId: string,</span>
+<span class="source-line" id="L310"><a class="line-link" href="#L310" aria-label="Line 310">310</a>    processToken: string,</span>
+<span class="source-line" id="L311"><a class="line-link" href="#L311" aria-label="Line 311">311</a>    daemonProcess: DaemonProcess,</span>
+<span class="source-line" id="L312"><a class="line-link" href="#L312" aria-label="Line 312">312</a>  ): void {</span>
+<span class="source-line" id="L313"><a class="line-link" href="#L313" aria-label="Line 313">313</a>    void daemonProcess.exited.then((exit) =&gt; {</span>
+<span class="source-line" id="L314"><a class="line-link" href="#L314" aria-label="Line 314">314</a>      this.launchedExits.set(instanceId, exit);</span>
+<span class="source-line" id="L315"><a class="line-link" href="#L315" aria-label="Line 315">315</a>      if (</span>
+<span class="source-line" id="L316"><a class="line-link" href="#L316" aria-label="Line 316">316</a>        this.registry.startingRecordForProcess(identity, instanceId, processToken) !== undefined</span>
+<span class="source-line" id="L317"><a class="line-link" href="#L317" aria-label="Line 317">317</a>      ) {</span>
+<span class="source-line" id="L318"><a class="line-link" href="#L318" aria-label="Line 318">318</a>        this.cleanupLaunchedProcess(identity, instanceId, processToken);</span>
+<span class="source-line" id="L319"><a class="line-link" href="#L319" aria-label="Line 319">319</a>      }</span>
+<span class="source-line" id="L320"><a class="line-link" href="#L320" aria-label="Line 320">320</a>    });</span>
+<span class="source-line" id="L321"><a class="line-link" href="#L321" aria-label="Line 321">321</a>  }</span>
+<span class="source-line" id="L322"><a class="line-link" href="#L322" aria-label="Line 322">322</a></span>
+<span class="source-line" id="L323"><a class="line-link" href="#L323" aria-label="Line 323">323</a>  private cleanupLaunchedProcess(</span>
+<span class="source-line" id="L324"><a class="line-link" href="#L324" aria-label="Line 324">324</a>    identity: DaemonWorkspaceIdentity,</span>
+<span class="source-line" id="L325"><a class="line-link" href="#L325" aria-label="Line 325">325</a>    instanceId: string,</span>
+<span class="source-line" id="L326"><a class="line-link" href="#L326" aria-label="Line 326">326</a>    processToken: string,</span>
+<span class="source-line" id="L327"><a class="line-link" href="#L327" aria-label="Line 327">327</a>  ): void {</span>
+<span class="source-line" id="L328"><a class="line-link" href="#L328" aria-label="Line 328">328</a>    const record = this.registry.recordForProcess(identity, instanceId, processToken);</span>
+<span class="source-line" id="L329"><a class="line-link" href="#L329" aria-label="Line 329">329</a>    if (record !== undefined) {</span>
+<span class="source-line" id="L330"><a class="line-link" href="#L330" aria-label="Line 330">330</a>      if (record.pid &gt; 0) {</span>
+<span class="source-line" id="L331"><a class="line-link" href="#L331" aria-label="Line 331">331</a>        this.registry.removeStartupLockIfProcess(identity, record);</span>
+<span class="source-line" id="L332"><a class="line-link" href="#L332" aria-label="Line 332">332</a>      } else {</span>
+<span class="source-line" id="L333"><a class="line-link" href="#L333" aria-label="Line 333">333</a>        this.registry.removeStartupLockIfLauncher(identity, instanceId, processToken);</span>
+<span class="source-line" id="L334"><a class="line-link" href="#L334" aria-label="Line 334">334</a>      }</span>
+<span class="source-line" id="L335"><a class="line-link" href="#L335" aria-label="Line 335">335</a>    }</span>
+<span class="source-line" id="L336"><a class="line-link" href="#L336" aria-label="Line 336">336</a>    this.registry.removeIfProcess(identity, instanceId, processToken);</span>
+<span class="source-line" id="L337"><a class="line-link" href="#L337" aria-label="Line 337">337</a>  }</span>
+<span class="source-line" id="L338"><a class="line-link" href="#L338" aria-label="Line 338">338</a></span>
+<span class="source-line" id="L339"><a class="line-link" href="#L339" aria-label="Line 339">339</a>  private async observeElectedWarmup(</span>
+<span class="source-line" id="L340"><a class="line-link" href="#L340" aria-label="Line 340">340</a>    identity: DaemonWorkspaceIdentity,</span>
+<span class="source-line" id="L341"><a class="line-link" href="#L341" aria-label="Line 341">341</a>  ): Promise&lt;DaemonWarmupTriggerResult&gt; {</span>
+<span class="source-line" id="L342"><a class="line-link" href="#L342" aria-label="Line 342">342</a>    while (true) {</span>
+<span class="source-line" id="L343"><a class="line-link" href="#L343" aria-label="Line 343">343</a>      const record = await this.validatedReadyRecord(identity);</span>
+<span class="source-line" id="L344"><a class="line-link" href="#L344" aria-label="Line 344">344</a>      if (record?.symnavVersion === this.launcher.symnavVersion) {</span>
+<span class="source-line" id="L345"><a class="line-link" href="#L345" aria-label="Line 345">345</a>        return { status: &quot;ready&quot;, instanceId: record.instanceId, pid: record.pid };</span>
+<span class="source-line" id="L346"><a class="line-link" href="#L346" aria-label="Line 346">346</a>      }</span>
+<span class="source-line" id="L347"><a class="line-link" href="#L347" aria-label="Line 347">347</a>      const owner = this.registry.startupOwner(identity);</span>
+<span class="source-line" id="L348"><a class="line-link" href="#L348" aria-label="Line 348">348</a>      if (owner === undefined) return this.trigger(identity);</span>
+<span class="source-line" id="L349"><a class="line-link" href="#L349" aria-label="Line 349">349</a>      if (this.startupOwnerIsAbandoned(identity, owner)) {</span>
+<span class="source-line" id="L350"><a class="line-link" href="#L350" aria-label="Line 350">350</a>        if (this.cleanupAbandonedStartup(identity, owner)) return this.trigger(identity);</span>
+<span class="source-line" id="L351"><a class="line-link" href="#L351" aria-label="Line 351">351</a>      }</span>
+<span class="source-line" id="L352"><a class="line-link" href="#L352" aria-label="Line 352">352</a>      const startingRecord = this.registry.readStoredInstance(identity, owner.instanceId);</span>
+<span class="source-line" id="L353"><a class="line-link" href="#L353" aria-label="Line 353">353</a>      if (</span>
+<span class="source-line" id="L354"><a class="line-link" href="#L354" aria-label="Line 354">354</a>        startingRecord?.state === &quot;starting&quot; &amp;&amp;</span>
+<span class="source-line" id="L355"><a class="line-link" href="#L355" aria-label="Line 355">355</a>        startingRecord.pid &gt; 0 &amp;&amp;</span>
+<span class="source-line" id="L356"><a class="line-link" href="#L356" aria-label="Line 356">356</a>        owner.ownerKind === &quot;daemon&quot;</span>
+<span class="source-line" id="L357"><a class="line-link" href="#L357" aria-label="Line 357">357</a>      ) {</span>
+<span class="source-line" id="L358"><a class="line-link" href="#L358" aria-label="Line 358">358</a>        return {</span>
+<span class="source-line" id="L359"><a class="line-link" href="#L359" aria-label="Line 359">359</a>          status: &quot;starting&quot;,</span>
+<span class="source-line" id="L360"><a class="line-link" href="#L360" aria-label="Line 360">360</a>          instanceId: owner.instanceId,</span>
+<span class="source-line" id="L361"><a class="line-link" href="#L361" aria-label="Line 361">361</a>          pid: startingRecord.pid,</span>
+<span class="source-line" id="L362"><a class="line-link" href="#L362" aria-label="Line 362">362</a>        };</span>
+<span class="source-line" id="L363"><a class="line-link" href="#L363" aria-label="Line 363">363</a>      }</span>
+<span class="source-line" id="L364"><a class="line-link" href="#L364" aria-label="Line 364">364</a>      await this.pause();</span>
+<span class="source-line" id="L365"><a class="line-link" href="#L365" aria-label="Line 365">365</a>    }</span>
+<span class="source-line" id="L366"><a class="line-link" href="#L366" aria-label="Line 366">366</a>  }</span>
+<span class="source-line" id="L367"><a class="line-link" href="#L367" aria-label="Line 367">367</a></span>
+<span class="source-line" id="L368"><a class="line-link" href="#L368" aria-label="Line 368">368</a>  private cleanupAbandonedStartup(identity: DaemonWorkspaceIdentity, owner: StartupOwner): boolean {</span>
+<span class="source-line" id="L369"><a class="line-link" href="#L369" aria-label="Line 369">369</a>    return this.registry.removeAbandonedStartupOwner(identity, owner);</span>
+<span class="source-line" id="L370"><a class="line-link" href="#L370" aria-label="Line 370">370</a>  }</span>
+<span class="source-line" id="L371"><a class="line-link" href="#L371" aria-label="Line 371">371</a></span>
+<span class="source-line" id="L372"><a class="line-link" href="#L372" aria-label="Line 372">372</a>  private startupOwnerIsAbandoned(identity: DaemonWorkspaceIdentity, owner: StartupOwner): boolean {</span>
+<span class="source-line" id="L373"><a class="line-link" href="#L373" aria-label="Line 373">373</a>    const record = this.registry.readStoredInstance(identity, owner.instanceId);</span>
+<span class="source-line" id="L374"><a class="line-link" href="#L374" aria-label="Line 374">374</a>    if (record !== undefined &amp;&amp; record.pid &gt; 0) {</span>
+<span class="source-line" id="L375"><a class="line-link" href="#L375" aria-label="Line 375">375</a>      return !this.processTerminator.isAlive(record.pid);</span>
+<span class="source-line" id="L376"><a class="line-link" href="#L376" aria-label="Line 376">376</a>    }</span>
+<span class="source-line" id="L377"><a class="line-link" href="#L377" aria-label="Line 377">377</a>    if (owner.ownerKind === &quot;daemon&quot;) return !this.processTerminator.isAlive(owner.ownerPid);</span>
+<span class="source-line" id="L378"><a class="line-link" href="#L378" aria-label="Line 378">378</a>    return (</span>
+<span class="source-line" id="L379"><a class="line-link" href="#L379" aria-label="Line 379">379</a>      !this.processTerminator.isAlive(owner.ownerPid) ||</span>
+<span class="source-line" id="L380"><a class="line-link" href="#L380" aria-label="Line 380">380</a>      !this.registry.startupOwnerIsWithinGrace(owner)</span>
+<span class="source-line" id="L381"><a class="line-link" href="#L381" aria-label="Line 381">381</a>    );</span>
+<span class="source-line" id="L382"><a class="line-link" href="#L382" aria-label="Line 382">382</a>  }</span>
+<span class="source-line" id="L383"><a class="line-link" href="#L383" aria-label="Line 383">383</a></span>
+<span class="source-line" id="L384"><a class="line-link" href="#L384" aria-label="Line 384">384</a>  private async validatedChildRecord(</span>
+<span class="source-line" id="L385"><a class="line-link" href="#L385" aria-label="Line 385">385</a>    identity: DaemonWorkspaceIdentity,</span>
+<span class="source-line" id="L386"><a class="line-link" href="#L386" aria-label="Line 386">386</a>  ): Promise&lt;DaemonRecord | undefined&gt; {</span>
+<span class="source-line" id="L387"><a class="line-link" href="#L387" aria-label="Line 387">387</a>    try {</span>
+<span class="source-line" id="L388"><a class="line-link" href="#L388" aria-label="Line 388">388</a>      return await this.validatedReadyRecord(identity);</span>
+<span class="source-line" id="L389"><a class="line-link" href="#L389" aria-label="Line 389">389</a>    } catch (error) {</span>
+<span class="source-line" id="L390"><a class="line-link" href="#L390" aria-label="Line 390">390</a>      if (error instanceof DaemonOwnedButUnresponsiveError) return undefined;</span>
+<span class="source-line" id="L391"><a class="line-link" href="#L391" aria-label="Line 391">391</a>      throw error;</span>
+<span class="source-line" id="L392"><a class="line-link" href="#L392" aria-label="Line 392">392</a>    }</span>
+<span class="source-line" id="L393"><a class="line-link" href="#L393" aria-label="Line 393">393</a>  }</span>
+<span class="source-line" id="L394"><a class="line-link" href="#L394" aria-label="Line 394">394</a></span>
+<span class="source-line" id="L395"><a class="line-link" href="#L395" aria-label="Line 395">395</a>  private async validatedReadyRecord(</span>
+<span class="source-line" id="L396"><a class="line-link" href="#L396" aria-label="Line 396">396</a>    identity: DaemonWorkspaceIdentity,</span>
+<span class="source-line" id="L397"><a class="line-link" href="#L397" aria-label="Line 397">397</a>  ): Promise&lt;DaemonRecord | undefined&gt; {</span>
+<span class="source-line" id="L398"><a class="line-link" href="#L398" aria-label="Line 398">398</a>    const record = this.registry.read(identity);</span>
+<span class="source-line" id="L399"><a class="line-link" href="#L399" aria-label="Line 399">399</a>    if (record?.state !== &quot;ready&quot;) return undefined;</span>
+<span class="source-line" id="L400"><a class="line-link" href="#L400" aria-label="Line 400">400</a>    const observation = await this.observer.observe(record);</span>
+<span class="source-line" id="L401"><a class="line-link" href="#L401" aria-label="Line 401">401</a>    if (observation.kind === &quot;responsive&quot;) {</span>
+<span class="source-line" id="L402"><a class="line-link" href="#L402" aria-label="Line 402">402</a>      this.registry.removeStartupLockIfProcess(identity, record);</span>
+<span class="source-line" id="L403"><a class="line-link" href="#L403" aria-label="Line 403">403</a>      return record;</span>
+<span class="source-line" id="L404"><a class="line-link" href="#L404" aria-label="Line 404">404</a>    }</span>
+<span class="source-line" id="L405"><a class="line-link" href="#L405" aria-label="Line 405">405</a>    if (observation.kind === &quot;exited&quot;) {</span>
+<span class="source-line" id="L406"><a class="line-link" href="#L406" aria-label="Line 406">406</a>      this.registry.removeIfProcess(identity, record.instanceId, record.processToken);</span>
+<span class="source-line" id="L407"><a class="line-link" href="#L407" aria-label="Line 407">407</a>      return undefined;</span>
+<span class="source-line" id="L408"><a class="line-link" href="#L408" aria-label="Line 408">408</a>    }</span>
+<span class="source-line" id="L409"><a class="line-link" href="#L409" aria-label="Line 409">409</a>    if (observation.kind === &quot;incompatible&quot; || observation.kind === &quot;corrupt&quot;) return undefined;</span>
+<span class="source-line" id="L410"><a class="line-link" href="#L410" aria-label="Line 410">410</a>    throw new DaemonOwnedButUnresponsiveError(</span>
+<span class="source-line" id="L411"><a class="line-link" href="#L411" aria-label="Line 411">411</a>      `Daemon process ${record.pid} is live but unresponsive; ownership was retained`,</span>
+<span class="source-line" id="L412"><a class="line-link" href="#L412" aria-label="Line 412">412</a>    );</span>
+<span class="source-line" id="L413"><a class="line-link" href="#L413" aria-label="Line 413">413</a>  }</span>
+<span class="source-line" id="L414"><a class="line-link" href="#L414" aria-label="Line 414">414</a></span>
+<span class="source-line" id="L415"><a class="line-link" href="#L415" aria-label="Line 415">415</a>  private async replaceStoredRecord(</span>
+<span class="source-line" id="L416"><a class="line-link" href="#L416" aria-label="Line 416">416</a>    identity: DaemonWorkspaceIdentity,</span>
+<span class="source-line" id="L417"><a class="line-link" href="#L417" aria-label="Line 417">417</a>    record: DaemonRecord,</span>
+<span class="source-line" id="L418"><a class="line-link" href="#L418" aria-label="Line 418">418</a>  ): Promise&lt;void&gt; {</span>
+<span class="source-line" id="L419"><a class="line-link" href="#L419" aria-label="Line 419">419</a>    const observation = await this.observer.observe(record);</span>
+<span class="source-line" id="L420"><a class="line-link" href="#L420" aria-label="Line 420">420</a>    if (observation.kind === &quot;exited&quot;) {</span>
+<span class="source-line" id="L421"><a class="line-link" href="#L421" aria-label="Line 421">421</a>      this.registry.removeIfProcess(identity, record.instanceId, record.processToken);</span>
+<span class="source-line" id="L422"><a class="line-link" href="#L422" aria-label="Line 422">422</a>      return;</span>
+<span class="source-line" id="L423"><a class="line-link" href="#L423" aria-label="Line 423">423</a>    }</span>
+<span class="source-line" id="L424"><a class="line-link" href="#L424" aria-label="Line 424">424</a>    if (observation.kind === &quot;starting&quot; || observation.kind === &quot;unresponsive&quot;) {</span>
+<span class="source-line" id="L425"><a class="line-link" href="#L425" aria-label="Line 425">425</a>      throw new DaemonOwnedButUnresponsiveError(</span>
+<span class="source-line" id="L426"><a class="line-link" href="#L426" aria-label="Line 426">426</a>        `Daemon process ${record.pid} is live but unresponsive; ownership was retained`,</span>
+<span class="source-line" id="L427"><a class="line-link" href="#L427" aria-label="Line 427">427</a>      );</span>
+<span class="source-line" id="L428"><a class="line-link" href="#L428" aria-label="Line 428">428</a>    }</span>
+<span class="source-line" id="L429"><a class="line-link" href="#L429" aria-label="Line 429">429</a>    await this.transport.request(record.endpoint, {</span>
+<span class="source-line" id="L430"><a class="line-link" href="#L430" aria-label="Line 430">430</a>      kind: &quot;terminate&quot;,</span>
+<span class="source-line" id="L431"><a class="line-link" href="#L431" aria-label="Line 431">431</a>      instanceId: record.instanceId,</span>
+<span class="source-line" id="L432"><a class="line-link" href="#L432" aria-label="Line 432">432</a>      processToken: record.processToken,</span>
+<span class="source-line" id="L433"><a class="line-link" href="#L433" aria-label="Line 433">433</a>    });</span>
+<span class="source-line" id="L434"><a class="line-link" href="#L434" aria-label="Line 434">434</a>    await this.waitForProcessExitAndEndpointRelease(record);</span>
+<span class="source-line" id="L435"><a class="line-link" href="#L435" aria-label="Line 435">435</a>    this.registry.removeIfProcess(identity, record.instanceId, record.processToken);</span>
+<span class="source-line" id="L436"><a class="line-link" href="#L436" aria-label="Line 436">436</a>  }</span>
+<span class="source-line" id="L437"><a class="line-link" href="#L437" aria-label="Line 437">437</a></span>
+<span class="source-line" id="L438"><a class="line-link" href="#L438" aria-label="Line 438">438</a>  private async waitForProcessExitAndEndpointRelease(record: DaemonRecord): Promise&lt;void&gt; {</span>
+<span class="source-line" id="L439"><a class="line-link" href="#L439" aria-label="Line 439">439</a>    const waitStartedAt = this.clock.wallNowMs();</span>
+<span class="source-line" id="L440"><a class="line-link" href="#L440" aria-label="Line 440">440</a>    while (this.clock.wallNowMs() - waitStartedAt &lt;= this.terminationTimeoutMs) {</span>
+<span class="source-line" id="L441"><a class="line-link" href="#L441" aria-label="Line 441">441</a>      const endpointReleased = !(await this.identifiesRecordedProcess(record));</span>
+<span class="source-line" id="L442"><a class="line-link" href="#L442" aria-label="Line 442">442</a>      const processExited = !this.processTerminator.isAlive(record.pid);</span>
+<span class="source-line" id="L443"><a class="line-link" href="#L443" aria-label="Line 443">443</a>      if (endpointReleased &amp;&amp; processExited) return;</span>
+<span class="source-line" id="L444"><a class="line-link" href="#L444" aria-label="Line 444">444</a>      await this.pause();</span>
+<span class="source-line" id="L445"><a class="line-link" href="#L445" aria-label="Line 445">445</a>    }</span>
+<span class="source-line" id="L446"><a class="line-link" href="#L446" aria-label="Line 446">446</a>    throw new DaemonProcessTerminationError(</span>
+<span class="source-line" id="L447"><a class="line-link" href="#L447" aria-label="Line 447">447</a>      `Daemon process ${record.pid} did not exit and release its endpoint`,</span>
+<span class="source-line" id="L448"><a class="line-link" href="#L448" aria-label="Line 448">448</a>    );</span>
+<span class="source-line" id="L449"><a class="line-link" href="#L449" aria-label="Line 449">449</a>  }</span>
+<span class="source-line" id="L450"><a class="line-link" href="#L450" aria-label="Line 450">450</a></span>
+<span class="source-line" id="L451"><a class="line-link" href="#L451" aria-label="Line 451">451</a>  private async identifiesRecordedProcess(record: DaemonRecord): Promise&lt;boolean&gt; {</span>
+<span class="source-line" id="L452"><a class="line-link" href="#L452" aria-label="Line 452">452</a>    try {</span>
+<span class="source-line" id="L453"><a class="line-link" href="#L453" aria-label="Line 453">453</a>      const response = await this.transport.request(record.endpoint, {</span>
+<span class="source-line" id="L454"><a class="line-link" href="#L454" aria-label="Line 454">454</a>        kind: &quot;identify&quot;,</span>
+<span class="source-line" id="L455"><a class="line-link" href="#L455" aria-label="Line 455">455</a>        instanceId: record.instanceId,</span>
+<span class="source-line" id="L456"><a class="line-link" href="#L456" aria-label="Line 456">456</a>        processToken: record.processToken,</span>
+<span class="source-line" id="L457"><a class="line-link" href="#L457" aria-label="Line 457">457</a>      });</span>
+<span class="source-line" id="L458"><a class="line-link" href="#L458" aria-label="Line 458">458</a>      return (</span>
+<span class="source-line" id="L459"><a class="line-link" href="#L459" aria-label="Line 459">459</a>        response.kind === &quot;identity&quot; &amp;&amp;</span>
+<span class="source-line" id="L460"><a class="line-link" href="#L460" aria-label="Line 460">460</a>        response.pid === record.pid &amp;&amp;</span>
+<span class="source-line" id="L461"><a class="line-link" href="#L461" aria-label="Line 461">461</a>        response.startedAt === record.startedAt</span>
+<span class="source-line" id="L462"><a class="line-link" href="#L462" aria-label="Line 462">462</a>      );</span>
+<span class="source-line" id="L463"><a class="line-link" href="#L463" aria-label="Line 463">463</a>    } catch {</span>
+<span class="source-line" id="L464"><a class="line-link" href="#L464" aria-label="Line 464">464</a>      return false;</span>
+<span class="source-line" id="L465"><a class="line-link" href="#L465" aria-label="Line 465">465</a>    }</span>
+<span class="source-line" id="L466"><a class="line-link" href="#L466" aria-label="Line 466">466</a>  }</span>
+<span class="source-line" id="L467"><a class="line-link" href="#L467" aria-label="Line 467">467</a></span>
+<span class="source-line" id="L468"><a class="line-link" href="#L468" aria-label="Line 468">468</a>  private async probeExecution(record: DaemonRecord): Promise&lt;void&gt; {</span>
+<span class="source-line" id="L469"><a class="line-link" href="#L469" aria-label="Line 469">469</a>    const receipt = await this.transport.execute(record.endpoint, {</span>
+<span class="source-line" id="L470"><a class="line-link" href="#L470" aria-label="Line 470">470</a>      kind: &quot;execute&quot;,</span>
+<span class="source-line" id="L471"><a class="line-link" href="#L471" aria-label="Line 471">471</a>      protocolVersion: DAEMON_PROTOCOL_VERSION,</span>
+<span class="source-line" id="L472"><a class="line-link" href="#L472" aria-label="Line 472">472</a>      instanceId: record.instanceId,</span>
+<span class="source-line" id="L473"><a class="line-link" href="#L473" aria-label="Line 473">473</a>      processToken: record.processToken,</span>
+<span class="source-line" id="L474"><a class="line-link" href="#L474" aria-label="Line 474">474</a>      requestId: randomUUID(),</span>
+<span class="source-line" id="L475"><a class="line-link" href="#L475" aria-label="Line 475">475</a>      commandName: this.readinessProbe.commandName,</span>
+<span class="source-line" id="L476"><a class="line-link" href="#L476" aria-label="Line 476">476</a>      request: {</span>
+<span class="source-line" id="L477"><a class="line-link" href="#L477" aria-label="Line 477">477</a>        argv: this.readinessProbe.argv,</span>
+<span class="source-line" id="L478"><a class="line-link" href="#L478" aria-label="Line 478">478</a>        cwd: record.workspaceRoot,</span>
+<span class="source-line" id="L479"><a class="line-link" href="#L479" aria-label="Line 479">479</a>        telemetryEnabled: false,</span>
+<span class="source-line" id="L480"><a class="line-link" href="#L480" aria-label="Line 480">480</a>        executionMode: &quot;cold&quot;,</span>
+<span class="source-line" id="L481"><a class="line-link" href="#L481" aria-label="Line 481">481</a>      },</span>
+<span class="source-line" id="L482"><a class="line-link" href="#L482" aria-label="Line 482">482</a>    });</span>
+<span class="source-line" id="L483"><a class="line-link" href="#L483" aria-label="Line 483">483</a>    const completion = await receipt.completion;</span>
+<span class="source-line" id="L484"><a class="line-link" href="#L484" aria-label="Line 484">484</a>    if (completion.status !== &quot;completed&quot; || completion.result.exitCode !== 0) {</span>
+<span class="source-line" id="L485"><a class="line-link" href="#L485" aria-label="Line 485">485</a>      throw new Error(&quot;Daemon execution readiness probe failed&quot;);</span>
+<span class="source-line" id="L486"><a class="line-link" href="#L486" aria-label="Line 486">486</a>    }</span>
+<span class="source-line" id="L487"><a class="line-link" href="#L487" aria-label="Line 487">487</a>  }</span>
+<span class="source-line" id="L488"><a class="line-link" href="#L488" aria-label="Line 488">488</a></span>
+<span class="source-line" id="L489"><a class="line-link" href="#L489" aria-label="Line 489">489</a>  private alreadyRunning(record: DaemonRecord): DaemonStartResult {</span>
+<span class="source-line" id="L490"><a class="line-link" href="#L490" aria-label="Line 490">490</a>    return {</span>
+<span class="source-line" id="L491"><a class="line-link" href="#L491" aria-label="Line 491">491</a>      status: &quot;already-running&quot;,</span>
+<span class="source-line" id="L492"><a class="line-link" href="#L492" aria-label="Line 492">492</a>      workspaceRoot: record.workspaceRoot,</span>
+<span class="source-line" id="L493"><a class="line-link" href="#L493" aria-label="Line 493">493</a>      pid: record.pid,</span>
+<span class="source-line" id="L494"><a class="line-link" href="#L494" aria-label="Line 494">494</a>      uptimeMs: Math.max(0, this.clock.wallNowMs() - record.startedAt),</span>
+<span class="source-line" id="L495"><a class="line-link" href="#L495" aria-label="Line 495">495</a>    };</span>
+<span class="source-line" id="L496"><a class="line-link" href="#L496" aria-label="Line 496">496</a>  }</span>
+<span class="source-line" id="L497"><a class="line-link" href="#L497" aria-label="Line 497">497</a></span>
+<span class="source-line" id="L498"><a class="line-link" href="#L498" aria-label="Line 498">498</a>  private pause(): Promise&lt;void&gt; {</span>
+<span class="source-line" id="L499"><a class="line-link" href="#L499" aria-label="Line 499">499</a>    return new Promise((resolve) =&gt; setTimeout(resolve, this.pollIntervalMs));</span>
+<span class="source-line" id="L500"><a class="line-link" href="#L500" aria-label="Line 500">500</a>  }</span>
+<span class="source-line" id="L501"><a class="line-link" href="#L501" aria-label="Line 501">501</a>}</span></div></body></html>

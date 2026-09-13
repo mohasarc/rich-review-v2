@@ -108,3 +108,8 @@ BUILD OK stack-head
 - 2026-09-13 03:21:20 +03: REQUEUE 14-outsider-persona after attempt 2: worker exited 1 without README
 - 2026-09-13 03:21:20 +03: START 14-outsider-persona attempt 3 via codex, pid 69478
 - 2026-09-13 03:21:30 +03: FINISH 10-tour-guide via codex, exit 0, README present
+- 2026-09-13 03:21:30 +03: COMMIT OK 10-tour-guide: [main 35b6145] Add experiment 10 tour-guide
+- 2026-09-13 03:21:30 +03: Generated brief 41-critique-refresh-10: recurring brief 38 after 10 completions
+- 2026-09-13 03:21:30 +03: Generated brief 42-fresh-reader-refresh-10: recurring brief 39 after 10 completions
+- 2026-09-13 03:21:30 +03: START 15-message-choreography-sim attempt 1 via codex, pid 70093
+- 2026-09-13 03:28:51 +03: FINISH 08-adversarial via codex, exit 0, README present
