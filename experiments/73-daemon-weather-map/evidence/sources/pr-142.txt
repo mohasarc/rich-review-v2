@@ -1,0 +1,75 @@
+## Context
+
+Outbound execution still lived in `LocalDaemonTransport` after lifecycle and socket mechanics gained dedicated owners. Accepted work requires independent recovery budgets for result fetches within an attempt and identical-request reattachments across attempts.
+
+## Shape
+
+Before — the transport façade embedded the execution state machine:
+
+```mermaid
+flowchart LR
+    Callers["Daemon command callers"] -->|"execute"| Facade["LocalDaemonTransport"]
+    Facade -->|"owns"| Embedded["Embedded admission, transfer, acknowledgement, and recovery"]
+    Embedded -->|"uses"| Socket["DaemonSocketClient"]
+    Embedded -->|"uses"| Lifecycle["DaemonLifecycleClient"]
+    Embedded -->|"creates"| Output["Result capture"]
+
+    classDef removed fill:#ffebe9,stroke:#cf222e,color:#24292f
+    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f
+    class Embedded removed
+    class Facade changed
+```
+
+After — the façade delegates the complete state machine to one execution client:
+
+```mermaid
+flowchart LR
+    Callers["Daemon command callers"] -->|"execute"| Facade["LocalDaemonTransport"]
+    Facade -->|"delegates"| Client["DaemonExecutionClient"]
+    Client -->|"uses"| Socket["DaemonSocketClient"]
+    Client -->|"acknowledges through"| Lifecycle["DaemonLifecycleClient"]
+    Client -->|"creates per attempt"| Output["Result capture"]
+
+    classDef added fill:#dafbe1,stroke:#1a7f37,color:#24292f
+    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f
+    class Client added
+    class Facade changed
+```
+
+Legend: green = added; yellow = changed; red = removed; default = unchanged.
+
+## Where it lives
+
+```text
+.
+└── apps/cli/src/daemon/
+    ├── ++ daemon-execution-client.ts               # owns outbound execution and accepted recovery
+    ├── ++ daemon-execution-client.test.ts          # locks direct ownership and identical-request recovery
+    ├── ** local-daemon-transport.ts                # composes and delegates to execution client
+    └── ** local-daemon-transport-execution.test.ts # retains transport-level delivery oracles
+```
+
+Legend: `++` added, `**` changed, `~~` moved, `--` removed.
+
+## Public surface
+
+```ts
+export class DaemonExecutionClient implements DaemonExecutionRequester {
+  constructor(options: DaemonExecutionClientOptions);
+  execute(endpoint: string, request: DaemonExecuteRequest): Promise<DaemonExecutionReceipt>;
+}
+```
+
+## Decisions
+
+- Chose a dedicated execution client over a generic response chain, because admission, accepted completion, transfer, acknowledgement, and recovery share one state machine.
+- Chose a fresh output capture per execute attempt over reusing interrupted capture state, because duplicate-request reattachment starts a new delivery while result fetch resumes the current delivery.
+- Chose independent numeric policy counters over boolean recovery flags, because fetch resumes and accepted reattachments have separate configurable budgets.
+- Chose the lifecycle client's acknowledgement-only surface over widening `DaemonLifecycleRequester`, because only result completion needs acknowledgement.
+- Chose an internal fetch-ended error over changing the public exhausted-fetch failure, because final exhaustion must retain accepted-corruption behavior without replaying execution.
+
+## Look here
+
+- `apps/cli/src/daemon/daemon-execution-client.ts:46`
+- `apps/cli/src/daemon/daemon-execution-client.ts:75`
+- `apps/cli/src/daemon/daemon-execution-client.ts:300`

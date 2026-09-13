@@ -1,0 +1,1004 @@
+--- main/apps/cli/src/daemon/local-daemon-transport-execution.test.ts
++++ head/packages/daemon/src/transport/daemon-transport-execution.test.ts
+@@ -4,16 +4,36 @@
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import { afterEach, describe, expect, it, vi } from "vitest";
+-import { OrderedCommandOutput } from "../command-execution-result.js";
++import { DaemonPolicy } from "@symnav/daemon";
++import type { DaemonExecutionFailureCode } from "../daemon-execution-failure.js";
++import { DaemonPolicyTestFactory } from "../../test/helpers/daemon-policy.js";
+ import {
+   DAEMON_PROTOCOL_VERSION,
+   type DaemonExecuteRequest,
+   type DaemonExecutionServerFrame,
+   type DaemonServerMessage,
+-} from "./daemon-protocol.js";
+-import { DaemonTransportError, LocalDaemonTransport } from "./local-daemon-transport.js";
+-import { COMMAND_OUTPUT_CHUNK_BYTES, DaemonCompletionSpoolStore } from "./completion-spool.js";
+-import { DaemonResultChunkCodec } from "./daemon-result-chunk-codec.js";
++} from "./protocol.js";
++import { DaemonTransportError } from "./transport-error.js";
++import { TestDaemonTransport as DaemonTransport } from "../../test/helpers/daemon-transport.js";
++import {
++  DaemonCompletionSpoolStore as RuntimeDaemonCompletionSpoolStore,
++  type DaemonCompletionSpoolStoreOptions,
++} from "../delivery/completion-spool.js";
++import { DaemonWireCodec } from "./wire-codec.js";
++import { DaemonClientResultCapture } from "./client-result-capture.js";
++
++const TEST_CHUNK_BYTES = 64 * 1024;
++const wireCodec = new DaemonWireCodec({
++  maximumJsonPayloadBytes: 8 * 1024 * 1024,
++  maximumExecutionControlPayloadBytes: 256 * 1024,
++  maximumChunkRawBytes: TEST_CHUNK_BYTES,
++});
++
++class DaemonCompletionSpoolStore extends RuntimeDaemonCompletionSpoolStore {
++  constructor(options: Omit<DaemonCompletionSpoolStoreOptions, "policy">) {
++    super({ ...options, policy: DaemonPolicy.currentSystem().values.output });
++  }
++}
+ 
+ const request: DaemonExecuteRequest = {
+   kind: "execute",
+@@ -21,10 +41,16 @@
+   instanceId: "instance",
+   processToken: "token",
+   requestId: "request",
+-  request: { argv: ["overview", "src/a.ts"], cwd: "/repo", telemetryEnabled: false },
++  commandName: "overview",
++  request: {
++    argv: ["overview", "src/a.ts"],
++    cwd: "/repo",
++    telemetryEnabled: false,
++    executionMode: "warm",
++  },
+ };
+ 
+-describe("LocalDaemonTransport execution delivery", () => {
++describe("DaemonTransport execution delivery", () => {
+   const servers: Server[] = [];
+   const sockets: Socket[] = [];
+   const directories: string[] = [];
+@@ -42,14 +68,14 @@
+   });
+ 
+   it("uses the accepted-request protocol generation", () => {
+-    expect(DAEMON_PROTOCOL_VERSION).toBe(4);
++    expect(DAEMON_PROTOCOL_VERSION).toBe(5);
+   });
+ 
+   it("classifies connection refusal before any write as retry-safe", async () => {
+     const endpoint = executionEndpoint(directories);
+ 
+     await expect(
+-      new LocalDaemonTransport({ requestTimeoutMs: 25 }).execute(endpoint, request),
++      new DaemonTransport({ requestTimeoutMs: 25 }).execute(endpoint, request),
+     ).rejects.toMatchObject({
+       code: "unreachable",
+       delivery: "not-submitted",
+@@ -63,7 +89,7 @@
+     });
+ 
+     await expect(
+-      new LocalDaemonTransport({ requestTimeoutMs: 100 }).execute(endpoint, request),
++      new DaemonTransport({ requestTimeoutMs: 100 }).execute(endpoint, request),
+     ).rejects.toMatchObject({
+       code: "closed",
+       delivery: "submitted-unconfirmed",
+@@ -88,12 +114,42 @@
+     });
+ 
+     await expect(
+-      new LocalDaemonTransport({ requestTimeoutMs: 100 }).execute(endpoint, request),
++      new DaemonTransport({ requestTimeoutMs: 100 }).execute(endpoint, request),
+     ).rejects.toMatchObject({
+       code: "rejected",
+       delivery: "submitted-unconfirmed",
+       retrySafe: true,
+       authenticatedInstanceId: request.instanceId,
++    } satisfies Partial<DaemonTransportError>);
++  });
++
++  it.each([
++    ["not-ready", false],
++    ["resource-pressure", false],
++    ["draining", false],
++    ["incompatible", true],
++  ] as const)("rejects contradictory %s retry safety", async (code, retrySafe) => {
++    const endpoint = await rawExecutionServer(servers, sockets, directories, (socket) => {
++      socket.once("data", () =>
++        socket.end(
++          frame({
++            kind: "rejected",
++            instanceId: request.instanceId,
++            processToken: request.processToken,
++            requestId: request.requestId,
++            code,
++            retrySafe,
++          } satisfies DaemonExecutionServerFrame),
++        ),
++      );
++    });
++
++    await expect(
++      new DaemonTransport({ requestTimeoutMs: 100 }).execute(endpoint, request),
++    ).rejects.toMatchObject({
++      code: "corrupt",
++      delivery: "submitted-unconfirmed",
++      retrySafe: false,
+     } satisfies Partial<DaemonTransportError>);
+   });
+ 
+@@ -119,12 +175,98 @@
+       });
+     });
+ 
+-    const receipt = await new LocalDaemonTransport({ requestTimeoutMs: 10 }).execute(
+-      endpoint,
+-      request,
+-    );
++    const receipt = await new DaemonTransport({ requestTimeoutMs: 10 }).execute(endpoint, request);
+ 
+     await expect(receipt.completion).resolves.toEqual({ status: "failed", code: "internal" });
++  });
++
++  it("applies the execution admission deadline until acceptance", async () => {
++    const endpoint = await rawExecutionServer(servers, sockets, directories, (socket) => {
++      socket.once("data", () => undefined);
++    });
++
++    await expect(
++      new DaemonTransport(policyWith({ executionAdmissionTimeoutMs: 25 })).execute(
++        endpoint,
++        request,
++      ),
++    ).rejects.toMatchObject({
++      code: "timeout",
++      delivery: "submitted-unconfirmed",
++      retrySafe: false,
++    } satisfies Partial<DaemonTransportError>);
++  });
++
++  it.each<DaemonExecutionFailureCode>([
++    "worker-exit",
++    "controlled-resource",
++    "response-capacity",
++    "stopping",
++    "internal",
++  ])("preserves accepted terminal failure %s without replay", async (code) => {
++    const endpoint = await rawExecutionServer(servers, sockets, directories, (socket) => {
++      socket.once("data", () =>
++        socket.end(
++          Buffer.concat([
++            frame(accepted()),
++            frame({
++              kind: "execution-failed",
++              instanceId: request.instanceId,
++              processToken: request.processToken,
++              requestId: request.requestId,
++              code,
++            } satisfies DaemonExecutionServerFrame),
++          ]),
++        ),
++      );
++    });
++
++    const receipt = await new DaemonTransport({ requestTimeoutMs: 100 }).execute(endpoint, request);
++
++    await expect(receipt.completion).resolves.toEqual({ status: "failed", code });
++  });
++
++  it.each([
++    ["socket close before acceptance", []],
++    ["protocol failure after acceptance", [accepted(), accepted()]],
++    [
++      "terminal daemon failure",
++      [
++        accepted(),
++        {
++          kind: "execution-failed",
++          instanceId: request.instanceId,
++          processToken: request.processToken,
++          requestId: request.requestId,
++          code: "internal",
++        } satisfies DaemonExecutionServerFrame,
++      ],
++    ],
++  ] as const)("disposes output exactly once after %s", async (scenario, responses) => {
++    const dispose = vi.spyOn(DaemonClientResultCapture.prototype, "dispose");
++    const endpoint = await rawExecutionServer(servers, sockets, directories, (socket) => {
++      socket.once("data", () => socket.end(Buffer.concat(responses.map(frame))));
++    });
++    const execution = new DaemonTransport().execute(endpoint, request);
++
++    if (scenario === "socket close before acceptance") {
++      await expect(execution).rejects.toMatchObject({
++        code: "closed",
++        delivery: "submitted-unconfirmed",
++      });
++    } else {
++      const receipt = await execution;
++      if (scenario === "terminal daemon failure") {
++        await expect(receipt.completion).resolves.toEqual({ status: "failed", code: "internal" });
++      } else {
++        await expect(receipt.completion).rejects.toMatchObject({
++          code: "corrupt",
++          delivery: "accepted",
++        });
++      }
++    }
++
++    expect(dispose).toHaveBeenCalledTimes(1);
+   });
+ 
+   it("has no completion deadline after acceptance", async () => {
+@@ -147,10 +289,9 @@
+       });
+     });
+ 
+-    const receipt = await new LocalDaemonTransport({ requestTimeoutMs: 10 }).execute(
+-      endpoint,
+-      request,
+-    );
++    const receipt = await new DaemonTransport(
++      policyWith({ executionAdmissionTimeoutMs: 10 }),
++    ).execute(endpoint, request);
+ 
+     await expect(receipt.completion).resolves.toEqual({
+       status: "failed",
+@@ -168,16 +309,16 @@
+       instanceId: request.instanceId,
+     });
+     const spool = await store.create(request.requestId);
+-    const chunkCount = (12 * 1024 * 1024) / COMMAND_OUTPUT_CHUNK_BYTES;
++    const chunkCount = (12 * 1024 * 1024) / TEST_CHUNK_BYTES;
+     for (let sequence = 0; sequence < chunkCount; sequence += 1) {
+       await spool.append({
+         sequence,
+         stream: sequence % 2 === 0 ? "stdout" : "stderr",
+-        bytes: Buffer.alloc(COMMAND_OUTPUT_CHUNK_BYTES, sequence),
++        bytes: Buffer.alloc(TEST_CHUNK_BYTES, sequence),
+       });
+     }
+     const manifest = await spool.finish(0);
+-    const serverTransport = new LocalDaemonTransport();
++    const serverTransport = new DaemonTransport();
+     const server = await serverTransport.listen(endpoint, async (message, send) => {
+       if (message.kind === "result-ack") {
+         await spool.acknowledge();
+@@ -220,20 +361,23 @@
+         sha256: manifest.sha256,
+       });
+     });
+-    const receipt = await new LocalDaemonTransport().execute(endpoint, request);
++    const receipt = await new DaemonTransport().execute(endpoint, request);
+     const completion = await receipt.completion;
+ 
+     expect(completion.status).toBe("completed");
+     if (completion.status !== "completed" || completion.result.output === undefined) return;
+-    expect(completion.result.output.summary).toEqual({
+-      rawBytes: manifest.rawBytes,
+-      recordCount: manifest.recordCount,
+-      sha256: manifest.sha256,
+-    });
++    expect(completion.result.output).not.toHaveProperty("summary");
++    let receivedRecords = 0;
++    for await (const record of completion.result.output.records()) {
++      expect(record.stream).toBe(receivedRecords % 2 === 0 ? "stdout" : "stderr");
++      expect(Buffer.from(record.bytes)).toEqual(Buffer.alloc(TEST_CHUNK_BYTES, receivedRecords));
++      receivedRecords += 1;
++    }
++    expect(receivedRecords).toBe(chunkCount);
+     expect(store.usage()).toEqual({ rawBytes: 0, completionCount: 0 });
+     await completion.result.output.dispose();
+     await server.close();
+-  }, 20_000);
++  }, 60_000);
+ 
+   it("advances one client record only after its spool append completes", async () => {
+     const directory = mkdtempSync(join(tmpdir(), "symnav-stalled-client-spool-"));
+@@ -248,7 +392,7 @@
+       await spool.append({
+         sequence,
+         stream: sequence % 2 === 0 ? "stdout" : "stderr",
+-        bytes: Buffer.alloc(COMMAND_OUTPUT_CHUNK_BYTES, sequence),
++        bytes: Buffer.alloc(TEST_CHUNK_BYTES, sequence),
+       });
+     }
+     const manifest = await spool.finish(0);
+@@ -263,9 +407,9 @@
+     const appendGate = new Promise<void>((resolve) => {
+       releaseAppend = resolve;
+     });
+-    const appendRecord = OrderedCommandOutput.prototype.appendRecord;
+-    vi.spyOn(OrderedCommandOutput.prototype, "appendRecord").mockImplementation(async function (
+-      this: OrderedCommandOutput,
++    const append = DaemonClientResultCapture.prototype.append;
++    vi.spyOn(DaemonClientResultCapture.prototype, "append").mockImplementation(async function (
++      this: DaemonClientResultCapture,
+       record,
+     ) {
+       appendCalls += 1;
+@@ -274,7 +418,7 @@
+       markAppendStarted();
+       if (appendCalls === 1) await appendGate;
+       try {
+-        await appendRecord.call(this, record);
++        await append.call(this, record);
+       } finally {
+         activeAppends -= 1;
+       }
+@@ -302,7 +446,7 @@
+         }
+       });
+     });
+-    const receipt = await new LocalDaemonTransport({
++    const receipt = await new DaemonTransport({
+       outputDirectory: join(directory, "client"),
+       outputInlineBytes: 0,
+     }).execute(endpoint, request);
+@@ -345,16 +489,16 @@
+     const appendGate = new Promise<void>((resolve) => {
+       releaseAppend = resolve;
+     });
+-    const appendRecord = OrderedCommandOutput.prototype.appendRecord;
++    const append = DaemonClientResultCapture.prototype.append;
+     let appendCalls = 0;
+-    vi.spyOn(OrderedCommandOutput.prototype, "appendRecord").mockImplementation(async function (
+-      this: OrderedCommandOutput,
++    vi.spyOn(DaemonClientResultCapture.prototype, "append").mockImplementation(async function (
++      this: DaemonClientResultCapture,
+       record,
+     ) {
+       appendCalls += 1;
+       markAppendStarted();
+       if (appendCalls === 1) await appendGate;
+-      await appendRecord.call(this, record);
++      await append.call(this, record);
+     });
+     const fetchOffsets: number[] = [];
+     const endpoint = await rawExecutionServer(servers, sockets, directories, (socket) => {
+@@ -391,7 +535,7 @@
+         }
+       });
+     });
+-    const receipt = await new LocalDaemonTransport().execute(endpoint, request);
++    const receipt = await new DaemonTransport().execute(endpoint, request);
+ 
+     await appendStarted;
+     expect(fetchOffsets).toEqual([]);
+@@ -458,25 +602,184 @@
+       });
+     });
+ 
+-    const receipt = await new LocalDaemonTransport().execute(endpoint, request);
++    const receipt = await new DaemonTransport().execute(endpoint, request);
+     const completion = await receipt.completion;
+ 
+     expect(fetchOffsets).toEqual([2]);
+-    expect(completion).toMatchObject({
+-      status: "completed",
+-      result: {
+-        exitCode: 0,
+-        output: {
+-          summary: {
+-            rawBytes: manifest.rawBytes,
+-            recordCount: manifest.recordCount,
+-            sha256: manifest.sha256,
+-          },
+-        },
+-      },
+-    });
++    expect(completion).toMatchObject({ status: "completed", result: { exitCode: 0 } });
++    if (completion.status === "completed") {
++      expect(completion.result.output).not.toHaveProperty("summary");
++      const records = [];
++      for await (const record of completion.result.output.records()) {
++        records.push({ stream: record.stream, bytes: Buffer.from(record.bytes).toString() });
++      }
++      expect(records).toEqual(
++        Array.from({ length: 5 }, (_, sequence) => ({
++          stream: sequence % 2 === 0 ? "stdout" : "stderr",
++          bytes: `record-${sequence}\n`,
++        })),
++      );
++    }
+     expect(store.usage()).toEqual({ rawBytes: 0, completionCount: 0 });
+     if (completion.status === "completed") await completion.result.output?.dispose();
++  });
++
++  it("disables result fetch resume without disabling execution reattachment", async () => {
++    const directory = mkdtempSync(join(tmpdir(), "symnav-zero-result-resume-"));
++    directories.push(directory);
++    const store = new DaemonCompletionSpoolStore({
++      directory,
++      workspaceKey: "workspace",
++      instanceId: request.instanceId,
++    });
++    const spool = await store.create(request.requestId);
++    const manifest = await spool.finish(0);
++    let executeCount = 0;
++    let fetchCount = 0;
++    const endpoint = await rawExecutionServer(servers, sockets, directories, (socket) => {
++      socket.once("data", (encoded) => {
++        const bytes = Buffer.isBuffer(encoded) ? encoded : Buffer.from(encoded);
++        const message = JSON.parse(bytes.subarray(4).toString()) as { kind: string };
++        if (message.kind === "result-fetch") {
++          fetchCount += 1;
++          return;
++        }
++        executeCount += 1;
++        if (executeCount === 1) {
++          socket.end(Buffer.concat([frame(accepted()), frame(resultManifest(manifest))]));
++          return;
++        }
++        socket.end(
++          Buffer.concat([
++            frame(accepted()),
++            frame({
++              kind: "execution-failed",
++              instanceId: request.instanceId,
++              processToken: request.processToken,
++              requestId: request.requestId,
++              code: "internal",
++            } satisfies DaemonExecutionServerFrame),
++          ]),
++        );
++      });
++    });
++
++    const receipt = await new DaemonTransport(
++      policyWith({}, { resultTransferResumeLimitPerExecutionAttempt: 0 }),
++    ).execute(endpoint, request);
++
++    await expect(receipt.completion).resolves.toEqual({ status: "failed", code: "internal" });
++    expect({ executeCount, fetchCount }).toEqual({ executeCount: 2, fetchCount: 0 });
++  });
++
++  it("honors result fetch resume limits greater than one within one execute attempt", async () => {
++    const directory = mkdtempSync(join(tmpdir(), "symnav-multiple-result-resumes-"));
++    directories.push(directory);
++    const store = new DaemonCompletionSpoolStore({
++      directory,
++      workspaceKey: "workspace",
++      instanceId: request.instanceId,
++    });
++    const spool = await store.create(request.requestId);
++    const manifest = await spool.finish(0);
++    let executeCount = 0;
++    const fetchOffsets: number[] = [];
++    const endpoint = await rawExecutionServer(servers, sockets, directories, (socket) => {
++      socket.once("data", (encoded) => {
++        const bytes = Buffer.isBuffer(encoded) ? encoded : Buffer.from(encoded);
++        const message = JSON.parse(bytes.subarray(4).toString()) as {
++          kind: string;
++          offset?: number;
++        };
++        if (message.kind === "result-ack") {
++          socket.end(
++            frame({
++              kind: "result-acknowledged",
++              instanceId: request.instanceId,
++              processToken: request.processToken,
++              requestId: request.requestId,
++              transferId: manifest.transferId,
++            }),
++          );
++          return;
++        }
++        if (message.kind === "result-fetch") {
++          fetchOffsets.push(message.offset ?? -1);
++          if (fetchOffsets.length === 1) {
++            socket.end(frame(resultManifest(manifest)));
++            return;
++          }
++          socket.end(Buffer.concat([frame(resultManifest(manifest)), frame(resultEnd(manifest))]));
++          return;
++        }
++        executeCount += 1;
++        socket.end(Buffer.concat([frame(accepted()), frame(resultManifest(manifest))]));
++      });
++    });
++
++    const receipt = await new DaemonTransport(
++      policyWith(
++        {},
++        {
++          postAcceptanceExecutionReattachmentLimit: 0,
++          resultTransferResumeLimitPerExecutionAttempt: 2,
++        },
++      ),
++    ).execute(endpoint, request);
++    const completion = await receipt.completion;
++
++    expect({ executeCount, fetchOffsets }).toEqual({ executeCount: 1, fetchOffsets: [0, 0] });
++    expect(completion).toMatchObject({ status: "completed", result: { exitCode: 0 } });
++    if (completion.status === "completed") await completion.result.output.dispose();
++  });
++
++  it("surfaces an exhausted clean fetch as accepted corruption without execution replay", async () => {
++    const directory = mkdtempSync(join(tmpdir(), "symnav-exhausted-result-resume-"));
++    directories.push(directory);
++    const store = new DaemonCompletionSpoolStore({
++      directory,
++      workspaceKey: "workspace",
++      instanceId: request.instanceId,
++    });
++    const spool = await store.create(request.requestId);
++    const manifest = await spool.finish(0);
++    let executeCount = 0;
++    let fetchCount = 0;
++    const endpoint = await rawExecutionServer(servers, sockets, directories, (socket) => {
++      socket.once("data", (encoded) => {
++        const bytes = Buffer.isBuffer(encoded) ? encoded : Buffer.from(encoded);
++        const message = JSON.parse(bytes.subarray(4).toString()) as { kind: string };
++        if (message.kind === "result-fetch") {
++          fetchCount += 1;
++          socket.end(frame(resultManifest(manifest)));
++          return;
++        }
++        executeCount += 1;
++        socket.end(
++          executeCount === 1
++            ? Buffer.concat([frame(accepted()), frame(resultManifest(manifest))])
++            : Buffer.concat([
++                frame(accepted()),
++                frame({
++                  kind: "execution-failed",
++                  instanceId: request.instanceId,
++                  processToken: request.processToken,
++                  requestId: request.requestId,
++                  code: "internal",
++                } satisfies DaemonExecutionServerFrame),
++              ]),
++        );
++      });
++    });
++
++    const receipt = await new DaemonTransport().execute(endpoint, request);
++
++    await expect(receipt.completion).rejects.toMatchObject({
++      code: "corrupt",
++      delivery: "accepted",
++      retrySafe: false,
++    } satisfies Partial<DaemonTransportError>);
++    expect({ executeCount, fetchCount }).toEqual({ executeCount: 1, fetchCount: 1 });
+   });
+ 
+   it.each([
+@@ -501,7 +804,7 @@
+       await spool.append({
+         sequence,
+         stream: sequence % 2 === 0 ? "stdout" : "stderr",
+-        bytes: Buffer.from(`record-${sequence}\n`),
++        bytes: Buffer.alloc(TEST_CHUNK_BYTES, sequence),
+       });
+     }
+     const manifest = await spool.finish(0);
+@@ -547,7 +850,7 @@
+             socket.write(
+               Buffer.concat([
+                 encodedEnd,
+-                DaemonResultChunkCodec.encode({
++                wireCodec.encodeServerMessage({
+                   transferId: manifest.transferId,
+                   requestId: request.requestId,
+                   offset: manifest.recordCount,
+@@ -564,7 +867,7 @@
+       });
+     });
+     const clientDirectory = join(directory, "client");
+-    const receipt = await new LocalDaemonTransport({
++    const receipt = await new DaemonTransport({
+       outputDirectory: clientDirectory,
+       outputInlineBytes: 0,
+     }).execute(endpoint, request);
+@@ -597,7 +900,12 @@
+       await spool.append({
+         sequence: 0,
+         stream: "stdout",
+-        bytes: Buffer.alloc(COMMAND_OUTPUT_CHUNK_BYTES, 7),
++        bytes: Buffer.alloc(TEST_CHUNK_BYTES, 7),
++      });
++      await spool.append({
++        sequence: 1,
++        stream: "stderr",
++        bytes: Buffer.from("spill"),
+       });
+       const manifest = await spool.finish(0);
+       const acknowledgement = frame({
+@@ -635,7 +943,7 @@
+         });
+       });
+       const clientDirectory = join(directory, "client");
+-      const receipt = await new LocalDaemonTransport({
++      const receipt = await new DaemonTransport({
+         requestTimeoutMs: 100,
+         outputDirectory: clientDirectory,
+         outputInlineBytes: 0,
+@@ -665,7 +973,7 @@
+       await spool.append({
+         sequence,
+         stream: sequence % 2 === 0 ? "stdout" : "stderr",
+-        bytes: Buffer.alloc(COMMAND_OUTPUT_CHUNK_BYTES, sequence),
++        bytes: Buffer.alloc(TEST_CHUNK_BYTES, sequence),
+       });
+     }
+     const manifest = await spool.finish(0);
+@@ -687,7 +995,7 @@
+       server.listen(endpoint, resolve);
+     });
+     const clientDirectory = join(directory, "client");
+-    const receipt = await new LocalDaemonTransport({
++    const receipt = await new DaemonTransport({
+       requestTimeoutMs: 100,
+       outputDirectory: clientDirectory,
+       outputInlineBytes: 0,
+@@ -715,7 +1023,12 @@
+     await spool.append({
+       sequence: 0,
+       stream: "stdout",
+-      bytes: Buffer.alloc(COMMAND_OUTPUT_CHUNK_BYTES, 3),
++      bytes: Buffer.alloc(TEST_CHUNK_BYTES, 3),
++    });
++    await spool.append({
++      sequence: 1,
++      stream: "stderr",
++      bytes: Buffer.from("spill"),
+     });
+     const manifest = await spool.finish(0);
+     let acknowledgementCount = 0;
+@@ -743,7 +1056,7 @@
+       });
+     });
+     const clientDirectory = join(directory, "client");
+-    const receipt = await new LocalDaemonTransport({
++    const receipt = await new DaemonTransport({
+       outputDirectory: clientDirectory,
+       outputInlineBytes: 0,
+     }).execute(endpoint, request);
+@@ -760,10 +1073,7 @@
+       socket.once("data", () => socket.end(frame(accepted())));
+     });
+ 
+-    const receipt = await new LocalDaemonTransport({ requestTimeoutMs: 100 }).execute(
+-      endpoint,
+-      request,
+-    );
++    const receipt = await new DaemonTransport({ requestTimeoutMs: 100 }).execute(endpoint, request);
+ 
+     await expect(receipt.completion).rejects.toMatchObject({
+       code: "closed",
+@@ -771,6 +1081,82 @@
+       retrySafe: false,
+       authenticatedInstanceId: request.instanceId,
+     } satisfies Partial<DaemonTransportError>);
++  });
++
++  it("disables accepted execution reattachment without disabling fetch policy", async () => {
++    let executeCount = 0;
++    const endpoint = await rawExecutionServer(servers, sockets, directories, (socket) => {
++      socket.once("data", () => {
++        executeCount += 1;
++        socket.end(frame(accepted()));
++      });
++    });
++
++    const receipt = await new DaemonTransport(
++      policyWith({}, { postAcceptanceExecutionReattachmentLimit: 0 }),
++    ).execute(endpoint, request);
++
++    await expect(receipt.completion).rejects.toMatchObject({
++      code: "closed",
++      delivery: "accepted",
++      authenticatedInstanceId: request.instanceId,
++    } satisfies Partial<DaemonTransportError>);
++    expect(executeCount).toBe(1);
++  });
++
++  it("honors accepted execution reattachment limits greater than one", async () => {
++    let executeCount = 0;
++    const endpoint = await rawExecutionServer(servers, sockets, directories, (socket) => {
++      socket.once("data", () => {
++        executeCount += 1;
++        if (executeCount < 3) {
++          socket.end(frame(accepted()));
++          return;
++        }
++        socket.end(
++          Buffer.concat([
++            frame(accepted()),
++            frame({
++              kind: "execution-failed",
++              instanceId: request.instanceId,
++              processToken: request.processToken,
++              requestId: request.requestId,
++              code: "internal",
++            } satisfies DaemonExecutionServerFrame),
++          ]),
++        );
++      });
++    });
++
++    const receipt = await new DaemonTransport(
++      policyWith({}, { postAcceptanceExecutionReattachmentLimit: 2 }),
++    ).execute(endpoint, request);
++
++    await expect(receipt.completion).resolves.toEqual({ status: "failed", code: "internal" });
++    expect(executeCount).toBe(3);
++  });
++
++  it("rethrows the first accepted close when reattachment fails before acceptance", async () => {
++    let executeCount = 0;
++    const endpoint = await rawExecutionServer(servers, sockets, directories, (socket) => {
++      socket.once("data", () => {
++        executeCount += 1;
++        if (executeCount === 1) socket.end(frame(accepted()));
++        else socket.end();
++      });
++    });
++
++    const receipt = await new DaemonTransport(
++      policyWith({}, { postAcceptanceExecutionReattachmentLimit: 1 }),
++    ).execute(endpoint, request);
++
++    await expect(receipt.completion).rejects.toMatchObject({
++      code: "closed",
++      delivery: "accepted",
++      message: "Daemon connection ended after acceptance before completion",
++      authenticatedInstanceId: request.instanceId,
++    } satisfies Partial<DaemonTransportError>);
++    expect(executeCount).toBe(2);
+   });
+ 
+   it("reattaches once with the same request after accepted delivery closes", async () => {
+@@ -815,15 +1201,117 @@
+       });
+     });
+ 
+-    const receipt = await new LocalDaemonTransport({ requestTimeoutMs: 100 }).execute(
+-      endpoint,
+-      request,
+-    );
++    const receipt = await new DaemonTransport({ requestTimeoutMs: 100 }).execute(endpoint, request);
+ 
+     const completion = await receipt.completion;
+ 
+     expect(completion).toMatchObject({ status: "completed", result: { exitCode: 0 } });
+     expect(executeCount).toBe(2);
++    if (completion.status === "completed") await completion.result.output.dispose();
++  });
++
++  it("reattaches the same request with fresh output and disposes the interrupted capture once", async () => {
++    const directory = mkdtempSync(join(tmpdir(), "symnav-isolated-reattach-"));
++    directories.push(directory);
++    const store = new DaemonCompletionSpoolStore({
++      directory: join(directory, "daemon"),
++      workspaceKey: "workspace",
++      instanceId: request.instanceId,
++    });
++    const spool = await store.create(request.requestId);
++    await spool.append({
++      sequence: 0,
++      stream: "stdout",
++      bytes: Buffer.from("partial"),
++    });
++    const manifest = await spool.finish(0);
++    const executeRequests: unknown[] = [];
++    const dispose = vi.spyOn(DaemonClientResultCapture.prototype, "dispose");
++    const endpoint = await rawExecutionServer(servers, sockets, directories, (socket) => {
++      socket.once("data", (encoded) => {
++        const bytes = Buffer.isBuffer(encoded) ? encoded : Buffer.from(encoded);
++        const message = JSON.parse(bytes.subarray(4).toString()) as { kind: string };
++        if (message.kind === "result-ack") {
++          socket.end(
++            frame({
++              kind: "result-acknowledged",
++              instanceId: request.instanceId,
++              processToken: request.processToken,
++              requestId: request.requestId,
++              transferId: manifest.transferId,
++            }),
++          );
++          return;
++        }
++        executeRequests.push(message);
++        if (executeRequests.length === 1) {
++          void firstEncodedRecord(spool, manifest).then((record) =>
++            socket.end(Buffer.concat([frame(accepted()), frame(resultManifest(manifest)), record])),
++          );
++          return;
++        }
++        void encodedResult(spool, manifest).then((result) => socket.end(result));
++      });
++    });
++
++    const receipt = await new DaemonTransport(
++      policyWith({}, { resultTransferResumeLimitPerExecutionAttempt: 0 }),
++    ).execute(endpoint, request);
++    const completion = await receipt.completion;
++
++    expect(executeRequests).toEqual([request, request]);
++    expect(dispose).toHaveBeenCalledTimes(1);
++    expect(completion).toMatchObject({ status: "completed", result: { exitCode: 0 } });
++    if (completion.status === "completed") await completion.result.output.dispose();
++  });
++
++  it("gives the reattached execute attempt its own fetch resume", async () => {
++    const directory = mkdtempSync(join(tmpdir(), "symnav-reattach-resume-"));
++    directories.push(directory);
++    const store = new DaemonCompletionSpoolStore({
++      directory: join(directory, "daemon"),
++      workspaceKey: "workspace",
++      instanceId: request.instanceId,
++    });
++    const spool = await store.create(request.requestId);
++    const manifest = await spool.finish(0);
++    let executeCount = 0;
++    let fetchCount = 0;
++    const endpoint = await rawExecutionServer(servers, sockets, directories, (socket) => {
++      socket.once("data", (encoded) => {
++        const bytes = Buffer.isBuffer(encoded) ? encoded : Buffer.from(encoded);
++        const message = JSON.parse(bytes.subarray(4).toString()) as { kind: string };
++        if (message.kind === "result-ack") {
++          socket.end(
++            frame({
++              kind: "result-acknowledged",
++              instanceId: request.instanceId,
++              processToken: request.processToken,
++              requestId: request.requestId,
++              transferId: manifest.transferId,
++            }),
++          );
++          return;
++        }
++        if (message.kind === "result-fetch") {
++          fetchCount += 1;
++          socket.end(Buffer.concat([frame(resultManifest(manifest)), frame(resultEnd(manifest))]));
++          return;
++        }
++        executeCount += 1;
++        socket.end(
++          executeCount === 1
++            ? frame(accepted())
++            : Buffer.concat([frame(accepted()), frame(resultManifest(manifest))]),
++        );
++      });
++    });
++
++    const receipt = await new DaemonTransport().execute(endpoint, request);
++    const completion = await receipt.completion;
++
++    expect(completion).toMatchObject({ status: "completed", result: { exitCode: 0 } });
++    expect({ executeCount, fetchCount }).toEqual({ executeCount: 2, fetchCount: 1 });
+     if (completion.status === "completed") await completion.result.output.dispose();
+   });
+ 
+@@ -880,7 +1368,7 @@
+     const endpoint = await rawExecutionServer(servers, sockets, directories, (socket) => {
+       socket.once("data", () => socket.end(Buffer.concat(frames.map(frame))));
+     });
+-    const transport = new LocalDaemonTransport({ requestTimeoutMs: 100 });
++    const transport = new DaemonTransport({ requestTimeoutMs: 100 });
+ 
+     const execution = transport.execute(endpoint, request);
+     await expect(execution.then((receipt) => receipt.completion)).rejects.toMatchObject({
+@@ -902,7 +1390,7 @@
+ }
+ 
+ function resultManifest(
+-  manifest: import("./completion-spool.js").CompletionSpoolManifest,
++  manifest: import("../delivery/completion-spool.js").CompletionSpoolManifest,
+ ): DaemonExecutionServerFrame {
+   return {
+     kind: "result-manifest",
+@@ -914,7 +1402,7 @@
+ }
+ 
+ function resultEnd(
+-  manifest: import("./completion-spool.js").CompletionSpoolManifest,
++  manifest: import("../delivery/completion-spool.js").CompletionSpoolManifest,
+ ): Extract<DaemonExecutionServerFrame, { kind: "result-end" }> {
+   return {
+     kind: "result-end",
+@@ -930,7 +1418,7 @@
+ 
+ async function sendRecords(
+   socket: Socket,
+-  spool: import("./completion-spool.js").CompletionSpool,
++  spool: import("../delivery/completion-spool.js").CompletionSpool,
+   transferId: string,
+   offset: number,
+   stopBefore = Number.POSITIVE_INFINITY,
+@@ -938,7 +1426,7 @@
+   for await (const record of spool.read(offset)) {
+     if (record.sequence >= stopBefore || socket.destroyed || !socket.writable) return;
+     socket.write(
+-      DaemonResultChunkCodec.encode({
++      wireCodec.encodeServerMessage({
+         transferId,
+         requestId: request.requestId,
+         offset: record.sequence,
+@@ -951,13 +1439,35 @@
+ }
+ 
+ async function encodedResult(
+-  spool: import("./completion-spool.js").CompletionSpool,
+-  manifest: import("./completion-spool.js").CompletionSpoolManifest,
++  spool: import("../delivery/completion-spool.js").CompletionSpool,
++  manifest: import("../delivery/completion-spool.js").CompletionSpoolManifest,
+ ): Promise<Buffer> {
+   const chunks = [frame(accepted()), frame(resultManifest(manifest))];
+   for await (const record of spool.read(0)) {
+     chunks.push(
+-      DaemonResultChunkCodec.encode({
++      Buffer.from(
++        wireCodec.encodeServerMessage({
++          transferId: manifest.transferId,
++          requestId: request.requestId,
++          offset: record.sequence,
++          sequence: record.sequence,
++          stream: record.stream,
++          bytes: record.bytes,
++        }),
++      ),
++    );
++  }
++  chunks.push(frame(resultEnd(manifest)));
++  return Buffer.concat(chunks);
++}
++
++async function firstEncodedRecord(
++  spool: import("../delivery/completion-spool.js").CompletionSpool,
++  manifest: import("../delivery/completion-spool.js").CompletionSpoolManifest,
++): Promise<Buffer> {
++  for await (const record of spool.read(0)) {
++    return Buffer.from(
++      wireCodec.encodeServerMessage({
+         transferId: manifest.transferId,
+         requestId: request.requestId,
+         offset: record.sequence,
+@@ -966,24 +1476,6 @@
+         bytes: record.bytes,
+       }),
+     );
+-  }
+-  chunks.push(frame(resultEnd(manifest)));
+-  return Buffer.concat(chunks);
+-}
+-
+-async function firstEncodedRecord(
+-  spool: import("./completion-spool.js").CompletionSpool,
+-  manifest: import("./completion-spool.js").CompletionSpoolManifest,
+-): Promise<Buffer> {
+-  for await (const record of spool.read(0)) {
+-    return DaemonResultChunkCodec.encode({
+-      transferId: manifest.transferId,
+-      requestId: request.requestId,
+-      offset: record.sequence,
+-      sequence: record.sequence,
+-      stream: record.stream,
+-      bytes: record.bytes,
+-    });
+   }
+   throw new Error("Expected one completion record");
+ }
+@@ -1038,3 +1530,16 @@
+     if (timeout !== undefined) clearTimeout(timeout);
+   }
+ }
++
++function policyWith(
++  transport: { readonly executionAdmissionTimeoutMs?: number } = {},
++  delivery: {
++    readonly postAcceptanceExecutionReattachmentLimit?: number;
++    readonly resultTransferResumeLimitPerExecutionAttempt?: number;
++  } = {},
++) {
++  return DaemonPolicyTestFactory.withOverrides(DaemonPolicy.currentSystem(), {
++    transport,
++    delivery,
++  }).values;
++}

@@ -1,0 +1,287 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>packages/daemon/src/transport/result-transfer-receiver.test.ts</title><style>body{margin:30px;font:15px system-ui;background:#f3f1e9;color:#183239}a{color:#126c7e}pre{font:13px/1.7 monospace;overflow:auto}.line{display:block;min-width:max-content}.line>a{display:inline-block;width:4ch;color:#647c7d}.line:target{background:#ffd9a0}h1{font-size:20px;overflow-wrap:anywhere}</style><a href="../../index.html#surface">← Weather map</a><h1>packages/daemon/src/transport/result-transfer-receiver.test.ts</h1><p>head · d07002357d3e9596bfaae910a1ac63b77981620b · SHA-256 2abf86050f5d32c3a5320e6a14524590e86b8d5061fb6f2aa52753b8d5edafcf</p><pre><span class="line" id="L1"><a href="#L1">1</a> import { createHash } from &quot;node:crypto&quot;;</span>
+<span class="line" id="L2"><a href="#L2">2</a> import { describe, expect, it, vi } from &quot;vitest&quot;;</span>
+<span class="line" id="L3"><a href="#L3">3</a> import type { DaemonExecutorExecutionResult, DaemonOutputRecord } from &quot;@symnav/daemon&quot;;</span>
+<span class="line" id="L4"><a href="#L4">4</a> import type { DaemonSequencedOutputRecord } from &quot;../daemon-executor.js&quot;;</span>
+<span class="line" id="L5"><a href="#L5">5</a> import type { CompletionSpoolManifest } from &quot;../delivery/completion-spool.js&quot;;</span>
+<span class="line" id="L6"><a href="#L6">6</a> import type { DaemonExecutionServerFrame, DaemonResultChunk } from &quot;./protocol.js&quot;;</span>
+<span class="line" id="L7"><a href="#L7">7</a> import type {</span>
+<span class="line" id="L8"><a href="#L8">8</a>   DaemonCapturedOutput,</span>
+<span class="line" id="L9"><a href="#L9">9</a>   DaemonCapturedOutputSummary,</span>
+<span class="line" id="L10"><a href="#L10">10</a>   DaemonOutputCapture,</span>
+<span class="line" id="L11"><a href="#L11">11</a> } from &quot;./client-result-capture.js&quot;;</span>
+<span class="line" id="L12"><a href="#L12">12</a> import { DaemonResultTransferReceiver } from &quot;./result-transfer-receiver.js&quot;;</span>
+<span class="line" id="L13"><a href="#L13">13</a> </span>
+<span class="line" id="L14"><a href="#L14">14</a> describe(&quot;DaemonResultTransferReceiver&quot;, () =&gt; {</span>
+<span class="line" id="L15"><a href="#L15">15</a>   it(&quot;requires one matching manifest at the start of every connection&quot;, async () =&gt; {</span>
+<span class="line" id="L16"><a href="#L16">16</a>     const output = new FakeCapture(summary([]));</span>
+<span class="line" id="L17"><a href="#L17">17</a>     const receiver = new DaemonResultTransferReceiver(&quot;request&quot;, output);</span>
+<span class="line" id="L18"><a href="#L18">18</a> </span>
+<span class="line" id="L19"><a href="#L19">19</a>     await expect(receiver.acceptChunk(chunk(0))).rejects.toThrow(</span>
+<span class="line" id="L20"><a href="#L20">20</a>       &quot;Daemon returned an invalid result chunk&quot;,</span>
+<span class="line" id="L21"><a href="#L21">21</a>     );</span>
+<span class="line" id="L22"><a href="#L22">22</a>     expect(() =&gt; receiver.acceptEnd(resultEnd(manifest()))).toThrow(</span>
+<span class="line" id="L23"><a href="#L23">23</a>       &quot;Daemon result transfer did not match its manifest&quot;,</span>
+<span class="line" id="L24"><a href="#L24">24</a>     );</span>
+<span class="line" id="L25"><a href="#L25">25</a>     expect(() =&gt;</span>
+<span class="line" id="L26"><a href="#L26">26</a>       receiver.acceptManifest(resultManifest(manifest(), { requestId: &quot;other&quot; })),</span>
+<span class="line" id="L27"><a href="#L27">27</a>     ).toThrow(&quot;Daemon result manifest has invalid coordinates&quot;);</span>
+<span class="line" id="L28"><a href="#L28">28</a>     receiver.acceptManifest(resultManifest(manifest()));</span>
+<span class="line" id="L29"><a href="#L29">29</a>     expect(() =&gt; receiver.acceptManifest(resultManifest(manifest()))).toThrow(</span>
+<span class="line" id="L30"><a href="#L30">30</a>       &quot;Duplicate result manifest&quot;,</span>
+<span class="line" id="L31"><a href="#L31">31</a>     );</span>
+<span class="line" id="L32"><a href="#L32">32</a> </span>
+<span class="line" id="L33"><a href="#L33">33</a>     receiver.beginConnection();</span>
+<span class="line" id="L34"><a href="#L34">34</a>     expect(receiver.manifest).toEqual(manifest());</span>
+<span class="line" id="L35"><a href="#L35">35</a>     expect(receiver.nextOffset).toBe(0);</span>
+<span class="line" id="L36"><a href="#L36">36</a>     expect(receiver.terminal).toBe(false);</span>
+<span class="line" id="L37"><a href="#L37">37</a>     receiver.acceptManifest(resultManifest(manifest()));</span>
+<span class="line" id="L38"><a href="#L38">38</a> </span>
+<span class="line" id="L39"><a href="#L39">39</a>     receiver.beginConnection();</span>
+<span class="line" id="L40"><a href="#L40">40</a>     expect(() =&gt;</span>
+<span class="line" id="L41"><a href="#L41">41</a>       receiver.acceptManifest(resultManifest({ ...manifest(), transferId: &quot;different&quot; })),</span>
+<span class="line" id="L42"><a href="#L42">42</a>     ).toThrow(&quot;Daemon resumed with a different result manifest&quot;);</span>
+<span class="line" id="L43"><a href="#L43">43</a>   });</span>
+<span class="line" id="L44"><a href="#L44">44</a> </span>
+<span class="line" id="L45"><a href="#L45">45</a>   it.each([</span>
+<span class="line" id="L46"><a href="#L46">46</a>     { requestId: &quot;other&quot; },</span>
+<span class="line" id="L47"><a href="#L47">47</a>     { instanceId: &quot;other&quot; },</span>
+<span class="line" id="L48"><a href="#L48">48</a>     { exitCode: 1 },</span>
+<span class="line" id="L49"><a href="#L49">49</a>     { rawBytes: 1 },</span>
+<span class="line" id="L50"><a href="#L50">50</a>     { recordCount: 1 },</span>
+<span class="line" id="L51"><a href="#L51">51</a>     { sha256: &quot;f&quot;.repeat(64) },</span>
+<span class="line" id="L52"><a href="#L52">52</a>   ] as const)(&quot;rejects a changed resumed manifest: %j&quot;, (change) =&gt; {</span>
+<span class="line" id="L53"><a href="#L53">53</a>     const receiver = new DaemonResultTransferReceiver(&quot;request&quot;, new FakeCapture(summary([])));</span>
+<span class="line" id="L54"><a href="#L54">54</a>     receiver.acceptManifest(resultManifest(manifest()));</span>
+<span class="line" id="L55"><a href="#L55">55</a>     receiver.beginConnection();</span>
+<span class="line" id="L56"><a href="#L56">56</a> </span>
+<span class="line" id="L57"><a href="#L57">57</a>     expect(() =&gt; receiver.acceptManifest(resultManifest({ ...manifest(), ...change }))).toThrow(</span>
+<span class="line" id="L58"><a href="#L58">58</a>       &quot;Daemon resumed with a different result manifest&quot;,</span>
+<span class="line" id="L59"><a href="#L59">59</a>     );</span>
+<span class="line" id="L60"><a href="#L60">60</a>   });</span>
+<span class="line" id="L61"><a href="#L61">61</a> </span>
+<span class="line" id="L62"><a href="#L62">62</a>   it(&quot;advances its offset only after the matching record is durably appended&quot;, async () =&gt; {</span>
+<span class="line" id="L63"><a href="#L63">63</a>     let releaseAppend!: () =&gt; void;</span>
+<span class="line" id="L64"><a href="#L64">64</a>     const appendGate = new Promise&lt;void&gt;((resolve) =&gt; {</span>
+<span class="line" id="L65"><a href="#L65">65</a>       releaseAppend = resolve;</span>
+<span class="line" id="L66"><a href="#L66">66</a>     });</span>
+<span class="line" id="L67"><a href="#L67">67</a>     const output = new FakeCapture(summary([]), async () =&gt; appendGate);</span>
+<span class="line" id="L68"><a href="#L68">68</a>     const receiver = new DaemonResultTransferReceiver(&quot;request&quot;, output);</span>
+<span class="line" id="L69"><a href="#L69">69</a>     receiver.acceptManifest(resultManifest(manifest({ recordCount: 1, rawBytes: 1 })));</span>
+<span class="line" id="L70"><a href="#L70">70</a> </span>
+<span class="line" id="L71"><a href="#L71">71</a>     const accepting = receiver.acceptChunk(chunk(0));</span>
+<span class="line" id="L72"><a href="#L72">72</a>     expect(receiver.nextOffset).toBe(0);</span>
+<span class="line" id="L73"><a href="#L73">73</a>     releaseAppend();</span>
+<span class="line" id="L74"><a href="#L74">74</a>     await accepting;</span>
+<span class="line" id="L75"><a href="#L75">75</a> </span>
+<span class="line" id="L76"><a href="#L76">76</a>     expect(receiver.nextOffset).toBe(1);</span>
+<span class="line" id="L77"><a href="#L77">77</a>     expect(output.appended).toEqual([{ sequence: 0, stream: &quot;stdout&quot;, bytes: Buffer.from(&quot;a&quot;) }]);</span>
+<span class="line" id="L78"><a href="#L78">78</a>     receiver.beginConnection();</span>
+<span class="line" id="L79"><a href="#L79">79</a>     expect(receiver.manifest).toEqual(manifest({ recordCount: 1, rawBytes: 1 }));</span>
+<span class="line" id="L80"><a href="#L80">80</a>     expect(receiver.nextOffset).toBe(1);</span>
+<span class="line" id="L81"><a href="#L81">81</a>     expect(receiver.terminal).toBe(false);</span>
+<span class="line" id="L82"><a href="#L82">82</a>     receiver.acceptManifest(resultManifest(manifest({ recordCount: 1, rawBytes: 1 })));</span>
+<span class="line" id="L83"><a href="#L83">83</a>   });</span>
+<span class="line" id="L84"><a href="#L84">84</a> </span>
+<span class="line" id="L85"><a href="#L85">85</a>   it.each([</span>
+<span class="line" id="L86"><a href="#L86">86</a>     { transferId: &quot;other&quot; },</span>
+<span class="line" id="L87"><a href="#L87">87</a>     { requestId: &quot;other&quot; },</span>
+<span class="line" id="L88"><a href="#L88">88</a>     { offset: 1 },</span>
+<span class="line" id="L89"><a href="#L89">89</a>     { sequence: 1 },</span>
+<span class="line" id="L90"><a href="#L90">90</a>   ] as const)(&quot;rejects invalid chunk coordinates: %j&quot;, async (change) =&gt; {</span>
+<span class="line" id="L91"><a href="#L91">91</a>     const receiver = new DaemonResultTransferReceiver(&quot;request&quot;, new FakeCapture(summary([])));</span>
+<span class="line" id="L92"><a href="#L92">92</a>     receiver.acceptManifest(resultManifest(manifest({ recordCount: 1, rawBytes: 1 })));</span>
+<span class="line" id="L93"><a href="#L93">93</a> </span>
+<span class="line" id="L94"><a href="#L94">94</a>     await expect(receiver.acceptChunk({ ...chunk(0), ...change })).rejects.toThrow(</span>
+<span class="line" id="L95"><a href="#L95">95</a>       &quot;Daemon returned an invalid result chunk&quot;,</span>
+<span class="line" id="L96"><a href="#L96">96</a>     );</span>
+<span class="line" id="L97"><a href="#L97">97</a>   });</span>
+<span class="line" id="L98"><a href="#L98">98</a> </span>
+<span class="line" id="L99"><a href="#L99">99</a>   it(&quot;requires one matching end after every manifest record&quot;, async () =&gt; {</span>
+<span class="line" id="L100"><a href="#L100">100</a>     const records = [chunk(0), chunk(1, &quot;stderr&quot;)];</span>
+<span class="line" id="L101"><a href="#L101">101</a>     const expectedSummary = summary(records);</span>
+<span class="line" id="L102"><a href="#L102">102</a>     const expectedManifest = manifest(expectedSummary);</span>
+<span class="line" id="L103"><a href="#L103">103</a>     const receiver = new DaemonResultTransferReceiver(&quot;request&quot;, new FakeCapture(expectedSummary));</span>
+<span class="line" id="L104"><a href="#L104">104</a>     receiver.acceptManifest(resultManifest(expectedManifest));</span>
+<span class="line" id="L105"><a href="#L105">105</a>     expect(() =&gt; receiver.acceptEnd(resultEnd(expectedManifest))).toThrow(</span>
+<span class="line" id="L106"><a href="#L106">106</a>       &quot;Daemon result transfer did not match its manifest&quot;,</span>
+<span class="line" id="L107"><a href="#L107">107</a>     );</span>
+<span class="line" id="L108"><a href="#L108">108</a>     for (const record of records) await receiver.acceptChunk(record);</span>
+<span class="line" id="L109"><a href="#L109">109</a>     receiver.acceptEnd(resultEnd(expectedManifest));</span>
+<span class="line" id="L110"><a href="#L110">110</a> </span>
+<span class="line" id="L111"><a href="#L111">111</a>     expect(receiver.terminal).toBe(true);</span>
+<span class="line" id="L112"><a href="#L112">112</a>     await expect(receiver.acceptChunk(chunk(2))).rejects.toThrow(</span>
+<span class="line" id="L113"><a href="#L113">113</a>       &quot;Daemon returned an invalid result chunk&quot;,</span>
+<span class="line" id="L114"><a href="#L114">114</a>     );</span>
+<span class="line" id="L115"><a href="#L115">115</a>     expect(() =&gt; receiver.acceptEnd(resultEnd(expectedManifest))).toThrow(</span>
+<span class="line" id="L116"><a href="#L116">116</a>       &quot;Daemon result transfer did not match its manifest&quot;,</span>
+<span class="line" id="L117"><a href="#L117">117</a>     );</span>
+<span class="line" id="L118"><a href="#L118">118</a>   });</span>
+<span class="line" id="L119"><a href="#L119">119</a> </span>
+<span class="line" id="L120"><a href="#L120">120</a>   it.each([</span>
+<span class="line" id="L121"><a href="#L121">121</a>     { instanceId: &quot;other&quot; },</span>
+<span class="line" id="L122"><a href="#L122">122</a>     { transferId: &quot;other&quot; },</span>
+<span class="line" id="L123"><a href="#L123">123</a>     { requestId: &quot;other&quot; },</span>
+<span class="line" id="L124"><a href="#L124">124</a>     { rawBytes: 2 },</span>
+<span class="line" id="L125"><a href="#L125">125</a>     { recordCount: 2 },</span>
+<span class="line" id="L126"><a href="#L126">126</a>     { sha256: &quot;f&quot;.repeat(64) },</span>
+<span class="line" id="L127"><a href="#L127">127</a>   ] as const)(&quot;rejects invalid end coordinates: %j&quot;, (change) =&gt; {</span>
+<span class="line" id="L128"><a href="#L128">128</a>     const receiver = new DaemonResultTransferReceiver(&quot;request&quot;, new FakeCapture(summary([])));</span>
+<span class="line" id="L129"><a href="#L129">129</a>     receiver.acceptManifest(resultManifest(manifest()));</span>
+<span class="line" id="L130"><a href="#L130">130</a> </span>
+<span class="line" id="L131"><a href="#L131">131</a>     expect(() =&gt; receiver.acceptEnd({ ...resultEnd(manifest()), ...change })).toThrow(</span>
+<span class="line" id="L132"><a href="#L132">132</a>       &quot;Daemon result transfer did not match its manifest&quot;,</span>
+<span class="line" id="L133"><a href="#L133">133</a>     );</span>
+<span class="line" id="L134"><a href="#L134">134</a>   });</span>
+<span class="line" id="L135"><a href="#L135">135</a> </span>
+<span class="line" id="L136"><a href="#L136">136</a>   it(&quot;returns the captured result only after terminal summary validation&quot;, async () =&gt; {</span>
+<span class="line" id="L137"><a href="#L137">137</a>     const expectedSummary = summary([]);</span>
+<span class="line" id="L138"><a href="#L138">138</a>     const output = new FakeCapture(expectedSummary);</span>
+<span class="line" id="L139"><a href="#L139">139</a>     const receiver = new DaemonResultTransferReceiver(&quot;request&quot;, output);</span>
+<span class="line" id="L140"><a href="#L140">140</a> </span>
+<span class="line" id="L141"><a href="#L141">141</a>     await expect(receiver.finish()).rejects.toThrow(&quot;Daemon result transfer is incomplete&quot;);</span>
+<span class="line" id="L142"><a href="#L142">142</a>     receiver.acceptManifest(resultManifest(manifest(expectedSummary)));</span>
+<span class="line" id="L143"><a href="#L143">143</a>     receiver.acceptEnd(resultEnd(manifest(expectedSummary)));</span>
+<span class="line" id="L144"><a href="#L144">144</a> </span>
+<span class="line" id="L145"><a href="#L145">145</a>     await expect(receiver.finish()).resolves.toBe(output.result);</span>
+<span class="line" id="L146"><a href="#L146">146</a>     expect(output.finishExitCodes).toEqual([0]);</span>
+<span class="line" id="L147"><a href="#L147">147</a>   });</span>
+<span class="line" id="L148"><a href="#L148">148</a> </span>
+<span class="line" id="L149"><a href="#L149">149</a>   it(&quot;disposes a captured result that fails digest validation&quot;, async () =&gt; {</span>
+<span class="line" id="L150"><a href="#L150">150</a>     const output = new FakeCapture({ ...summary([]), sha256: &quot;f&quot;.repeat(64) });</span>
+<span class="line" id="L151"><a href="#L151">151</a>     const receiver = new DaemonResultTransferReceiver(&quot;request&quot;, output);</span>
+<span class="line" id="L152"><a href="#L152">152</a>     receiver.acceptManifest(resultManifest(manifest()));</span>
+<span class="line" id="L153"><a href="#L153">153</a>     receiver.acceptEnd(resultEnd(manifest()));</span>
+<span class="line" id="L154"><a href="#L154">154</a> </span>
+<span class="line" id="L155"><a href="#L155">155</a>     await expect(receiver.finish()).rejects.toThrow(</span>
+<span class="line" id="L156"><a href="#L156">156</a>       &quot;Daemon result transfer failed digest validation&quot;,</span>
+<span class="line" id="L157"><a href="#L157">157</a>     );</span>
+<span class="line" id="L158"><a href="#L158">158</a>     expect(output.resultOutput.dispose).toHaveBeenCalledOnce();</span>
+<span class="line" id="L159"><a href="#L159">159</a>   });</span>
+<span class="line" id="L160"><a href="#L160">160</a> </span>
+<span class="line" id="L161"><a href="#L161">161</a>   it(&quot;disposes abandoned partial capture once but leaves completed output caller-owned&quot;, async () =&gt; {</span>
+<span class="line" id="L162"><a href="#L162">162</a>     const partial = new FakeCapture(summary([]));</span>
+<span class="line" id="L163"><a href="#L163">163</a>     const partialReceiver = new DaemonResultTransferReceiver(&quot;request&quot;, partial);</span>
+<span class="line" id="L164"><a href="#L164">164</a>     partialReceiver.acceptManifest(resultManifest(manifest()));</span>
+<span class="line" id="L165"><a href="#L165">165</a>     await partialReceiver.dispose();</span>
+<span class="line" id="L166"><a href="#L166">166</a>     await partialReceiver.dispose();</span>
+<span class="line" id="L167"><a href="#L167">167</a>     expect(partial.disposeCalls).toBe(1);</span>
+<span class="line" id="L168"><a href="#L168">168</a> </span>
+<span class="line" id="L169"><a href="#L169">169</a>     const completed = new FakeCapture(summary([]));</span>
+<span class="line" id="L170"><a href="#L170">170</a>     const completedReceiver = new DaemonResultTransferReceiver(&quot;request&quot;, completed);</span>
+<span class="line" id="L171"><a href="#L171">171</a>     completedReceiver.acceptManifest(resultManifest(manifest()));</span>
+<span class="line" id="L172"><a href="#L172">172</a>     completedReceiver.acceptEnd(resultEnd(manifest()));</span>
+<span class="line" id="L173"><a href="#L173">173</a>     await completedReceiver.finish();</span>
+<span class="line" id="L174"><a href="#L174">174</a>     await completedReceiver.dispose();</span>
+<span class="line" id="L175"><a href="#L175">175</a>     expect(completed.disposeCalls).toBe(0);</span>
+<span class="line" id="L176"><a href="#L176">176</a>     expect(completed.resultOutput.dispose).not.toHaveBeenCalled();</span>
+<span class="line" id="L177"><a href="#L177">177</a>   });</span>
+<span class="line" id="L178"><a href="#L178">178</a> });</span>
+<span class="line" id="L179"><a href="#L179">179</a> </span>
+<span class="line" id="L180"><a href="#L180">180</a> class FakeCapture implements DaemonOutputCapture {</span>
+<span class="line" id="L181"><a href="#L181">181</a>   readonly appended: DaemonSequencedOutputRecord[] = [];</span>
+<span class="line" id="L182"><a href="#L182">182</a>   readonly finishExitCodes: number[] = [];</span>
+<span class="line" id="L183"><a href="#L183">183</a>   readonly resultOutput = new FakeOutput();</span>
+<span class="line" id="L184"><a href="#L184">184</a>   readonly result: DaemonExecutorExecutionResult = { exitCode: 0, output: this.resultOutput };</span>
+<span class="line" id="L185"><a href="#L185">185</a>   disposeCalls = 0;</span>
+<span class="line" id="L186"><a href="#L186">186</a> </span>
+<span class="line" id="L187"><a href="#L187">187</a>   constructor(</span>
+<span class="line" id="L188"><a href="#L188">188</a>     private readonly capturedSummary: DaemonCapturedOutputSummary,</span>
+<span class="line" id="L189"><a href="#L189">189</a>     private readonly appendOperation: () =&gt; Promise&lt;void&gt; = () =&gt; Promise.resolve(),</span>
+<span class="line" id="L190"><a href="#L190">190</a>   ) {}</span>
+<span class="line" id="L191"><a href="#L191">191</a> </span>
+<span class="line" id="L192"><a href="#L192">192</a>   async append(record: DaemonSequencedOutputRecord): Promise&lt;void&gt; {</span>
+<span class="line" id="L193"><a href="#L193">193</a>     await this.appendOperation();</span>
+<span class="line" id="L194"><a href="#L194">194</a>     this.appended.push({ ...record, bytes: Buffer.from(record.bytes) });</span>
+<span class="line" id="L195"><a href="#L195">195</a>   }</span>
+<span class="line" id="L196"><a href="#L196">196</a> </span>
+<span class="line" id="L197"><a href="#L197">197</a>   finish(exitCode: number): Promise&lt;DaemonCapturedOutput&gt; {</span>
+<span class="line" id="L198"><a href="#L198">198</a>     this.finishExitCodes.push(exitCode);</span>
+<span class="line" id="L199"><a href="#L199">199</a>     return Promise.resolve({</span>
+<span class="line" id="L200"><a href="#L200">200</a>       result: this.result,</span>
+<span class="line" id="L201"><a href="#L201">201</a>       summary: this.capturedSummary,</span>
+<span class="line" id="L202"><a href="#L202">202</a>     });</span>
+<span class="line" id="L203"><a href="#L203">203</a>   }</span>
+<span class="line" id="L204"><a href="#L204">204</a> </span>
+<span class="line" id="L205"><a href="#L205">205</a>   dispose(): Promise&lt;void&gt; {</span>
+<span class="line" id="L206"><a href="#L206">206</a>     this.disposeCalls += 1;</span>
+<span class="line" id="L207"><a href="#L207">207</a>     return Promise.resolve();</span>
+<span class="line" id="L208"><a href="#L208">208</a>   }</span>
+<span class="line" id="L209"><a href="#L209">209</a> }</span>
+<span class="line" id="L210"><a href="#L210">210</a> </span>
+<span class="line" id="L211"><a href="#L211">211</a> class FakeOutput {</span>
+<span class="line" id="L212"><a href="#L212">212</a>   readonly dispose = vi.fn(() =&gt; Promise.resolve());</span>
+<span class="line" id="L213"><a href="#L213">213</a> </span>
+<span class="line" id="L214"><a href="#L214">214</a>   async *records(): AsyncIterable&lt;DaemonOutputRecord&gt; {}</span>
+<span class="line" id="L215"><a href="#L215">215</a> }</span>
+<span class="line" id="L216"><a href="#L216">216</a> </span>
+<span class="line" id="L217"><a href="#L217">217</a> function manifest(overrides: Partial&lt;CompletionSpoolManifest&gt; = {}): CompletionSpoolManifest {</span>
+<span class="line" id="L218"><a href="#L218">218</a>   return {</span>
+<span class="line" id="L219"><a href="#L219">219</a>     transferId: &quot;transfer&quot;,</span>
+<span class="line" id="L220"><a href="#L220">220</a>     requestId: &quot;request&quot;,</span>
+<span class="line" id="L221"><a href="#L221">221</a>     instanceId: &quot;instance&quot;,</span>
+<span class="line" id="L222"><a href="#L222">222</a>     exitCode: 0,</span>
+<span class="line" id="L223"><a href="#L223">223</a>     rawBytes: 0,</span>
+<span class="line" id="L224"><a href="#L224">224</a>     recordCount: 0,</span>
+<span class="line" id="L225"><a href="#L225">225</a>     sha256: createHash(&quot;sha256&quot;).digest(&quot;hex&quot;),</span>
+<span class="line" id="L226"><a href="#L226">226</a>     ...overrides,</span>
+<span class="line" id="L227"><a href="#L227">227</a>   };</span>
+<span class="line" id="L228"><a href="#L228">228</a> }</span>
+<span class="line" id="L229"><a href="#L229">229</a> </span>
+<span class="line" id="L230"><a href="#L230">230</a> function resultManifest(</span>
+<span class="line" id="L231"><a href="#L231">231</a>   value: CompletionSpoolManifest,</span>
+<span class="line" id="L232"><a href="#L232">232</a>   overrides: Partial&lt;ResultManifestFrame&gt; = {},</span>
+<span class="line" id="L233"><a href="#L233">233</a> ): ResultManifestFrame {</span>
+<span class="line" id="L234"><a href="#L234">234</a>   return {</span>
+<span class="line" id="L235"><a href="#L235">235</a>     kind: &quot;result-manifest&quot;,</span>
+<span class="line" id="L236"><a href="#L236">236</a>     instanceId: value.instanceId,</span>
+<span class="line" id="L237"><a href="#L237">237</a>     processToken: &quot;token&quot;,</span>
+<span class="line" id="L238"><a href="#L238">238</a>     requestId: value.requestId,</span>
+<span class="line" id="L239"><a href="#L239">239</a>     manifest: value,</span>
+<span class="line" id="L240"><a href="#L240">240</a>     ...overrides,</span>
+<span class="line" id="L241"><a href="#L241">241</a>   };</span>
+<span class="line" id="L242"><a href="#L242">242</a> }</span>
+<span class="line" id="L243"><a href="#L243">243</a> </span>
+<span class="line" id="L244"><a href="#L244">244</a> function resultEnd(</span>
+<span class="line" id="L245"><a href="#L245">245</a>   value: CompletionSpoolManifest,</span>
+<span class="line" id="L246"><a href="#L246">246</a> ): Extract&lt;DaemonExecutionServerFrame, { readonly kind: &quot;result-end&quot; }&gt; {</span>
+<span class="line" id="L247"><a href="#L247">247</a>   return {</span>
+<span class="line" id="L248"><a href="#L248">248</a>     kind: &quot;result-end&quot;,</span>
+<span class="line" id="L249"><a href="#L249">249</a>     instanceId: value.instanceId,</span>
+<span class="line" id="L250"><a href="#L250">250</a>     processToken: &quot;token&quot;,</span>
+<span class="line" id="L251"><a href="#L251">251</a>     requestId: value.requestId,</span>
+<span class="line" id="L252"><a href="#L252">252</a>     transferId: value.transferId,</span>
+<span class="line" id="L253"><a href="#L253">253</a>     rawBytes: value.rawBytes,</span>
+<span class="line" id="L254"><a href="#L254">254</a>     recordCount: value.recordCount,</span>
+<span class="line" id="L255"><a href="#L255">255</a>     sha256: value.sha256,</span>
+<span class="line" id="L256"><a href="#L256">256</a>   };</span>
+<span class="line" id="L257"><a href="#L257">257</a> }</span>
+<span class="line" id="L258"><a href="#L258">258</a> </span>
+<span class="line" id="L259"><a href="#L259">259</a> type ResultManifestFrame = Extract&lt;</span>
+<span class="line" id="L260"><a href="#L260">260</a>   DaemonExecutionServerFrame,</span>
+<span class="line" id="L261"><a href="#L261">261</a>   { readonly kind: &quot;result-manifest&quot; }</span>
+<span class="line" id="L262"><a href="#L262">262</a> &gt;;</span>
+<span class="line" id="L263"><a href="#L263">263</a> </span>
+<span class="line" id="L264"><a href="#L264">264</a> function chunk(sequence: number, stream: &quot;stdout&quot; | &quot;stderr&quot; = &quot;stdout&quot;): DaemonResultChunk {</span>
+<span class="line" id="L265"><a href="#L265">265</a>   return {</span>
+<span class="line" id="L266"><a href="#L266">266</a>     transferId: &quot;transfer&quot;,</span>
+<span class="line" id="L267"><a href="#L267">267</a>     requestId: &quot;request&quot;,</span>
+<span class="line" id="L268"><a href="#L268">268</a>     offset: sequence,</span>
+<span class="line" id="L269"><a href="#L269">269</a>     sequence,</span>
+<span class="line" id="L270"><a href="#L270">270</a>     stream,</span>
+<span class="line" id="L271"><a href="#L271">271</a>     bytes: Buffer.from(String.fromCharCode(97 + sequence)),</span>
+<span class="line" id="L272"><a href="#L272">272</a>   };</span>
+<span class="line" id="L273"><a href="#L273">273</a> }</span>
+<span class="line" id="L274"><a href="#L274">274</a> </span>
+<span class="line" id="L275"><a href="#L275">275</a> function summary(records: readonly DaemonResultChunk[]): DaemonCapturedOutputSummary {</span>
+<span class="line" id="L276"><a href="#L276">276</a>   const hash = createHash(&quot;sha256&quot;);</span>
+<span class="line" id="L277"><a href="#L277">277</a>   let rawBytes = 0;</span>
+<span class="line" id="L278"><a href="#L278">278</a>   for (const record of records) {</span>
+<span class="line" id="L279"><a href="#L279">279</a>     const encoded = Buffer.alloc(5 + record.bytes.byteLength);</span>
+<span class="line" id="L280"><a href="#L280">280</a>     encoded.writeUInt8(record.stream === &quot;stdout&quot; ? 0 : 1, 0);</span>
+<span class="line" id="L281"><a href="#L281">281</a>     encoded.writeUInt32BE(record.bytes.byteLength, 1);</span>
+<span class="line" id="L282"><a href="#L282">282</a>     Buffer.from(record.bytes).copy(encoded, 5);</span>
+<span class="line" id="L283"><a href="#L283">283</a>     hash.update(encoded);</span>
+<span class="line" id="L284"><a href="#L284">284</a>     rawBytes += record.bytes.byteLength;</span>
+<span class="line" id="L285"><a href="#L285">285</a>   }</span>
+<span class="line" id="L286"><a href="#L286">286</a>   return { rawBytes, recordCount: records.length, sha256: hash.digest(&quot;hex&quot;) };</span>
+<span class="line" id="L287"><a href="#L287">287</a> }</span></pre></html>

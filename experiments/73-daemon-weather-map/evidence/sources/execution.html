@@ -1,0 +1,447 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>packages/daemon/src/transport/execution-client.ts</title><style>body{margin:30px;font:15px system-ui;background:#f3f1e9;color:#183239}a{color:#126c7e}pre{font:13px/1.7 monospace;overflow:auto}.line{display:block;min-width:max-content}.line>a{display:inline-block;width:4ch;color:#647c7d}.line:target{background:#ffd9a0}h1{font-size:20px;overflow-wrap:anywhere}</style><a href="../../index.html#surface">← Weather map</a><h1>packages/daemon/src/transport/execution-client.ts</h1><p>head · d07002357d3e9596bfaae910a1ac63b77981620b · SHA-256 39b580e9cd60fe8138082d069b53831befa8ea0f8e203dea1ddf440e5ad09eae</p><pre><span class="line" id="L1"><a href="#L1">1</a> import type { DaemonPolicyValues } from &quot;@symnav/daemon&quot;;</span>
+<span class="line" id="L2"><a href="#L2">2</a> import type { DaemonExecutionFailureCode } from &quot;../daemon-execution-failure.js&quot;;</span>
+<span class="line" id="L3"><a href="#L3">3</a> import type { DaemonOutputCapture } from &quot;./client-result-capture.js&quot;;</span>
+<span class="line" id="L4"><a href="#L4">4</a> import type { DaemonLifecycleClient } from &quot;./lifecycle-client.js&quot;;</span>
+<span class="line" id="L5"><a href="#L5">5</a> import type {</span>
+<span class="line" id="L6"><a href="#L6">6</a>   DaemonExecuteRequest,</span>
+<span class="line" id="L7"><a href="#L7">7</a>   DaemonExecutionServerFrame,</span>
+<span class="line" id="L8"><a href="#L8">8</a>   DaemonResultChunk,</span>
+<span class="line" id="L9"><a href="#L9">9</a> } from &quot;./protocol.js&quot;;</span>
+<span class="line" id="L10"><a href="#L10">10</a> import { DaemonProtocolError, type DaemonProtocolValidator } from &quot;./protocol-validator.js&quot;;</span>
+<span class="line" id="L11"><a href="#L11">11</a> import { DaemonResultTransferReceiver } from &quot;./result-transfer-receiver.js&quot;;</span>
+<span class="line" id="L12"><a href="#L12">12</a> import type {</span>
+<span class="line" id="L13"><a href="#L13">13</a>   DaemonExecutionAcceptance,</span>
+<span class="line" id="L14"><a href="#L14">14</a>   DaemonExecutionReceipt,</span>
+<span class="line" id="L15"><a href="#L15">15</a>   DaemonExecutionRequester,</span>
+<span class="line" id="L16"><a href="#L16">16</a>   DaemonSocketClient,</span>
+<span class="line" id="L17"><a href="#L17">17</a> } from &quot;./contracts.js&quot;;</span>
+<span class="line" id="L18"><a href="#L18">18</a> import { DaemonTransportError, type DaemonDeliveryState } from &quot;./transport-error.js&quot;;</span>
+<span class="line" id="L19"><a href="#L19">19</a> import type { DaemonWireCodec } from &quot;./wire-codec.js&quot;;</span>
+<span class="line" id="L20"><a href="#L20">20</a> </span>
+<span class="line" id="L21"><a href="#L21">21</a> class DaemonResultFetchEndedError extends DaemonTransportError {</span>
+<span class="line" id="L22"><a href="#L22">22</a>   constructor(instanceId: string) {</span>
+<span class="line" id="L23"><a href="#L23">23</a>     super(&quot;closed&quot;, &quot;accepted&quot;, &quot;Daemon result resume ended before completion&quot;, instanceId);</span>
+<span class="line" id="L24"><a href="#L24">24</a>   }</span>
+<span class="line" id="L25"><a href="#L25">25</a> }</span>
+<span class="line" id="L26"><a href="#L26">26</a> </span>
+<span class="line" id="L27"><a href="#L27">27</a> interface DaemonExecutionClientOptions {</span>
+<span class="line" id="L28"><a href="#L28">28</a>   readonly sockets: DaemonSocketClient;</span>
+<span class="line" id="L29"><a href="#L29">29</a>   readonly lifecycle: Pick&lt;DaemonLifecycleClient, &quot;acknowledgeResult&quot;&gt;;</span>
+<span class="line" id="L30"><a href="#L30">30</a>   readonly codec: DaemonWireCodec;</span>
+<span class="line" id="L31"><a href="#L31">31</a>   readonly validator: DaemonProtocolValidator;</span>
+<span class="line" id="L32"><a href="#L32">32</a>   readonly createOutput: () =&gt; DaemonOutputCapture;</span>
+<span class="line" id="L33"><a href="#L33">33</a>   readonly transportPolicy: DaemonPolicyValues[&quot;transport&quot;];</span>
+<span class="line" id="L34"><a href="#L34">34</a>   readonly deliveryPolicy: DaemonPolicyValues[&quot;delivery&quot;];</span>
+<span class="line" id="L35"><a href="#L35">35</a> }</span>
+<span class="line" id="L36"><a href="#L36">36</a> </span>
+<span class="line" id="L37"><a href="#L37">37</a> export class DaemonExecutionClient implements DaemonExecutionRequester {</span>
+<span class="line" id="L38"><a href="#L38">38</a>   constructor(private readonly options: DaemonExecutionClientOptions) {}</span>
+<span class="line" id="L39"><a href="#L39">39</a> </span>
+<span class="line" id="L40"><a href="#L40">40</a>   execute(endpoint: string, request: DaemonExecuteRequest): Promise&lt;DaemonExecutionReceipt&gt; {</span>
+<span class="line" id="L41"><a href="#L41">41</a>     return this.executeOnce(endpoint, request).then((receipt) =&gt; ({</span>
+<span class="line" id="L42"><a href="#L42">42</a>       acceptance: receipt.acceptance,</span>
+<span class="line" id="L43"><a href="#L43">43</a>       completion: this.completeWithReattachments(endpoint, request, receipt.completion),</span>
+<span class="line" id="L44"><a href="#L44">44</a>     }));</span>
+<span class="line" id="L45"><a href="#L45">45</a>   }</span>
+<span class="line" id="L46"><a href="#L46">46</a> </span>
+<span class="line" id="L47"><a href="#L47">47</a>   private async completeWithReattachments(</span>
+<span class="line" id="L48"><a href="#L48">48</a>     endpoint: string,</span>
+<span class="line" id="L49"><a href="#L49">49</a>     request: DaemonExecuteRequest,</span>
+<span class="line" id="L50"><a href="#L50">50</a>     completion: DaemonExecutionReceipt[&quot;completion&quot;],</span>
+<span class="line" id="L51"><a href="#L51">51</a>   ): DaemonExecutionReceipt[&quot;completion&quot;] {</span>
+<span class="line" id="L52"><a href="#L52">52</a>     let currentCompletion = completion;</span>
+<span class="line" id="L53"><a href="#L53">53</a>     let originalAcceptedClose: DaemonTransportError | undefined;</span>
+<span class="line" id="L54"><a href="#L54">54</a>     let reattachmentCount = 0;</span>
+<span class="line" id="L55"><a href="#L55">55</a>     while (true) {</span>
+<span class="line" id="L56"><a href="#L56">56</a>       try {</span>
+<span class="line" id="L57"><a href="#L57">57</a>         return await currentCompletion;</span>
+<span class="line" id="L58"><a href="#L58">58</a>       } catch (error) {</span>
+<span class="line" id="L59"><a href="#L59">59</a>         if (!DaemonExecutionClient.isAcceptedConnectionClose(error, request)) throw error;</span>
+<span class="line" id="L60"><a href="#L60">60</a>         originalAcceptedClose ??= error;</span>
+<span class="line" id="L61"><a href="#L61">61</a>         if (</span>
+<span class="line" id="L62"><a href="#L62">62</a>           reattachmentCount &gt;= this.options.deliveryPolicy.postAcceptanceExecutionReattachmentLimit</span>
+<span class="line" id="L63"><a href="#L63">63</a>         )</span>
+<span class="line" id="L64"><a href="#L64">64</a>           throw originalAcceptedClose;</span>
+<span class="line" id="L65"><a href="#L65">65</a>         try {</span>
+<span class="line" id="L66"><a href="#L66">66</a>           const reattached = await this.executeOnce(endpoint, request);</span>
+<span class="line" id="L67"><a href="#L67">67</a>           currentCompletion = reattached.completion;</span>
+<span class="line" id="L68"><a href="#L68">68</a>           reattachmentCount += 1;</span>
+<span class="line" id="L69"><a href="#L69">69</a>         } catch {</span>
+<span class="line" id="L70"><a href="#L70">70</a>           throw originalAcceptedClose;</span>
+<span class="line" id="L71"><a href="#L71">71</a>         }</span>
+<span class="line" id="L72"><a href="#L72">72</a>       }</span>
+<span class="line" id="L73"><a href="#L73">73</a>     }</span>
+<span class="line" id="L74"><a href="#L74">74</a>   }</span>
+<span class="line" id="L75"><a href="#L75">75</a> </span>
+<span class="line" id="L76"><a href="#L76">76</a>   private executeOnce(</span>
+<span class="line" id="L77"><a href="#L77">77</a>     endpoint: string,</span>
+<span class="line" id="L78"><a href="#L78">78</a>     request: DaemonExecuteRequest,</span>
+<span class="line" id="L79"><a href="#L79">79</a>   ): Promise&lt;DaemonExecutionReceipt&gt; {</span>
+<span class="line" id="L80"><a href="#L80">80</a>     this.options.validator.request(request);</span>
+<span class="line" id="L81"><a href="#L81">81</a>     return new Promise((resolve, reject) =&gt; {</span>
+<span class="line" id="L82"><a href="#L82">82</a>       const decoder = this.options.codec.transferDecoder();</span>
+<span class="line" id="L83"><a href="#L83">83</a>       const transfer = new DaemonResultTransferReceiver(</span>
+<span class="line" id="L84"><a href="#L84">84</a>         request.requestId,</span>
+<span class="line" id="L85"><a href="#L85">85</a>         this.options.createOutput(),</span>
+<span class="line" id="L86"><a href="#L86">86</a>       );</span>
+<span class="line" id="L87"><a href="#L87">87</a>       let connection: Awaited&lt;ReturnType&lt;DaemonSocketClient[&quot;connect&quot;]&gt;&gt; | undefined;</span>
+<span class="line" id="L88"><a href="#L88">88</a>       let delivery: DaemonDeliveryState = &quot;not-submitted&quot;;</span>
+<span class="line" id="L89"><a href="#L89">89</a>       let acceptance: DaemonExecutionAcceptance | undefined;</span>
+<span class="line" id="L90"><a href="#L90">90</a>       let terminal = false;</span>
+<span class="line" id="L91"><a href="#L91">91</a>       let outerSettled = false;</span>
+<span class="line" id="L92"><a href="#L92">92</a>       let completionSettled = false;</span>
+<span class="line" id="L93"><a href="#L93">93</a>       let resumeCount = 0;</span>
+<span class="line" id="L94"><a href="#L94">94</a>       let resolveCompletion!: (value: Awaited&lt;DaemonExecutionReceipt[&quot;completion&quot;]&gt;) =&gt; void;</span>
+<span class="line" id="L95"><a href="#L95">95</a>       let rejectCompletion!: (error: DaemonTransportError) =&gt; void;</span>
+<span class="line" id="L96"><a href="#L96">96</a>       const completion = new Promise&lt;Awaited&lt;DaemonExecutionReceipt[&quot;completion&quot;]&gt;&gt;(</span>
+<span class="line" id="L97"><a href="#L97">97</a>         (completionResolve, completionReject) =&gt; {</span>
+<span class="line" id="L98"><a href="#L98">98</a>           resolveCompletion = completionResolve;</span>
+<span class="line" id="L99"><a href="#L99">99</a>           rejectCompletion = completionReject;</span>
+<span class="line" id="L100"><a href="#L100">100</a>         },</span>
+<span class="line" id="L101"><a href="#L101">101</a>       );</span>
+<span class="line" id="L102"><a href="#L102">102</a>       const fail = (error: unknown): void =&gt; {</span>
+<span class="line" id="L103"><a href="#L103">103</a>         const transportError = DaemonExecutionClient.transportError(error, delivery);</span>
+<span class="line" id="L104"><a href="#L104">104</a>         connection?.destroy();</span>
+<span class="line" id="L105"><a href="#L105">105</a>         if (!outerSettled) {</span>
+<span class="line" id="L106"><a href="#L106">106</a>           outerSettled = true;</span>
+<span class="line" id="L107"><a href="#L107">107</a>           void transfer.dispose().finally(() =&gt; reject(transportError));</span>
+<span class="line" id="L108"><a href="#L108">108</a>           return;</span>
+<span class="line" id="L109"><a href="#L109">109</a>         }</span>
+<span class="line" id="L110"><a href="#L110">110</a>         if (!completionSettled) {</span>
+<span class="line" id="L111"><a href="#L111">111</a>           completionSettled = true;</span>
+<span class="line" id="L112"><a href="#L112">112</a>           void transfer.dispose().finally(() =&gt; rejectCompletion(transportError));</span>
+<span class="line" id="L113"><a href="#L113">113</a>         }</span>
+<span class="line" id="L114"><a href="#L114">114</a>       };</span>
+<span class="line" id="L115"><a href="#L115">115</a>       const resume = (): boolean =&gt; {</span>
+<span class="line" id="L116"><a href="#L116">116</a>         if (</span>
+<span class="line" id="L117"><a href="#L117">117</a>           resumeCount &gt;= this.options.deliveryPolicy.resultTransferResumeLimitPerExecutionAttempt ||</span>
+<span class="line" id="L118"><a href="#L118">118</a>           completionSettled ||</span>
+<span class="line" id="L119"><a href="#L119">119</a>           acceptance === undefined ||</span>
+<span class="line" id="L120"><a href="#L120">120</a>           transfer.manifest === undefined ||</span>
+<span class="line" id="L121"><a href="#L121">121</a>           terminal</span>
+<span class="line" id="L122"><a href="#L122">122</a>         ) {</span>
+<span class="line" id="L123"><a href="#L123">123</a>           return false;</span>
+<span class="line" id="L124"><a href="#L124">124</a>         }</span>
+<span class="line" id="L125"><a href="#L125">125</a>         resumeCount += 1;</span>
+<span class="line" id="L126"><a href="#L126">126</a>         connection?.destroy();</span>
+<span class="line" id="L127"><a href="#L127">127</a>         transfer.beginConnection();</span>
+<span class="line" id="L128"><a href="#L128">128</a>         void this.fetchCompletion(endpoint, request, transfer)</span>
+<span class="line" id="L129"><a href="#L129">129</a>           .then((completionValue) =&gt; {</span>
+<span class="line" id="L130"><a href="#L130">130</a>             if (completionSettled) return;</span>
+<span class="line" id="L131"><a href="#L131">131</a>             completionSettled = true;</span>
+<span class="line" id="L132"><a href="#L132">132</a>             resolveCompletion(completionValue);</span>
+<span class="line" id="L133"><a href="#L133">133</a>           })</span>
+<span class="line" id="L134"><a href="#L134">134</a>           .catch((error: unknown) =&gt; {</span>
+<span class="line" id="L135"><a href="#L135">135</a>             if (DaemonExecutionClient.isAcceptedConnectionClose(error, request) &amp;&amp; resume()) {</span>
+<span class="line" id="L136"><a href="#L136">136</a>               return;</span>
+<span class="line" id="L137"><a href="#L137">137</a>             }</span>
+<span class="line" id="L138"><a href="#L138">138</a>             fail(</span>
+<span class="line" id="L139"><a href="#L139">139</a>               error instanceof DaemonResultFetchEndedError</span>
+<span class="line" id="L140"><a href="#L140">140</a>                 ? new DaemonTransportError(&quot;corrupt&quot;, &quot;accepted&quot;, error.message)</span>
+<span class="line" id="L141"><a href="#L141">141</a>                 : error,</span>
+<span class="line" id="L142"><a href="#L142">142</a>             );</span>
+<span class="line" id="L143"><a href="#L143">143</a>           });</span>
+<span class="line" id="L144"><a href="#L144">144</a>         return true;</span>
+<span class="line" id="L145"><a href="#L145">145</a>       };</span>
+<span class="line" id="L146"><a href="#L146">146</a>       const publishAcceptance = (): void =&gt; {</span>
+<span class="line" id="L147"><a href="#L147">147</a>         if (acceptance === undefined || outerSettled) return;</span>
+<span class="line" id="L148"><a href="#L148">148</a>         outerSettled = true;</span>
+<span class="line" id="L149"><a href="#L149">149</a>         connection?.disableTimeout();</span>
+<span class="line" id="L150"><a href="#L150">150</a>         resolve({ acceptance, completion });</span>
+<span class="line" id="L151"><a href="#L151">151</a>       };</span>
+<span class="line" id="L152"><a href="#L152">152</a>       const consume = async (bytes: Uint8Array): Promise&lt;void&gt; =&gt; {</span>
+<span class="line" id="L153"><a href="#L153">153</a>         const values = decoder.append(bytes);</span>
+<span class="line" id="L154"><a href="#L154">154</a>         let completedResult = false;</span>
+<span class="line" id="L155"><a href="#L155">155</a>         let failedCode: DaemonExecutionFailureCode | undefined;</span>
+<span class="line" id="L156"><a href="#L156">156</a>         for (const value of values) {</span>
+<span class="line" id="L157"><a href="#L157">157</a>           if (DaemonExecutionClient.isResultChunk(value)) {</span>
+<span class="line" id="L158"><a href="#L158">158</a>             if (acceptance === undefined)</span>
+<span class="line" id="L159"><a href="#L159">159</a>               throw new Error(&quot;Daemon returned output before acceptance&quot;);</span>
+<span class="line" id="L160"><a href="#L160">160</a>             await transfer.acceptChunk(value);</span>
+<span class="line" id="L161"><a href="#L161">161</a>             continue;</span>
+<span class="line" id="L162"><a href="#L162">162</a>           }</span>
+<span class="line" id="L163"><a href="#L163">163</a>           const frame = this.options.validator.executionFrame(request, value);</span>
+<span class="line" id="L164"><a href="#L164">164</a>           if (frame.kind === &quot;rejected&quot;) {</span>
+<span class="line" id="L165"><a href="#L165">165</a>             if (acceptance !== undefined || terminal) {</span>
+<span class="line" id="L166"><a href="#L166">166</a>               throw new Error(&quot;Daemon rejected an already accepted request&quot;);</span>
+<span class="line" id="L167"><a href="#L167">167</a>             }</span>
+<span class="line" id="L168"><a href="#L168">168</a>             throw new DaemonTransportError(</span>
+<span class="line" id="L169"><a href="#L169">169</a>               &quot;rejected&quot;,</span>
+<span class="line" id="L170"><a href="#L170">170</a>               &quot;submitted-unconfirmed&quot;,</span>
+<span class="line" id="L171"><a href="#L171">171</a>               `Daemon rejected execution: ${frame.code}`,</span>
+<span class="line" id="L172"><a href="#L172">172</a>               frame.instanceId,</span>
+<span class="line" id="L173"><a href="#L173">173</a>               frame.code,</span>
+<span class="line" id="L174"><a href="#L174">174</a>             );</span>
+<span class="line" id="L175"><a href="#L175">175</a>           }</span>
+<span class="line" id="L176"><a href="#L176">176</a>           if (frame.kind === &quot;accepted&quot;) {</span>
+<span class="line" id="L177"><a href="#L177">177</a>             if (acceptance !== undefined || terminal) {</span>
+<span class="line" id="L178"><a href="#L178">178</a>               throw new Error(&quot;Daemon returned duplicate acceptance&quot;);</span>
+<span class="line" id="L179"><a href="#L179">179</a>             }</span>
+<span class="line" id="L180"><a href="#L180">180</a>             delivery = &quot;accepted&quot;;</span>
+<span class="line" id="L181"><a href="#L181">181</a>             acceptance = {</span>
+<span class="line" id="L182"><a href="#L182">182</a>               requestId: frame.requestId,</span>
+<span class="line" id="L183"><a href="#L183">183</a>               instanceId: frame.instanceId,</span>
+<span class="line" id="L184"><a href="#L184">184</a>               acceptedAt: frame.acceptedAt,</span>
+<span class="line" id="L185"><a href="#L185">185</a>               queuePosition: frame.queuePosition,</span>
+<span class="line" id="L186"><a href="#L186">186</a>             };</span>
+<span class="line" id="L187"><a href="#L187">187</a>             publishAcceptance();</span>
+<span class="line" id="L188"><a href="#L188">188</a>             continue;</span>
+<span class="line" id="L189"><a href="#L189">189</a>           }</span>
+<span class="line" id="L190"><a href="#L190">190</a>           if (acceptance === undefined) {</span>
+<span class="line" id="L191"><a href="#L191">191</a>             throw new Error(&quot;Daemon returned completion before acceptance&quot;);</span>
+<span class="line" id="L192"><a href="#L192">192</a>           }</span>
+<span class="line" id="L193"><a href="#L193">193</a>           if (frame.kind === &quot;result-manifest&quot;) {</span>
+<span class="line" id="L194"><a href="#L194">194</a>             if (terminal) throw new Error(&quot;Daemon returned a manifest after completion&quot;);</span>
+<span class="line" id="L195"><a href="#L195">195</a>             transfer.acceptManifest(frame);</span>
+<span class="line" id="L196"><a href="#L196">196</a>             continue;</span>
+<span class="line" id="L197"><a href="#L197">197</a>           }</span>
+<span class="line" id="L198"><a href="#L198">198</a>           if (frame.kind === &quot;result-end&quot;) {</span>
+<span class="line" id="L199"><a href="#L199">199</a>             transfer.acceptEnd(frame);</span>
+<span class="line" id="L200"><a href="#L200">200</a>             terminal = true;</span>
+<span class="line" id="L201"><a href="#L201">201</a>             completedResult = true;</span>
+<span class="line" id="L202"><a href="#L202">202</a>             continue;</span>
+<span class="line" id="L203"><a href="#L203">203</a>           }</span>
+<span class="line" id="L204"><a href="#L204">204</a>           if (terminal) throw new Error(&quot;Daemon returned duplicate terminal frame&quot;);</span>
+<span class="line" id="L205"><a href="#L205">205</a>           terminal = true;</span>
+<span class="line" id="L206"><a href="#L206">206</a>           failedCode = frame.code;</span>
+<span class="line" id="L207"><a href="#L207">207</a>         }</span>
+<span class="line" id="L208"><a href="#L208">208</a>         if (completedResult) {</span>
+<span class="line" id="L209"><a href="#L209">209</a>           const result = await transfer.finish();</span>
+<span class="line" id="L210"><a href="#L210">210</a>           const completedManifest = transfer.manifest;</span>
+<span class="line" id="L211"><a href="#L211">211</a>           if (completedManifest === undefined) throw new Error(&quot;Completion manifest is missing&quot;);</span>
+<span class="line" id="L212"><a href="#L212">212</a>           try {</span>
+<span class="line" id="L213"><a href="#L213">213</a>             await this.options.lifecycle.acknowledgeResult(</span>
+<span class="line" id="L214"><a href="#L214">214</a>               endpoint,</span>
+<span class="line" id="L215"><a href="#L215">215</a>               request,</span>
+<span class="line" id="L216"><a href="#L216">216</a>               completedManifest.transferId,</span>
+<span class="line" id="L217"><a href="#L217">217</a>             );</span>
+<span class="line" id="L218"><a href="#L218">218</a>           } catch (error) {</span>
+<span class="line" id="L219"><a href="#L219">219</a>             await result.output.dispose();</span>
+<span class="line" id="L220"><a href="#L220">220</a>             throw error;</span>
+<span class="line" id="L221"><a href="#L221">221</a>           }</span>
+<span class="line" id="L222"><a href="#L222">222</a>           if (!completionSettled) {</span>
+<span class="line" id="L223"><a href="#L223">223</a>             completionSettled = true;</span>
+<span class="line" id="L224"><a href="#L224">224</a>             connection?.end();</span>
+<span class="line" id="L225"><a href="#L225">225</a>             resolveCompletion({ status: &quot;completed&quot;, result });</span>
+<span class="line" id="L226"><a href="#L226">226</a>           }</span>
+<span class="line" id="L227"><a href="#L227">227</a>         }</span>
+<span class="line" id="L228"><a href="#L228">228</a>         if (failedCode !== undefined &amp;&amp; !completionSettled) {</span>
+<span class="line" id="L229"><a href="#L229">229</a>           completionSettled = true;</span>
+<span class="line" id="L230"><a href="#L230">230</a>           connection?.end();</span>
+<span class="line" id="L231"><a href="#L231">231</a>           await transfer.dispose();</span>
+<span class="line" id="L232"><a href="#L232">232</a>           resolveCompletion({ status: &quot;failed&quot;, code: failedCode });</span>
+<span class="line" id="L233"><a href="#L233">233</a>         }</span>
+<span class="line" id="L234"><a href="#L234">234</a>       };</span>
+<span class="line" id="L235"><a href="#L235">235</a>       const receive = async (): Promise&lt;void&gt; =&gt; {</span>
+<span class="line" id="L236"><a href="#L236">236</a>         try {</span>
+<span class="line" id="L237"><a href="#L237">237</a>           connection = await this.options.sockets.connect(</span>
+<span class="line" id="L238"><a href="#L238">238</a>             endpoint,</span>
+<span class="line" id="L239"><a href="#L239">239</a>             this.options.transportPolicy.executionAdmissionTimeoutMs,</span>
+<span class="line" id="L240"><a href="#L240">240</a>           );</span>
+<span class="line" id="L241"><a href="#L241">241</a>         } catch (error) {</span>
+<span class="line" id="L242"><a href="#L242">242</a>           if (DaemonExecutionClient.isSocketTimeout(error)) {</span>
+<span class="line" id="L243"><a href="#L243">243</a>             fail(new DaemonTransportError(&quot;timeout&quot;, delivery, &quot;Daemon request timed out&quot;));</span>
+<span class="line" id="L244"><a href="#L244">244</a>             return;</span>
+<span class="line" id="L245"><a href="#L245">245</a>           }</span>
+<span class="line" id="L246"><a href="#L246">246</a>           const message = error instanceof Error ? error.message : String(error);</span>
+<span class="line" id="L247"><a href="#L247">247</a>           fail(new DaemonTransportError(&quot;unreachable&quot;, delivery, message));</span>
+<span class="line" id="L248"><a href="#L248">248</a>           return;</span>
+<span class="line" id="L249"><a href="#L249">249</a>         }</span>
+<span class="line" id="L250"><a href="#L250">250</a>         try {</span>
+<span class="line" id="L251"><a href="#L251">251</a>           connection.write(this.options.codec.encodeControl(request));</span>
+<span class="line" id="L252"><a href="#L252">252</a>           delivery = &quot;submitted-unconfirmed&quot;;</span>
+<span class="line" id="L253"><a href="#L253">253</a>         } catch (error) {</span>
+<span class="line" id="L254"><a href="#L254">254</a>           fail(error);</span>
+<span class="line" id="L255"><a href="#L255">255</a>           return;</span>
+<span class="line" id="L256"><a href="#L256">256</a>         }</span>
+<span class="line" id="L257"><a href="#L257">257</a>         try {</span>
+<span class="line" id="L258"><a href="#L258">258</a>           for await (const bytes of connection.incoming) {</span>
+<span class="line" id="L259"><a href="#L259">259</a>             try {</span>
+<span class="line" id="L260"><a href="#L260">260</a>               await consume(bytes);</span>
+<span class="line" id="L261"><a href="#L261">261</a>             } catch (error) {</span>
+<span class="line" id="L262"><a href="#L262">262</a>               throw DaemonExecutionClient.transportError(error, delivery);</span>
+<span class="line" id="L263"><a href="#L263">263</a>             }</span>
+<span class="line" id="L264"><a href="#L264">264</a>           }</span>
+<span class="line" id="L265"><a href="#L265">265</a>           if (terminal &amp;&amp; completionSettled) return;</span>
+<span class="line" id="L266"><a href="#L266">266</a>           if (resume()) return;</span>
+<span class="line" id="L267"><a href="#L267">267</a>           try {</span>
+<span class="line" id="L268"><a href="#L268">268</a>             decoder.assertComplete();</span>
+<span class="line" id="L269"><a href="#L269">269</a>           } catch (error) {</span>
+<span class="line" id="L270"><a href="#L270">270</a>             fail(error);</span>
+<span class="line" id="L271"><a href="#L271">271</a>             return;</span>
+<span class="line" id="L272"><a href="#L272">272</a>           }</span>
+<span class="line" id="L273"><a href="#L273">273</a>           fail(</span>
+<span class="line" id="L274"><a href="#L274">274</a>             new DaemonTransportError(</span>
+<span class="line" id="L275"><a href="#L275">275</a>               &quot;closed&quot;,</span>
+<span class="line" id="L276"><a href="#L276">276</a>               delivery,</span>
+<span class="line" id="L277"><a href="#L277">277</a>               acceptance === undefined</span>
+<span class="line" id="L278"><a href="#L278">278</a>                 ? &quot;Daemon connection ended before acceptance&quot;</span>
+<span class="line" id="L279"><a href="#L279">279</a>                 : &quot;Daemon connection ended after acceptance before completion&quot;,</span>
+<span class="line" id="L280"><a href="#L280">280</a>               acceptance?.instanceId,</span>
+<span class="line" id="L281"><a href="#L281">281</a>             ),</span>
+<span class="line" id="L282"><a href="#L282">282</a>           );</span>
+<span class="line" id="L283"><a href="#L283">283</a>         } catch (error) {</span>
+<span class="line" id="L284"><a href="#L284">284</a>           if (error instanceof DaemonTransportError || error instanceof DaemonProtocolError) {</span>
+<span class="line" id="L285"><a href="#L285">285</a>             fail(error);</span>
+<span class="line" id="L286"><a href="#L286">286</a>             return;</span>
+<span class="line" id="L287"><a href="#L287">287</a>           }</span>
+<span class="line" id="L288"><a href="#L288">288</a>           if (DaemonExecutionClient.isSocketTimeout(error)) {</span>
+<span class="line" id="L289"><a href="#L289">289</a>             fail(new DaemonTransportError(&quot;timeout&quot;, delivery, &quot;Daemon request timed out&quot;));</span>
+<span class="line" id="L290"><a href="#L290">290</a>             return;</span>
+<span class="line" id="L291"><a href="#L291">291</a>           }</span>
+<span class="line" id="L292"><a href="#L292">292</a>           if (resume()) return;</span>
+<span class="line" id="L293"><a href="#L293">293</a>           const message = error instanceof Error ? error.message : String(error);</span>
+<span class="line" id="L294"><a href="#L294">294</a>           fail(new DaemonTransportError(&quot;closed&quot;, delivery, message, acceptance?.instanceId));</span>
+<span class="line" id="L295"><a href="#L295">295</a>         }</span>
+<span class="line" id="L296"><a href="#L296">296</a>       };</span>
+<span class="line" id="L297"><a href="#L297">297</a>       void receive();</span>
+<span class="line" id="L298"><a href="#L298">298</a>     });</span>
+<span class="line" id="L299"><a href="#L299">299</a>   }</span>
+<span class="line" id="L300"><a href="#L300">300</a> </span>
+<span class="line" id="L301"><a href="#L301">301</a>   private async fetchCompletion(</span>
+<span class="line" id="L302"><a href="#L302">302</a>     endpoint: string,</span>
+<span class="line" id="L303"><a href="#L303">303</a>     request: DaemonExecuteRequest,</span>
+<span class="line" id="L304"><a href="#L304">304</a>     transfer: DaemonResultTransferReceiver,</span>
+<span class="line" id="L305"><a href="#L305">305</a>   ): DaemonExecutionReceipt[&quot;completion&quot;] {</span>
+<span class="line" id="L306"><a href="#L306">306</a>     const decoder = this.options.codec.transferDecoder();</span>
+<span class="line" id="L307"><a href="#L307">307</a>     let connection: Awaited&lt;ReturnType&lt;DaemonSocketClient[&quot;connect&quot;]&gt;&gt;;</span>
+<span class="line" id="L308"><a href="#L308">308</a>     try {</span>
+<span class="line" id="L309"><a href="#L309">309</a>       connection = await this.options.sockets.connect(endpoint);</span>
+<span class="line" id="L310"><a href="#L310">310</a>     } catch (error) {</span>
+<span class="line" id="L311"><a href="#L311">311</a>       const message = error instanceof Error ? error.message : String(error);</span>
+<span class="line" id="L312"><a href="#L312">312</a>       throw new DaemonTransportError(&quot;closed&quot;, &quot;accepted&quot;, message, request.instanceId);</span>
+<span class="line" id="L313"><a href="#L313">313</a>     }</span>
+<span class="line" id="L314"><a href="#L314">314</a>     try {</span>
+<span class="line" id="L315"><a href="#L315">315</a>       connection.write(</span>
+<span class="line" id="L316"><a href="#L316">316</a>         this.options.codec.encodeControl({</span>
+<span class="line" id="L317"><a href="#L317">317</a>           kind: &quot;result-fetch&quot;,</span>
+<span class="line" id="L318"><a href="#L318">318</a>           protocolVersion: request.protocolVersion,</span>
+<span class="line" id="L319"><a href="#L319">319</a>           instanceId: request.instanceId,</span>
+<span class="line" id="L320"><a href="#L320">320</a>           processToken: request.processToken,</span>
+<span class="line" id="L321"><a href="#L321">321</a>           requestId: request.requestId,</span>
+<span class="line" id="L322"><a href="#L322">322</a>           offset: transfer.nextOffset,</span>
+<span class="line" id="L323"><a href="#L323">323</a>         }),</span>
+<span class="line" id="L324"><a href="#L324">324</a>       );</span>
+<span class="line" id="L325"><a href="#L325">325</a>     } catch (error) {</span>
+<span class="line" id="L326"><a href="#L326">326</a>       connection.destroy();</span>
+<span class="line" id="L327"><a href="#L327">327</a>       throw DaemonExecutionClient.transportError(error, &quot;accepted&quot;);</span>
+<span class="line" id="L328"><a href="#L328">328</a>     }</span>
+<span class="line" id="L329"><a href="#L329">329</a>     let ended = false;</span>
+<span class="line" id="L330"><a href="#L330">330</a>     try {</span>
+<span class="line" id="L331"><a href="#L331">331</a>       for await (const bytes of connection.incoming) {</span>
+<span class="line" id="L332"><a href="#L332">332</a>         try {</span>
+<span class="line" id="L333"><a href="#L333">333</a>           let completedResult = false;</span>
+<span class="line" id="L334"><a href="#L334">334</a>           let failedCode: DaemonExecutionFailureCode | undefined;</span>
+<span class="line" id="L335"><a href="#L335">335</a>           for (const value of decoder.append(bytes)) {</span>
+<span class="line" id="L336"><a href="#L336">336</a>             if (ended) throw new Error(&quot;Daemon resumed with a duplicate terminal frame&quot;);</span>
+<span class="line" id="L337"><a href="#L337">337</a>             if (DaemonExecutionClient.isResultChunk(value)) {</span>
+<span class="line" id="L338"><a href="#L338">338</a>               await transfer.acceptChunk(value);</span>
+<span class="line" id="L339"><a href="#L339">339</a>               continue;</span>
+<span class="line" id="L340"><a href="#L340">340</a>             }</span>
+<span class="line" id="L341"><a href="#L341">341</a>             const frame = this.options.validator.executionFrame(request, value);</span>
+<span class="line" id="L342"><a href="#L342">342</a>             if (frame.kind === &quot;result-manifest&quot;) {</span>
+<span class="line" id="L343"><a href="#L343">343</a>               transfer.acceptManifest(frame);</span>
+<span class="line" id="L344"><a href="#L344">344</a>               continue;</span>
+<span class="line" id="L345"><a href="#L345">345</a>             }</span>
+<span class="line" id="L346"><a href="#L346">346</a>             if (frame.kind === &quot;execution-failed&quot;) {</span>
+<span class="line" id="L347"><a href="#L347">347</a>               ended = true;</span>
+<span class="line" id="L348"><a href="#L348">348</a>               failedCode = frame.code;</span>
+<span class="line" id="L349"><a href="#L349">349</a>               continue;</span>
+<span class="line" id="L350"><a href="#L350">350</a>             }</span>
+<span class="line" id="L351"><a href="#L351">351</a>             if (frame.kind !== &quot;result-end&quot;) {</span>
+<span class="line" id="L352"><a href="#L352">352</a>               throw new Error(&quot;Daemon resumed with an invalid terminal frame&quot;);</span>
+<span class="line" id="L353"><a href="#L353">353</a>             }</span>
+<span class="line" id="L354"><a href="#L354">354</a>             transfer.acceptEnd(frame);</span>
+<span class="line" id="L355"><a href="#L355">355</a>             ended = true;</span>
+<span class="line" id="L356"><a href="#L356">356</a>             completedResult = true;</span>
+<span class="line" id="L357"><a href="#L357">357</a>           }</span>
+<span class="line" id="L358"><a href="#L358">358</a>           if (completedResult) {</span>
+<span class="line" id="L359"><a href="#L359">359</a>             const result = await transfer.finish();</span>
+<span class="line" id="L360"><a href="#L360">360</a>             const manifest = transfer.manifest;</span>
+<span class="line" id="L361"><a href="#L361">361</a>             if (manifest === undefined) throw new Error(&quot;Completion manifest is missing&quot;);</span>
+<span class="line" id="L362"><a href="#L362">362</a>             try {</span>
+<span class="line" id="L363"><a href="#L363">363</a>               await this.options.lifecycle.acknowledgeResult(</span>
+<span class="line" id="L364"><a href="#L364">364</a>                 endpoint,</span>
+<span class="line" id="L365"><a href="#L365">365</a>                 request,</span>
+<span class="line" id="L366"><a href="#L366">366</a>                 manifest.transferId,</span>
+<span class="line" id="L367"><a href="#L367">367</a>               );</span>
+<span class="line" id="L368"><a href="#L368">368</a>             } catch (error) {</span>
+<span class="line" id="L369"><a href="#L369">369</a>               await result.output.dispose();</span>
+<span class="line" id="L370"><a href="#L370">370</a>               throw error;</span>
+<span class="line" id="L371"><a href="#L371">371</a>             }</span>
+<span class="line" id="L372"><a href="#L372">372</a>             connection.end();</span>
+<span class="line" id="L373"><a href="#L373">373</a>             return { status: &quot;completed&quot;, result };</span>
+<span class="line" id="L374"><a href="#L374">374</a>           }</span>
+<span class="line" id="L375"><a href="#L375">375</a>           if (failedCode !== undefined) {</span>
+<span class="line" id="L376"><a href="#L376">376</a>             connection.end();</span>
+<span class="line" id="L377"><a href="#L377">377</a>             await transfer.dispose();</span>
+<span class="line" id="L378"><a href="#L378">378</a>             return { status: &quot;failed&quot;, code: failedCode };</span>
+<span class="line" id="L379"><a href="#L379">379</a>           }</span>
+<span class="line" id="L380"><a href="#L380">380</a>         } catch (error) {</span>
+<span class="line" id="L381"><a href="#L381">381</a>           throw DaemonExecutionClient.transportError(error, &quot;accepted&quot;);</span>
+<span class="line" id="L382"><a href="#L382">382</a>         }</span>
+<span class="line" id="L383"><a href="#L383">383</a>       }</span>
+<span class="line" id="L384"><a href="#L384">384</a>       try {</span>
+<span class="line" id="L385"><a href="#L385">385</a>         decoder.assertComplete();</span>
+<span class="line" id="L386"><a href="#L386">386</a>       } catch (error) {</span>
+<span class="line" id="L387"><a href="#L387">387</a>         throw DaemonExecutionClient.transportError(error, &quot;accepted&quot;);</span>
+<span class="line" id="L388"><a href="#L388">388</a>       }</span>
+<span class="line" id="L389"><a href="#L389">389</a>       throw new DaemonResultFetchEndedError(request.instanceId);</span>
+<span class="line" id="L390"><a href="#L390">390</a>     } catch (error) {</span>
+<span class="line" id="L391"><a href="#L391">391</a>       connection.destroy();</span>
+<span class="line" id="L392"><a href="#L392">392</a>       if (error instanceof DaemonTransportError || error instanceof DaemonProtocolError) {</span>
+<span class="line" id="L393"><a href="#L393">393</a>         throw DaemonExecutionClient.transportError(error, &quot;accepted&quot;);</span>
+<span class="line" id="L394"><a href="#L394">394</a>       }</span>
+<span class="line" id="L395"><a href="#L395">395</a>       const message = error instanceof Error ? error.message : String(error);</span>
+<span class="line" id="L396"><a href="#L396">396</a>       throw new DaemonTransportError(&quot;closed&quot;, &quot;accepted&quot;, message, request.instanceId);</span>
+<span class="line" id="L397"><a href="#L397">397</a>     }</span>
+<span class="line" id="L398"><a href="#L398">398</a>   }</span>
+<span class="line" id="L399"><a href="#L399">399</a> </span>
+<span class="line" id="L400"><a href="#L400">400</a>   private static isAcceptedConnectionClose(</span>
+<span class="line" id="L401"><a href="#L401">401</a>     error: unknown,</span>
+<span class="line" id="L402"><a href="#L402">402</a>     request: DaemonExecuteRequest,</span>
+<span class="line" id="L403"><a href="#L403">403</a>   ): error is DaemonTransportError {</span>
+<span class="line" id="L404"><a href="#L404">404</a>     return (</span>
+<span class="line" id="L405"><a href="#L405">405</a>       error instanceof DaemonTransportError &amp;&amp;</span>
+<span class="line" id="L406"><a href="#L406">406</a>       error.code === &quot;closed&quot; &amp;&amp;</span>
+<span class="line" id="L407"><a href="#L407">407</a>       error.delivery === &quot;accepted&quot; &amp;&amp;</span>
+<span class="line" id="L408"><a href="#L408">408</a>       error.authenticatedInstanceId === request.instanceId</span>
+<span class="line" id="L409"><a href="#L409">409</a>     );</span>
+<span class="line" id="L410"><a href="#L410">410</a>   }</span>
+<span class="line" id="L411"><a href="#L411">411</a> </span>
+<span class="line" id="L412"><a href="#L412">412</a>   private static transportError(</span>
+<span class="line" id="L413"><a href="#L413">413</a>     error: unknown,</span>
+<span class="line" id="L414"><a href="#L414">414</a>     delivery: DaemonDeliveryState,</span>
+<span class="line" id="L415"><a href="#L415">415</a>   ): DaemonTransportError {</span>
+<span class="line" id="L416"><a href="#L416">416</a>     if (error instanceof DaemonTransportError) return error;</span>
+<span class="line" id="L417"><a href="#L417">417</a>     if (error instanceof DaemonProtocolError) {</span>
+<span class="line" id="L418"><a href="#L418">418</a>       return new DaemonTransportError(</span>
+<span class="line" id="L419"><a href="#L419">419</a>         error.code,</span>
+<span class="line" id="L420"><a href="#L420">420</a>         &quot;accepted&quot;,</span>
+<span class="line" id="L421"><a href="#L421">421</a>         error.message,</span>
+<span class="line" id="L422"><a href="#L422">422</a>         error.authenticatedInstanceId,</span>
+<span class="line" id="L423"><a href="#L423">423</a>       );</span>
+<span class="line" id="L424"><a href="#L424">424</a>     }</span>
+<span class="line" id="L425"><a href="#L425">425</a>     const message = error instanceof Error ? error.message : String(error);</span>
+<span class="line" id="L426"><a href="#L426">426</a>     return new DaemonTransportError(&quot;corrupt&quot;, delivery, message);</span>
+<span class="line" id="L427"><a href="#L427">427</a>   }</span>
+<span class="line" id="L428"><a href="#L428">428</a> </span>
+<span class="line" id="L429"><a href="#L429">429</a>   private static isSocketTimeout(error: unknown): boolean {</span>
+<span class="line" id="L430"><a href="#L430">430</a>     return (</span>
+<span class="line" id="L431"><a href="#L431">431</a>       error instanceof Error &amp;&amp;</span>
+<span class="line" id="L432"><a href="#L432">432</a>       &quot;code&quot; in error &amp;&amp;</span>
+<span class="line" id="L433"><a href="#L433">433</a>       (error as Error &amp; { readonly code?: unknown }).code === &quot;ETIMEDOUT&quot;</span>
+<span class="line" id="L434"><a href="#L434">434</a>     );</span>
+<span class="line" id="L435"><a href="#L435">435</a>   }</span>
+<span class="line" id="L436"><a href="#L436">436</a> </span>
+<span class="line" id="L437"><a href="#L437">437</a>   private static isResultChunk(value: unknown): value is DaemonResultChunk {</span>
+<span class="line" id="L438"><a href="#L438">438</a>     return (</span>
+<span class="line" id="L439"><a href="#L439">439</a>       typeof value === &quot;object&quot; &amp;&amp;</span>
+<span class="line" id="L440"><a href="#L440">440</a>       value !== null &amp;&amp;</span>
+<span class="line" id="L441"><a href="#L441">441</a>       !Array.isArray(value) &amp;&amp;</span>
+<span class="line" id="L442"><a href="#L442">442</a>       !(&quot;kind&quot; in value) &amp;&amp;</span>
+<span class="line" id="L443"><a href="#L443">443</a>       &quot;bytes&quot; in value &amp;&amp;</span>
+<span class="line" id="L444"><a href="#L444">444</a>       value.bytes instanceof Uint8Array</span>
+<span class="line" id="L445"><a href="#L445">445</a>     );</span>
+<span class="line" id="L446"><a href="#L446">446</a>   }</span>
+<span class="line" id="L447"><a href="#L447">447</a> }</span></pre></html>
