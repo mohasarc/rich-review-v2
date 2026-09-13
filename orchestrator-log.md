@@ -1271,3 +1271,4 @@ no changes added to commit (use "git add" and/or "git commit -a")
 - 2026-09-13 16:02:06 +03: SUPERVISOR STOPPED
 - 2026-09-13 16:02:26 +03: MONITOR STOPPED
 - 2026-09-13 16:04:31 +03: FINAL STOP requested by user. Supervisor and watchdog exited; no screen sessions, active workers, queued briefs, or running briefs remain. Experiment 82 was interrupted, retained as a documented negative result with README, and moved to done. Final inventory: 84 experiment folders, 84 done briefs, 0 running, 0 queued; symnav worktrees were not modified.
+- 2026-09-13 16:09:28 +03: FINAL PUBLISH snapshot aa65f697bb7d662a6774d51b02dba8feceaa515f pushed to public main; local and origin matched with a clean worktree. No supervisor or watchdog screen sessions remain.
