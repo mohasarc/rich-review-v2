@@ -1,0 +1,1501 @@
+commit 9284116a4bb2be984054d9b3af010b31b61a90b2
+Author: Mohammed S. Yaseen <moha.98.1900@gmail.com>
+Date:   Sun Sep 6 08:00:47 2026 +0300
+
+    Use package-owned daemon parity actors
+
+diff --git a/apps/cli/test/e2e/daemon/parity.test.ts b/apps/cli/test/e2e/daemon/parity.test.ts
+index ba4990a7a..37a0015bd 100644
+--- a/apps/cli/test/e2e/daemon/parity.test.ts
++++ b/apps/cli/test/e2e/daemon/parity.test.ts
+@@ -18,19 +18,8 @@ import { fileURLToPath } from "node:url";
+ import { spawn } from "node:child_process";
+ import { createHash } from "node:crypto";
+ import { afterEach, describe, expect, it } from "vitest";
+-import { DaemonPolicy, type DaemonExecutorRequest } from "@symnav/daemon";
+ import { fixturePath, runSymnavBinary, type RunSymnavBinaryResult } from "@symnav/testing";
+ import type { ChildProcess } from "node:child_process";
+-import {
+-  DAEMON_PROTOCOL_VERSION,
+-  DAEMON_RECORD_SCHEMA_VERSION,
+-  type DaemonRecord,
+-} from "../../../src/daemon/daemon-protocol.js";
+-import { TestDaemonRegistry as DaemonRegistry } from "../../helpers/daemon-registry.js";
+-import { DaemonWorkspaceIdentity } from "../../../src/daemon/daemon-workspace-identity.js";
+-import { StateDirectoryResolver } from "../../../src/state-directory-resolver.js";
+-import { TestLocalDaemonTransport as LocalDaemonTransport } from "../../helpers/local-daemon-transport.js";
+-import { createDefaultDependencies } from "../../../src/program.js";
+ import { canonicalWorkspaceRoot } from "../../helpers/canonical-workspace-root.js";
+ import { E2eProcessCleanup } from "../../helpers/e2e-process-cleanup.js";
+ import { CliDaemonTesting } from "../../helpers/daemon-testing.js";
+@@ -125,13 +114,13 @@ describe("symnav daemon parity", () => {
+     expect(existsSync(`${controlled.requestStartedPath}.1`)).toBe(true);
+     expect(harness.telemetryModes()).toEqual(["warm"]);
+     expect(harness.daemonRecordCount()).toBe(1);
+-    expect(harness.onlyDaemonPid()).toBe(controlled.record.pid);
++    expect(harness.onlyDaemonPid()).toBe(controlled.pid);
+     expect(harness.completionSpoolFileCount()).toBe(0);
+     const next = await harness.warmAsync(["overview", "input.ts"]);
+     expect(next).toMatchObject({ status: 0, stderr: cold.stderr });
+     expect(next.stdout.startsWith(cold.stdout)).toBe(true);
+     expect(existsSync(`${controlled.requestStartedPath}.2`)).toBe(true);
+-    expect(harness.onlyDaemonPid()).toBe(controlled.record.pid);
++    expect(harness.onlyDaemonPid()).toBe(controlled.pid);
+   }, 15_000);
+ 
+   it("streams a valid JSON response larger than the former frame limit", async () => {
+@@ -147,7 +136,7 @@ describe("symnav daemon parity", () => {
+     expect(existsSync(`${controlled.requestStartedPath}.1`)).toBe(true);
+     expect(harness.telemetryModes()).toEqual(["warm"]);
+     expect(harness.daemonRecordCount()).toBe(1);
+-    expect(harness.onlyDaemonPid()).toBe(controlled.record.pid);
++    expect(harness.onlyDaemonPid()).toBe(controlled.pid);
+     expect(harness.completionSpoolFileCount()).toBe(0);
+   }, 15_000);
+ 
+@@ -239,21 +228,7 @@ describe("symnav daemon parity", () => {
+     harnesses.push(harness);
+     const releasePath = join(harness.root, "release-first-request");
+     const controlled = await harness.startControlledDaemon(releasePath);
+-    const transport = new LocalDaemonTransport({ requestTimeoutMs: 10_000 });
+-    const first = transport.execute(controlled.record.endpoint, {
+-      kind: "execute",
+-      protocolVersion: DAEMON_PROTOCOL_VERSION,
+-      instanceId: controlled.record.instanceId,
+-      processToken: controlled.record.processToken,
+-      requestId: "fifo-first",
+-      commandName: "overview",
+-      request: {
+-        argv: ["--version"],
+-        cwd: controlled.record.workspaceRoot,
+-        telemetryEnabled: false,
+-        executionMode: "warm",
+-      },
+-    });
++    const first = harness.warmAsync(["overview", "warning.ts"]);
+     await waitUntil(() => existsSync(`${controlled.requestStartedPath}.1`));
+     const second = harness.warmAsync(["overview", "input.ts"]);
+     await new Promise((resolve) => setTimeout(resolve, 100));
+@@ -261,14 +236,13 @@ describe("symnav daemon parity", () => {
+     writeFileSync(join(harness.workspaceRoot, "input.ts"), "export const queuedEdit = 3;\n");
+     writeFileSync(releasePath, "release");
+ 
+-    const firstResponse = await (await first).completion;
++    const firstResponse = await first;
+     const secondResult = await second;
+ 
+-    expect(firstResponse).toMatchObject({ status: "completed", result: { exitCode: 0 } });
++    expect(firstResponse).toMatchObject({ status: 0 });
+     await waitUntil(() => existsSync(`${controlled.requestStartedPath}.2`));
+     expect(secondResult).toEqual(harness.cold(["overview", "input.ts"]));
+-    if (firstResponse.status !== "completed") throw new Error("Expected first FIFO result");
+-    expect(await decodeOutput(firstResponse.result.output)).toMatch(/^\d+\.\d+\.\d+/);
++    expect(firstResponse.stdout).toContain("stillVisible");
+     expect(secondResult.stdout).toContain("queuedEdit");
+   }, 15_000);
+ 
+@@ -288,9 +262,7 @@ describe("symnav daemon parity", () => {
+             import.meta.url,
+           ),
+         ),
+-        controlled.record.endpoint,
+-        controlled.record.instanceId,
+-        controlled.record.processToken,
++        harness.stateDirectory,
+         harness.workspaceRoot,
+         acceptedPath,
+       ],
+@@ -301,23 +273,13 @@ describe("symnav daemon parity", () => {
+     caller.kill("SIGKILL");
+     await waitForProcess(caller);
+     writeFileSync(releasePath, "release");
+-    const transport = new LocalDaemonTransport({ requestTimeoutMs: 5_000 });
+-    await waitUntil(async () => {
+-      const status = await transport.executionStatus(controlled.record.endpoint, {
+-        kind: "execution-status",
+-        protocolVersion: DAEMON_PROTOCOL_VERSION,
+-        instanceId: controlled.record.instanceId,
+-        processToken: controlled.record.processToken,
+-        requestId: "accepted-disconnect",
+-      });
+-      return status.state === "completed";
+-    });
++    await waitUntil(() => existsSync(`${acceptedPath}.completion`));
+ 
+-    expect(harness.onlyDaemonPid()).toBe(controlled.record.pid);
++    expect(harness.onlyDaemonPid()).toBe(controlled.pid);
+     await waitUntil(() => harness.telemetryModes().length === 1);
+     expect(harness.telemetryModes()).toEqual(["warm"]);
+     expect(harness.warm(["overview", "input.ts"])).toEqual(harness.cold(["overview", "input.ts"]));
+-    expect(harness.onlyDaemonPid()).toBe(controlled.record.pid);
++    expect(harness.onlyDaemonPid()).toBe(controlled.pid);
+     expect(harness.telemetryModes()).toEqual(["warm"]);
+   }, 15_000);
+ 
+@@ -383,23 +345,34 @@ describe("symnav daemon parity", () => {
+         existsSync(controlled.requestIdPath) &&
+         existsSync(controlled.requestPayloadPath),
+     );
+-    const requestId = readFileSync(controlled.requestIdPath, "utf8");
+-    const acceptedRequest = JSON.parse(
+-      readFileSync(controlled.requestPayloadPath, "utf8"),
+-    ) as DaemonExecutorRequest;
+-    const transport = new LocalDaemonTransport({ requestTimeoutMs: 5_000 });
+-    const duplicate = await transport.execute(controlled.record.endpoint, {
+-      kind: "execute",
+-      protocolVersion: DAEMON_PROTOCOL_VERSION,
+-      instanceId: controlled.record.instanceId,
+-      processToken: controlled.record.processToken,
+-      requestId,
+-      commandName: "overview",
+-      request: acceptedRequest,
+-    });
++    const duplicatePath = join(harness.root, "duplicate-request");
++    const duplicate = spawn(
++      process.execPath,
++      [
++        fileURLToPath(new URL("../../../node_modules/tsx/dist/cli.mjs", import.meta.url)),
++        fileURLToPath(
++          new URL(
++            "../../../../../packages/daemon/test/actors/daemon-accepted-caller.ts",
++            import.meta.url,
++          ),
++        ),
++        harness.stateDirectory,
++        harness.workspaceRoot,
++        duplicatePath,
++        "duplicate",
++        controlled.requestPayloadPath,
++        controlled.requestIdPath,
++      ],
++      { stdio: "ignore" },
++    );
++    await waitUntil(() => existsSync(duplicatePath));
+     writeFileSync(controlled.workerExitReleasePath, "release");
+ 
+-    await expect(duplicate.completion).resolves.toEqual({ status: "failed", code: "worker-exit" });
++    await waitForProcess(duplicate);
++    expect(JSON.parse(readFileSync(`${duplicatePath}.completion`, "utf8"))).toEqual({
++      status: "failed",
++      code: "worker-exit",
++    });
+     const controlledResult = await execution;
+ 
+     expect(controlledResult).toEqual({
+@@ -412,7 +385,7 @@ describe("symnav daemon parity", () => {
+     expect(harness.telemetryModes()).toEqual([]);
+     expect(harness.daemonRecordCount()).toBe(1);
+     await waitForProcess(controlled.child);
+-    expect(processIsAlive(controlled.record.pid)).toBe(false);
++    expect(processIsAlive(controlled.pid)).toBe(false);
+   }, 15_000);
+ 
+   it("keeps cold bytes and status when daemon state path is an existing file", () => {
+@@ -603,7 +576,7 @@ describe("symnav daemon parity", () => {
+ class DaemonParityHarness {
+   readonly root = mkdtempSync(join(tmpdir(), "symnav-daemon-parity-"));
+   readonly workspaceRoot = join(this.root, "workspace");
+-  private readonly stateDirectory = join(this.root, "state");
++  readonly stateDirectory = join(this.root, "state");
+   private readonly helperProcesses: ChildProcess[] = [];
+ 
+   constructor(fixtureName?: string) {
+@@ -743,21 +716,11 @@ class DaemonParityHarness {
+ 
+   async startControlledDaemon(releaseArgument = "--no-release"): Promise<ControlledDaemon> {
+     const controlledWorkspaceRoot = canonicalWorkspaceRoot(realpathSync(this.workspaceRoot));
+-    const identity = DaemonWorkspaceIdentity.from(
+-      controlledWorkspaceRoot,
+-      StateDirectoryResolver.canonicalize(this.stateDirectory),
+-    );
+-    const registry = new DaemonRegistry(identity.registryDirectory);
+     const instanceId = "controlled-crash";
+     const processToken = `${instanceId}-token`;
+     const readyPath = join(this.stateDirectory, `${instanceId}-ready`);
+     const requestStartedPath = join(this.stateDirectory, `${instanceId}-request`);
+-    const symnavVersion = createDefaultDependencies(
+-      identity.stateDirectory,
+-      DaemonPolicy.currentSystem(),
+-    ).symnavVersion;
+-    const lease = registry.acquireStartup(identity, instanceId);
+-    if (lease === undefined) throw new Error("Expected controlled daemon startup ownership");
++    const symnavVersion = this.cold(["--version"]).stdout.trim();
+     const child = spawn(
+       process.execPath,
+       [
+@@ -787,34 +750,13 @@ class DaemonParityHarness {
+       },
+     );
+     this.helperProcesses.push(child);
+-    await waitUntil(() => existsSync(`${readyPath}.boot`));
+-    const daemonPid = Number(readFileSync(`${readyPath}.boot`, "utf8"));
+-    const record: DaemonRecord = {
+-      schemaVersion: DAEMON_RECORD_SCHEMA_VERSION,
+-      protocolVersion: DAEMON_PROTOCOL_VERSION,
+-      symnavVersion,
+-      workspaceRoot: controlledWorkspaceRoot,
+-      workspaceKey: identity.workspaceKey,
+-      stateKey: identity.stateKey,
+-      identityKey: identity.identityKey,
+-      instanceId,
+-      processToken,
+-      endpoint: identity.endpoint(instanceId),
+-      pid: daemonPid,
+-      state: "starting",
+-      startedAt: Date.now(),
+-      memoryCapBytes: Number.MAX_SAFE_INTEGER,
+-    };
+-    if (!registry.writeStartingIfStartupOwner(identity, record)) {
+-      throw new Error("Controlled daemon lost startup ownership");
+-    }
+     await waitUntil(() => existsSync(readyPath));
+-    lease.release();
+-    const readyRecord = registry.read(identity);
+-    if (readyRecord?.state !== "ready") throw new Error("Controlled daemon did not become ready");
++    const instances = new CliDaemonTesting(this.stateDirectory).inspector.listInstances();
++    const readyInstance = instances.find((instance) => instance.instanceId === instanceId);
++    if (readyInstance?.state !== "ready") throw new Error("Controlled daemon did not become ready");
+     return {
+       child,
+-      record: readyRecord,
++      pid: readyInstance.pid,
+       requestPayloadPath: `${requestStartedPath}.payload`,
+       requestStartedPath,
+       requestIdPath: `${requestStartedPath}.request-id`,
+@@ -903,22 +845,13 @@ function waitForProcess(child: ChildProcess): Promise<void> {
+   });
+ }
+ 
+-async function decodeOutput(
+-  output: import("@symnav/daemon").DaemonExecutorOutput,
+-): Promise<string> {
+-  const chunks = [];
+-  for await (const record of output.records()) chunks.push(Buffer.from(record.bytes));
+-  await output.dispose();
+-  return Buffer.concat(chunks).toString();
+-}
+-
+ function digest(value: string): string {
+   return createHash("sha256").update(value).digest("hex");
+ }
+ 
+ interface ControlledDaemon {
+   readonly child: ChildProcess;
+-  readonly record: DaemonRecord;
++  readonly pid: number;
+   readonly requestPayloadPath: string;
+   readonly requestStartedPath: string;
+   readonly requestIdPath: string;
+diff --git a/apps/cli/test/e2e/daemon/status.test.ts b/apps/cli/test/e2e/daemon/status.test.ts
+index aa6547861..a34208821 100644
+--- a/apps/cli/test/e2e/daemon/status.test.ts
++++ b/apps/cli/test/e2e/daemon/status.test.ts
+@@ -1,40 +1,19 @@
+-import {
+-  existsSync,
+-  mkdirSync,
+-  mkdtempSync,
+-  readFileSync,
+-  realpathSync,
+-  writeFileSync,
+-} from "node:fs";
+-import { spawn, type ChildProcess } from "node:child_process";
++import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+-import { fileURLToPath } from "node:url";
+-import { afterEach, describe, expect, it, vi } from "vitest";
++import { afterEach, describe, expect, it } from "vitest";
+ import { runSymnavBinary } from "@symnav/testing";
+-import {
+-  DAEMON_PROTOCOL_VERSION,
+-  DAEMON_RECORD_SCHEMA_VERSION,
+-  type DaemonRecord,
+-} from "../../../src/daemon/daemon-protocol.js";
+-import type { StartupOwner } from "../../../src/daemon/daemon-registry.js";
+-import { TestDaemonRegistry as DaemonRegistry } from "../../helpers/daemon-registry.js";
+-import { DaemonWorkspaceIdentity } from "../../../src/daemon/daemon-workspace-identity.js";
+-import { TestLocalDaemonTransport as LocalDaemonTransport } from "../../helpers/local-daemon-transport.js";
+-import { StateDirectoryResolver } from "../../../src/state-directory-resolver.js";
+ import { canonicalWorkspaceRoot } from "../../helpers/canonical-workspace-root.js";
+ import { E2eProcessCleanup } from "../../helpers/e2e-process-cleanup.js";
+-import { DaemonStateFiles } from "../../helpers/daemon-state-files.js";
++import { CliDaemonTesting } from "../../helpers/daemon-testing.js";
+ 
+ describe("symnav daemon status", () => {
+   const stateDirectories: string[] = [];
+   const daemonPids: number[] = [];
+-  const helperProcesses: ChildProcess[] = [];
+ 
+   afterEach(async () => {
+-    await E2eProcessCleanup.terminate(daemonPids, helperProcesses);
++    await E2eProcessCleanup.terminate(daemonPids, []);
+     daemonPids.length = 0;
+-    helperProcesses.length = 0;
+     E2eProcessCleanup.removeDirectories(stateDirectories);
+     stateDirectories.length = 0;
+   });
+@@ -114,474 +93,6 @@ describe("symnav daemon status", () => {
+         .sort((left, right) => left.localeCompare(right)),
+     );
+   });
+-
+-  it("reports starting only while the matching cross-process owner is live", async () => {
+-    const stateDir = temporaryStateDirectory(stateDirectories);
+-    const workspaceRoot = temporaryWorkspace(stateDirectories);
+-    const readyPath = join(stateDir, "publisher-ready");
+-    const barrierPath = join(stateDir, "publisher-go");
+-    const resultPath = join(stateDir, "publisher-result");
+-    const publisher = spawnStartupPublisher(
+-      workspaceRoot,
+-      stateDir,
+-      readyPath,
+-      barrierPath,
+-      resultPath,
+-    );
+-    helperProcesses.push(publisher);
+-    await waitUntil(() => existsSync(readyPath));
+-
+-    const starting = runSymnavBinary(["daemon", "status", "--json"], {
+-      cwd: tmpdir(),
+-      env: { SYMNAV_STATE_DIR: stateDir },
+-    });
+-    expect(JSON.parse(starting.stdout).daemons).toEqual([
+-      expect.objectContaining({ workspaceRoot, state: "starting", pid: 0 }),
+-    ]);
+-
+-    writeFileSync(barrierPath, "go");
+-    await waitForProcess(publisher);
+-    helperProcesses.splice(helperProcesses.indexOf(publisher), 1);
+-    const stopped = runSymnavBinary(["daemon", "status", "--json"], {
+-      cwd: tmpdir(),
+-      env: { SYMNAV_STATE_DIR: stateDir },
+-    });
+-    expect(JSON.parse(stopped.stdout)).toEqual({ schemaVersion: 1, daemons: [] });
+-  });
+-
+-  it("keeps one daemon-owned warm-up when its initiating caller is killed", async () => {
+-    const stateDir = temporaryStateDirectory(stateDirectories);
+-    const workspaceRoot = canonicalWorkspaceRoot(
+-      realpathSync(temporaryWorkspace(stateDirectories)),
+-    );
+-    const instanceId = "caller-exit";
+-    const processToken = "caller-exit-process";
+-    const bootPath = join(stateDir, "caller-exit-boot");
+-    const callerBarrierPath = join(stateDir, "caller-exit-spawned");
+-    const childReleasePath = join(stateDir, "caller-exit-release");
+-    const readyPath = join(stateDir, "caller-exit-ready");
+-    const caller = spawnCallerExitStartup(
+-      workspaceRoot,
+-      stateDir,
+-      instanceId,
+-      processToken,
+-      bootPath,
+-      readyPath,
+-      callerBarrierPath,
+-      childReleasePath,
+-    );
+-    helperProcesses.push(caller);
+-    await waitUntil(
+-      () => existsSync(callerBarrierPath),
+-      5_000,
+-      "Timed out waiting for initiating caller startup",
+-    );
+-    const childPid = Number(readFileSync(bootPath, "utf8"));
+-    daemonPids.push(childPid);
+-    const identity = DaemonWorkspaceIdentity.from(
+-      workspaceRoot,
+-      StateDirectoryResolver.canonicalize(stateDir),
+-    );
+-    const registry = new DaemonRegistry(identity.registryDirectory);
+-    const readStartupOwner = registry.startupOwner.bind(registry);
+-    vi.spyOn(registry, "startupOwner")
+-      .mockReturnValueOnce(undefined)
+-      .mockImplementation(readStartupOwner);
+-    const startupOwnerSpy = vi.mocked(registry.startupOwner);
+-    const matchesDaemonOwner = (owner: StartupOwner | undefined): owner is StartupOwner =>
+-      owner?.identityKey === identity.identityKey &&
+-      owner.instanceId === instanceId &&
+-      owner.processToken === processToken &&
+-      owner.ownerKind === "daemon" &&
+-      owner.ownerPid === childPid;
+-
+-    expect(registry.readStoredInstance(identity, instanceId)).toMatchObject({
+-      instanceId,
+-      processToken,
+-      pid: childPid,
+-      state: "starting",
+-    });
+-    let ownerBeforeCallerExit: StartupOwner | undefined;
+-    await waitUntil(
+-      () => {
+-        const owner = registry.startupOwner(identity);
+-        if (!matchesDaemonOwner(owner)) return false;
+-        ownerBeforeCallerExit = owner;
+-        return true;
+-      },
+-      5_000,
+-      "Timed out waiting for daemon startup ownership",
+-    );
+-    if (ownerBeforeCallerExit === undefined) throw new Error("Expected daemon startup ownership");
+-    const revisionBeforeCallerExit = ownerBeforeCallerExit.revision;
+-    expect(caller.kill("SIGKILL")).toBe(true);
+-    await waitForKilledProcess(caller);
+-    helperProcesses.splice(helperProcesses.indexOf(caller), 1);
+-    startupOwnerSpy.mockReturnValueOnce(undefined);
+-    let ownerAfterCallerExit: StartupOwner | undefined;
+-    await waitUntil(
+-      () => {
+-        const owner = registry.startupOwner(identity);
+-        if (!matchesDaemonOwner(owner) || owner.revision === revisionBeforeCallerExit) return false;
+-        ownerAfterCallerExit = owner;
+-        return true;
+-      },
+-      5_000,
+-      "Timed out waiting for daemon-owned startup heartbeat after caller exit",
+-    );
+-    expect(ownerAfterCallerExit).toBeDefined();
+-
+-    const statusStartedAt = Date.now();
+-    const starting = runSymnavBinary(["daemon", "status", "--json"], {
+-      cwd: tmpdir(),
+-      env: { SYMNAV_STATE_DIR: stateDir },
+-    });
+-
+-    expect(starting.status).toBe(0);
+-    expect(Date.now() - statusStartedAt).toBeLessThan(5_000);
+-    expect(JSON.parse(starting.stdout).daemons).toEqual([
+-      expect.objectContaining({
+-        workspaceRoot,
+-        state: "starting",
+-        pid: childPid,
+-        startupElapsedMs: expect.any(Number),
+-        memoryBytes: expect.any(Number),
+-      }),
+-    ]);
+-    await waitUntil(
+-      () => matchesDaemonOwner(registry.startupOwner(identity)),
+-      5_000,
+-      "Timed out waiting for daemon startup ownership after status",
+-    );
+-
+-    const laterStarts = [
+-      spawnDaemonStart(workspaceRoot, stateDir),
+-      spawnDaemonStart(workspaceRoot, stateDir),
+-    ];
+-    helperProcesses.push(...laterStarts);
+-    await new Promise((resolve) => setTimeout(resolve, 200));
+-    expect(laterStarts.map((start) => start.exitCode)).toEqual([null, null]);
+-    expect(daemonRecords(stateDir)).toEqual([
+-      expect.objectContaining({ instanceId, processToken, pid: childPid }),
+-    ]);
+-
+-    writeFileSync(childReleasePath, "go");
+-    await waitUntil(() => existsSync(readyPath), 15_000, "Timed out waiting for daemon readiness");
+-    await Promise.all(laterStarts.map(waitForProcess));
+-    for (const laterStart of laterStarts) {
+-      helperProcesses.splice(helperProcesses.indexOf(laterStart), 1);
+-    }
+-    const navigation = runSymnavBinary(["overview", "input.ts"], {
+-      cwd: workspaceRoot,
+-      env: { SYMNAV_DAEMON: "1", SYMNAV_STATE_DIR: stateDir },
+-    });
+-    const readyRecords = daemonRecords(stateDir);
+-    const readyRecord = readyRecords[0];
+-
+-    expect(navigation.status, navigation.stderr).toBe(0);
+-    expect(navigation.stdout).toContain("value");
+-    expect(readyRecords).toEqual([
+-      expect.objectContaining({ instanceId, processToken, pid: childPid, state: "ready" }),
+-    ]);
+-    expect(readyRecord?.state).toBe("ready");
+-    expect(readyRecord?.pid).toBe(childPid);
+-    expect(readyRecord?.instanceId).toBe(instanceId);
+-    expect(readyRecord?.processToken).toBe(processToken);
+-
+-    const stopped = runSymnavBinary(["daemon", "stop"], {
+-      cwd: workspaceRoot,
+-      env: { SYMNAV_STATE_DIR: stateDir },
+-    });
+-    expect(stopped.status).toBe(0);
+-    expect(isProcessAlive(childPid)).toBe(false);
+-    expect(daemonRecords(stateDir)).toEqual([]);
+-  }, 30_000);
+-
+-  it("cleans a stale current-schema record", async () => {
+-    const stateDir = temporaryStateDirectory(stateDirectories);
+-    const cwd = temporaryWorkspace(stateDirectories);
+-    const started = runSymnavBinary(["daemon", "start"], {
+-      cwd,
+-      env: { SYMNAV_STATE_DIR: stateDir },
+-    });
+-    expect(started.status).toBe(0);
+-    captureDaemonPids(stateDir, daemonPids);
+-    const originalRecord = daemonRecords(stateDir)[0];
+-    expect(originalRecord).toBeDefined();
+-    await E2eProcessCleanup.kill(daemonPids);
+-    daemonPids.length = 0;
+-    const recordPath = DaemonStateFiles.matchingPaths(stateDir, ".json")[0];
+-    expect(recordPath).toBeDefined();
+-    const record = JSON.parse(readFileSync(recordPath!, "utf8")) as Record<string, unknown>;
+-    writeFileSync(recordPath!, JSON.stringify({ ...record, pid: 999_999_999 }));
+-
+-    const status = runSymnavBinary(["daemon", "status"], {
+-      cwd: tmpdir(),
+-      env: { SYMNAV_STATE_DIR: stateDir },
+-    });
+-    expect(status).toEqual({ stdout: "No daemons running.\n", stderr: "", status: 0 });
+-    expect(DaemonStateFiles.matchingPaths(stateDir, ".json")).toEqual([]);
+-    expect(existsSync(String(record.endpoint))).toBe(false);
+-  });
+-
+-  it("reports a stuck live daemon promptly without replacing its process", async () => {
+-    const stateDir = temporaryStateDirectory(stateDirectories);
+-    const workspaceRoot = temporaryWorkspace(stateDirectories);
+-    const instanceId = "stuck-status";
+-    const processToken = "stuck-status-process";
+-    const readyPath = join(stateDir, "stuck-ready");
+-    const requestStartedPath = join(stateDir, "stuck-request");
+-    const identity = DaemonWorkspaceIdentity.from(
+-      workspaceRoot,
+-      StateDirectoryResolver.canonicalize(stateDir),
+-    );
+-    const registry = new DaemonRegistry(identity.registryDirectory);
+-    const lease = registry.acquireStartup(identity, instanceId);
+-    expect(lease).toBeDefined();
+-    const child = spawnStuckDaemon(
+-      workspaceRoot,
+-      stateDir,
+-      instanceId,
+-      processToken,
+-      readyPath,
+-      requestStartedPath,
+-    );
+-    helperProcesses.push(child);
+-    await waitUntil(() => existsSync(`${readyPath}.boot`));
+-    const daemonPid = Number(readFileSync(`${readyPath}.boot`, "utf8"));
+-    expect(
+-      registry.writeStartingIfStartupOwner(identity, {
+-        schemaVersion: DAEMON_RECORD_SCHEMA_VERSION,
+-        protocolVersion: DAEMON_PROTOCOL_VERSION,
+-        symnavVersion: "0.1.0",
+-        workspaceRoot,
+-        workspaceKey: identity.workspaceKey,
+-        stateKey: identity.stateKey,
+-        identityKey: identity.identityKey,
+-        instanceId,
+-        processToken,
+-        endpoint: identity.endpoint(instanceId),
+-        pid: daemonPid,
+-        state: "starting",
+-        startedAt: Date.now(),
+-        memoryCapBytes: Number.MAX_SAFE_INTEGER,
+-      }),
+-    ).toBe(true);
+-    await waitUntil(() => existsSync(readyPath));
+-    lease?.release();
+-    const originalRecord = daemonRecords(stateDir)[0];
+-    expect(originalRecord).toBeDefined();
+-    daemonPids.push(originalRecord!.pid);
+-    const transport = new LocalDaemonTransport({ requestTimeoutMs: 5_000 });
+-    void transport
+-      .execute(originalRecord!.endpoint, {
+-        kind: "execute",
+-        protocolVersion: DAEMON_PROTOCOL_VERSION,
+-        instanceId,
+-        processToken,
+-        requestId: "stuck-navigation",
+-        commandName: "overview",
+-        request: {
+-          argv: ["overview", "input.ts"],
+-          cwd: workspaceRoot,
+-          telemetryEnabled: false,
+-          executionMode: "warm",
+-        },
+-      })
+-      .then((receipt) => receipt.completion.catch(() => undefined))
+-      .catch(() => undefined);
+-    await waitUntil(() => existsSync(requestStartedPath));
+-
+-    const statusStartedAt = Date.now();
+-    const status = runSymnavBinary(["daemon", "status", "--json"], {
+-      cwd: tmpdir(),
+-      env: { SYMNAV_STATE_DIR: stateDir },
+-    });
+-    const statusDurationMs = Date.now() - statusStartedAt;
+-    const recordsAfterStatus = daemonRecords(stateDir);
+-
+-    expect(status.status).toBe(0);
+-    expect(statusDurationMs).toBeLessThan(5_000);
+-    expect(JSON.parse(status.stdout).daemons).toEqual([
+-      expect.objectContaining({
+-        workspaceRoot,
+-        state: "busy",
+-        pid: originalRecord!.pid,
+-        command: "overview",
+-        queued: 0,
+-      }),
+-    ]);
+-    expect(recordsAfterStatus).toHaveLength(1);
+-    expect(recordsAfterStatus[0]?.pid).toBe(originalRecord!.pid);
+-    expect(recordsAfterStatus[0]?.instanceId).toBe(instanceId);
+-  });
+-
+-  it("retains authenticated ownership when a live daemon stops answering ping", async () => {
+-    const stateDir = temporaryStateDirectory(stateDirectories);
+-    const workspaceRoot = temporaryWorkspace(stateDirectories);
+-    const instanceId = "live-silent";
+-    const processToken = "live-silent-process";
+-    const startedAt = Date.now();
+-    const readyPath = join(stateDir, "live-silent-ready");
+-    const identity = DaemonWorkspaceIdentity.from(
+-      workspaceRoot,
+-      StateDirectoryResolver.canonicalize(stateDir),
+-    );
+-    const child = spawnLiveSilentDaemon(
+-      identity.endpoint(instanceId),
+-      instanceId,
+-      processToken,
+-      startedAt,
+-      readyPath,
+-    );
+-    helperProcesses.push(child);
+-    await waitUntil(() => existsSync(readyPath));
+-    const pid = Number(readFileSync(readyPath, "utf8"));
+-    daemonPids.push(pid);
+-    const registry = new DaemonRegistry(identity.registryDirectory);
+-    registry.write({
+-      schemaVersion: DAEMON_RECORD_SCHEMA_VERSION,
+-      protocolVersion: DAEMON_PROTOCOL_VERSION,
+-      symnavVersion: "0.1.0",
+-      workspaceRoot,
+-      workspaceKey: identity.workspaceKey,
+-      stateKey: identity.stateKey,
+-      identityKey: identity.identityKey,
+-      instanceId,
+-      processToken,
+-      endpoint: identity.endpoint(instanceId),
+-      pid,
+-      state: "ready",
+-      startedAt,
+-      readyAt: startedAt,
+-      fileCount: 1,
+-      memoryCapBytes: Number.MAX_SAFE_INTEGER,
+-    });
+-
+-    const statusStartedAt = Date.now();
+-    const status = runSymnavBinary(["daemon", "status", "--json"], {
+-      cwd: tmpdir(),
+-      env: { SYMNAV_STATE_DIR: stateDir },
+-    });
+-
+-    expect(Date.now() - statusStartedAt).toBeLessThan(5_000);
+-    expect(JSON.parse(status.stdout)).toEqual({
+-      schemaVersion: 1,
+-      daemons: [expect.objectContaining({ state: "unresponsive", workspaceRoot, pid })],
+-    });
+-    expect(registry.read(identity)).toMatchObject({ instanceId, processToken, pid });
+-  });
+-
+-  it("reports malformed authenticated activity without leaking or replacing ownership", async () => {
+-    const stateDir = temporaryStateDirectory(stateDirectories);
+-    const workspaceRoot = temporaryWorkspace(stateDirectories);
+-    const instanceId = "malformed-activity";
+-    const processToken = "malformed-activity-process";
+-    const startedAt = Date.now();
+-    const readyPath = join(stateDir, "malformed-activity-ready");
+-    const secret = "/private/source/PaymentProcessor::charge?token=secret";
+-    const identity = DaemonWorkspaceIdentity.from(
+-      workspaceRoot,
+-      StateDirectoryResolver.canonicalize(stateDir),
+-    );
+-    const child = spawnMalformedActivityDaemon(
+-      identity.endpoint(instanceId),
+-      instanceId,
+-      processToken,
+-      startedAt,
+-      readyPath,
+-      secret,
+-    );
+-    helperProcesses.push(child);
+-    await waitUntil(() => existsSync(readyPath));
+-    const pid = Number(readFileSync(readyPath, "utf8"));
+-    daemonPids.push(pid);
+-    const registry = new DaemonRegistry(identity.registryDirectory);
+-    registry.write({
+-      schemaVersion: DAEMON_RECORD_SCHEMA_VERSION,
+-      protocolVersion: DAEMON_PROTOCOL_VERSION,
+-      symnavVersion: "0.1.0",
+-      workspaceRoot,
+-      workspaceKey: identity.workspaceKey,
+-      stateKey: identity.stateKey,
+-      identityKey: identity.identityKey,
+-      instanceId,
+-      processToken,
+-      endpoint: identity.endpoint(instanceId),
+-      pid,
+-      state: "ready",
+-      startedAt,
+-      readyAt: startedAt,
+-      fileCount: 1,
+-      memoryCapBytes: Number.MAX_SAFE_INTEGER,
+-    });
+-
+-    const statusStartedAt = Date.now();
+-    const status = runSymnavBinary(["daemon", "status", "--json"], {
+-      cwd: tmpdir(),
+-      env: { SYMNAV_STATE_DIR: stateDir },
+-    });
+-
+-    expect(Date.now() - statusStartedAt).toBeLessThan(5_000);
+-    expect(status.stdout).not.toContain(secret);
+-    expect(JSON.parse(status.stdout)).toEqual({
+-      schemaVersion: 1,
+-      daemons: [expect.objectContaining({ state: "unresponsive", workspaceRoot, pid })],
+-    });
+-    expect(registry.read(identity)).toMatchObject({ instanceId, processToken, pid });
+-  });
+-
+-  it("returns the cold workspace error and exits after workspace deletion", async () => {
+-    const stateDir = temporaryStateDirectory(stateDirectories);
+-    const workspaceRoot = mkdtempSync(join(tmpdir(), "symnav-deleted-workspace-"));
+-    stateDirectories.push(workspaceRoot);
+-    mkdirSync(join(workspaceRoot, ".git"));
+-    writeFileSync(join(workspaceRoot, "input.ts"), "export const value = 1;\n");
+-    const started = runSymnavBinary(["daemon", "start"], {
+-      cwd: workspaceRoot,
+-      env: { SYMNAV_STATE_DIR: stateDir },
+-    });
+-    expect(started.status).toBe(0);
+-    const record = daemonRecords(stateDir)[0];
+-    expect(record).toBeDefined();
+-    daemonPids.push(record!.pid);
+-    E2eProcessCleanup.removeDirectories([workspaceRoot]);
+-
+-    const cold = runSymnavBinary(["--cwd", workspaceRoot, "overview", "input.ts"], {
+-      cwd: tmpdir(),
+-      env: { SYMNAV_DAEMON: "0" },
+-    });
+-    const response = await (
+-      await new LocalDaemonTransport().execute(record!.endpoint, {
+-        kind: "execute",
+-        protocolVersion: DAEMON_PROTOCOL_VERSION,
+-        instanceId: record!.instanceId,
+-        processToken: record!.processToken,
+-        requestId: "deleted-workspace",
+-        commandName: "version",
+-        request: {
+-          argv: ["overview", "input.ts"],
+-          cwd: workspaceRoot,
+-          telemetryEnabled: false,
+-          executionMode: "warm",
+-        },
+-      })
+-    ).completion;
+-
+-    expect(response.status).toBe("completed");
+-    if (response.status !== "completed") throw new Error("Expected command result");
+-    expect(await replay(response.result.output, "stdout")).toBe(cold.stdout);
+-    expect(await replay(response.result.output, "stderr")).toBe(cold.stderr);
+-    expect(response.result.exitCode).toBe(cold.status);
+-    await response.result.output.dispose();
+-    await waitUntil(() => {
+-      runSymnavBinary(["daemon", "status", "--json"], {
+-        cwd: tmpdir(),
+-        env: { SYMNAV_STATE_DIR: stateDir },
+-      });
+-      return daemonRecords(stateDir).length === 0;
+-    }, 90_000);
+-  }, 120_000);
+ });
+ 
+ function temporaryStateDirectory(directories: string[]): string {
+@@ -590,247 +101,15 @@ function temporaryStateDirectory(directories: string[]): string {
+   return directory;
+ }
+ 
+-function temporaryWorkspace(directories: string[], label = "workspace"): string {
+-  const directory = mkdtempSync(join(tmpdir(), `symnav-daemon-status-${label}-`));
+-  directories.push(directory);
+-  mkdirSync(join(directory, ".git"));
+-  writeFileSync(join(directory, "input.ts"), "export const value = 1;\n");
+-  return directory;
+-}
+-
+-function spawnStartupPublisher(
+-  workspaceRoot: string,
+-  stateDirectory: string,
+-  readyPath: string,
+-  barrierPath: string,
+-  resultPath: string,
+-): ChildProcess {
+-  return spawn(
+-    process.execPath,
+-    [
+-      fileURLToPath(new URL("../../../node_modules/tsx/dist/cli.mjs", import.meta.url)),
+-      fileURLToPath(
+-        new URL(
+-          "../../../../../packages/daemon/test/actors/daemon-startup-publisher.ts",
+-          import.meta.url,
+-        ),
+-      ),
+-      workspaceRoot,
+-      stateDirectory,
+-      readyPath,
+-      barrierPath,
+-      resultPath,
+-    ],
+-    { stdio: "ignore" },
+-  );
+-}
+-
+-function spawnStuckDaemon(
+-  workspaceRoot: string,
+-  stateDirectory: string,
+-  instanceId: string,
+-  processToken: string,
+-  readyPath: string,
+-  requestStartedPath: string,
+-): ChildProcess {
+-  return spawn(
+-    process.execPath,
+-    [
+-      fileURLToPath(new URL("../../../node_modules/tsx/dist/cli.mjs", import.meta.url)),
+-      fileURLToPath(
+-        new URL(
+-          "../../../../../packages/daemon/test/actors/daemon-process-coordinator-controlled.ts",
+-          import.meta.url,
+-        ),
+-      ),
+-      workspaceRoot,
+-      stateDirectory,
+-      instanceId,
+-      processToken,
+-      readyPath,
+-      requestStartedPath,
+-      "--no-release",
+-      "0.1.0",
+-    ],
+-    { stdio: "ignore" },
+-  );
+-}
+-
+-function spawnLiveSilentDaemon(
+-  endpoint: string,
+-  instanceId: string,
+-  processToken: string,
+-  startedAt: number,
+-  readyPath: string,
+-): ChildProcess {
+-  return spawn(
+-    process.execPath,
+-    [
+-      fileURLToPath(new URL("../../../node_modules/tsx/dist/cli.mjs", import.meta.url)),
+-      fileURLToPath(
+-        new URL(
+-          "../../../../../packages/daemon/test/actors/daemon-live-silent.ts",
+-          import.meta.url,
+-        ),
+-      ),
+-      endpoint,
+-      instanceId,
+-      processToken,
+-      String(startedAt),
+-      readyPath,
+-    ],
+-    { stdio: "ignore" },
+-  );
+-}
+-
+-function spawnMalformedActivityDaemon(
+-  endpoint: string,
+-  instanceId: string,
+-  processToken: string,
+-  startedAt: number,
+-  readyPath: string,
+-  secret: string,
+-): ChildProcess {
+-  return spawn(
+-    process.execPath,
+-    [
+-      fileURLToPath(new URL("../../../node_modules/tsx/dist/cli.mjs", import.meta.url)),
+-      fileURLToPath(
+-        new URL(
+-          "../../../../../packages/daemon/test/actors/daemon-malformed-activity.ts",
+-          import.meta.url,
+-        ),
+-      ),
+-      endpoint,
+-      instanceId,
+-      processToken,
+-      String(startedAt),
+-      readyPath,
+-      secret,
+-    ],
+-    { stdio: "ignore" },
+-  );
+-}
+-
+-function spawnCallerExitStartup(
+-  workspaceRoot: string,
+-  stateDirectory: string,
+-  instanceId: string,
+-  processToken: string,
+-  bootPath: string,
+-  readyPath: string,
+-  callerBarrierPath: string,
+-  childReleasePath: string,
+-): ChildProcess {
+-  return spawn(
+-    process.execPath,
+-    [
+-      fileURLToPath(new URL("../../../node_modules/tsx/dist/cli.mjs", import.meta.url)),
+-      fileURLToPath(new URL("../../helpers/daemon-startup-caller-exit.ts", import.meta.url)),
+-      workspaceRoot,
+-      stateDirectory,
+-      instanceId,
+-      processToken,
+-      bootPath,
+-      readyPath,
+-      callerBarrierPath,
+-      childReleasePath,
+-    ],
+-    { stdio: "ignore" },
+-  );
+-}
+-
+-function spawnDaemonStart(workspaceRoot: string, stateDirectory: string): ChildProcess {
+-  return spawn(
+-    process.execPath,
+-    [fileURLToPath(new URL("../../../dist/cli.js", import.meta.url)), "daemon", "start"],
+-    {
+-      cwd: workspaceRoot,
+-      env: {
+-        ...process.env,
+-        SYMNAV_STATE_DIR: stateDirectory,
+-        SYMNAV_TELEMETRY: "0",
+-      },
+-      stdio: "ignore",
+-    },
+-  );
+-}
+-
+-function waitForProcess(child: ChildProcess): Promise<void> {
+-  if (child.exitCode !== null) {
+-    return child.exitCode === 0
+-      ? Promise.resolve()
+-      : Promise.reject(new Error(`Startup publisher exited with code ${String(child.exitCode)}`));
+-  }
+-  if (child.signalCode !== null) {
+-    return Promise.reject(
+-      new Error(`Startup publisher exited with signal ${String(child.signalCode)}`),
+-    );
+-  }
+-  return new Promise((resolve, reject) => {
+-    child.once("error", reject);
+-    child.once("exit", (code) => {
+-      if (code === 0) resolve();
+-      else reject(new Error(`Startup publisher exited with code ${String(code)}`));
+-    });
+-  });
+-}
+-
+-function waitForKilledProcess(child: ChildProcess): Promise<void> {
+-  if (child.signalCode !== null || (child.exitCode !== null && child.exitCode !== 0)) {
+-    return Promise.resolve();
+-  }
+-  if (child.exitCode === 0) {
+-    return Promise.reject(new Error("Startup caller did not exit abruptly"));
+-  }
+-  return new Promise((resolve, reject) => {
+-    child.once("error", reject);
+-    child.once("exit", (code, signal) => {
+-      if (signal !== null || (code !== null && code !== 0)) resolve();
+-      else reject(new Error("Startup caller did not exit abruptly"));
+-    });
+-  });
+-}
+-
+-function isProcessAlive(pid: number): boolean {
+-  try {
+-    process.kill(pid, 0);
+-    return true;
+-  } catch {
+-    return false;
+-  }
++function temporaryWorkspace(directories: string[], name = "workspace"): string {
++  const parent = mkdtempSync(join(tmpdir(), `symnav-daemon-status-${name}-`));
++  directories.push(parent);
++  const workspace = join(parent, name);
++  mkdirSync(join(workspace, ".git"), { recursive: true });
++  writeFileSync(join(workspace, "input.ts"), "export const value = 1;\n");
++  return workspace;
+ }
+ 
+ function captureDaemonPids(stateDir: string, pids: number[]): void {
+-  pids.push(...daemonRecords(stateDir).map((record) => record.pid));
+-}
+-
+-function daemonRecords(stateDir: string): readonly DaemonRecord[] {
+-  return DaemonStateFiles.matchingPaths(stateDir, ".json").map(
+-    (path) => JSON.parse(readFileSync(path, "utf8")) as DaemonRecord,
+-  );
+-}
+-
+-async function replay(
+-  output: import("@symnav/daemon").DaemonExecutorOutput,
+-  stream: "stdout" | "stderr",
+-): Promise<string> {
+-  const chunks = [];
+-  for await (const record of output.records()) {
+-    if (record.stream === stream) chunks.push(Buffer.from(record.bytes));
+-  }
+-  return Buffer.concat(chunks).toString("utf8");
+-}
+-
+-async function waitUntil(
+-  predicate: () => boolean,
+-  timeoutMs = 5_000,
+-  failureMessage = "Timed out waiting for daemon shutdown",
+-): Promise<void> {
+-  const deadline = Date.now() + timeoutMs;
+-  while (Date.now() <= deadline) {
+-    if (predicate()) return;
+-    await new Promise((resolve) => setTimeout(resolve, 10));
+-  }
+-  throw new Error(failureMessage);
++  pids.push(...new CliDaemonTesting(stateDir).processIds());
+ }
+diff --git a/apps/cli/test/e2e/daemon/stop.test.ts b/apps/cli/test/e2e/daemon/stop.test.ts
+index 9304e7e7e..f205d7f10 100644
+--- a/apps/cli/test/e2e/daemon/stop.test.ts
++++ b/apps/cli/test/e2e/daemon/stop.test.ts
+@@ -1,31 +1,12 @@
+-import { spawn, type ChildProcess } from "node:child_process";
+-import {
+-  existsSync,
+-  mkdirSync,
+-  mkdtempSync,
+-  readFileSync,
+-  realpathSync,
+-  writeFileSync,
+-} from "node:fs";
++import type { ChildProcess } from "node:child_process";
++import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+-import { fileURLToPath } from "node:url";
+ import { afterEach, describe, expect, it } from "vitest";
+ import { runSymnavBinary } from "@symnav/testing";
+-import { DaemonPolicy } from "@symnav/daemon";
+-import {
+-  DAEMON_PROTOCOL_VERSION,
+-  DAEMON_RECORD_SCHEMA_VERSION,
+-  type DaemonRecord,
+-} from "../../../src/daemon/daemon-protocol.js";
+-import { TestDaemonRegistry as DaemonRegistry } from "../../helpers/daemon-registry.js";
+-import { DaemonWorkspaceIdentity } from "../../../src/daemon/daemon-workspace-identity.js";
+-import { TestLocalDaemonTransport as LocalDaemonTransport } from "../../helpers/local-daemon-transport.js";
+-import { StateDirectoryResolver } from "../../../src/state-directory-resolver.js";
+ import { canonicalWorkspaceRoot } from "../../helpers/canonical-workspace-root.js";
+ import { E2eProcessCleanup } from "../../helpers/e2e-process-cleanup.js";
+ import { CliDaemonTesting } from "../../helpers/daemon-testing.js";
+-import { createDefaultDependencies } from "../../../src/program.js";
+ 
+ describe("symnav daemon stop", () => {
+   const stateDirectories: string[] = [];
+@@ -98,264 +79,8 @@ describe("symnav daemon stop", () => {
+       expect.objectContaining({ status: "stopped", pid: expect.any(Number) }),
+     );
+   });
+-
+-  it("waits for a launched starting process to exit before reporting stopped", async () => {
+-    const stateDir = temporaryStateDirectory(stateDirectories);
+-    const cwd = temporaryWorkspace(stateDirectories);
+-    const identity = DaemonWorkspaceIdentity.from(
+-      canonicalWorkspaceRoot(realpathSync(cwd)),
+-      StateDirectoryResolver.canonicalize(stateDir),
+-    );
+-    const registry = new DaemonRegistry(identity.registryDirectory);
+-    const instanceId = "starting-stop";
+-    const processToken = "starting-stop-process";
+-    const child = spawn(process.execPath, ["-e", "setInterval(() => undefined, 1000)"], {
+-      stdio: "ignore",
+-    });
+-    helperProcesses.push(child);
+-    if (child.pid === undefined) throw new Error("Starting process did not receive a PID");
+-    expect(registry.acquireStartup(identity, instanceId)).toBeDefined();
+-    const record: DaemonRecord = {
+-      schemaVersion: DAEMON_RECORD_SCHEMA_VERSION,
+-      protocolVersion: DAEMON_PROTOCOL_VERSION,
+-      symnavVersion: "test",
+-      workspaceRoot: identity.workspaceRoot,
+-      workspaceKey: identity.workspaceKey,
+-      stateKey: identity.stateKey,
+-      identityKey: identity.identityKey,
+-      instanceId,
+-      processToken,
+-      endpoint: identity.endpoint(instanceId),
+-      pid: child.pid,
+-      state: "starting",
+-      startedAt: Date.now(),
+-      memoryCapBytes: Number.MAX_SAFE_INTEGER,
+-    };
+-    expect(registry.writeStartingIfStartupOwner(identity, record)).toBe(true);
+-
+-    const stopped = await runBuiltStop(cwd, stateDir);
+-
+-    expect(stopped).toEqual({
+-      status: 0,
+-      stdout: expect.stringMatching(/^\{"status":"stopped"/),
+-      stderr: "",
+-    });
+-    expect(processIsAlive(record.pid)).toBe(false);
+-    expect(registry.readStoredInstance(identity, instanceId)).toBeUndefined();
+-    expect(registry.startupOwner(identity)).toBeUndefined();
+-    helperProcesses.splice(helperProcesses.indexOf(child), 1);
+-  }, 15_000);
+-
+-  it("drains an in-flight request before the built stop command returns", async () => {
+-    const stateDir = temporaryStateDirectory(stateDirectories);
+-    const cwd = temporaryWorkspace(stateDirectories);
+-    const releasePath = join(stateDir, "release-request");
+-    const runtime = await startControlledDaemon(
+-      stateDir,
+-      canonicalWorkspaceRoot(realpathSync(cwd)),
+-      releasePath,
+-    );
+-    helperProcesses.push(runtime.child);
+-    const transport = new LocalDaemonTransport({ requestTimeoutMs: 10_000 });
+-    const execution = transport.execute(runtime.record.endpoint, {
+-      kind: "execute",
+-      protocolVersion: DAEMON_PROTOCOL_VERSION,
+-      instanceId: runtime.record.instanceId,
+-      processToken: runtime.record.processToken,
+-      requestId: "built-drain",
+-      commandName: "version",
+-      request: { argv: ["--version"], cwd, telemetryEnabled: false, executionMode: "warm" },
+-    });
+-    await waitUntil(() => existsSync(runtime.requestStartedPath));
+-    const stopping = runBuiltStop(cwd, stateDir);
+-    await new Promise((resolve) => setTimeout(resolve, 100));
+-    writeFileSync(releasePath, "release");
+-
+-    const response = await (await execution).completion;
+-    const stopped = await stopping;
+-
+-    expect(response).toMatchObject({ status: "completed", result: { exitCode: 0 } });
+-    expect(stopped).toEqual({
+-      status: 0,
+-      stdout: expect.stringMatching(/^\{"status":"stopped"/),
+-      stderr: "",
+-    });
+-    await waitForProcess(runtime.child);
+-    helperProcesses.splice(helperProcesses.indexOf(runtime.child), 1);
+-  }, 15_000);
+-
+-  it("force-kills stuck work before the built stop command renders success", async () => {
+-    const stateDir = temporaryStateDirectory(stateDirectories);
+-    const cwd = temporaryWorkspace(stateDirectories);
+-    const runtime = await startControlledDaemon(
+-      stateDir,
+-      canonicalWorkspaceRoot(realpathSync(cwd)),
+-    );
+-    helperProcesses.push(runtime.child);
+-    const transport = new LocalDaemonTransport({ requestTimeoutMs: 10_000 });
+-    const execution = transport.execute(runtime.record.endpoint, {
+-      kind: "execute",
+-      protocolVersion: DAEMON_PROTOCOL_VERSION,
+-      instanceId: runtime.record.instanceId,
+-      processToken: runtime.record.processToken,
+-      requestId: "built-force",
+-      commandName: "version",
+-      request: { argv: ["--version"], cwd, telemetryEnabled: false, executionMode: "warm" },
+-    });
+-    await waitUntil(() => existsSync(runtime.requestStartedPath));
+-
+-    const stopped = await runBuiltStop(cwd, stateDir);
+-
+-    expect(stopped).toEqual({
+-      status: 0,
+-      stdout: expect.stringMatching(/^\{"status":"killed"/),
+-      stderr: "",
+-    });
+-    expect(() => process.kill(runtime.record.pid, 0)).toThrow();
+-    await expect(execution.then((receipt) => receipt.completion)).resolves.toMatchObject({
+-      status: "failed",
+-      code: "stopping",
+-    });
+-    await waitForProcess(runtime.child);
+-    helperProcesses.splice(helperProcesses.indexOf(runtime.child), 1);
+-  }, 15_000);
+ });
+ 
+-interface ControlledDaemon {
+-  readonly child: ChildProcess;
+-  readonly record: DaemonRecord;
+-  readonly requestStartedPath: string;
+-}
+-
+-async function startControlledDaemon(
+-  stateDirectory: string,
+-  workspaceRoot: string,
+-  releasePath?: string,
+-): Promise<ControlledDaemon> {
+-  const identity = DaemonWorkspaceIdentity.from(
+-    workspaceRoot,
+-    StateDirectoryResolver.canonicalize(stateDirectory),
+-  );
+-  const registry = new DaemonRegistry(identity.registryDirectory);
+-  const instanceId = `controlled-${releasePath === undefined ? "forced" : "draining"}`;
+-  const processToken = `${instanceId}-token`;
+-  const readyPath = join(stateDirectory, `${instanceId}-ready`);
+-  const requestStartedPath = join(stateDirectory, `${instanceId}-request`);
+-  const symnavVersion = createDefaultDependencies(
+-    StateDirectoryResolver.canonicalize(stateDirectory),
+-    DaemonPolicy.currentSystem(),
+-  ).symnavVersion;
+-  const lease = registry.acquireStartup(identity, instanceId);
+-  if (lease === undefined) throw new Error("Expected controlled daemon startup ownership");
+-  const child = spawn(
+-    process.execPath,
+-    [
+-      fileURLToPath(new URL("../../../node_modules/tsx/dist/cli.mjs", import.meta.url)),
+-      fileURLToPath(
+-        new URL(
+-          "../../../../../packages/daemon/test/actors/daemon-process-coordinator-controlled.ts",
+-          import.meta.url,
+-        ),
+-      ),
+-      workspaceRoot,
+-      stateDirectory,
+-      instanceId,
+-      processToken,
+-      readyPath,
+-      requestStartedPath,
+-      releasePath ?? "--no-release",
+-      symnavVersion,
+-    ],
+-    { stdio: "ignore" },
+-  );
+-  await waitUntil(() => existsSync(`${readyPath}.boot`));
+-  const daemonPid = Number(readFileSync(`${readyPath}.boot`, "utf8"));
+-  const record: DaemonRecord = {
+-    schemaVersion: DAEMON_RECORD_SCHEMA_VERSION,
+-    protocolVersion: DAEMON_PROTOCOL_VERSION,
+-    symnavVersion,
+-    workspaceRoot,
+-    workspaceKey: identity.workspaceKey,
+-    stateKey: identity.stateKey,
+-    identityKey: identity.identityKey,
+-    instanceId,
+-    processToken,
+-    endpoint: identity.endpoint(instanceId),
+-    pid: daemonPid,
+-    state: "starting",
+-    startedAt: Date.now(),
+-    memoryCapBytes: Number.MAX_SAFE_INTEGER,
+-  };
+-  if (!registry.writeStartingIfStartupOwner(identity, record)) {
+-    throw new Error("Controlled daemon lost startup ownership");
+-  }
+-  await waitUntil(() => existsSync(readyPath));
+-  lease.release();
+-  const readyRecord = registry.read(identity);
+-  if (readyRecord?.state !== "ready") throw new Error("Controlled daemon did not become ready");
+-  return { child, record: readyRecord, requestStartedPath };
+-}
+-
+-function runBuiltStop(
+-  cwd: string,
+-  stateDirectory: string,
+-): Promise<{ readonly status: number | null; readonly stdout: string; readonly stderr: string }> {
+-  const child = spawn(
+-    process.execPath,
+-    [fileURLToPath(new URL("../../../dist/cli.js", import.meta.url)), "daemon", "stop", "--json"],
+-    {
+-      cwd,
+-      env: { ...process.env, SYMNAV_STATE_DIR: stateDirectory, SYMNAV_TELEMETRY: "0" },
+-      stdio: ["ignore", "pipe", "pipe"],
+-    },
+-  );
+-  let stdout = "";
+-  let stderr = "";
+-  child.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
+-    stdout += chunk;
+-  });
+-  child.stderr?.setEncoding("utf8").on("data", (chunk: string) => {
+-    stderr += chunk;
+-  });
+-  return new Promise((resolve, reject) => {
+-    child.once("error", reject);
+-    child.once("exit", (status) => resolve({ status, stdout, stderr }));
+-  });
+-}
+-
+-function waitForProcess(child: ChildProcess): Promise<void> {
+-  if (child.exitCode !== null) {
+-    return child.exitCode === 0
+-      ? Promise.resolve()
+-      : Promise.reject(new Error(`Controlled daemon exited with code ${String(child.exitCode)}`));
+-  }
+-  return new Promise((resolve, reject) => {
+-    child.once("error", reject);
+-    child.once("exit", (code) => {
+-      if (code === 0) resolve();
+-      else reject(new Error(`Controlled daemon exited with code ${String(code)}`));
+-    });
+-  });
+-}
+-
+-async function waitUntil(predicate: () => boolean): Promise<void> {
+-  const deadline = Date.now() + 5_000;
+-  while (Date.now() <= deadline) {
+-    if (predicate()) return;
+-    await new Promise((resolve) => setTimeout(resolve, 10));
+-  }
+-  throw new Error("Timed out waiting for controlled daemon state");
+-}
+-
+-function processIsAlive(pid: number): boolean {
+-  try {
+-    process.kill(pid, 0);
+-    return true;
+-  } catch {
+-    return false;
+-  }
+-}
+-
+ function temporaryStateDirectory(directories: string[]): string {
+   const directory = mkdtempSync(join(tmpdir(), "symnav-daemon-stop-e2e-"));
+   directories.push(directory);
+diff --git a/packages/daemon/test/actors/daemon-accepted-caller.ts b/packages/daemon/test/actors/daemon-accepted-caller.ts
+index 3d7a5ec0d..52bc99033 100644
+--- a/packages/daemon/test/actors/daemon-accepted-caller.ts
++++ b/packages/daemon/test/actors/daemon-accepted-caller.ts
+@@ -1,31 +1,45 @@
+-import { writeFileSync } from "node:fs";
++import { readFileSync, writeFileSync } from "node:fs";
+ import { DAEMON_PROTOCOL_VERSION } from "../../src/transport/protocol.js";
+ import { TestLocalDaemonTransport as LocalDaemonTransport } from "../helpers/local-daemon-transport.js";
++import { DaemonWorkspaceIdentity } from "../../src/registry/workspace-identity.js";
++import { TestDaemonRegistry as DaemonRegistry } from "../helpers/daemon-registry.js";
++import type { DaemonExecutorRequest } from "../../src/daemon-executor.js";
++import { CanonicalTestPath } from "../helpers/canonical-path.js";
+ 
+-const [endpoint, instanceId, processToken, workspaceRoot, acceptedPath] = process.argv.slice(2);
+-if (
+-  endpoint === undefined ||
+-  instanceId === undefined ||
+-  processToken === undefined ||
+-  workspaceRoot === undefined ||
+-  acceptedPath === undefined
+-) {
++const [stateDirectory, workspaceRoot, acceptedPath, mode, requestPath, requestIdPath] =
++  process.argv.slice(2);
++if (stateDirectory === undefined || workspaceRoot === undefined || acceptedPath === undefined) {
+   process.exit(2);
+ }
++const identity = DaemonWorkspaceIdentity.from(
++  CanonicalTestPath.resolve(workspaceRoot),
++  CanonicalTestPath.resolve(stateDirectory),
++);
++const record = new DaemonRegistry(identity.registryDirectory).read(identity);
++if (record?.state !== "ready") throw new Error("Expected ready daemon record");
++const duplicate = mode === "duplicate";
++if (duplicate && (requestPath === undefined || requestIdPath === undefined)) process.exit(2);
++const request = duplicate
++  ? (JSON.parse(readFileSync(requestPath!, "utf8")) as DaemonExecutorRequest)
++  : {
++      argv: ["overview", "input.ts"],
++      cwd: identity.workspaceRoot,
++      telemetryEnabled: true,
++      executionMode: "warm" as const,
++    };
+ 
+-const receipt = await new LocalDaemonTransport({ requestTimeoutMs: 5_000 }).execute(endpoint, {
+-  kind: "execute",
+-  protocolVersion: DAEMON_PROTOCOL_VERSION,
+-  instanceId,
+-  processToken,
+-  requestId: "accepted-disconnect",
+-  commandName: "version",
+-  request: {
+-    argv: ["overview", "input.ts"],
+-    cwd: workspaceRoot,
+-    telemetryEnabled: true,
+-    executionMode: "warm",
++const receipt = await new LocalDaemonTransport({ requestTimeoutMs: 5_000 }).execute(
++  record.endpoint,
++  {
++    kind: "execute",
++    protocolVersion: DAEMON_PROTOCOL_VERSION,
++    instanceId: record.instanceId,
++    processToken: record.processToken,
++    requestId: duplicate ? readFileSync(requestIdPath!, "utf8") : "accepted-disconnect",
++    commandName: duplicate ? "overview" : "version",
++    request,
+   },
+-});
++);
+ writeFileSync(acceptedPath, JSON.stringify(receipt.acceptance));
+-await receipt.completion;
++const completion = await receipt.completion;
++writeFileSync(`${acceptedPath}.completion`, JSON.stringify(completion));
+diff --git a/packages/daemon/test/actors/daemon-process-coordinator-controlled.ts b/packages/daemon/test/actors/daemon-process-coordinator-controlled.ts
+index 9437631d2..c4f76b5f6 100644
+--- a/packages/daemon/test/actors/daemon-process-coordinator-controlled.ts
++++ b/packages/daemon/test/actors/daemon-process-coordinator-controlled.ts
+@@ -18,6 +18,11 @@ import { NodeDaemonNavigationWorker } from "../../src/worker/navigation-worker.j
+ import type { DaemonNavigationWorkerResponse } from "../../src/worker/worker-protocol.js";
+ import { CanonicalTestPath } from "../helpers/canonical-path.js";
+ import { TestDaemonProcessCoordinator as DaemonProcessCoordinator } from "../helpers/daemon-process-coordinator.js";
++import {
++  DAEMON_PROTOCOL_VERSION,
++  DAEMON_RECORD_SCHEMA_VERSION,
++  type DaemonRecord,
++} from "../../src/transport/protocol.js";
+ 
+ const [
+   workspaceRoot,
+@@ -197,6 +202,28 @@ class ControlledNavigationWorker implements DaemonNavigationWorker {
+ }
+ 
+ const identity = DaemonWorkspaceIdentity.from(workspaceRoot, canonicalStateDirectory);
++const registry = new DaemonRegistry(identity.registryDirectory);
++const startupLease = registry.acquireStartup(identity, instanceId);
++if (startupLease === undefined) throw new Error("Expected controlled daemon startup ownership");
++const startingRecord: DaemonRecord = {
++  schemaVersion: DAEMON_RECORD_SCHEMA_VERSION,
++  protocolVersion: DAEMON_PROTOCOL_VERSION,
++  symnavVersion,
++  workspaceRoot,
++  workspaceKey: identity.workspaceKey,
++  stateKey: identity.stateKey,
++  identityKey: identity.identityKey,
++  instanceId,
++  processToken,
++  endpoint: identity.endpoint(instanceId),
++  pid: process.pid,
++  state: "starting",
++  startedAt: Date.now(),
++  memoryCapBytes: Number.MAX_SAFE_INTEGER,
++};
++if (!registry.writeStartingIfStartupOwner(identity, startingRecord)) {
++  throw new Error("Controlled daemon lost startup ownership");
++}
+ const workerExitReleasePath = `${acceptedRequestStartedPath}.release-worker-exit`;
+ const navigationWorker = workerExit
+   ? new NodeDaemonNavigationWorker({
+@@ -248,9 +275,10 @@ const daemon = new DaemonProcessCoordinator({
+   symnavVersion,
+   memoryCapBytes: Number.MAX_SAFE_INTEGER,
+   policy: daemonPolicy,
+-  registry: new DaemonRegistry(identity.registryDirectory),
++  registry,
+   transport: new LocalDaemonTransport(),
+   navigationWorker,
+ });
+ await daemon.start();
++startupLease.release();
+ writeFileSync(readyPath, "ready");

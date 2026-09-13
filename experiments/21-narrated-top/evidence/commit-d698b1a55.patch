@@ -1,0 +1,445 @@
+commit d698b1a55d0ce2e46c7bb716d0b7d4f866276516
+Author: Mohammed S. Yaseen <moha.98.1900@gmail.com>
+Date:   Sun Sep 6 08:08:00 2026 +0300
+
+    Internalize daemon policy serialization
+
+diff --git a/packages/daemon/src/daemon-policy.test.ts b/packages/daemon/src/daemon-policy.test.ts
+index 95522ba31..e6719a19e 100644
+--- a/packages/daemon/src/daemon-policy.test.ts
++++ b/packages/daemon/src/daemon-policy.test.ts
+@@ -1,6 +1,7 @@
+ import { describe, expect, it } from "vitest";
+ 
+ import { DaemonPolicy, type DaemonPolicyValues } from "./index.js";
++import { DaemonPolicyCodec } from "./daemon-policy.js";
+ import { DaemonPolicyTestFactory } from "../test/helpers/daemon-policy.js";
+ 
+ const MEBIBYTE = 1024 * 1024;
+@@ -123,8 +124,8 @@ describe("DaemonPolicy", () => {
+       DaemonPolicy.fromSystemMemory({ totalBytes: GIBIBYTE }),
+       { transport: { singleResponseTimeoutMs: 991 } },
+     );
+-    const serialized = policy.toSerialized();
+-    expect(DaemonPolicy.fromSerialized(serialized).values).toEqual(policy.values);
++    const serialized = DaemonPolicyCodec.serialize(policy);
++    expect(DaemonPolicyCodec.deserialize(serialized).values).toEqual(policy.values);
+     expect(Object.isFrozen(serialized)).toBe(true);
+     expect(Object.isFrozen(serialized.values)).toBe(true);
+   });
+@@ -154,9 +155,9 @@ describe("DaemonPolicy", () => {
+     ],
+   ])("rejects %s", (_, mutate) => {
+     const value = structuredClone(
+-      DaemonPolicy.fromSystemMemory({ totalBytes: GIBIBYTE }).toSerialized(),
++      DaemonPolicyCodec.serialize(DaemonPolicy.fromSystemMemory({ totalBytes: GIBIBYTE })),
+     );
+     mutate(value);
+-    expect(() => DaemonPolicy.fromSerialized(value)).toThrow("Invalid daemon policy");
++    expect(() => DaemonPolicyCodec.deserialize(value)).toThrow("Invalid daemon policy");
+   });
+ });
+diff --git a/packages/daemon/src/daemon-policy.ts b/packages/daemon/src/daemon-policy.ts
+index 5884bf4f5..b20f7a8da 100644
+--- a/packages/daemon/src/daemon-policy.ts
++++ b/packages/daemon/src/daemon-policy.ts
+@@ -159,14 +159,6 @@ export class DaemonPolicy {
+     });
+   }
+ 
+-  static fromSerialized(value: unknown): DaemonPolicy {
+-    return new DaemonPolicy(DaemonPolicyCodec.parse(value));
+-  }
+-
+-  toSerialized(): Readonly<SerializedDaemonPolicy> {
+-    return DaemonPolicyCodec.serialize(this);
+-  }
+-
+   private static clamp(value: number, minimum: number, maximum: number): number {
+     return Math.max(minimum, Math.min(maximum, value));
+   }
+@@ -193,6 +185,13 @@ export class DaemonPolicyCodec {
+     return JSON.parse(JSON.stringify(values)) as DaemonPolicyValues;
+   }
+ 
++  static deserialize(value: unknown): DaemonPolicy {
++    const PolicyConstructor = DaemonPolicy as unknown as new (
++      values: DaemonPolicyValues,
++    ) => DaemonPolicy;
++    return new PolicyConstructor(DaemonPolicyCodec.parse(value));
++  }
++
+   private static validateValues(values: Record<string, unknown>): void {
+     DaemonPolicyCodec.exactKeys(values, [
+       "transport",
+diff --git a/packages/daemon/src/host-contract.test.ts b/packages/daemon/src/host-contract.test.ts
+index cfa8e4e04..4daeccd89 100644
+--- a/packages/daemon/src/host-contract.test.ts
++++ b/packages/daemon/src/host-contract.test.ts
+@@ -133,10 +133,8 @@ class DaemonContractExpectation {
+   ];
+ 
+   public static readonly policyMembers = [
+-    "instance:toSerialized",
+     "instance:values",
+     "static:currentSystem",
+-    "static:fromSerialized",
+     "static:fromSystemMemory",
+   ];
+ 
+@@ -195,6 +193,8 @@ class DaemonContractExpectation {
+     "registry/startup-coordinator.ts",
+     "registry/workspace-identity.ts",
+     "resources/resource-supervisor.ts",
++    "testing/daemon-testing-inspector.ts",
++    "testing/index.ts",
+     "transport/client-result-capture.ts",
+     "transport/contracts.ts",
+     "transport/execution-client.ts",
+@@ -598,20 +598,15 @@ describe("daemon host contract", () => {
+ 
+   it("defines the exact daemon policy static and instance API", () => {
+     expectTypeOf<keyof typeof DaemonPolicy>().toEqualTypeOf<
+-      "prototype" | "currentSystem" | "fromSystemMemory" | "fromSerialized"
++      "prototype" | "currentSystem" | "fromSystemMemory"
+     >();
+     expectTypeOf<DaemonPolicy>().toEqualTypeOf<{
+       readonly values: DaemonPolicyValues;
+-      toSerialized(): Readonly<{
+-        readonly schemaVersion: 1;
+-        readonly values: DaemonPolicyValues;
+-      }>;
+     }>();
+     expectTypeOf<typeof DaemonPolicy.currentSystem>().returns.toEqualTypeOf<DaemonPolicy>();
+     expectTypeOf<typeof DaemonPolicy.fromSystemMemory>().parameters.toEqualTypeOf<
+       [DaemonSystemMemory]
+     >();
+-    expectTypeOf<typeof DaemonPolicy.fromSerialized>().parameters.toEqualTypeOf<[unknown]>();
+ 
+     const sourceRoot = DaemonContractSourcePath.root(import.meta.url);
+     const policySource = ts.sys.readFile(join(sourceRoot, "daemon-policy.ts"));
+diff --git a/packages/daemon/src/process-entry.ts b/packages/daemon/src/process-entry.ts
+index 91a4ea070..0f79a41be 100644
+--- a/packages/daemon/src/process-entry.ts
++++ b/packages/daemon/src/process-entry.ts
+@@ -1,4 +1,4 @@
+-import { DaemonPolicy } from "./daemon-policy.js";
++import { DaemonPolicyCodec } from "./daemon-policy.js";
+ import { NodeDaemonClock } from "./lifecycle/daemon-clock.js";
+ import { DaemonLogger } from "./diagnostics/logger.js";
+ import { DaemonProcessConfigurationParser } from "./process/process-launcher.js";
+@@ -15,7 +15,7 @@ class DaemonProcessEntry {
+       configuration.workspaceRoot,
+       configuration.stateDirectory,
+     );
+-    const policy = DaemonPolicy.fromSerialized(configuration.policy);
++    const policy = DaemonPolicyCodec.deserialize(configuration.policy);
+     const clock = new NodeDaemonClock();
+     const registry = new DaemonRegistry(identity.registryDirectory, policy.values.startup, clock);
+     const logger = new DaemonLogger(identity, configuration.instanceId, clock, {
+diff --git a/packages/daemon/src/process/process-coordinator-requests.test.ts b/packages/daemon/src/process/process-coordinator-requests.test.ts
+index b181a58d1..ffa11e9b3 100644
+--- a/packages/daemon/src/process/process-coordinator-requests.test.ts
++++ b/packages/daemon/src/process/process-coordinator-requests.test.ts
+@@ -19,6 +19,7 @@ import type {
+   DaemonServer,
+ } from "../transport/protocol.js";
+ import { DAEMON_PROTOCOL_VERSION, DAEMON_RECORD_SCHEMA_VERSION } from "../transport/protocol.js";
++import { DaemonPolicyCodec } from "../daemon-policy.js";
+ import {
+   CompletionSpoolCapacityError,
+   NodeCompletionSpoolStorage,
+@@ -1680,7 +1681,7 @@ describe("DaemonProcessCoordinator requests", () => {
+             stateDirectory: "/state",
+             productVersion: "test",
+             executorModuleUrl: "file:///test/daemon-executor.js",
+-            policy: DaemonPolicy.currentSystem().toSerialized(),
++            policy: DaemonPolicyCodec.serialize(DaemonPolicy.currentSystem()),
+           },
+           entryUrl: new URL(
+             "../../test/helpers/daemon-navigation-worker-fixture.mjs",
+@@ -1758,7 +1759,7 @@ describe("DaemonProcessCoordinator requests", () => {
+             stateDirectory: "/state",
+             productVersion: "test",
+             executorModuleUrl: "file:///test/daemon-executor.js",
+-            policy: DaemonPolicy.currentSystem().toSerialized(),
++            policy: DaemonPolicyCodec.serialize(DaemonPolicy.currentSystem()),
+           },
+           entryUrl: new URL(
+             "../../test/helpers/daemon-navigation-worker-fixture.mjs",
+@@ -1803,7 +1804,7 @@ describe("DaemonProcessCoordinator requests", () => {
+             stateDirectory: "/state",
+             productVersion: "test",
+             executorModuleUrl: "file:///test/daemon-executor.js",
+-            policy: DaemonPolicy.currentSystem().toSerialized(),
++            policy: DaemonPolicyCodec.serialize(DaemonPolicy.currentSystem()),
+           },
+           entryUrl: new URL(
+             "../../test/helpers/daemon-navigation-worker-fixture.mjs",
+diff --git a/packages/daemon/src/process/process-coordinator.ts b/packages/daemon/src/process/process-coordinator.ts
+index d678f27ef..f16d1286d 100644
+--- a/packages/daemon/src/process/process-coordinator.ts
++++ b/packages/daemon/src/process/process-coordinator.ts
+@@ -8,6 +8,7 @@ import {
+   type DaemonPolicy,
+   type DaemonPolicyValues,
+ } from "@symnav/daemon";
++import { DaemonPolicyCodec } from "../daemon-policy.js";
+ import { AcceptedRequestLedger } from "../execution/accepted-request-ledger.js";
+ import { AcceptedExecutionSession } from "../execution/accepted-execution-session.js";
+ import { DaemonActivityProjector } from "./activity-projector.js";
+@@ -119,7 +120,7 @@ export class DaemonProcessCoordinator {
+                 productVersion: options.productVersion,
+                 executorModuleUrl:
+                   options.executorModuleUrl ?? "file:///missing/symnav-daemon-executor.js",
+-                policy: policy.toSerialized(),
++                policy: DaemonPolicyCodec.serialize(policy),
+               },
+               resourceLimits: {
+                 maxOldGenerationSizeMb: resourcePolicy.workerMaxOldGenerationSizeMiB,
+diff --git a/packages/daemon/src/process/process-launcher.test.ts b/packages/daemon/src/process/process-launcher.test.ts
+index 7a53a0f40..51072e4b4 100644
+--- a/packages/daemon/src/process/process-launcher.test.ts
++++ b/packages/daemon/src/process/process-launcher.test.ts
+@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ import { CanonicalTestPath } from "../../test/helpers/canonical-path.js";
+ import { DaemonPolicy } from "@symnav/daemon";
+ import { DaemonPolicyTestFactory } from "../../test/helpers/daemon-policy.js";
++import { DaemonPolicyCodec } from "../daemon-policy.js";
+ 
+ const { processListeners, spawnMock } = vi.hoisted(() => ({
+   processListeners: new Map<string, (...args: unknown[]) => void>(),
+@@ -155,7 +156,7 @@ describe("NodeDaemonProcessLauncher", () => {
+       expect(configuration.processToken).toBe("process-token");
+       expect(configuration.startupOwnerKind).toBe("daemon");
+       expect(configuration.executorModuleUrl).toBe(executorModuleUrl);
+-      expect(configuration.policy).toEqual(policy.toSerialized());
++      expect(configuration.policy).toEqual(DaemonPolicyCodec.serialize(policy));
+       expect(configuration.endpoint).toBe(identity.endpoint("instance"));
+       expect(options.env.SYMNAV_STATE_DIR).toBe(absoluteStateDirectory);
+       expect(options.cwd).toBe(tmpdir());
+diff --git a/packages/daemon/src/process/process-launcher.ts b/packages/daemon/src/process/process-launcher.ts
+index 4eb5c39c0..5b39f1f6e 100644
+--- a/packages/daemon/src/process/process-launcher.ts
++++ b/packages/daemon/src/process/process-launcher.ts
+@@ -2,11 +2,12 @@ import { mkdirSync } from "node:fs";
+ import { tmpdir } from "node:os";
+ import { fileURLToPath } from "node:url";
+ import { spawn } from "node:child_process";
++import { type DaemonExecutorModuleUrl, type DaemonPolicyValues } from "@symnav/daemon";
+ import {
+-  DaemonPolicy,
+-  type DaemonExecutorModuleUrl,
+-  type DaemonPolicyValues,
+-} from "@symnav/daemon";
++  DaemonPolicyCodec,
++  type DaemonPolicy,
++  type SerializedDaemonPolicy,
++} from "../daemon-policy.js";
+ import type { DaemonWorkspaceIdentity } from "../registry/workspace-identity.js";
+ import type { DaemonIdentityCoordinates } from "../transport/protocol.js";
+ import { NodeDaemonClock, type DaemonClock } from "../lifecycle/daemon-clock.js";
+@@ -15,7 +16,7 @@ interface DaemonProcessConfiguration extends DaemonIdentityCoordinates {
+   readonly stateDirectory: string;
+   readonly symnavVersion: string;
+   readonly executorModuleUrl: DaemonExecutorModuleUrl;
+-  readonly policy: ReturnType<DaemonPolicy["toSerialized"]>;
++  readonly policy: SerializedDaemonPolicy;
+   readonly startupOwnerKind: "daemon";
+ }
+ 
+@@ -149,7 +150,7 @@ export class NodeDaemonProcessLauncher implements DaemonProcessLauncher {
+       endpoint: identity.endpoint(instanceId),
+       symnavVersion: this.symnavVersion,
+       executorModuleUrl: this.executorModuleUrl,
+-      policy: this.policy.toSerialized(),
++      policy: DaemonPolicyCodec.serialize(this.policy),
+       startupOwnerKind: "daemon",
+     };
+     const encodedConfiguration = Buffer.from(JSON.stringify(configuration)).toString("base64url");
+@@ -255,9 +256,9 @@ export class DaemonProcessConfigurationParser {
+     }
+   }
+ 
+-  private static isPolicy(value: unknown): value is ReturnType<DaemonPolicy["toSerialized"]> {
++  private static isPolicy(value: unknown): value is SerializedDaemonPolicy {
+     try {
+-      DaemonPolicy.fromSerialized(value);
++      DaemonPolicyCodec.parse(value);
+       return true;
+     } catch {
+       return false;
+diff --git a/packages/daemon/src/worker/navigation-worker-entry.ts b/packages/daemon/src/worker/navigation-worker-entry.ts
+index 3b6535249..cd01f5bc0 100644
+--- a/packages/daemon/src/worker/navigation-worker-entry.ts
++++ b/packages/daemon/src/worker/navigation-worker-entry.ts
+@@ -2,13 +2,13 @@ import { parentPort, workerData } from "node:worker_threads";
+ import { getHeapStatistics } from "node:v8";
+ import {
+   DaemonExecutorModuleLoader,
+-  DaemonPolicy,
+   type DaemonDiagnostics,
+   type DaemonExecutor,
+   type DaemonExecutorModuleUrl,
+   type DaemonOutputRecord,
+   type DaemonWorkerFailureCode,
+ } from "@symnav/daemon";
++import { DaemonPolicyCodec, type DaemonPolicy, type SerializedDaemonPolicy } from "../daemon-policy.js";
+ import {
+   DaemonNavigationWorkerProtocol,
+   type WorkerCommandDurations,
+@@ -23,7 +23,7 @@ interface DaemonWorkerData {
+   readonly generation: number;
+   readonly productVersion: string;
+   readonly executorModuleUrl: DaemonExecutorModuleUrl;
+-  readonly policy: ReturnType<DaemonPolicy["toSerialized"]>;
++  readonly policy: SerializedDaemonPolicy;
+ }
+ 
+ class DaemonNavigationWorkerEntry {
+@@ -38,7 +38,7 @@ class DaemonNavigationWorkerEntry {
+     private readonly port: NonNullable<typeof parentPort>,
+     private readonly data: DaemonWorkerData,
+   ) {
+-    this.policy = DaemonPolicy.fromSerialized(data.policy);
++    this.policy = DaemonPolicyCodec.deserialize(data.policy);
+   }
+ 
+   run(): void {
+diff --git a/packages/daemon/src/worker/navigation-worker.test.ts b/packages/daemon/src/worker/navigation-worker.test.ts
+index 7004577e4..1d905c5b8 100644
+--- a/packages/daemon/src/worker/navigation-worker.test.ts
++++ b/packages/daemon/src/worker/navigation-worker.test.ts
+@@ -6,6 +6,7 @@ import { setFlagsFromString } from "node:v8";
+ import { describe, expect, it } from "vitest";
+ import { DaemonPolicy, type DaemonExecutorRequest } from "@symnav/daemon";
+ import { DaemonPolicyTestFactory } from "../../test/helpers/daemon-policy.js";
++import { DaemonPolicyCodec } from "../daemon-policy.js";
+ import { fixturePath } from "@symnav/testing";
+ import { NodeDaemonNavigationWorker } from "./navigation-worker.js";
+ 
+@@ -40,7 +41,7 @@ describe("NodeDaemonNavigationWorker", () => {
+           stateDirectory: "/state",
+           productVersion: "1.2.3",
+           executorModuleUrl,
+-          policy: policy.toSerialized(),
++          policy: DaemonPolicyCodec.serialize(policy),
+         },
+         resourceLimits: { maxOldGenerationSizeMb: 128 },
+         entryUrl: new URL(
+@@ -51,7 +52,7 @@ describe("NodeDaemonNavigationWorker", () => {
+       });
+       await worker.start("/repo");
+       expect(JSON.parse(readFileSync(policyPath, "utf8"))).toEqual({
+-        policy: policy.toSerialized(),
++        policy: DaemonPolicyCodec.serialize(policy),
+         productVersion: "1.2.3",
+         executorModuleUrl,
+       });
+@@ -420,7 +421,7 @@ function createInjectedWorker(
+       stateDirectory,
+       productVersion,
+       executorModuleUrl,
+-      policy: policy.toSerialized(),
++      policy: DaemonPolicyCodec.serialize(policy),
+     },
+     resourceLimits: { maxOldGenerationSizeMb: 128 },
+     entryUrl: new URL("../../dist/worker-entry.js", import.meta.url),
+@@ -435,7 +436,7 @@ function createWorker(mode: string, maxOldGenerationSizeMb = 128): NodeDaemonNav
+       stateDirectory: "/state",
+       productVersion: "1.2.3",
+       executorModuleUrl: "file:///absolute/symnav/daemon-executor.js",
+-      policy: policy.toSerialized(),
++      policy: DaemonPolicyCodec.serialize(policy),
+     },
+     resourceLimits: { maxOldGenerationSizeMb },
+     entryUrl: new URL("../../test/helpers/daemon-navigation-worker-fixture.mjs", import.meta.url),
+diff --git a/packages/daemon/src/worker/navigation-worker.ts b/packages/daemon/src/worker/navigation-worker.ts
+index 8994a50c4..55f7c646a 100644
+--- a/packages/daemon/src/worker/navigation-worker.ts
++++ b/packages/daemon/src/worker/navigation-worker.ts
+@@ -1,12 +1,12 @@
+ import { Worker } from "node:worker_threads";
+ import {
+-  DaemonPolicy,
+   type DaemonCommandName,
+   type DaemonExecutorRequest,
+   type DaemonExecutorModuleUrl,
+   type DaemonOutputSink,
+   type DaemonSequencedOutputRecord,
+ } from "@symnav/daemon";
++import { DaemonPolicyCodec, type SerializedDaemonPolicy } from "../daemon-policy.js";
+ import {
+   DaemonNavigationWorkerProtocol,
+   type DaemonNavigationWorkerRequest,
+@@ -48,7 +48,7 @@ export interface DaemonNavigationWorkerConfiguration {
+   readonly stateDirectory: string;
+   readonly productVersion: string;
+   readonly executorModuleUrl: DaemonExecutorModuleUrl;
+-  readonly policy: ReturnType<DaemonPolicy["toSerialized"]>;
++  readonly policy: SerializedDaemonPolicy;
+ }
+ 
+ export interface NodeDaemonNavigationWorkerOptions {
+@@ -86,7 +86,7 @@ export class NodeDaemonNavigationWorker implements DaemonNavigationWorker {
+ 
+   constructor(options: NodeDaemonNavigationWorkerOptions) {
+     this.generation = options.generation;
+-    this.maximumChunkRawBytes = DaemonPolicy.fromSerialized(
++    this.maximumChunkRawBytes = DaemonPolicyCodec.deserialize(
+       options.configuration.policy,
+     ).values.output.maximumChunkRawBytes;
+     this.exited = new Promise((resolve) => {
+diff --git a/packages/daemon/test/helpers/daemon-policy.ts b/packages/daemon/test/helpers/daemon-policy.ts
+index 35fbdbea7..867992fbd 100644
+--- a/packages/daemon/test/helpers/daemon-policy.ts
++++ b/packages/daemon/test/helpers/daemon-policy.ts
+@@ -1,4 +1,8 @@
+-import { DaemonPolicy, type DaemonPolicyValues } from "../../src/daemon-policy.js";
++import {
++  DaemonPolicy,
++  DaemonPolicyCodec,
++  type DaemonPolicyValues,
++} from "../../src/daemon-policy.js";
+ 
+ type DaemonPolicyOverrides = {
+   readonly [Section in keyof DaemonPolicyValues]?: Partial<DaemonPolicyValues[Section]>;
+@@ -12,6 +16,6 @@ export class DaemonPolicyTestFactory {
+         { ...sectionValues, ...overrides[section as keyof DaemonPolicyValues] },
+       ]),
+     ) as unknown as DaemonPolicyValues;
+-    return DaemonPolicy.fromSerialized({ schemaVersion: 1, values });
++    return DaemonPolicyCodec.deserialize({ schemaVersion: 1, values });
+   }
+ }
+diff --git a/packages/daemon/test/integration/built-entry-artifacts.test.ts b/packages/daemon/test/integration/built-entry-artifacts.test.ts
+index 319f1772e..41ac91e0d 100644
+--- a/packages/daemon/test/integration/built-entry-artifacts.test.ts
++++ b/packages/daemon/test/integration/built-entry-artifacts.test.ts
+@@ -1,7 +1,7 @@
+ import { dirname, join } from "node:path";
+ import { fileURLToPath, pathToFileURL } from "node:url";
+ import { describe, expect, it } from "vitest";
+-import { DaemonPolicy } from "../../src/daemon-policy.js";
++import { DaemonPolicy, DaemonPolicyCodec } from "../../src/daemon-policy.js";
+ import { NodeDaemonNavigationWorker } from "../../dist/worker/navigation-worker.js";
+ 
+ describe("built daemon entry artifacts", () => {
+@@ -18,7 +18,7 @@ describe("built daemon entry artifacts", () => {
+         stateDirectory: join(packageDirectory, "test"),
+         productVersion: "test",
+         executorModuleUrl,
+-        policy: policy.toSerialized(),
++        policy: DaemonPolicyCodec.serialize(policy),
+       },
+       resourceLimits: { maxOldGenerationSizeMb: 128 },
+     });
+@@ -66,7 +66,7 @@ describe("built daemon entry artifacts", () => {
+         stateDirectory: join(packageDirectory, "test"),
+         productVersion: "test",
+         executorModuleUrl: moduleUrl,
+-        policy: policy.toSerialized(),
++        policy: DaemonPolicyCodec.serialize(policy),
+       },
+       resourceLimits: { maxOldGenerationSizeMb: 128 },
+     });

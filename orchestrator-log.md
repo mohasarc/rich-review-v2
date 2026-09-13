@@ -163,3 +163,8 @@ BUILD OK stack-head
 - 2026-09-13 04:28:26 +03: START 24-question-driven-nav attempt 1 via claude-opus, pid 90736
 - 2026-09-13 04:29:43 +03: MONITOR OK supervisor=1153, finished=19, running=5, queued=18, dirty-worktrees=0, missing-readmes=0, free-disk=32.7GiB
 - 2026-09-13 04:30:46 +03: FINISH 20-contract-table via codex, exit 0, README present
+- 2026-09-13 04:30:46 +03: COMMIT OK 20-contract-table: [main 6ae583f] Add experiment 20 contract-table
+- 2026-09-13 04:30:46 +03: Generated brief 43-critique-refresh-20: recurring brief 38 after 20 completions
+- 2026-09-13 04:30:46 +03: Generated brief 44-fresh-reader-refresh-20: recurring brief 39 after 20 completions
+- 2026-09-13 04:30:46 +03: START 25-reader-sketch attempt 1 via codex, pid 91520
+- 2026-09-13 04:40:57 +03: FINISH 21-narrated-top via codex, exit 0, README present

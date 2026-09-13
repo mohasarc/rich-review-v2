@@ -1,0 +1,4203 @@
+window.REVIEW = {
+  "base": "b6801ebdd2421d0ca2e4bdd61ec0f04c24ddd73e",
+  "head": "d07002357d3e9596bfaae910a1ac63b77981620b",
+  "prs": [
+    {
+      "number": 123,
+      "title": "Move workspace source caching to core",
+      "body": "## Context\n\nDaemon workers and future hosts need source-byte caching without depending on the TypeScript backend. Moving ownership must preserve current snapshot-replacement behavior, including selection refreshes evicting omitted bytes.\n\n## Shape\n\nBefore — TypeScript owned the reusable cache:\n\n```mermaid\nflowchart LR\n    Backend[\"TypeScriptBackend<br/>refresh owner\"] -->|uses| Cache[\"WorkspaceSourceCache<br/>&lt;&lt;backend private&gt;&gt;\"]\n    Cache -->|uses| FileSystem[\"FileSystem<br/>&lt;&lt;core contract&gt;&gt;\"]\n    style Cache fill:#ffdddd,stroke:#cc0000\n```\n\nAfter — core owns the cache and TypeScript consumes its export:\n\n```mermaid\nflowchart LR\n    Backend[\"TypeScriptBackend<br/>refresh owner\"] -->|uses| Cache[\"WorkspaceSourceCache<br/>&lt;&lt;core export&gt;&gt;\"]\n    Cache -->|uses| FileSystem[\"FileSystem<br/>&lt;&lt;core contract&gt;&gt;\"]\n    style Backend fill:#fff2cc,stroke:#bf9000\n    style Cache fill:#ddffdd,stroke:#008800\n```\n\nLegend: green = added; red = removed; yellow = changed.\n\n## Where it lives\n\n```text\n.\n├── ** .github/PULL_REQUEST_TEMPLATE.md               # defines context/shape-based PR descriptions\n├── apps/cli/test/integration/commands/overview/\n│   └── ** overview-command.test.ts                   # guards selected-file isolation across 4,000 siblings\n├── packages/\n│   ├── core/src/\n│   │   ├── ** index.ts                               # exports the cache\n│   │   └── workspace/\n│   │       ├── ~~ workspace-source-cache.ts          # moved from packages/backend-typescript/src/typescript-backend/\n│   │       └── ++ workspace-source-cache.test.ts     # locks replacement and delegation\n│   └── backend-typescript/\n│       ├── src/typescript-backend/\n│       │   └── ** typescript-backend.ts              # consumes the core cache\n│       └── test/integration/\n│           └── ** typescript-backend.test.ts         # locks selection eviction\n└── plans/005/\n    └── ** daemon-follow-ups-functional-spec.md       # defers selection-aware retention\n```\n\n## Public surface\n\nAdded:\n\n```ts\nexport class WorkspaceSourceCache implements FileSystem {\n  constructor(fileSystem: FileSystem);\n  refresh(snapshot: WorkspaceSnapshot): void;\n  readFile(absPath: string): Promise<string>;\n  readFileSync(absPath: string): string;\n  exists(absPath: string): Promise<boolean>;\n  listDir(absPath: string): Promise<readonly string[]>;\n  isDirectory(absPath: string): Promise<boolean>;\n  metadata(absPath: string): Promise<FileMetadata>;\n  existsSync(absPath: string): boolean;\n  listDirSync(absPath: string): readonly string[];\n  isDirectorySync(absPath: string): boolean;\n  metadataSync(absPath: string): FileMetadata;\n}\n```\n\n## Decisions\n\n- Chose core ownership over TypeScript-backend ownership, because daemon workers and future hosts need the cache without importing TypeScript code.\n- Chose snapshot replacement over coverage-aware merging, because this refactor preserves current selection-eviction behavior and defers retention changes.\n- Chose a `FileSystem` facade over cache-specific reads, because existing TypeScript services already consume filesystem injection.\n\n## Look here\n\n- `packages/core/src/workspace/workspace-source-cache.ts:10`\n- `packages/backend-typescript/src/typescript-backend/typescript-backend.ts:79`\n- `apps/cli/test/integration/commands/overview/overview-command.test.ts:224`\n",
+      "commits": [
+        {
+          "sha": "eded8cdc8be17998c5746f173ba3db6ded81f08a",
+          "subject": "Characterize backend selection replacement",
+          "body": ""
+        },
+        {
+          "sha": "e1339da273c11bc8cea6a9c2018563cfcc1b6c9d",
+          "subject": "Characterize overview selection isolation",
+          "body": ""
+        },
+        {
+          "sha": "b1f46e6ae6af1a0cf17d26430d2ae7d2032cb65f",
+          "subject": "Add core source-cache replacement",
+          "body": ""
+        },
+        {
+          "sha": "a4e39edabe2738e20c1a0e5999541d0d2ddd06a1",
+          "subject": "Guard cached source path replacement",
+          "body": ""
+        },
+        {
+          "sha": "4519202dc547b2fd379bc8367ba622d29538e9e3",
+          "subject": "Invalidate changed cached revisions",
+          "body": ""
+        },
+        {
+          "sha": "3556a9cd66a2276c9a9aea841338e956ae5ed040",
+          "subject": "Guard unchanged cached revisions",
+          "body": ""
+        },
+        {
+          "sha": "4d17681b46901a8f09224718d816a69b019692f7",
+          "subject": "Share cached synchronous source reads",
+          "body": ""
+        },
+        {
+          "sha": "15dda7bec9ffa26cde89fe64fbac7c04d4976fed",
+          "subject": "Delegate uncached filesystem operations",
+          "body": ""
+        },
+        {
+          "sha": "f9b705cf0379a2dbfdf42fe730dbc3fa40462ee9",
+          "subject": "Use core WorkspaceSourceCache in TypeScript",
+          "body": ""
+        },
+        {
+          "sha": "4f37b9c216d7bdf4d88f1f92fb1997e03204e621",
+          "subject": "Record selection-aware source-cache follow-up",
+          "body": ""
+        },
+        {
+          "sha": "78dd77de23445e73bc3ae0ccd24a44c884a3fea5",
+          "subject": "Update pull request template",
+          "body": ""
+        }
+      ],
+      "base": "main",
+      "head": "agent/daemon-architecture-refactor-part-01-source-cache",
+      "group": "state",
+      "decisions": [
+        {
+          "id": "d123-1",
+          "label": "Cache in core",
+          "status": "stated",
+          "text": "Chose core ownership over TypeScript-backend ownership, because daemon workers and future hosts need the cache without importing TypeScript code.",
+          "pr": 123
+        },
+        {
+          "id": "d123-2",
+          "label": "Snapshot replaces cached coverage",
+          "status": "stated",
+          "text": "Chose snapshot replacement over coverage-aware merging, because this refactor preserves current selection-eviction behavior and defers retention changes.",
+          "pr": 123
+        },
+        {
+          "id": "d123-3",
+          "label": "Filesystem facade",
+          "status": "stated",
+          "text": "Chose a `FileSystem` facade over cache-specific reads, because existing TypeScript services already consume filesystem injection.",
+          "pr": 123
+        }
+      ]
+    },
+    {
+      "number": 124,
+      "title": "Publish revisioned backend state transactionally",
+      "body": "## Context\n\nThe daemon architecture spec assigns reusable revision comparison, prepared-file indexing, and publication to core, but TypeScript still owned them after #123 moved source caching. This layer moves those mechanics into core while preserving selection retention, TypeScript source/node identity, and `LanguageBackend` results and errors.\n\n## Shape\n\nBefore — TypeScript state mixed portable indexes with toolchain mutation:\n\n```mermaid\nflowchart LR\n    Backend[\"TypeScriptBackend<br/>async LanguageBackend\"] -->|uses| State[\"TypeScriptWorkspaceState<br/>revision diff + indexes + ts-morph\"]\n    State -->|uses| Project[\"ts-morph Project<br/>source/node owner\"]\n    style State fill:#ffdddd,stroke:#cc0000\n```\n\nAfter — core publishes portable candidate state; TypeScript supplies one mutation transaction:\n\n```mermaid\nflowchart LR\n    Backend[\"TypeScriptBackend<br/>async LanguageBackend\"] -->|uses| State[\"TypeScriptWorkspaceState<br/>TypeScript lookup adapter\"]\n    State -->|extends| CoreState[\"RevisionedBackendState<br/>diff + validate + publish\"]\n    State -->|creates| Preparation[\"TypeScriptWorkspacePreparation<br/>&lt;&lt;unexported&gt;&gt;\"]\n    Preparation -->|uses| Project[\"ts-morph Project<br/>source/node owner\"]\n    style State fill:#fff2cc,stroke:#bf9000\n    style CoreState fill:#ddffdd,stroke:#008800\n    style Preparation fill:#ddffdd,stroke:#008800\n```\n\nLegend: green = added ownership; red = removed ownership; yellow = changed responsibility.\n\n## Where it lives\n\n```text\n.\n└── packages/\n    ├── core/src/\n    │   ├── ** index.ts\n    │   └── backend/\n    │       ├── ++ revisioned-backend-state.ts       # owns revision/index transactions\n    │       └── ++ revisioned-backend-state.test.ts  # fake incremental/full backends\n    └── backend-typescript/src/\n        ├── ** index.ts                               # removes backend-owned revision exports\n        ├── ** ... 4 query/index consumer files      # await on-demand preparation\n        └── typescript-backend/\n            ├── ** typescript-backend.ts              # awaits state publication\n            ├── ** typescript-workspace-state.ts      # owns ts-morph mutation journal\n            └── ** ... 2 colocated tests              # async adoption and rollback boundaries\n```\n\n## Public surface\n\nAdded to `@symnav/core`:\n\n```ts\nexport interface RevisionedBackendPreparedFile<PreparedDetails> {\n  readonly file: WorkspaceFile;\n  readonly entries: OverviewFileEntries;\n  readonly details: PreparedDetails;\n}\n\nexport type RevisionedBackendFileChange<PreparedDetails> =\n  | { readonly kind: \"added\"; readonly file: WorkspaceFile }\n  | {\n      readonly kind: \"changed\";\n      readonly file: WorkspaceFile;\n      readonly previous: RevisionedBackendPreparedFile<PreparedDetails>;\n    };\n\nexport interface RevisionedBackendPreparationRequest<PreparedDetails> {\n  readonly coverage: BackendRefreshCoverage;\n  readonly changes: readonly RevisionedBackendFileChange<PreparedDetails>[];\n  readonly removedFiles: readonly RevisionedBackendPreparedFile<PreparedDetails>[];\n  readonly effectiveFiles: readonly WorkspaceFile[];\n}\n\nexport abstract class RevisionedBackendPreparation<PreparedDetails> {\n  abstract prepare(): Promise<readonly RevisionedBackendPreparedFile<PreparedDetails>[]>;\n  abstract commit(): Promise<void>;\n  abstract rollback(): Promise<void>;\n}\n\nexport interface IndexedBackendDeclaration {\n  readonly declaration: SymbolOverviewNode;\n  readonly file: ResolvedPath;\n}\n\nexport abstract class RevisionedBackendState<PreparedDetails> {\n  protected constructor(fileSystem: FileSystem);\n  refresh(files: readonly WorkspaceFile[], coverage?: BackendRefreshCoverage): Promise<BackendRefreshSummary>;\n  ensureFiles(files: readonly ResolvedPath[]): Promise<void>;\n  fileEntries(file: ResolvedPath): Promise<OverviewFileEntries>;\n  declarations(files: readonly ResolvedPath[]): Promise<readonly SymbolOverviewNode[]>;\n  diagnostics(file: ResolvedPath): readonly NavigationDiagnostic[];\n  declarationsIn(relativePath: string): readonly SymbolOverviewNode[] | undefined;\n  declarationForIdentity(identity: SymbolIdentity): IndexedBackendDeclaration | undefined;\n  currentFileCount(): number;\n  protected preparedFile(relativePath: string): RevisionedBackendPreparedFile<PreparedDetails> | undefined;\n  protected preparedFiles(): readonly RevisionedBackendPreparedFile<PreparedDetails>[];\n  protected relativePathForAbsolute(absolutePath: string): string | undefined;\n  protected abstract createPreparation(request: RevisionedBackendPreparationRequest<PreparedDetails>): RevisionedBackendPreparation<PreparedDetails>;\n}\n```\n\nChanged in `@symnav/backend-typescript`:\n\n```ts\nexport class TypeScriptWorkspaceState extends RevisionedBackendState<TypeScriptPreparedFileDetails> {\n  // before: fileEntries(file: ResolvedPath, diagnostics?: DiagnosticSink): OverviewFileEntries\n  fileEntries(file: ResolvedPath, diagnostics?: DiagnosticSink): Promise<OverviewFileEntries>;\n}\n```\n\nRemoved from `@symnav/backend-typescript` root:\n\n```ts\ntype PreparedFileIndex;\ntype PreparedFileRevision;\ntype TypeScriptFileRevision;\n```\n\n## Decisions\n\n- Chose an incremental overlay candidate over requiring complete preparation output, because another language backend may prepare only changed files.\n- Chose candidate validation before subclass commit over post-commit validation, because malformed output must leave portable and toolchain state unpublished.\n- Chose one-file selection transactions for `ensureFiles` over one aggregate transaction, because existing behavior retains earlier progress when a later file fails.\n- Chose a TypeScript-owned mutation journal over core mutation callbacks, because source files and node restoration are `ts-morph` concerns.\n- Chose reversible path staging before source removal over recreating removed sources, because published lookups retain exact `SourceFile` handles.\n\n## Look here\n\n- `packages/core/src/backend/revisioned-backend-state.ts:65`\n- `packages/core/src/backend/revisioned-backend-state.ts:181`\n- `packages/backend-typescript/src/typescript-backend/typescript-workspace-state.ts:159`\n",
+      "commits": [
+        {
+          "sha": "b0fa20d750a702a12a9a33710c0ec65ebff13532",
+          "subject": "Define revisioned backend state contracts",
+          "body": ""
+        },
+        {
+          "sha": "294ca79f667a56153e4243f60b899cc3e922a314",
+          "subject": "Diff revisioned backend files",
+          "body": ""
+        },
+        {
+          "sha": "0ae50165bd23f731a10d0fc962039087968fece6",
+          "subject": "Validate revisioned backend candidates",
+          "body": ""
+        },
+        {
+          "sha": "a1a9a2a9aafff6b5decbe71ef04ac7da6df6fb69",
+          "subject": "Roll back failed backend preparations",
+          "body": ""
+        },
+        {
+          "sha": "144f7746166f2603be23f8770d77b80060e7a252",
+          "subject": "Accept full backend preparation results",
+          "body": ""
+        },
+        {
+          "sha": "f142e0bb231f75f20663314320826d6f669330d2",
+          "subject": "Ensure missing backend files sequentially",
+          "body": ""
+        },
+        {
+          "sha": "4a70bcc87ce15d26e10c8aab18499fbed806b5d9",
+          "subject": "Adopt revisioned TypeScript state preparation",
+          "body": ""
+        },
+        {
+          "sha": "23edd420ba9c024bc300641a17a6b49ab3e16547",
+          "subject": "Preserve sequential TypeScript preparation progress",
+          "body": ""
+        },
+        {
+          "sha": "cf0107c1fed07bb532cbf28edf0fd71f17c8c002",
+          "subject": "Verify TypeScript source mutation rollback",
+          "body": ""
+        },
+        {
+          "sha": "9643fac8f3e138fea0cc66ddd28a92611ab5b7d6",
+          "subject": "Make obsolete TypeScript removals transactional",
+          "body": ""
+        }
+      ],
+      "base": "agent/daemon-architecture-refactor-part-01-source-cache",
+      "head": "agent/daemon-architecture-refactor-part-02-transactional-backend-state",
+      "group": "state",
+      "decisions": [
+        {
+          "id": "d124-1",
+          "label": "Incremental overlay or full preparation",
+          "status": "stated",
+          "text": "Chose an incremental overlay candidate over requiring complete preparation output, because another language backend may prepare only changed files.",
+          "pr": 124
+        },
+        {
+          "id": "d124-2",
+          "label": "Validate → commit → publish",
+          "status": "stated",
+          "text": "Chose candidate validation before subclass commit over post-commit validation, because malformed output must leave portable and toolchain state unpublished.",
+          "pr": 124
+        },
+        {
+          "id": "d124-3",
+          "label": "ensureFiles commits one file at a time",
+          "status": "stated",
+          "text": "Chose one-file selection transactions for `ensureFiles` over one aggregate transaction, because existing behavior retains earlier progress when a later file fails.",
+          "pr": 124
+        },
+        {
+          "id": "d124-4",
+          "label": "TypeScript owns mutation rollback",
+          "status": "stated",
+          "text": "Chose a TypeScript-owned mutation journal over core mutation callbacks, because source files and node restoration are `ts-morph` concerns.",
+          "pr": 124
+        },
+        {
+          "id": "d124-5",
+          "label": "Preserve exact source handles",
+          "status": "stated",
+          "text": "Chose reversible path staging before source removal over recreating removed sources, because published lookups retain exact `SourceFile` handles.",
+          "pr": 124
+        }
+      ]
+    },
+    {
+      "number": 126,
+      "title": "Publish project membership transactionally",
+      "body": "## Context\n\nThe [daemon architecture spec](https://github.com/mohasarc/symnav/blob/main/plans/005/daemon-architecture-functional-spec.md) assigns language-neutral project discovery, input invalidation, membership, and graph publication to core. TypeScript retains tsconfig parsing, package mapping, and `ts-morph` project construction without changing refresh or semantic lookup behavior.\n\n## Shape\n\nBefore — TypeScript owned language rules and reusable graph mechanics:\n\n```mermaid\nflowchart LR\n    Backend[\"TypeScriptBackend\"] -->|uses| TypeScriptGraph[\"TypeScriptProjectGraph<br/>tsconfig + discovery + invalidation<br/>membership + publication\"]\n    TypeScriptGraph -->|uses| SemanticProject[\"TypeScriptSemanticProject<br/>ts-morph resources\"]\n    style TypeScriptGraph fill:#ffdddd,stroke:#cc0000\n```\n\nAfter — core owns the graph transaction and TypeScript supplies hooks:\n\n```mermaid\nflowchart LR\n    Backend[\"TypeScriptBackend\"] -->|uses| TypeScriptGraph[\"TypeScriptProjectGraph<br/>&lt;&lt;subclass&gt;&gt;<br/>tsconfig + package hooks\"]\n    TypeScriptGraph -.->|extends| CoreGraph[\"ProjectGraph<br/>&lt;&lt;abstract base&gt;&gt;<br/>discovery + membership + publication\"]\n    TypeScriptGraph -->|uses| SemanticProject[\"TypeScriptSemanticProject<br/>ts-morph resources\"]\n    CoreGraph -->|uses| Collector[\"ProjectInputCollector<br/>successful + missing observations\"]\n    style TypeScriptGraph fill:#fff2cc,stroke:#bf9000\n    style CoreGraph fill:#ddffdd,stroke:#008800\n    style Collector fill:#ddffdd,stroke:#008800\n```\n\nLegend: green = added; red = removed; yellow = changed; default = pre-existing and unchanged.\n\n## Where it lives\n\n```text\n.\n└── packages/\n    ├── core/src/\n    │   ├── ** index.ts\n    │   └── workspace/\n    │       ├── ++ project-graph.ts       # owns generic graph transactions\n    │       └── ++ project-graph.test.ts  # proves discovery, validation, and rollback\n    └── backend-typescript/src/typescript-backend/\n        ├── ** typescript-project-graph.ts       # supplies TypeScript-specific hooks\n        └── ** typescript-project-graph.test.ts  # preserves TypeScript edge behavior\n```\n\n## Public surface\n\nAdded to `@symnav/core`:\n\n```ts\nexport interface ProjectInput {\n  readonly path: string;\n  readonly content: string;\n}\nexport interface ProjectInputObservation {\n  readonly path: string;\n  readonly content: string | null;\n}\nexport class ProjectInputCollector {\n  constructor(fileSystem: FileSystem);\n  read(path: string): string | undefined;\n  observations(): readonly ProjectInputObservation[];\n}\nexport interface ParsedProjectConfiguration<ConfigurationUnit> {\n  readonly configuration: ConfigurationUnit;\n  readonly referencedConfigurationPaths: readonly string[];\n  readonly inputs: readonly ProjectInput[];\n}\nexport interface ProjectConfigurationMembership<ConfigurationUnit> {\n  readonly path: string;\n  readonly configuration: ConfigurationUnit;\n  readonly files: readonly WorkspaceFile[];\n}\nexport interface ProjectGraphPreparationRequest<ConfigurationUnit> {\n  readonly snapshot: WorkspaceSnapshot;\n  readonly configurations: readonly ProjectConfigurationMembership<ConfigurationUnit>[];\n  readonly inferredFiles: readonly WorkspaceFile[];\n  readonly inputCollector: ProjectInputCollector;\n}\nexport interface PreparedProjectGraph<Project> {\n  readonly configuredProjects: readonly Project[];\n  readonly inferredProject: Project;\n  readonly inputs: readonly ProjectInput[];\n}\nexport interface ProjectWithTransientResources {\n  releaseTransientResources(): void | Promise<void>;\n}\nexport interface ProjectGraphRefreshSummary {\n  readonly root: string;\n  readonly configuredProjectCount: number;\n  readonly inferredFileCount: number;\n  readonly changedInputCount: number;\n}\nexport abstract class ProjectGraph<\n  ConfigurationUnit,\n  Project extends ProjectWithTransientResources,\n> {\n  protected constructor(fileSystem: FileSystem);\n  protected refreshProjectGraph(snapshot: WorkspaceSnapshot): Promise<ProjectGraphRefreshSummary>;\n  releaseTransientResources(): Promise<void>;\n  protected primaryProjectFor(relativePath: string): Project | undefined;\n  protected projectsFor(relativePath: string): readonly Project[];\n  protected workspaceFile(relativePath: string): WorkspaceFile | undefined;\n  protected abstract initialConfigurationPaths(root: string): readonly string[];\n  protected abstract parseConfiguration(request: {\n    readonly path: string;\n    readonly content: string;\n    readonly snapshot: WorkspaceSnapshot;\n    readonly inputCollector: ProjectInputCollector;\n  }): Promise<ParsedProjectConfiguration<ConfigurationUnit> | undefined>;\n  protected abstract filesForConfiguration(\n    configuration: ConfigurationUnit,\n    snapshot: WorkspaceSnapshot,\n  ): readonly WorkspaceFile[];\n  protected abstract prepareProjects(\n    request: ProjectGraphPreparationRequest<ConfigurationUnit>,\n  ): Promise<PreparedProjectGraph<Project>>;\n}\n```\n\nChanged:\n\n```ts\nexport class TypeScriptProjectGraph\n  extends ProjectGraph<ParsedTypeScriptConfiguration, TypeScriptSemanticProject>\n  implements TypeScriptSemanticSourceProvider\n```\n\n## Decisions\n\n- Chose a core abstract base over leaving reusable graph mechanics in TypeScript, because discovery, invalidation, membership, and publication have no TypeScript dependency.\n- Chose one fresh collector per rebuild over retaining observations across graphs, because unreachable inputs must stop invalidating while missing inputs must trigger rediscovery when they appear.\n- Chose exact active-input validation over an undocumented subclass precondition, because every published input must participate in the observation set that drives invalidation.\n- Chose canonical snapshot members over relative-path-only membership, because project preparation must not receive a foreign path or revision identity.\n- Chose complete validation followed by one state assignment over incremental mutation, because every candidate failure must preserve the prior graph.\n\n## Look here\n\n- `packages/core/src/workspace/project-graph.ts:99`\n- `packages/core/src/workspace/project-graph.ts:253`\n- `packages/core/src/workspace/project-graph.ts:271`\n",
+      "commits": [
+        {
+          "sha": "84103e8bd42261484edc6b893de5d40e61a6ec0a",
+          "subject": "Define project membership contracts",
+          "body": ""
+        },
+        {
+          "sha": "96b5cfb9a1eab6dd329e8a2e19d08c5bec5e14e8",
+          "subject": "Specify project input observations",
+          "body": ""
+        },
+        {
+          "sha": "3e144cb8732fcae96e3b5f570a9d95c115b4c43c",
+          "subject": "Collect exact project input observations",
+          "body": ""
+        },
+        {
+          "sha": "fd24badd460f5f8abfdf1a90137d560590a65c26",
+          "subject": "Define project graph preparation request",
+          "body": ""
+        },
+        {
+          "sha": "75ffe51dec8c29bdf646aeca23f11f5300c24cff",
+          "subject": "Specify FIFO project discovery",
+          "body": ""
+        },
+        {
+          "sha": "f45898c40ee65e724a276dc3e445a8a8b9f3a9b2",
+          "subject": "Discover project configurations FIFO",
+          "body": ""
+        },
+        {
+          "sha": "469903241a50c8df5f60d6b737bb72ecbde327e1",
+          "subject": "Specify ordered project ownership",
+          "body": ""
+        },
+        {
+          "sha": "7067648a3e3d1807a6f977f755cccaf057b05ae8",
+          "subject": "Publish ordered project ownership",
+          "body": ""
+        },
+        {
+          "sha": "1f975ad367e0737e2dfc7fad81570943592ee594",
+          "subject": "Specify inferred project fallback",
+          "body": ""
+        },
+        {
+          "sha": "64f3d96a6f5c66a3da69a118a85a3cc712d0108b",
+          "subject": "Use inferred project for unowned files",
+          "body": ""
+        },
+        {
+          "sha": "c7d1560bac7b647c21525f0c2960f61956ffd8c7",
+          "subject": "Specify exact project graph invalidation",
+          "body": ""
+        },
+        {
+          "sha": "f3d5e55e3213593b7cb8c8fa99b1abf4e87d5ec1",
+          "subject": "Invalidate project graphs from exact inputs",
+          "body": ""
+        },
+        {
+          "sha": "8866a537053751d3457b66baafb4effadb08463f",
+          "subject": "Specify active project input validation",
+          "body": ""
+        },
+        {
+          "sha": "c4249a533a369f75ccb5a55b0a81b23d7385c7f3",
+          "subject": "Validate active project input observations",
+          "body": ""
+        },
+        {
+          "sha": "b516ef8dd5fa4ca8f0bd203f977ef62aa32fc52e",
+          "subject": "Specify canonical project membership",
+          "body": ""
+        },
+        {
+          "sha": "5ca43d4b87153d86cf8301dc8203b5ff09e8cabe",
+          "subject": "Canonicalize project membership files",
+          "body": ""
+        },
+        {
+          "sha": "f1b48edee22b5d7338bd2aa7fcc5c4fc75efb379",
+          "subject": "Specify prepared project count validation",
+          "body": ""
+        },
+        {
+          "sha": "4bd89aa0e110810094afee13fdceedc7f834b1c0",
+          "subject": "Validate prepared project counts",
+          "body": ""
+        },
+        {
+          "sha": "6c6c7b62fd619e496fc518c6cf68f6d07e330da7",
+          "subject": "Characterize failed project preparation",
+          "body": ""
+        },
+        {
+          "sha": "882238c3609f91e46756595b3735d27d61b8f056",
+          "subject": "Specify sequential project resource release",
+          "body": ""
+        },
+        {
+          "sha": "d01ab95d2bfbad5fc5994ae745e79bc7f129883c",
+          "subject": "Release project resources sequentially",
+          "body": ""
+        },
+        {
+          "sha": "0ee6b37999e1df338af21d554f8b4c78f4c8a881",
+          "subject": "Characterize missing TypeScript package inputs",
+          "body": ""
+        },
+        {
+          "sha": "10ab5f56100b923016ab20792d2c16389cceaccd",
+          "subject": "Characterize unreachable TypeScript inputs",
+          "body": ""
+        },
+        {
+          "sha": "e8843a2c104319785c893322fb15e721a4b711c8",
+          "subject": "Characterize TypeScript multi-project ownership",
+          "body": ""
+        },
+        {
+          "sha": "a1e325a5ff979bdfa25babc5554621c8c0f20497",
+          "subject": "Adopt core project graph in TypeScript",
+          "body": ""
+        }
+      ],
+      "base": "agent/daemon-architecture-refactor-part-02-transactional-backend-state",
+      "head": "agent/daemon-architecture-refactor-part-03-project-membership-graph",
+      "group": "state",
+      "decisions": [
+        {
+          "id": "d126-1",
+          "label": "Core owns graph transactions",
+          "status": "stated",
+          "text": "Chose a core abstract base over leaving reusable graph mechanics in TypeScript, because discovery, invalidation, membership, and publication have no TypeScript dependency.",
+          "pr": 126
+        },
+        {
+          "id": "d126-2",
+          "label": "Fresh input observations per rebuild",
+          "status": "stated",
+          "text": "Chose one fresh collector per rebuild over retaining observations across graphs, because unreachable inputs must stop invalidating while missing inputs must trigger rediscovery when they appear.",
+          "pr": 126
+        },
+        {
+          "id": "d126-3",
+          "label": "Validate every active input",
+          "status": "stated",
+          "text": "Chose exact active-input validation over an undocumented subclass precondition, because every published input must participate in the observation set that drives invalidation.",
+          "pr": 126
+        },
+        {
+          "id": "d126-4",
+          "label": "Canonical snapshot membership",
+          "status": "stated",
+          "text": "Chose canonical snapshot members over relative-path-only membership, because project preparation must not receive a foreign path or revision identity.",
+          "pr": 126
+        },
+        {
+          "id": "d126-5",
+          "label": "Publish the complete graph at once",
+          "status": "stated",
+          "text": "Chose complete validation followed by one state assignment over incremental mutation, because every candidate failure must preserve the prior graph.",
+          "pr": 126
+        }
+      ]
+    },
+    {
+      "number": 127,
+      "title": "Scope semantic caches to one turn",
+      "body": "## Context\n\nThe [daemon architecture spec](https://github.com/mohasarc/symnav/blob/main/plans/005/daemon-architecture-functional-spec.md) assigns turn-scoped semantic-cache lifetime to core. Building on #126, this layer moves only cache lifetime out of TypeScript while preserving all six algorithms, key spaces, promise/value identities, and failure behavior.\n\n## Shape\n\nBefore — TypeScript owned each cache and its clearing sequence:\n\n```mermaid\nflowchart LR\n    Backend[\"TypeScriptBackend\"] -->|calls refresh/release| Service[\"TypeScriptSemanticQueryService<br/>query algorithms + manual clearing\"]\n    Service -->|owns| Maps[\"six independent Maps\"]\n    Service -->|starts release| Graph[\"TypeScriptProjectGraph\"]\n    style Service fill:#fff2cc,stroke:#bf9000\n    style Maps fill:#ffdddd,stroke:#cc0000\n```\n\nAfter — core owns cache lifetime and the backend is the release barrier:\n\n```mermaid\nflowchart LR\n    Backend[\"TypeScriptBackend<br/>awaited release boundary\"] -->|calls refresh/release| Service[\"TypeScriptSemanticQueryService<br/>query algorithms\"]\n    Service -->|owns| Scope[\"TurnScopedCacheScope<br/>synchronous lifecycle\"]\n    Scope -->|owns| Handles[\"six isolated typed handles\"]\n    Service -->|awaits release| Graph[\"TypeScriptProjectGraph\"]\n    style Backend fill:#fff2cc,stroke:#bf9000\n    style Service fill:#fff2cc,stroke:#bf9000\n    style Scope fill:#ddffdd,stroke:#008800\n    style Handles fill:#ddffdd,stroke:#008800\n```\n\nLegend: green = added ownership; red = removed ownership; yellow = changed responsibility.\n\n## Where it lives\n\n```text\n.\n└── packages/\n    ├── core/src/\n    │   ├── ** index.ts\n    │   └── backend/\n    │       ├── ++ turn-scoped-cache-scope.ts       # owns generic cache lifetime\n    │       └── ++ turn-scoped-cache-scope.test.ts  # locks identity, error, and clearing contracts\n    └── backend-typescript/src/typescript-backend/\n        ├── ** typescript-semantic-query-service.ts       # adopts six isolated cache handles\n        ├── ** typescript-semantic-query-service.test.ts  # characterizes TypeScript cache behavior\n        └── ** typescript-backend.ts                      # owns successful-turn and release barriers\n```\n\n## Public surface\n\nAdded to `@symnav/core`:\n\n```ts\nexport interface TurnScopedCache<Key, Value> {\n  getOrCreate(key: Key, createValue: () => Value): Value;\n}\n\nexport class TurnScopedCacheScope {\n  createCache<Key, Value>(): TurnScopedCache<Key, Value>;\n  beginTurn(): void;\n  releaseTransientResources(): void;\n}\n```\n\nChanged on exported `TypeScriptSemanticQueryService`:\n\n```ts\n// before: beginTurn(snapshot: WorkspaceSnapshot): void\nbeginTurn(files: readonly WorkspaceFile[]): void;\n\n// before: releaseTransientResources(): void\nreleaseTransientResources(): Promise<void>;\n```\n\n## Decisions\n\n- Chose one scope with six handles over one shared map, because the existing queries have independent key and value spaces.\n- Chose `Map.has` before `Map.get` over truthiness checks, because `undefined` is a valid cached value.\n- Chose synchronous cache clearing before project release over clearing after the await, because released semantics must be unavailable while release is pending or rejecting.\n- Chose to begin the next turn only after refresh succeeds over clearing at refresh entry, because failed refresh must preserve the current successful turn.\n\n## Look here\n\n- `packages/core/src/backend/turn-scoped-cache-scope.ts:14`\n- `packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts:129`\n- `packages/backend-typescript/src/typescript-backend/typescript-backend.ts:79`\n",
+      "commits": [
+        {
+          "sha": "44de06c631863ac27d78545d7cb9570b2ce19165",
+          "subject": "Characterize TypeScript semantic cache identities",
+          "body": ""
+        },
+        {
+          "sha": "67df0279bdf4d40bdfa05f813ab56475a9ffbf9c",
+          "subject": "Define turn-scoped cache handles",
+          "body": ""
+        },
+        {
+          "sha": "f515f73e93ae678f75189d02f184829e4ab895a9",
+          "subject": "Specify turn-scoped cache lifecycle",
+          "body": ""
+        },
+        {
+          "sha": "471a46653a6f381e4a6c7960a4f1094e2217fe3e",
+          "subject": "Implement turn-scoped cache lifecycle",
+          "body": ""
+        },
+        {
+          "sha": "9e656518954d8e6b81966d768badce82738d4efc",
+          "subject": "Specify awaited semantic resource release",
+          "body": ""
+        },
+        {
+          "sha": "64919bcbcf7fcc8202779b78c5f069b24662bb18",
+          "subject": "Adopt turn-scoped TypeScript query caches",
+          "body": ""
+        }
+      ],
+      "base": "agent/daemon-architecture-refactor-part-03-project-membership-graph",
+      "head": "agent/daemon-architecture-refactor-part-04-query-cache-lifecycle",
+      "group": "state",
+      "decisions": [
+        {
+          "id": "d127-1",
+          "label": "Six separate cache handles",
+          "status": "stated",
+          "text": "Chose one scope with six handles over one shared map, because the existing queries have independent key and value spaces.",
+          "pr": 127
+        },
+        {
+          "id": "d127-2",
+          "label": "Cache undefined by presence",
+          "status": "stated",
+          "text": "Chose `Map.has` before `Map.get` over truthiness checks, because `undefined` is a valid cached value.",
+          "pr": 127
+        },
+        {
+          "id": "d127-3",
+          "label": "Clear before awaiting release",
+          "status": "stated",
+          "text": "Chose synchronous cache clearing before project release over clearing after the await, because released semantics must be unavailable while release is pending or rejecting.",
+          "pr": 127
+        },
+        {
+          "id": "d127-4",
+          "label": "New turn only after successful refresh",
+          "status": "stated",
+          "text": "Chose to begin the next turn only after refresh succeeds over clearing at refresh entry, because failed refresh must preserve the current successful turn.",
+          "pr": 127
+        }
+      ]
+    },
+    {
+      "number": 128,
+      "title": "Retain workspaces through core sessions",
+      "body": "## Context\n\nThe [daemon architecture spec](https://github.com/mohasarc/symnav/blob/main/plans/005/daemon-architecture-functional-spec.md) assigns language-independent workspace retention and backend lifetime to core. Building on #127, this layer removes CLI-owned request scopes while preserving cold discovery, retained daemon turns, selection isolation, command ordering, and output behavior.\n\n## Shape\n\nBefore — CLI-owned scopes split workspace preparation from worker resource lifetime:\n\n```mermaid\nflowchart LR\n    Command[\"runCommand\"] -->|uses| Factory[\"WorkspaceRequestScopeFactory<br/>discovery + snapshot + refresh\"]\n    Retained[\"RetainedWorkspaceProgram<br/>owns backends\"] -->|uses| Factory\n    Factory -->|uses| Catalog[\"WorkspaceCatalog<br/>optional retention\"]\n    Factory -->|uses| Router[\"BackendRouter<br/>per turn\"]\n    Worker[\"daemon worker<br/>releases raw backends\"] -->|uses| Retained\n    style Command fill:#fff2cc,stroke:#bf9000\n    style Factory fill:#ffdddd,stroke:#cc0000\n    style Retained fill:#fff2cc,stroke:#bf9000\n    style Worker fill:#fff2cc,stroke:#bf9000\n```\n\nAfter — core sessions own request and retained preparation through one lifecycle boundary:\n\n```mermaid\nflowchart LR\n    Command[\"runCommand\"] -->|uses| Request[\"WorkspaceSession<br/>request discovery\"]\n    Retained[\"RetainedWorkspaceProgram<br/>composition only\"] -->|uses| Session[\"WorkspaceSession<br/>session discovery\"]\n    Worker[\"daemon worker\"] -->|uses| Session\n    Request -->|uses| Router[\"fresh BackendRouter<br/>per turn\"]\n    Session -->|uses| Router\n    Session -->|uses| Catalog[\"retained WorkspaceCatalog<br/>per root\"]\n    style Command fill:#fff2cc,stroke:#bf9000\n    style Request fill:#ddffdd,stroke:#008800\n    style Retained fill:#fff2cc,stroke:#bf9000\n    style Session fill:#ddffdd,stroke:#008800\n    style Worker fill:#fff2cc,stroke:#bf9000\n```\n\nLegend: green = added ownership; red = removed ownership; yellow = changed responsibility; default = pre-existing and unchanged.\n\n## Where it lives\n\n```text\n.\n├── packages/core/src/\n│   ├── ** index.ts\n│   └── workspace/\n│       ├── ++ workspace-session.ts       # owns discovery, preparation, routing, and release\n│       └── ++ workspace-session.test.ts  # locks retention and lifecycle contracts\n└── apps/cli/\n    ├── src/\n    │   ├── ** command.ts                           # preserves discovery and validation order\n    │   ├── ** cli-program-executor.ts              # accepts an injected session\n    │   ├── ** program-dependencies.ts              # replaces scope factory dependency\n    │   ├── daemon/\n    │   │   ├── ** retained-workspace-program.ts  # composes one retained session\n    │   │   └── ** daemon-navigation-worker-entry.ts\n    │   ├── -- workspace-request-scope.ts           # superseded CLI ownership\n    │   └── -- workspace-request-scope.test.ts\n    └── test/integration/commands/\n        └── ** ... 3 files  # session injection and retained-selection coverage\n```\n\n## Public surface\n\nAdded to `@symnav/core`:\n\n```ts\nexport type WorkspaceDiscoveryRetention = \"request\" | \"session\";\nexport type WorkspaceSnapshotSelector = (\n  workspace: Workspace,\n  router: BackendRouter,\n) => Promise<WorkspaceSnapshot>;\nexport type WorkspacePreparation =\n  | { readonly coverage: \"workspace\" }\n  | { readonly coverage: \"selection\"; readonly selectSnapshot: WorkspaceSnapshotSelector };\nexport interface PreparedWorkspaceScope {\n  readonly workspace: Workspace;\n  readonly snapshot: WorkspaceSnapshot;\n  readonly router: BackendRouter;\n  readonly refresh: BackendRefreshSummary;\n}\nexport class WorkspaceSession {\n  constructor(options: {\n    readonly fileSystem: FileSystem;\n    readonly backends: readonly LanguageBackend[];\n    readonly discoveryRetention: WorkspaceDiscoveryRetention;\n  });\n  prepare(startDirectory: string, preparation?: WorkspacePreparation): Promise<PreparedWorkspaceScope>;\n  openWorkspace(startDirectory: string, coverage: BackendRefreshCoverage): Promise<Workspace>;\n  prepareWorkspace(workspace: Workspace, preparation: WorkspacePreparation): Promise<PreparedWorkspaceScope>;\n  releaseTransientResources(): Promise<void>;\n}\n```\n\nChanged in CLI composition:\n\n```ts\n// before: scopeFactory?: WorkspaceRequestScopeFactory\nreadonly workspaceSession?: WorkspaceSession;\n\n// before: constructor(dependencies, scopeFactory?, outputOptions?)\nconstructor(\n  dependencies: ProgramDependencies,\n  workspaceSession?: WorkspaceSession,\n  outputOptions?: OrderedCommandOutputOptions,\n);\n```\n\n## Decisions\n\n- Chose explicit request/session discovery retention over one cached strategy, because cold commands must not retain a catalog while daemon turns must reuse unchanged file identity.\n- Chose fresh selection discovery over retained-catalog reconciliation, because a selected file must not enumerate or fail on unrelated retained siblings.\n- Chose a copied backend array and fresh router per turn over a persistent router, because backend order is session state while routing results are turn state.\n- Chose explicit workspace opening before validation and preparation after validation over one combined call, because existing error and source-read ordering is observable.\n- Chose repeatable concurrent release over permanent session closure, because backend cleanup must retain state and retry every backend on later calls.\n\n## Look here\n\n- `packages/core/src/workspace/workspace-session.ts:32`\n- `apps/cli/src/command.ts:59`\n- `apps/cli/src/daemon/retained-workspace-program.ts:6`\n",
+      "commits": [
+        {
+          "sha": "4da5bf21e6ddd09e213b36687cad9fe927560479",
+          "subject": "Define workspace session contracts",
+          "body": ""
+        },
+        {
+          "sha": "5b6ab20896decbc90f00a5e7e49e45c1c88272f7",
+          "subject": "Add the workspace session boundary",
+          "body": ""
+        },
+        {
+          "sha": "de7b0d90c68b1c8bbe3ebebe8e27715860ae33d8",
+          "subject": "Specify request and retained workspace turns",
+          "body": ""
+        },
+        {
+          "sha": "dee58943a94cc62e8a69ef71c87e5f03885583f1",
+          "subject": "Prepare request and retained workspace turns",
+          "body": ""
+        },
+        {
+          "sha": "99cbd3a581eb5574c289fdce35e1664d165f6e59",
+          "subject": "Specify selection discovery and coverage",
+          "body": ""
+        },
+        {
+          "sha": "cc2bbd7e3f30f238a2ae2a1123881e0c18c09819",
+          "subject": "Prepare selection-scoped workspace turns",
+          "body": ""
+        },
+        {
+          "sha": "678ee343ab48f175ea8f4b1a45684ff203d68fa0",
+          "subject": "Specify workspace session failure boundaries",
+          "body": ""
+        },
+        {
+          "sha": "76672237c8530d24c66119a2e794b48fe0869672",
+          "subject": "Propagate workspace preparation failures",
+          "body": ""
+        },
+        {
+          "sha": "5411dd869155a4be8d4b294601ecb9f8d59e1978",
+          "subject": "Specify stable backend routing order",
+          "body": ""
+        },
+        {
+          "sha": "d8b8c719c2e97a4e0c88d543aa2c8f01df4afdbe",
+          "subject": "Stabilize backend routing order",
+          "body": ""
+        },
+        {
+          "sha": "06f9a977e870a7d9f4f4f95486a562d0084d7286",
+          "subject": "Specify multiple-root session retention",
+          "body": ""
+        },
+        {
+          "sha": "90b09c0af8b208ad868798245d916672eef1c7fd",
+          "subject": "Retain independent workspace roots",
+          "body": ""
+        },
+        {
+          "sha": "2d8ac0b2a629f77759bcae071cb7b9fdd1427d83",
+          "subject": "Specify workspace session release lifecycle",
+          "body": ""
+        },
+        {
+          "sha": "bb8b6404a61765619952d0d2d5b6597c46ab3c98",
+          "subject": "Release workspace session resources concurrently",
+          "body": ""
+        },
+        {
+          "sha": "385ada10b7056870cff70a4ab4cdccede1ae707e",
+          "subject": "Specify command workspace session injection",
+          "body": ""
+        },
+        {
+          "sha": "1818c93a30dccbc23b4c86a247de4fb55fa2028c",
+          "subject": "Prepare commands through workspace sessions",
+          "body": ""
+        },
+        {
+          "sha": "08f697b98bfc63cc133b19738d09892259ac56bb",
+          "subject": "Specify retained executor session reuse",
+          "body": ""
+        },
+        {
+          "sha": "65e58d0ed313a8fc57e05a8f0bd93092a264733c",
+          "subject": "Retain one workspace session in daemon workers",
+          "body": ""
+        },
+        {
+          "sha": "03cc3f2d1b51188d822cc17ab2055d1b5318dfe2",
+          "subject": "Characterize lazy help execution",
+          "body": ""
+        },
+        {
+          "sha": "144e1e7518cca4f42298d3d4ac10fb084ac059ad",
+          "subject": "Characterize cold session construction",
+          "body": ""
+        },
+        {
+          "sha": "ca0002b01f141f5d7d730c0be44d556954c77b60",
+          "subject": "Migrate retained overview sessions",
+          "body": ""
+        },
+        {
+          "sha": "ccad044c3a85334947bbc0f0b5ac757485df7e4c",
+          "subject": "Remove CLI workspace scope ownership",
+          "body": ""
+        }
+      ],
+      "base": "agent/daemon-architecture-refactor-part-04-query-cache-lifecycle",
+      "head": "agent/daemon-architecture-refactor-part-05-workspace-session",
+      "group": "state",
+      "decisions": [
+        {
+          "id": "d128-1",
+          "label": "Request or session retention",
+          "status": "stated",
+          "text": "Chose explicit request/session discovery retention over one cached strategy, because cold commands must not retain a catalog while daemon turns must reuse unchanged file identity.",
+          "pr": 128
+        },
+        {
+          "id": "d128-2",
+          "label": "Selection discovers fresh",
+          "status": "stated",
+          "text": "Chose fresh selection discovery over retained-catalog reconciliation, because a selected file must not enumerate or fail on unrelated retained siblings.",
+          "pr": 128
+        },
+        {
+          "id": "d128-3",
+          "label": "Stable backends; fresh router",
+          "status": "stated",
+          "text": "Chose a copied backend array and fresh router per turn over a persistent router, because backend order is session state while routing results are turn state.",
+          "pr": 128
+        },
+        {
+          "id": "d128-4",
+          "label": "Open → validate → prepare",
+          "status": "stated",
+          "text": "Chose explicit workspace opening before validation and preparation after validation over one combined call, because existing error and source-read ordering is observable.",
+          "pr": 128
+        },
+        {
+          "id": "d128-5",
+          "label": "Repeatable concurrent backend release",
+          "status": "stated",
+          "text": "Chose repeatable concurrent release over permanent session closure, because backend cleanup must retain state and retry every backend on later calls.",
+          "pr": 128
+        }
+      ]
+    },
+    {
+      "number": 129,
+      "title": "Resolve state directories in CLI",
+      "body": "## Context\n\nThe [daemon architecture spec](https://github.com/mohasarc/symnav/blob/main/plans/005/daemon-architecture-functional-spec.md) assigns environment resolution to CLI and keeps telemetry as a zero-internal-dependency leaf. Building on #128, this layer moves the existing path algorithm without changing state layout, daemon routing, or lifecycle behavior.\n\n## Shape\n\nBefore — telemetry selected and canonicalized the shared state path:\n\n```mermaid\nflowchart LR\n    Entry[\"CLI entry\"] -->|uses| Resolver[\"telemetry resolveStateDir\"]\n    Entry -->|uses| Dependencies[\"ProgramDependencies<br/>canonical path\"]\n    Entry -->|uses| Dispatcher[\"DaemonCommandDispatcher<br/>canonical path\"]\n    style Entry fill:#fff2cc,stroke:#bf9000\n    style Resolver fill:#ffdddd,stroke:#cc0000\n```\n\nAfter — CLI resolves once and passes the same value through composition:\n\n```mermaid\nflowchart LR\n    Entry[\"CLI entry\"] -->|uses| Resolver[\"StateDirectoryResolver\"]\n    Entry -->|uses| Dependencies[\"ProgramDependencies<br/>same resolved path\"]\n    Entry -->|uses| Dispatcher[\"DaemonCommandDispatcher<br/>same resolved path\"]\n    Dependencies -->|uses| Usage[\"telemetry usageLogPath\"]\n    style Entry fill:#fff2cc,stroke:#bf9000\n    style Resolver fill:#ddffdd,stroke:#008800\n```\n\nLegend: green = added ownership; red = removed ownership; yellow = changed responsibility; default = pre-existing and unchanged.\n\n## Where it lives\n\n```text\n.\n├── apps/cli/src/\n│   ├── ++ state-directory-resolver.ts       # owns selection and canonicalization\n│   ├── ++ state-directory-resolver.test.ts  # locks environment, path, and symlink behavior\n│   ├── ** cli.ts                            # resolves once for top-level composition\n│   └── ** program.ts                        # consumes the path and retains direct-build fallback\n└── packages/telemetry/src/\n    ├── ** index.ts                          # removes shared resolver exports\n    ├── ** state-dir.ts                      # retains usage-log path derivation only\n    └── ** state-dir.test.ts                 # locks the reduced telemetry surface\n```\n\n## Public surface\n\nAdded inside `apps/cli`:\n\n```ts\nexport class StateDirectoryResolver {\n  constructor(environment?: NodeJS.ProcessEnv, homeDirectory?: string);\n  resolve(): string;\n  static canonicalize(stateDirectory: string): string;\n}\n```\n\nRemoved from `@symnav/telemetry`:\n\n```ts\nexport function canonicalStateDir(stateDirectory: string): string;\nexport function resolveStateDir(env?: NodeJS.ProcessEnv, homedir?: string): string;\n```\n\n## Decisions\n\n- Chose a CLI-owned class over renamed telemetry functions, because CLI composes both telemetry and daemon state consumers.\n- Chose one top-level resolved value over per-consumer resolution, because telemetry identity, usage writes, and daemon process paths must retain the same canonical string.\n- Chose longest-existing-ancestor canonicalization over requiring the final directory to exist, because configured and default paths may contain missing tail segments.\n- Chose constructor-injected environment and home values over test-time global mutation, because path selection needs deterministic isolated tests.\n\n## Look here\n\n- `apps/cli/src/state-directory-resolver.ts:11`\n- `apps/cli/src/cli.ts:7`\n- `apps/cli/src/program.ts:44`\n",
+      "commits": [
+        {
+          "sha": "f2699586a1f40a775bb47f60ee53e46c5b562715",
+          "subject": "Specify CLI state directory resolution",
+          "body": ""
+        },
+        {
+          "sha": "c68fac83313fb2f0132ccdd50f041fb5ced1ae24",
+          "subject": "Move state directory resolution to CLI",
+          "body": ""
+        },
+        {
+          "sha": "f773f9cd3dd46af6f620c81b4fec9028aac4c0cc",
+          "subject": "Resolve the state directory at CLI composition",
+          "body": ""
+        },
+        {
+          "sha": "7a9ae5ca512011dac3af594712cd930d08f3f6c3",
+          "subject": "Remove shared state resolution from telemetry",
+          "body": ""
+        },
+        {
+          "sha": "d3a3d80f24c5df2a65249ebd003222773e528d98",
+          "subject": "Stabilize controlled worker fixture synchronization",
+          "body": ""
+        },
+        {
+          "sha": "1fc179cef3dcb417b0f5aab2f4431919b23f0a5f",
+          "subject": "Reproduce transient daemon owner reads",
+          "body": ""
+        },
+        {
+          "sha": "b0a6ce67e50f0356138c658e149a269731c75d5b",
+          "subject": "Stabilize daemon startup ownership oracle",
+          "body": ""
+        }
+      ],
+      "base": "agent/daemon-architecture-refactor-part-05-workspace-session",
+      "head": "agent/daemon-architecture-refactor-part-06-state-directory-ownership",
+      "group": "host",
+      "decisions": [
+        {
+          "id": "d129-1",
+          "label": "CLI owns path resolution",
+          "status": "stated",
+          "text": "Chose a CLI-owned class over renamed telemetry functions, because CLI composes both telemetry and daemon state consumers.",
+          "pr": 129
+        },
+        {
+          "id": "d129-2",
+          "label": "One canonical path for both consumers",
+          "status": "stated",
+          "text": "Chose one top-level resolved value over per-consumer resolution, because telemetry identity, usage writes, and daemon process paths must retain the same canonical string.",
+          "pr": 129
+        },
+        {
+          "id": "d129-3",
+          "label": "Canonicalize existing ancestor",
+          "status": "stated",
+          "text": "Chose longest-existing-ancestor canonicalization over requiring the final directory to exist, because configured and default paths may contain missing tail segments.",
+          "pr": 129
+        },
+        {
+          "id": "d129-4",
+          "label": "Inject environment and home in tests",
+          "status": "stated",
+          "text": "Chose constructor-injected environment and home values over test-time global mutation, because path selection needs deterministic isolated tests.",
+          "pr": 129
+        }
+      ]
+    },
+    {
+      "number": 130,
+      "title": "Establish daemon package and policy snapshot",
+      "body": "## Context\n\nDaemon contracts and thresholds lived beside CLI mechanisms, so package rules could not enforce leaf ownership and detached processes received only reconstructed resource subsets. This layer establishes the leaf contract/policy owner and carries one complete snapshot through process and worker boundaries; operational consumer migration stays in the next stack layer.\n\n## Shape\n\nBefore — CLI owned the portable boundary and policy inputs alongside mechanisms:\n\n```mermaid\nflowchart LR\n    CLI[\"apps/cli<br/>contracts + threshold construction + mechanisms\"]\n    Renderer[\"@symnav/renderer<br/>core-only dependency\"]\n\n    style CLI fill:#ffdddd,stroke:#cc0000\n    style Renderer fill:#fff2cc,stroke:#bf9000\n```\n\nAfter — daemon contracts and the immutable snapshot have a leaf owner:\n\n```mermaid\nflowchart LR\n    Daemon[\"@symnav/daemon<br/>portable contracts + DaemonPolicy\"]\n    CLI[\"apps/cli<br/>composition + mechanisms\"]\n    Renderer[\"@symnav/renderer\"]\n\n    CLI -->|\"depends on\"| Daemon\n    Renderer -.->|\"may depend on\"| Daemon\n\n    style Daemon fill:#ddffdd,stroke:#008800\n    style CLI fill:#fff2cc,stroke:#bf9000\n    style Renderer fill:#fff2cc,stroke:#bf9000\n```\n\nLegend: green = added ownership; red = removed ownership; yellow = changed responsibility or dependency permission.\n\n- CLI creates one `DaemonPolicy` from system memory.\n- Launch, process-entry, and worker-entry boundaries pass the complete versioned snapshot.\n- Existing daemon mechanisms remain under `apps/cli` in this layer.\n\n## Where it lives\n\n```text\n.\n├── ** AGENTS.md                         # records daemon ownership and locked dependencies\n├── ** eslint.config.mjs                 # registers daemon and test-only policy access\n├── ** tsconfig.json                     # adds daemon to the root build graph\n├── ** pnpm-lock.yaml                    # records workspace links\n├── ** apps/cli/                         # 27 files compose and propagate one snapshot\n├── ++ packages/daemon/\n│   ├── ++ package.json                  # leaf ESM package with exact root/test exports\n│   ├── ++ tsconfig*.json                # production leaf and test references\n│   ├── ++ src/\n│   │   ├── ++ ... 4 contract files      # executor, diagnostics, commands, lifecycle reports\n│   │   ├── ++ daemon-policy.ts          # defaults, memory recipes, freezing, strict codec\n│   │   ├── ++ index.ts                  # closed public root\n│   │   ├── ++ policy-testing.ts         # temporary test-only override factory\n│   │   └── ++ ... 2 test files          # exact type/declaration/runtime policy oracles\n│   └── ++ test/public-import.test.ts     # package import surface proof\n├── ** packages/renderer/                 # 2 files permit the future daemon-report edge\n├── ** meta-tests/src/                    # 3 files enforce graph, exports, and policy docs\n└── plans/\n    ├── ** 000/symnav-stages.md           # records the contract-first migration milestone\n    └── ++ 005/daemon-policy.md           # enumerates every value, recipe, and absence\n```\n\nLegend: `++` added, `**` changed, `~~` moved, `--` removed.\n\n## Public surface\n\nAdded at `@symnav/daemon` root:\n\n```ts\nexport interface DaemonExecutor {\n  initialize(workspaceRoot: string): Promise<DaemonExecutorInitializationResult>;\n  execute(request: DaemonExecutorRequest): Promise<DaemonExecutorExecutionResult>;\n  releaseTransientResources(): Promise<void>;\n}\n\nexport class DaemonPolicy {\n  private constructor(values: DaemonPolicyValues);\n  static currentSystem(): DaemonPolicy;\n  static fromSystemMemory(memory: DaemonSystemMemory): DaemonPolicy;\n  static fromSerialized(value: unknown): DaemonPolicy;\n  readonly values: DaemonPolicyValues;\n  toSerialized(): Readonly<{\n    readonly schemaVersion: 1;\n    readonly values: DaemonPolicyValues;\n  }>;\n}\n```\n\nThe root also adds type-only command, diagnostic, executor request/output, activity, status, start, and stop contracts. Temporary `@symnav/daemon/policy-testing` exports only `DaemonPolicyTestFactory`; production imports are rejected.\n\n## Decisions\n\n- Chose a zero-internal-dependency package over keeping portable contracts in CLI, because future daemon mechanisms need an enforceable owner.\n- Chose a complete versioned snapshot over partial per-hop options, because process and worker boundaries must preserve exact derived values.\n- Chose a restricted `./policy-testing` subpath over root-level overrides, because tests need independent values without creating a user tuning surface.\n- Chose AST, declaration, runtime, manifest, and dependency allowlists over documentation alone, because public-surface and package-graph drift must fail CI.\n- Chose a cut after snapshot propagation over including operational consumer migration, because policy transport and threshold adoption are separate review concerns.\n\n## Look here\n\n- `packages/daemon/src/daemon-policy.ts:91`\n- `packages/daemon/src/daemon-policy.ts:185`\n- `apps/cli/src/daemon/daemon-process-launcher.ts:122`\n",
+      "commits": [
+        {
+          "sha": "66328a7c1240bce4dfbd17efb4122b7a9c99b285",
+          "subject": "Specify the daemon host contract",
+          "body": ""
+        },
+        {
+          "sha": "0e1c76d3100342726482633aa47003abac66bb9e",
+          "subject": "Define the daemon host contract",
+          "body": ""
+        },
+        {
+          "sha": "7dc82aaf5d89e1969c7586c83befcbf7d8b689a9",
+          "subject": "Specify the daemon project graph",
+          "body": ""
+        },
+        {
+          "sha": "eb85a0fe79cff46c5d2db5fd11bf174226ba65b8",
+          "subject": "Wire the daemon workspace package",
+          "body": ""
+        },
+        {
+          "sha": "e4af9b9b48dcd0e6348e6b66dcd64168900ba087",
+          "subject": "Specify daemon boundary registration",
+          "body": ""
+        },
+        {
+          "sha": "6f46c0aee4b5f17344460514dbe6043476eec5a4",
+          "subject": "Register the daemon lint boundary",
+          "body": ""
+        },
+        {
+          "sha": "7c24fb872da21e3de8997c1349901384e3b5633d",
+          "subject": "Specify daemon lint permissions",
+          "body": ""
+        },
+        {
+          "sha": "6713cdddccb6dfd1c94808dd16c70aa03fe08b39",
+          "subject": "Enforce daemon lint permissions",
+          "body": ""
+        },
+        {
+          "sha": "0370a6ed8afdc91539afff0a6e8d8428bf892e85",
+          "subject": "Document the daemon package ownership",
+          "body": ""
+        },
+        {
+          "sha": "1409e5e91e81ad97789feeec123972872cf39bdf",
+          "subject": "Specify import-equals export detection",
+          "body": ""
+        },
+        {
+          "sha": "fd23ff7f7cc3f5f4d7fa695d118138d1cc491fe9",
+          "subject": "Detect import-equals exports",
+          "body": ""
+        },
+        {
+          "sha": "6aaea73694336d4c0eaf260ef504dca307f1b9c8",
+          "subject": "Specify the complete daemon policy",
+          "body": ""
+        },
+        {
+          "sha": "f3fcd99caa4928f34a6f2520b9fba18f7be3dc4c",
+          "subject": "Define the complete daemon policy",
+          "body": ""
+        },
+        {
+          "sha": "e18af3c070e40ed1edb3024b4bad1f5769215e12",
+          "subject": "Specify daemon policy documentation",
+          "body": ""
+        },
+        {
+          "sha": "c1737748e64cfc0f81b1f68f4cfa97a8ab7ee04d",
+          "subject": "Document every daemon policy threshold",
+          "body": ""
+        },
+        {
+          "sha": "1ef73960eb0f3cffd9056be853eab73f3effcd9c",
+          "subject": "Specify complete daemon policy propagation",
+          "body": ""
+        },
+        {
+          "sha": "b32bbb4137dd2e890d83582d471dc14de1e0f347",
+          "subject": "Thread one daemon policy snapshot",
+          "body": ""
+        },
+        {
+          "sha": "b3a6c4fa5dcf96223765aa147a9e094cd4a51b0e",
+          "subject": "Resolve daemon contract source URLs portably",
+          "body": ""
+        }
+      ],
+      "base": "agent/daemon-architecture-refactor-part-06-state-directory-ownership",
+      "head": "agent/daemon-architecture-refactor-part-07-daemon-package-policy-snapshot",
+      "group": "policy",
+      "decisions": [
+        {
+          "id": "d130-1",
+          "label": "Daemon is an internal dependency leaf",
+          "status": "stated",
+          "text": "Chose a zero-internal-dependency package over keeping portable contracts in CLI, because future daemon mechanisms need an enforceable owner.",
+          "pr": 130
+        },
+        {
+          "id": "d130-2",
+          "label": "Complete versioned policy snapshot",
+          "status": "stated",
+          "text": "Chose a complete versioned snapshot over partial per-hop options, because process and worker boundaries must preserve exact derived values.",
+          "pr": 130
+        },
+        {
+          "id": "d130-3",
+          "label": "Temporary test-only policy overrides",
+          "status": "stated",
+          "text": "Chose a restricted `./policy-testing` subpath over root-level overrides, because tests need independent values without creating a user tuning surface.",
+          "pr": 130
+        },
+        {
+          "id": "d130-4",
+          "label": "Enforce surface in compiler + lint + tests",
+          "status": "stated",
+          "text": "Chose AST, declaration, runtime, manifest, and dependency allowlists over documentation alone, because public-surface and package-graph drift must fail CI.",
+          "pr": 130
+        },
+        {
+          "id": "d130-5",
+          "label": "Propagate policy before migrating consumers",
+          "status": "stated",
+          "text": "Chose a cut after snapshot propagation over including operational consumer migration, because policy transport and threshold adoption are separate review concerns.",
+          "pr": 130
+        }
+      ]
+    },
+    {
+      "number": 131,
+      "title": "Route daemon thresholds through centralized policy",
+      "body": "## Context\n\nThe preceding stack layer defines `DaemonPolicy` and carries one complete snapshot across process and worker boundaries. CLI daemon mechanisms still owned local defaults, optional numeric overrides, and hard-coded timeout/retry behavior, so runtime consumers could bypass that snapshot.\n\n## Shape\n\nBefore — operational consumers retained their own threshold inputs:\n\n```mermaid\nflowchart LR\n    Policy[\"DaemonPolicy snapshot<br/>from preceding layer\"]\n    Defaults[\"CLI constants +<br/>optional numeric inputs\"]\n    Consumers[\"resource/output, lifecycle/diagnostic,<br/>deadline/attempt consumers\"]\n\n    Policy -.->|\"crosses process and worker boundaries\"| Consumers\n    Defaults -->|\"configures\"| Consumers\n\n    style Defaults fill:#ffdddd,stroke:#cc0000\n    style Consumers fill:#fff2cc,stroke:#bf9000\n```\n\nAfter — each consumer receives its required policy section:\n\n```mermaid\nflowchart LR\n    Policy[\"DaemonPolicy snapshot<br/>from preceding layer\"]\n    Slices[\"required resource, output, startup,<br/>shutdown, diagnostics, delivery slices\"]\n    Consumers[\"CLI daemon mechanisms\"]\n\n    Policy -->|\"projects values\"| Slices\n    Slices -->|\"configures\"| Consumers\n\n    style Slices fill:#ddffdd,stroke:#008800\n    style Consumers fill:#fff2cc,stroke:#bf9000\n```\n\nLegend: green = added policy input; red = removed local ownership; yellow = changed consumer.\n\n- Output capture, completion spooling, framing, worker chunk validation, and resource supervision use required output/resource slices.\n- Startup, shutdown, idle lifetime, process termination, acknowledgement polling, logging, and trace retention use required lifecycle/diagnostic slices.\n- Status observation selects its 100 ms timeout by composition purpose; ordinary lifecycle and execution-status exchanges retain 250 ms.\n- Result fetch resumes and post-accept execution reattachments consume independent numeric budgets.\n\n## Where it lives\n\n```text\n.\n├── apps/cli/\n│   ├── src/\n│   │   ├── ** cli-program-executor.ts              # supplies output policy to command capture\n│   │   ├── ** command-execution-result.ts           # applies chunk, inline, and result capacities\n│   │   ├── ** commands/daemon/                      # composes lifecycle policy and status timeout purpose\n│   │   └── ** daemon/\n│   │       ├── ** ... 16 implementation files      # consume required operational policy slices\n│   │       └── ** ... 15 test files                # preserve threshold and retry behavior\n│   └── test/\n│       ├── ** ... 7 e2e/benchmark files            # retain process and output parity\n│       └── helpers/\n│           ├── ++ ... 7 files                      # adapt legacy test knobs to validated policies\n│           └── ** ... 10 files                     # use policy-backed helpers\n└── meta-tests/src/\n    └── ** daemon-package.test.ts                    # rejects retired defaults and bypasses\n```\n\nLegend: `++` added, `**` changed, `~~` moved, `--` removed.\n\n## Decisions\n\n- Chose required policy slices over optional per-consumer numbers, because omitted composition must not recreate local defaults.\n- Chose composition-purpose timeout selection over request-kind selection, because status observation and ordinary execution-status requests have distinct deadlines.\n- Chose independent numeric resume and reattachment counters over one shared boolean, because each reattached execute attempt has its own fetch-resume allowance.\n- Chose test-only adapters over production compatibility overloads, because tests need small thresholds without restoring runtime tuning seams.\n\n## Look here\n\n- `apps/cli/src/daemon/local-daemon-transport.ts:289`\n- `apps/cli/src/daemon/local-daemon-transport.ts:402`\n- `apps/cli/src/daemon/workspace-daemon.ts:113`\n",
+      "commits": [
+        {
+          "sha": "d7c3ceef736d99e7999854918bf838ea96dadb4c",
+          "subject": "Specify resource and output policy slices",
+          "body": ""
+        },
+        {
+          "sha": "8dca047390daa99cfca5eea55fe109189503f085",
+          "subject": "Route resource and output policy",
+          "body": ""
+        },
+        {
+          "sha": "5830598f2c751ad58f3ab0fe591f9542772c837a",
+          "subject": "Specify lifecycle and diagnostic policy slices",
+          "body": ""
+        },
+        {
+          "sha": "bb0205972fe1b7c85ab1fe039fc28a1dfc159211",
+          "subject": "Route lifecycle and diagnostic policy",
+          "body": ""
+        },
+        {
+          "sha": "3f673305d9096cc847bdedda44d0de67e8c6727c",
+          "subject": "Specify distinct daemon deadlines and attempts",
+          "body": ""
+        },
+        {
+          "sha": "b100221db48754656328391b878299c5a0bab443",
+          "subject": "Preserve distinct daemon attempt limits",
+          "body": ""
+        }
+      ],
+      "base": "agent/daemon-architecture-refactor-part-07-daemon-package-policy-snapshot",
+      "head": "agent/daemon-architecture-refactor-part-08-daemon-policy-consumers",
+      "group": "policy",
+      "decisions": [
+        {
+          "id": "d131-1",
+          "label": "Required policy slices",
+          "status": "stated",
+          "text": "Chose required policy slices over optional per-consumer numbers, because omitted composition must not recreate local defaults.",
+          "pr": 131
+        },
+        {
+          "id": "d131-2",
+          "label": "100 ms status; 250 ms ordinary response",
+          "status": "stated",
+          "text": "Chose composition-purpose timeout selection over request-kind selection, because status observation and ordinary execution-status requests have distinct deadlines.",
+          "pr": 131
+        },
+        {
+          "id": "d131-3",
+          "label": "Independent resume + reattach budgets",
+          "status": "stated",
+          "text": "Chose independent numeric resume and reattachment counters over one shared boolean, because each reattached execute attempt has its own fetch-resume allowance.",
+          "pr": 131
+        },
+        {
+          "id": "d131-4",
+          "label": "Test adapters; no production tuning knobs",
+          "status": "stated",
+          "text": "Chose test-only adapters over production compatibility overloads, because tests need small thresholds without restoring runtime tuning seams.",
+          "pr": 131
+        }
+      ]
+    },
+    {
+      "number": 132,
+      "title": "Own one daemon command vocabulary",
+      "body": "## Context\n\nCommand labels had four runtime owners, and daemon process code inferred operational identity by scanning opaque argv. A command-looking option value or target could therefore override the command selected by CLI syntax.\n\n## Shape\n\nBefore — command identity was reconstructed after CLI routing:\n\n```mermaid\nflowchart LR\n    Argv[\"CLI argv\"]\n    Selector[\"InvocationWorkspaceSelector<br/>route + argv\"]\n    Pipeline[\"execute pipeline<br/>opaque argv\"]\n    Derivation[\"WorkspaceDaemon<br/>scans argv for a command\"]\n    Authorities[\"app protocol union +<br/>duplicate runtime sets\"]\n    Projections[\"worker, diagnostics,<br/>activity, benchmarks\"]\n\n    Argv -->|\"passes\"| Selector\n    Selector -->|\"passes\"| Pipeline\n    Pipeline -->|\"passes\"| Derivation\n    Authorities -->|\"constrains\"| Derivation\n    Derivation -->|\"labels\"| Projections\n\n    style Selector fill:#fff2cc,stroke:#bf9000\n    style Pipeline fill:#fff2cc,stroke:#bf9000\n    style Derivation fill:#ffdddd,stroke:#cc0000\n    style Authorities fill:#ffdddd,stroke:#cc0000\n```\n\nAfter — CLI classifies once and every daemon boundary carries that identity:\n\n```mermaid\nflowchart LR\n    Vocabulary[\"@symnav/daemon frozen tuple<br/>derived type + runtime validation\"]\n    Selector[\"InvocationWorkspaceSelector<br/>exhaustive syntax mapping\"]\n    Wire[\"generation-5 execute envelope<br/>required commandName\"]\n    Pipeline[\"ledger, queue, and daemon<br/>forward commandName\"]\n    Projections[\"worker, diagnostics,<br/>activity, benchmarks\"]\n\n    Vocabulary -->|\"types\"| Selector\n    Selector -->|\"passes\"| Wire\n    Vocabulary -->|\"validates\"| Wire\n    Wire -->|\"passes\"| Pipeline\n    Pipeline -->|\"passes\"| Projections\n\n    style Vocabulary fill:#ddffdd,stroke:#008800\n    style Selector fill:#fff2cc,stroke:#bf9000\n    style Wire fill:#fff2cc,stroke:#bf9000\n    style Pipeline fill:#fff2cc,stroke:#bf9000\n    style Projections fill:#fff2cc,stroke:#bf9000\n```\n\nLegend: green = added authority; red = removed authority or derivation; yellow = changed path.\n\n- Argv normalization remains independent from command identity.\n- Readiness still executes `--version` with telemetry disabled, now labeled explicitly as `version`.\n- Generation-4 requests are rejected before execution, and generation-5 clients replace generation-4 daemons before readiness.\n\n## Where it lives\n\n```text\n.\n├── packages/daemon/\n│   ├── src/\n│   │   ├── ** daemon-command-name.ts              # owns tuple, validator, and readiness shape\n│   │   ├── ++ daemon-command-name.test.ts         # locks values and runtime immutability\n│   │   ├── ** host-contract.test.ts               # locks source, declarations, and exports\n│   │   └── ** index.ts                            # exposes root value and type contracts\n│   └── test/\n│       └── ** public-import.test.ts                # verifies consumer-visible surface\n└── apps/cli/\n    ├── src/daemon/\n    │   ├── ** invocation-workspace-selector.ts    # maps CLI syntax once\n    │   ├── ** ... 14 production files             # carry identity through daemon boundaries\n    │   └── ** ... 12 colocated test files          # lock mapping and propagation\n    └── test/\n        └── ** ... 9 files                         # preserve process, e2e, and benchmark behavior\n```\n\nLegend: `++` added, `**` changed, `~~` moved, `--` removed.\n\n## Public surface\n\nAdded at the `@symnav/daemon` root:\n\n```ts\nexport const DAEMON_COMMAND_NAMES: readonly [\"overview\", \"resolve\", \"def\", \"refs\", \"context\", \"graph\", \"stats\", \"help\", \"version\", \"unknown\"];\nexport interface DaemonReadinessProbe {\n  readonly commandName: DaemonCommandName;\n  readonly argv: readonly string[];\n}\n```\n\n## Decisions\n\n- Chose a frozen daemon-owned tuple over another app-local set, because runtime validation and the union must change together.\n- Chose an exhaustive CLI record over deriving workspace routes from the full tuple, because help, version, control, and unknown are syntax routes rather than workspace commands.\n- Chose `commandName` beside opaque argv over nesting or reparsing it, because argv normalization and operational labeling have different owners.\n- Chose to include `commandName` in accepted-request compatibility over comparing argv alone, because retry attachment must preserve original operational identity.\n- Chose a new protocol generation over optional or legacy command metadata, because either mixed-generation direction must take established compatibility handling before execution.\n\n## Look here\n\n- `apps/cli/src/daemon/invocation-workspace-selector.ts:6`\n- `apps/cli/src/daemon/daemon-protocol.ts:7`\n- `apps/cli/src/daemon/accepted-request-ledger.ts:209`\n",
+      "commits": [
+        {
+          "sha": "7184bbd30c81a491a7c6bebc8267b8b7c23d61e4",
+          "subject": "Specify the daemon command vocabulary",
+          "body": ""
+        },
+        {
+          "sha": "6898be723814d4f31f020fbe2bec9c41a1446c96",
+          "subject": "Define the daemon command vocabulary",
+          "body": ""
+        },
+        {
+          "sha": "f729476715181cbe2f4e95e7528614efad13a62d",
+          "subject": "Specify exhaustive CLI command mapping",
+          "body": ""
+        },
+        {
+          "sha": "790b58f449af486efce9484de1b842564287328b",
+          "subject": "Map CLI routes to daemon command names",
+          "body": ""
+        },
+        {
+          "sha": "cf807d166b1289f7d5f75dfded9a07eee8484ddb",
+          "subject": "Specify explicit daemon command propagation",
+          "body": ""
+        },
+        {
+          "sha": "9dd51416a5956132c07c13f0dddbf2325d11905d",
+          "subject": "Propagate daemon command names explicitly",
+          "body": ""
+        },
+        {
+          "sha": "bc0af5cf5d0a3b5f262aa6abb3953b7c332a5299",
+          "subject": "Advance daemon protocol for command metadata",
+          "body": ""
+        },
+        {
+          "sha": "f5fcbfed844a3b6186e490c215a53ded8995005b",
+          "subject": "Resolve command contract source URL portably",
+          "body": ""
+        }
+      ],
+      "base": "agent/daemon-architecture-refactor-part-08-daemon-policy-consumers",
+      "head": "agent/daemon-architecture-refactor-part-09-command-vocabulary",
+      "group": "identity",
+      "decisions": [
+        {
+          "id": "d132-1",
+          "label": "One frozen command vocabulary",
+          "status": "stated",
+          "text": "Chose a frozen daemon-owned tuple over another app-local set, because runtime validation and the union must change together.",
+          "pr": 132
+        },
+        {
+          "id": "d132-2",
+          "label": "CLI owns syntax mapping",
+          "status": "stated",
+          "text": "Chose an exhaustive CLI record over deriving workspace routes from the full tuple, because help, version, control, and unknown are syntax routes rather than workspace commands.",
+          "pr": 132
+        },
+        {
+          "id": "d132-3",
+          "label": "commandName travels beside argv",
+          "status": "stated",
+          "text": "Chose `commandName` beside opaque argv over nesting or reparsing it, because argv normalization and operational labeling have different owners.",
+          "pr": 132
+        },
+        {
+          "id": "d132-4",
+          "label": "Duplicates compare command identity",
+          "status": "stated",
+          "text": "Chose to include `commandName` in accepted-request compatibility over comparing argv alone, because retry attachment must preserve original operational identity.",
+          "pr": 132
+        },
+        {
+          "id": "d132-5",
+          "label": "Protocol generation 4 → 5",
+          "status": "stated",
+          "text": "Chose a new protocol generation over optional or legacy command metadata, because either mixed-generation direction must take established compatibility handling before execution.",
+          "pr": 132
+        }
+      ]
+    },
+    {
+      "number": 133,
+      "title": "Unify daemon execution failure vocabulary",
+      "body": "## Context\n\nExecution failures previously used an app-owned outer union, a colliding worker-thread alias, and repeated validators and classification branches. This change gives `@symnav/daemon` one outer authority while preserving every serialized string and client outcome.\n\n## Shape\n\nBefore — outer execution failures had several app-owned authorities, while worker failures reused the same type name:\n\n```mermaid\nflowchart LR\n    Protocol[\"daemon-protocol<br/>outer failure union\"]\n    Workspace[\"WorkspaceDaemon<br/>inline terminal precedence\"]\n    Transport[\"LocalDaemonTransport<br/>duplicate validator\"]\n    Logger[\"DaemonLogger<br/>duplicate value set\"]\n    Ledger[\"ledger, status, wire,<br/>and client paths\"]\n    Worker[\"worker protocol<br/>colliding failure alias\"]\n\n    Workspace -->|\"uses outer type\"| Protocol\n    Transport -->|\"uses copied values\"| Protocol\n    Logger -->|\"uses copied values\"| Protocol\n    Ledger -->|\"uses outer type\"| Protocol\n\n    style Protocol fill:#ffdddd,stroke:#cc0000\n    style Workspace fill:#fff2cc,stroke:#bf9000\n    style Transport fill:#fff2cc,stroke:#bf9000\n    style Logger fill:#fff2cc,stroke:#bf9000\n    style Ledger fill:#fff2cc,stroke:#bf9000\n    style Worker fill:#ffdddd,stroke:#cc0000\n```\n\nAfter — daemon owns the closed outer vocabulary and precedence; the CLI supplies app-owned error identity facts:\n\n```mermaid\nflowchart LR\n    Authority[\"@symnav/daemon<br/>DaemonExecutionFailures\"]\n    Boundary[\"WorkspaceDaemon<br/>instanceof facts\"]\n    Consumers[\"ledger, transport, logger,<br/>status, wire, and client\"]\n    WorkerType[\"@symnav/daemon<br/>DaemonWorkerFailureCode\"]\n    WorkerPath[\"worker protocol<br/>and entry\"]\n\n    Boundary -->|\"uses fact-only classifier\"| Authority\n    Consumers -->|\"uses type and validator\"| Authority\n    WorkerPath -->|\"uses distinct inner type\"| WorkerType\n\n    style Authority fill:#ddffdd,stroke:#008800\n    style Boundary fill:#fff2cc,stroke:#bf9000\n    style Consumers fill:#fff2cc,stroke:#bf9000\n    style WorkerType fill:#ddffdd,stroke:#008800\n    style WorkerPath fill:#fff2cc,stroke:#bf9000\n```\n\nLegend: green = added authority; red = removed authority or collision; yellow = changed path.\n\n- Outer classification preserves resource, capacity, worker-exit, and shutdown precedence.\n- Worker values remain `initialization`, `execution`, `protocol`, and `resource` on the wire.\n- Accepted terminal failures retain their controlled client result and never replay work.\n\n## Where it lives\n\n```text\n.\n├── packages/daemon/\n│   ├── src/\n│   │   ├── ++ daemon-execution-failure.ts       # owns outer validation, precedence, and both vocabularies\n│   │   ├── ++ daemon-execution-failure.test.ts  # locks closed sets and precedence\n│   │   ├── ** host-contract.test.ts             # locks source and declaration exports\n│   │   └── ** index.ts                          # exposes root runtime and type contracts\n│   └── test/\n│       └── ** public-import.test.ts              # verifies consumer-visible imports\n└── apps/cli/src/daemon/\n    ├── ** workspace-daemon.ts                   # derives app-owned identity facts\n    ├── ** daemon-navigation-worker-protocol.ts  # adopts distinct worker failure type\n    ├── ** daemon-navigation-worker-entry.ts     # emits unchanged worker values\n    ├── ** ... 5 outer consumer files            # protocol, ledger, transport, logging, and client mapping\n    └── ** ... 5 colocated test files             # lock boundaries, subtype behavior, and no replay\n```\n\nLegend: `++` added, `**` changed, `~~` moved, `--` removed.\n\n## Public surface\n\nAdded at the `@symnav/daemon` root:\n\n```ts\nexport type DaemonExecutionFailureCode = (typeof executionFailureCodes)[number];\nexport type DaemonWorkerFailureCode = \"initialization\" | \"execution\" | \"protocol\" | \"resource\";\nexport interface DaemonExecutionFailureContext {\n  readonly resourceInterrupted: boolean;\n  readonly responseCapacityExceeded: boolean;\n  readonly workerExited: boolean;\n  readonly shutdownFailureCode?: \"stopping\" | \"controlled-resource\";\n  readonly shutdownStarted: boolean;\n}\nexport class DaemonExecutionFailures {\n  static isCode(value: unknown): value is DaemonExecutionFailureCode;\n  static classify(context: DaemonExecutionFailureContext): DaemonExecutionFailureCode;\n}\n```\n\n## Decisions\n\n- Chose one private outer tuple with a derived union over repeated app-local unions, because runtime validation and compile-time vocabulary must change together.\n- Chose a distinct worker type with no shared literals over retaining the colliding alias, because inner worker failures and outer request-completion failures are different domains.\n- Chose a pure context classifier over lifecycle-specific branching at the call site, because precedence is exhaustively testable without constructing a workspace daemon.\n- Chose app-owned `instanceof` fact derivation over constructor-name or `error.name` reflection, because it preserves subtype behavior without reversing package dependencies or accepting spoofed errors.\n\n## Look here\n\n- `packages/daemon/src/daemon-execution-failure.ts:26`\n- `apps/cli/src/daemon/workspace-daemon.ts:641`\n- `apps/cli/src/daemon/local-daemon-transport.ts:1347`\n",
+      "commits": [
+        {
+          "sha": "47e5d214286daefa168de651339618b8dd7841ee",
+          "subject": "Specify daemon failure vocabularies",
+          "body": ""
+        },
+        {
+          "sha": "b24fc749be2563a281f36a40739726801edf43e5",
+          "subject": "Define daemon execution failure authority",
+          "body": ""
+        },
+        {
+          "sha": "6dbd687b5d35aa163ceac507964f15368c9ed96f",
+          "subject": "Rename the worker failure code type",
+          "body": ""
+        },
+        {
+          "sha": "fd8175c90b930067b83d5cadb882cc148ffa6b18",
+          "subject": "Specify execution failure boundaries",
+          "body": ""
+        },
+        {
+          "sha": "04ef2e5d56a4d864631a0b122a9ea6a456e6f9b9",
+          "subject": "Centralize execution failure classification",
+          "body": ""
+        },
+        {
+          "sha": "b62f93c541f1cfef93b73c3acb17ad1fa47f195c",
+          "subject": "Resolve failure contract source URL portably",
+          "body": ""
+        }
+      ],
+      "base": "agent/daemon-architecture-refactor-part-09-command-vocabulary",
+      "head": "agent/daemon-architecture-refactor-part-10-execution-failure-vocabulary",
+      "group": "identity",
+      "decisions": [
+        {
+          "id": "d133-1",
+          "label": "One outer failure vocabulary",
+          "status": "stated",
+          "text": "Chose one private outer tuple with a derived union over repeated app-local unions, because runtime validation and compile-time vocabulary must change together.",
+          "pr": 133
+        },
+        {
+          "id": "d133-2",
+          "label": "Separate worker failure domain",
+          "status": "stated",
+          "text": "Chose a distinct worker type with no shared literals over retaining the colliding alias, because inner worker failures and outer request-completion failures are different domains.",
+          "pr": 133
+        },
+        {
+          "id": "d133-3",
+          "label": "Pure failure-precedence classifier",
+          "status": "stated",
+          "text": "Chose a pure context classifier over lifecycle-specific branching at the call site, because precedence is exhaustively testable without constructing a workspace daemon.",
+          "pr": 133
+        },
+        {
+          "id": "d133-4",
+          "label": "Derive facts with instanceof",
+          "status": "stated",
+          "text": "Chose app-owned `instanceof` fact derivation over constructor-name or `error.name` reflection, because it preserves subtype behavior without reversing package dependencies or accepting spoofed errors.",
+          "pr": 133
+        }
+      ]
+    },
+    {
+      "number": 134,
+      "title": "Make daemon admission rejection authoritative",
+      "body": "## Context\n\nExecution admission mixed authentication, daemon state, duplicate compatibility, wire framing, and retry booleans in app-owned branches. `@symnav/daemon` now owns rejection order and retry meaning without changing disconnect, sampling, queue, duplicate, or fallback behavior.\n\n## Shape\n\nBefore — app code owned admission order, rejection frames, and retry interpretation:\n\n```mermaid\nflowchart LR\n    Workspace[\"WorkspaceDaemon<br/>hand-ordered branches +<br/>mutation-time duplicate check\"]\n    Protocol[\"daemon-protocol<br/>app-owned rejection union\"]\n    Transport[\"LocalDaemonTransport<br/>copied code validator +<br/>trusted retrySafe\"]\n    Fallback[\"dispatcher fallback<br/>local replay gate\"]\n\n    Workspace -->|\"uses caller-supplied retrySafe\"| Protocol\n    Transport -->|\"uses copied rejection set\"| Protocol\n    Fallback -->|\"uses wire retrySafe\"| Transport\n\n    style Workspace fill:#ffdddd,stroke:#cc0000\n    style Protocol fill:#ffdddd,stroke:#cc0000\n    style Transport fill:#ffdddd,stroke:#cc0000\n```\n\nAfter — daemon contracts own first-failure decisions, frame consistency, and code-derived retry safety:\n\n```mermaid\nflowchart LR\n    Ledger[\"AcceptedRequestLedger<br/>side-effect-free compatibility\"]\n    Workspace[\"WorkspaceDaemon<br/>projects admission context\"]\n    Policy[\"@symnav/daemon<br/>DaemonAdmissionPolicy\"]\n    Rejections[\"@symnav/daemon<br/>DaemonAdmissionRejections\"]\n    Transport[\"LocalDaemonTransport<br/>validates and projects code\"]\n    Fallback[\"dispatcher fallback<br/>local replay gate\"]\n\n    Workspace -->|\"uses compatibility\"| Ledger\n    Workspace -->|\"uses ordered decision\"| Policy\n    Workspace -->|\"uses derived frame\"| Rejections\n    Transport -->|\"uses consistency + retry table\"| Rejections\n    Fallback -->|\"uses derived retrySafe\"| Transport\n\n    style Ledger fill:#fff2cc,stroke:#bf9000\n    style Workspace fill:#fff2cc,stroke:#bf9000\n    style Policy fill:#ddffdd,stroke:#008800\n    style Rejections fill:#ddffdd,stroke:#008800\n    style Transport fill:#fff2cc,stroke:#bf9000\n```\n\nLegend: green = added authority; red = removed authority; yellow = changed path.\n\n- Guard precedence is authentication, worker readiness, resource pressure, queue state, then duplicate compatibility.\n- Authentication mismatch still disconnects without a rejection frame or resource sample.\n- Authenticated `not-ready`, `resource-pressure`, and `draining` rejections remain replayable; `incompatible` does not.\n\n## Where it lives\n\n```text\n.\n├── packages/daemon/\n│   ├── src/\n│   │   ├── ++ daemon-admission.ts             # owns guards, frames, validation, and retry safety\n│   │   ├── ++ daemon-admission.test.ts        # locks pairwise precedence and retry table\n│   │   ├── ** host-contract.test.ts           # locks exact source and declaration surface\n│   │   └── ** index.ts                        # exposes admission contracts at package root\n│   └── test/\n│       └── ** public-import.test.ts            # verifies consumer-visible imports\n└── apps/cli/src/daemon/\n    ├── ** workspace-daemon.ts                 # projects state into synchronous policy decisions\n    ├── ** accepted-request-ledger.ts          # reports compatibility without mutation\n    ├── ** local-daemon-transport.ts           # validates frames and derives retry projection\n    ├── ** daemon-protocol.ts                  # reuses daemon-owned frame vocabulary\n    ├── ** workspace-request-queue.ts          # reuses daemon-owned queue-state vocabulary\n    └── ** ... 4 test files                    # preserve admission, wire, duplicate, and fallback behavior\n```\n\nLegend: `++` added, `**` changed, `~~` moved, `--` removed.\n\n## Public surface\n\nAdded at the `@symnav/daemon` root:\n\n```ts\nexport type DaemonExecuteRejectionCode =\n  | \"not-ready\"\n  | \"draining\"\n  | \"resource-pressure\"\n  | \"incompatible\";\nexport type AcceptedRequestCompatibility = \"unseen\" | \"matching\" | \"conflicting\";\nexport type WorkspaceRequestQueueState = \"accepting\" | \"draining\" | \"closed\";\nexport type DaemonExecutionCoordinates = {\n  readonly instanceId: string;\n  readonly processToken: string;\n  readonly requestId: string;\n};\nexport type DaemonRejectedExecutionFrame = {\n  readonly kind: \"rejected\";\n  readonly instanceId: string;\n  readonly processToken: string;\n  readonly requestId: string;\n  readonly code: DaemonExecuteRejectionCode;\n  readonly retrySafe: boolean;\n};\nexport interface DaemonAdmissionContext {\n  readonly request: unknown;\n  readonly authenticated: boolean;\n  readonly workerReady: boolean;\n  readonly resourceAdmissionPaused: boolean;\n  readonly queueState: WorkspaceRequestQueueState;\n  readonly compatibility: AcceptedRequestCompatibility;\n}\nexport interface DaemonAdmissionGuard {\n  rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined;\n}\nexport type DaemonAdmissionRejectionCode = \"authentication\" | DaemonExecuteRejectionCode;\nexport type DaemonAdmissionDecision =\n  | { readonly kind: \"accept\" }\n  | { readonly kind: \"disconnect\"; readonly code: \"authentication\" }\n  | { readonly kind: \"reject\"; readonly code: DaemonExecuteRejectionCode };\nexport class DaemonAdmissionPolicy {\n  decide(context: DaemonAdmissionContext): DaemonAdmissionDecision;\n}\nexport class DaemonAdmissionRejections {\n  static retrySafe(code: DaemonExecuteRejectionCode): boolean;\n  static frame(\n    code: DaemonExecuteRejectionCode,\n    coordinates: DaemonExecutionCoordinates,\n  ): DaemonRejectedExecutionFrame;\n  static assertConsistent(frame: DaemonRejectedExecutionFrame): void;\n}\n```\n\n## Decisions\n\n- Chose explicit guard classes over inline conditionals, because first-failure order is visible and exhaustively testable as one policy.\n- Chose side-effect-free ledger compatibility over mutation-time corruption handling, because conflicts must reject without changing accepted state.\n- Chose code-derived retry safety over trusting wire booleans, because contradictory frames must be corrupt rather than replayable.\n- Chose `unknown` for the temporary request field over importing the CLI request type, because `@symnav/daemon` must remain dependency-free until the daemon-owned executor contract replaces it.\n\n## Look here\n\n- `packages/daemon/src/daemon-admission.ts:85`\n- `apps/cli/src/daemon/workspace-daemon.ts:556`\n- `apps/cli/src/daemon/local-daemon-transport.ts:1293`\n",
+      "commits": [
+        {
+          "sha": "97edfebfbf6b452ada48b3e991febd33b7d85457",
+          "subject": "Characterize authentication admission disconnect",
+          "body": ""
+        },
+        {
+          "sha": "bb218351c1b20ed9b844328286809f7b00deb63f",
+          "subject": "Characterize ordered admission boundaries",
+          "body": ""
+        },
+        {
+          "sha": "e75156fdb3bd9a49f077593af8337bbd572e7f2b",
+          "subject": "Characterize nonawaited admission sampling",
+          "body": ""
+        },
+        {
+          "sha": "4bfd4c1c8a55d316815759a4e693e645bd8381e0",
+          "subject": "Specify daemon admission contracts",
+          "body": ""
+        },
+        {
+          "sha": "2f66bf873fc45a3bb32010457b169c31bd8d8ea2",
+          "subject": "Define daemon admission contracts",
+          "body": ""
+        },
+        {
+          "sha": "dc9495029d361e75ec17c1b64c7f728d7ab5cbf0",
+          "subject": "Specify ordered daemon admission policy",
+          "body": ""
+        },
+        {
+          "sha": "f35a9d55926cdbc87600be8cf4f0258cf874e6fb",
+          "subject": "Enforce ordered daemon admission policy",
+          "body": ""
+        },
+        {
+          "sha": "105256cd1232e9c09b729547d77a7d76fef526dd",
+          "subject": "Specify daemon admission rejection authority",
+          "body": ""
+        },
+        {
+          "sha": "e607252979c8a5f2d70ff6eecd5d004739404ab4",
+          "subject": "Define daemon admission rejection authority",
+          "body": ""
+        },
+        {
+          "sha": "37ead00236fbbf2292a219ade73184180ffd20fa",
+          "subject": "Specify code-derived admission retry safety",
+          "body": ""
+        },
+        {
+          "sha": "686c63904a56c44538af3b80ae38e8939a443fc2",
+          "subject": "Derive admission retry safety from rejection codes",
+          "body": ""
+        },
+        {
+          "sha": "2a98b1d597384340f32019c06bab006f083155ec",
+          "subject": "Specify side-effect-free duplicate compatibility",
+          "body": ""
+        },
+        {
+          "sha": "ad0d459435a1799eb24905055e71ef423f9ee241",
+          "subject": "Expose accepted-request compatibility",
+          "body": ""
+        },
+        {
+          "sha": "f80e430d4d88941000c5790de1fcac638ce32e8b",
+          "subject": "Route execution admission through ordered guards",
+          "body": ""
+        },
+        {
+          "sha": "f51201124276a143efd8ba1bb99f081cc0dded0a",
+          "subject": "Resolve admission contract source URL portably",
+          "body": ""
+        }
+      ],
+      "base": "agent/daemon-architecture-refactor-part-10-execution-failure-vocabulary",
+      "head": "agent/daemon-architecture-refactor-part-11-admission-rejection",
+      "group": "identity",
+      "decisions": [
+        {
+          "id": "d134-1",
+          "label": "Ordered admission guards",
+          "status": "stated",
+          "text": "Chose explicit guard classes over inline conditionals, because first-failure order is visible and exhaustively testable as one policy.",
+          "pr": 134
+        },
+        {
+          "id": "d134-2",
+          "label": "Check duplicates without mutation",
+          "status": "stated",
+          "text": "Chose side-effect-free ledger compatibility over mutation-time corruption handling, because conflicts must reject without changing accepted state.",
+          "pr": 134
+        },
+        {
+          "id": "d134-3",
+          "label": "Rejection code determines retry safety",
+          "status": "stated",
+          "text": "Chose code-derived retry safety over trusting wire booleans, because contradictory frames must be corrupt rather than replayable.",
+          "pr": 134
+        },
+        {
+          "id": "d134-4",
+          "label": "Dependency-free unknown request field",
+          "status": "stated",
+          "text": "Chose `unknown` for the temporary request field over importing the CLI request type, because `@symnav/daemon` must remain dependency-free until the daemon-owned executor contract replaces it.",
+          "pr": 134
+        }
+      ]
+    },
+    {
+      "number": 135,
+      "title": "Execute daemon work through an injected host module",
+      "body": "## Context\n\nDaemon workers constructed CLI and core execution objects directly, despite `@symnav/daemon` needing to remain free of internal package dependencies. This range injects the CLI executor through an absolute module URL and preserves execution, output, diagnostics, readiness, and resource-reporting behavior.\n\n## Shape\n\nBefore — worker code owned host-specific execution construction:\n\n```mermaid\nflowchart LR\n    Worker[\"Daemon worker<br/>CLI/core imports\"]\n    Adapter[\"RetainedWorkspaceProgram\"]\n    Session[\"WorkspaceSession +<br/>CliProgramExecutor\"]\n\n    Worker -->|\"constructs\"| Adapter\n    Adapter -->|\"constructs\"| Session\n\n    style Worker fill:#fff2cc,stroke:#bf9000\n    style Adapter fill:#ffdddd,stroke:#cc0000\n```\n\nAfter — CLI supplies a validated host module through process and worker configuration:\n\n```mermaid\nflowchart LR\n    Composition[\"CLI composition\"]\n    Configuration[\"daemon process +<br/>worker configuration\"]\n    Worker[\"Daemon worker<br/>daemon contracts only\"]\n    Loader[\"DaemonExecutorModuleLoader\"]\n    Executor[\"CLI DaemonExecutor\"]\n    Session[\"WorkspaceSession +<br/>CliProgramExecutor\"]\n\n    Composition -->|\"absolute file URL\"| Configuration\n    Configuration -->|\"worker data\"| Worker\n    Worker -->|\"module URL + host options\"| Loader\n    Loader -->|\"validated factory result\"| Executor\n    Executor -->|\"retained session\"| Session\n\n    style Composition fill:#fff2cc,stroke:#bf9000\n    style Configuration fill:#fff2cc,stroke:#bf9000\n    style Worker fill:#fff2cc,stroke:#bf9000\n    style Loader fill:#ddffdd,stroke:#008800\n    style Executor fill:#ddffdd,stroke:#008800\n```\n\nLegend: green = added ownership; red = removed ownership; yellow = changed path.\n\n- Worker output is sequenced and rechunked at the daemon policy cap before each acknowledgement.\n- Recursive diagnostics remain opaque across the host boundary while known timing and refresh fields are projected defensively.\n- The final test-only commit resolves Phase 12's material carry: deferred adapter sampling and a no-op worker callback now fail mutation-resistant request-local heap tests.\n\n## Where it lives\n\n```text\n.\n├── packages/daemon/\n│   ├── ** src/daemon-diagnostics.ts                   # validates recursive JSON-like diagnostics\n│   ├── ** src/daemon-executor.ts                      # owns host contracts and module loading\n│   ├── ** src/index.ts                                # exposes the daemon package surface\n│   └── ** ... 3 contract and public-import tests      # lock the dependency-free boundary\n└── apps/cli/\n    ├── ++ src/daemon-executor.ts                      # implements the injected host factory\n    ├── ++ src/daemon-executor.test.ts                 # proves synchronous phase sampling\n    ├── ** src/commands/daemon/register-daemon-command.ts # supplies the executor module URL\n    ├── ** src/daemon/\n    │   ├── ** daemon-navigation-worker-entry.ts       # loads, validates, executes, and samples\n    │   ├── ** daemon-navigation-worker-protocol.ts    # carries daemon-owned messages\n    │   ├── ** daemon-process-launcher.ts              # propagates strict process configuration\n    │   ├── ++ local-daemon-output.ts                  # bridges daemon output to CLI storage\n    │   ├── -- retained-workspace-program.ts           # superseded worker-local adapter\n    │   └── ** ... 20 files                            # preserve lifecycle and transport behavior\n    └── test/\n        ├── ++ helpers/injected-daemon-executor-fixture.mjs\n        ├── ++ helpers/resource-sampling-daemon-executor-fixture.mjs\n        └── ** ... 7 files                             # preserve process, parity, and lifecycle behavior\n```\n\nLegend: `++` added, `**` changed, `~~` moved, `--` removed.\n\n## Public surface\n\nAdded at the `@symnav/daemon` root and CLI executor module:\n\n```ts\nexport class DaemonDiagnosticValues {\n  static isDiagnostics(value: unknown): value is DaemonDiagnostics;\n}\nexport interface DaemonSequencedOutputRecord extends DaemonOutputRecord { readonly sequence: number; }\nexport interface DaemonOutputSink { append(record: DaemonSequencedOutputRecord): Promise<void>; }\nexport class DaemonExecutorModuleLoader {\n  static load(moduleUrl: DaemonExecutorModuleUrl, options: DaemonExecutorFactoryOptions): Promise<DaemonExecutor>;\n}\nexport function createDaemonExecutor(options: DaemonExecutorFactoryOptions): DaemonExecutor;\nexport function daemonExecutorModuleUrl(): DaemonExecutorModuleUrl;\n```\n\nChanged:\n\n```ts\nexport interface DaemonExecutorFactoryOptions {\n  readonly stateDirectory: string;\n  readonly productVersion: string;\n  readonly sampleResources: () => void;\n}\n```\n\n## Decisions\n\n- Chose an absolute injected file URL over importing CLI code from daemon mechanisms, because the daemon package must keep zero internal dependencies.\n- Chose recursive JSON-like diagnostics over a CLI refresh-summary contract, because worker telemetry can project known fields without owning host-specific diagnostics.\n- Chose worker-side rechunking and sequencing over transport metadata in executor output, because chunk limits and acknowledgement flow belong to the worker protocol.\n- Chose runtime validation over trusting dynamically imported TypeScript shapes, because invalid host modules must retain existing initialization and execution failure handling.\n- Chose a daemon-owned no-payload sampling callback over sharing CLI command-phase types, because synchronous phase boundaries must update the active request's heap high-water without reversing dependency direction.\n\n## Look here\n\n- `packages/daemon/src/daemon-executor.ts:105`\n- `apps/cli/src/daemon/daemon-navigation-worker-entry.ts:89`\n- `apps/cli/src/daemon-executor.ts:53`\n",
+      "commits": [
+        {
+          "sha": "cb7acede90ecbd049d389d2e894bcb2bc42bca3d",
+          "subject": "Specify the CLI daemon executor",
+          "body": ""
+        },
+        {
+          "sha": "86cbadc59091373441cb18db5a906d8ef51eca59",
+          "subject": "Implement the CLI daemon executor",
+          "body": ""
+        },
+        {
+          "sha": "6bd8c92b029261cc193eb8c28b287f0f429f0d3c",
+          "subject": "Specify daemon output and diagnostic contracts",
+          "body": ""
+        },
+        {
+          "sha": "d384ae398714575e00b6bb11b983336d4b6b1544",
+          "subject": "Define daemon output and diagnostic contracts",
+          "body": ""
+        },
+        {
+          "sha": "98595d68285a236ccfc0829e3a25f0ebc474972b",
+          "subject": "Specify daemon-owned worker messages",
+          "body": ""
+        },
+        {
+          "sha": "b722a4a6f16768c7ebfba1d33ee3e1a210db2c50",
+          "subject": "Use daemon-owned worker messages",
+          "body": ""
+        },
+        {
+          "sha": "c139cbe94d841247c0ba16b8957af3ce50d5fc5e",
+          "subject": "Specify executor module URL propagation",
+          "body": ""
+        },
+        {
+          "sha": "9bfc705527257f011032c2f322deca5d5eead39a",
+          "subject": "Thread the executor module URL",
+          "body": ""
+        },
+        {
+          "sha": "93e93c4997ea7e7e3b97bbd3ee8eac3275ff49d6",
+          "subject": "Specify strict daemon process configuration",
+          "body": ""
+        },
+        {
+          "sha": "c7a51af6fa0e23b26728e9fe4c4089eac7d4c920",
+          "subject": "Validate daemon process configuration exactly",
+          "body": ""
+        },
+        {
+          "sha": "d176d50b8acbff3eb81d33d813500524f2591eef",
+          "subject": "Specify executor module loading",
+          "body": ""
+        },
+        {
+          "sha": "0c2c8fccd15672c8c0f018d4036eb99a888c17db",
+          "subject": "Load injected daemon executor modules",
+          "body": ""
+        },
+        {
+          "sha": "169115c8057f6bc441d3745be4e2e43296472494",
+          "subject": "Specify injected worker execution",
+          "body": ""
+        },
+        {
+          "sha": "d5f127b6ad0cb6f1524036f0760dc050071ad896",
+          "subject": "Execute workers through injected host modules",
+          "body": ""
+        },
+        {
+          "sha": "47853f2e2a32c158aaa6e0bb284f3aff140f5418",
+          "subject": "Prove injected executor readiness parity",
+          "body": ""
+        },
+        {
+          "sha": "c6bea77410cedc9357663c3d95afc9ab2b6e073b",
+          "subject": "Prove synchronous worker resource sampling",
+          "body": ""
+        },
+        {
+          "sha": "38dfceb5548025edf0d23d37051535981c6de819",
+          "subject": "Cover encoded executor module paths",
+          "body": ""
+        },
+        {
+          "sha": "0d5218023c3043ba26ecf847746861c454f89922",
+          "subject": "Load executor modules through the host runtime",
+          "body": ""
+        },
+        {
+          "sha": "323888b8df93cedde4f49494c4e56c42a9410d6f",
+          "subject": "Budget retained executor integration tests",
+          "body": ""
+        }
+      ],
+      "base": "agent/daemon-architecture-refactor-part-11-admission-rejection",
+      "head": "agent/daemon-architecture-refactor-part-12-injected-host-module",
+      "group": "host",
+      "decisions": [
+        {
+          "id": "d135-1",
+          "label": "Inject an absolute executor module URL",
+          "status": "stated",
+          "text": "Chose an absolute injected file URL over importing CLI code from daemon mechanisms, because the daemon package must keep zero internal dependencies.",
+          "pr": 135
+        },
+        {
+          "id": "d135-2",
+          "label": "Opaque recursive diagnostics",
+          "status": "stated",
+          "text": "Chose recursive JSON-like diagnostics over a CLI refresh-summary contract, because worker telemetry can project known fields without owning host-specific diagnostics.",
+          "pr": 135
+        },
+        {
+          "id": "d135-3",
+          "label": "Worker sequences and rechunks bytes",
+          "status": "stated",
+          "text": "Chose worker-side rechunking and sequencing over transport metadata in executor output, because chunk limits and acknowledgement flow belong to the worker protocol.",
+          "pr": 135
+        },
+        {
+          "id": "d135-4",
+          "label": "Validate the imported executor",
+          "status": "stated",
+          "text": "Chose runtime validation over trusting dynamically imported TypeScript shapes, because invalid host modules must retain existing initialization and execution failure handling.",
+          "pr": 135
+        },
+        {
+          "id": "d135-5",
+          "label": "Synchronous resource sampling callback",
+          "status": "stated",
+          "text": "Chose a daemon-owned no-payload sampling callback over sharing CLI command-phase types, because synchronous phase boundaries must update the active request's heap high-water without reversing dependency direction.",
+          "pr": 135
+        }
+      ]
+    },
+    {
+      "number": 136,
+      "title": "Render daemon lifecycle reports in renderer",
+      "body": "## Context\n\nThe [daemon architecture contract](plans/005/daemon-architecture-functional-spec.md#lifecycle-rendering) assigns lifecycle formatting to `@symnav/renderer`, but CLI daemon internals still owned start, status, and stop output bytes. The move must preserve every text/JSON byte and leave format selection, writes, and existing error wrappers in CLI.\n\n## Shape\n\nBefore — CLI command registration depended on an app-internal formatter and app-owned report types:\n\n```mermaid\nflowchart LR\n    Command[\"CLI command registration<br/>selects format and writes bytes\"]\n    Renderer[\"CLI DaemonLifecycleRenderer<br/>&lt;&lt;internal&gt;&gt;\"]\n    Reports[\"CLI daemon-protocol<br/>lifecycle report types\"]\n\n    Command -->|\"uses\"| Renderer\n    Renderer -->|\"uses\"| Reports\n\n    classDef removed fill:#ffebe9,stroke:#cf222e,color:#24292f\n    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n    class Command changed\n    class Renderer removed\n```\n\nAfter — renderer owns formatting against public daemon reports; CLI retains selection and terminal effects:\n\n```mermaid\nflowchart LR\n    Command[\"CLI command registration<br/>selects format and writes bytes\"]\n    Renderer[\"@symnav/renderer<br/>DaemonLifecycleRenderer\"]\n    Reports[\"@symnav/daemon<br/>public lifecycle reports\"]\n\n    Command -->|\"uses\"| Renderer\n    Renderer -->|\"uses\"| Reports\n\n    classDef added fill:#dafbe1,stroke:#1a7f37,color:#24292f\n    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n    class Command changed\n    class Renderer added\n```\n\nLegend: green = added ownership; red = removed ownership; yellow = changed dependency; default = unchanged.\n\n## Where it lives\n\n```text\n.\n├── packages/renderer/src/\n│   ├── ** index.ts                                      # exports lifecycle rendering at package root\n│   └── lifecycle/\n│       ├── ~~ daemon-lifecycle-renderer.ts              # moved from apps/cli/src/daemon/\n│       └── ++ daemon-lifecycle-renderer.test.ts         # locks lifecycle bytes at their owner\n├── apps/cli/src/\n│   ├── commands/daemon/\n│   │   ├── ** register-daemon-command.ts                # consumes the public renderer\n│   │   └── ++ register-daemon-command.test.ts           # locks selection and unchanged forwarding\n│   └── daemon/\n│       └── -- daemon-lifecycle-renderer.test.ts         # superseded CLI-owned coverage\n└── meta-tests/src/\n    └── ++ renderer-package.test.ts                      # enforces dependency and import boundaries\n```\n\nLegend: `++` added, `**` changed, `~~` moved, `--` removed.\n\n## Public surface\n\nAdded at the `@symnav/renderer` root:\n\n```ts\nexport class DaemonLifecycleRenderer {\n  static renderStartText(result: DaemonStartResult): string;\n  static renderStartJson(result: DaemonStartResult): string;\n  static renderStatusText(results: readonly RunningDaemonStatus[]): string;\n  static renderStatusJson(results: readonly RunningDaemonStatus[]): string;\n  static renderStopText(result: DaemonStopResult): string;\n  static renderStopJson(result: DaemonStopResult): string;\n}\n```\n\n## Decisions\n\n- Chose one stateless renderer class over command-specific formatter functions, because start, status, and stop bytes form one cohesive public rendering unit.\n- Chose public `@symnav/daemon` report imports over daemon internal subpaths, because renderer depends on daemon contracts rather than their source layout.\n\n## Look here\n\n- `packages/renderer/src/lifecycle/daemon-lifecycle-renderer.ts:41`\n- `apps/cli/src/commands/daemon/register-daemon-command.test.ts:85`\n- `meta-tests/src/renderer-package.test.ts:19`\n",
+      "commits": [
+        {
+          "sha": "7aa52ae132da150ca2a30976699289c4d2ff9000",
+          "subject": "Lock daemon lifecycle rendering bytes",
+          "body": ""
+        },
+        {
+          "sha": "57d3e5afcf903c3cc8b51537318e22dfb47d326b",
+          "subject": "Specify renderer-owned daemon lifecycle output",
+          "body": ""
+        },
+        {
+          "sha": "3147c1f342409775ad8e277dca867e9983335efb",
+          "subject": "Render daemon lifecycle reports in renderer",
+          "body": ""
+        },
+        {
+          "sha": "ec1756098b14574b738dc7f846a7b40927a78fb9",
+          "subject": "Specify CLI lifecycle renderer delegation",
+          "body": ""
+        },
+        {
+          "sha": "26e24735413e3fe1b88991dadedda61648d6b42c",
+          "subject": "Delegate daemon lifecycle rendering from CLI",
+          "body": ""
+        }
+      ],
+      "base": "agent/daemon-architecture-refactor-part-12-injected-host-module",
+      "head": "agent/daemon-architecture-refactor-part-13-lifecycle-renderer",
+      "group": "host",
+      "decisions": [
+        {
+          "id": "d136-1",
+          "label": "One stateless lifecycle renderer",
+          "status": "stated",
+          "text": "Chose one stateless renderer class over command-specific formatter functions, because start, status, and stop bytes form one cohesive public rendering unit.",
+          "pr": 136
+        },
+        {
+          "id": "d136-2",
+          "label": "Render public daemon reports",
+          "status": "stated",
+          "text": "Chose public `@symnav/daemon` report imports over daemon internal subpaths, because renderer depends on daemon contracts rather than their source layout.",
+          "pr": 136
+        }
+      ]
+    },
+    {
+      "number": 137,
+      "title": "Isolate daemon transport framing and validation",
+      "body": "## Context\n\nThe [daemon architecture contract](plans/005/daemon-architecture-functional-spec.md#included) calls for `LocalDaemonTransport` to split into codec, validator, client, and server responsibilities. One socket facade still owned wire framing, protocol validation, correlation, and every consumer-facing transport method.\n\n## Shape\n\nBefore — consumers and protocol mechanics converged on one concrete transport:\n\n```mermaid\nflowchart LR\n    Consumers[\"Daemon consumers\"]\n    Transport[\"LocalDaemonTransport\"]\n    Protocol[\"Framing + validation<br/>&lt;&lt;embedded&gt;&gt;\"]\n    Sockets[\"Node sockets\"]\n\n    Consumers -->|\"uses\"| Transport\n    Transport -->|\"uses\"| Protocol\n    Transport -->|\"uses\"| Sockets\n\n    classDef removed fill:#ffebe9,stroke:#cf222e,color:#24292f\n    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n    class Consumers,Transport changed\n    class Protocol removed\n```\n\nAfter — consumers use operation-shaped ports while the facade delegates protocol concerns:\n\n```mermaid\nflowchart LR\n    Consumers[\"Daemon consumers\"]\n    Lifecycle[\"Lifecycle ports<br/>&lt;&lt;internal&gt;&gt;\"]\n    Execution[\"Execution port<br/>&lt;&lt;internal&gt;&gt;\"]\n    Server[\"Request-server port<br/>&lt;&lt;internal&gt;&gt;\"]\n    Transport[\"LocalDaemonTransport<br/>Node socket facade\"]\n    Codec[\"DaemonWireCodec\"]\n    Validator[\"DaemonProtocolValidator\"]\n    Sockets[\"Node sockets\"]\n\n    Consumers -->|\"uses\"| Lifecycle\n    Consumers -->|\"uses\"| Execution\n    Consumers -->|\"uses\"| Server\n    Transport -->|\"implements\"| Lifecycle\n    Transport -->|\"implements\"| Execution\n    Transport -->|\"implements\"| Server\n    Transport -->|\"uses\"| Codec\n    Transport -->|\"uses\"| Validator\n    Transport -->|\"uses\"| Sockets\n\n    classDef added fill:#dafbe1,stroke:#1a7f37,color:#24292f\n    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n    class Lifecycle,Execution,Server,Codec,Validator added\n    class Consumers,Transport changed\n```\n\nLegend: green = added boundary; red = removed embedded ownership; yellow = changed dependency or owner; default = unchanged.\n\n## Where it lives\n\n```text\n.\n└── apps/cli/src/daemon/\n    ├── ++ daemon-transport.ts              # operation-shaped lifecycle, execution, socket, and server ports\n    ├── ++ daemon-wire-codec.ts             # JSON and binary framing with independent capacity limits\n    ├── ++ daemon-protocol-validator.ts      # exact schemas, response correlation, and retry consistency\n    ├── ** local-daemon-transport.ts         # Node socket facade delegates framing and validation\n    ├── -- daemon-result-chunk-codec.ts      # binary chunk framing moved into wire codec ownership\n    └── ** ... 5 daemon consumers            # depend on the narrow ports they use\n```\n\nLegend: `++` added, `**` changed, `~~` moved, `--` removed.\n\n## Decisions\n\n- Chose operation-shaped transport interfaces over `LocalDaemonTransport` and consumer-local transport shapes, because lifecycle observation, execution, and request serving require different capabilities.\n- Chose separate control and transfer decoders over one binary-aware decoder, because only execution transfer connections may interpret high-bit frames as result chunks.\n- Chose response-kind-specific JSON limits over one control limit, because lifecycle responses retain ordinary JSON capacity while execution frames use the smaller execution-control cap.\n- Chose to map `DaemonProtocolError` at the facade boundary over changing `DaemonTransportError`, because delivery, authentication, compatibility, and retry classifications must remain stable.\n- Chose to absorb result-chunk header and digest validation into `DaemonWireCodec` over retaining a standalone chunk codec, because chunk integrity belongs to the binary frame format.\n\n## Look here\n\n- `apps/cli/src/daemon/daemon-transport.ts:15`\n- `apps/cli/src/daemon/daemon-wire-codec.ts:30`\n- `apps/cli/src/daemon/daemon-protocol-validator.ts:30`\n",
+      "commits": [
+        {
+          "sha": "90f7e5820c0e8d3882547c7b393924930ae57c01",
+          "subject": "Specify narrow daemon transport ports",
+          "body": ""
+        },
+        {
+          "sha": "749ed0b603779ffbdcc23b126f885a2dbdec5498",
+          "subject": "Depend on narrow daemon transport ports",
+          "body": ""
+        },
+        {
+          "sha": "e219eeca170b339f6ea901f73c3d27f1400d6ada",
+          "subject": "Specify daemon wire framing",
+          "body": ""
+        },
+        {
+          "sha": "aaf001643d92fe617d7fcb7a5a206ec335241d8f",
+          "subject": "Delegate daemon wire framing",
+          "body": ""
+        },
+        {
+          "sha": "c0473870c4c675eb9585e424fa88ea279649691f",
+          "subject": "Specify lifecycle response capacity",
+          "body": ""
+        },
+        {
+          "sha": "1c55e10dd42d29164893bc00de49d295d96b4fb1",
+          "subject": "Preserve lifecycle response capacity",
+          "body": ""
+        },
+        {
+          "sha": "4c9afef836f0ecf3c91c68a9f3c2be019553fc67",
+          "subject": "Specify daemon protocol validation",
+          "body": ""
+        },
+        {
+          "sha": "757c41a213838bec2a5754d270f2b2ea7e029330",
+          "subject": "Delegate daemon protocol validation",
+          "body": ""
+        }
+      ],
+      "base": "agent/daemon-architecture-refactor-part-13-lifecycle-renderer",
+      "head": "agent/daemon-architecture-refactor-part-14-transport-framing",
+      "group": "delivery",
+      "decisions": [
+        {
+          "id": "d137-1",
+          "label": "Transport ports match operations",
+          "status": "stated",
+          "text": "Chose operation-shaped transport interfaces over `LocalDaemonTransport` and consumer-local transport shapes, because lifecycle observation, execution, and request serving require different capabilities.",
+          "pr": 137
+        },
+        {
+          "id": "d137-2",
+          "label": "Separate control + transfer decoders",
+          "status": "stated",
+          "text": "Chose separate control and transfer decoders over one binary-aware decoder, because only execution transfer connections may interpret high-bit frames as result chunks.",
+          "pr": 137
+        },
+        {
+          "id": "d137-3",
+          "label": "Separate JSON capacity limits",
+          "status": "stated",
+          "text": "Chose response-kind-specific JSON limits over one control limit, because lifecycle responses retain ordinary JSON capacity while execution frames use the smaller execution-control cap.",
+          "pr": 137
+        },
+        {
+          "id": "d137-4",
+          "label": "Map errors at transport boundary",
+          "status": "stated",
+          "text": "Chose to map `DaemonProtocolError` at the facade boundary over changing `DaemonTransportError`, because delivery, authentication, compatibility, and retry classifications must remain stable.",
+          "pr": 137
+        },
+        {
+          "id": "d137-5",
+          "label": "Codec owns chunk integrity",
+          "status": "stated",
+          "text": "Chose to absorb result-chunk header and digest validation into `DaemonWireCodec` over retaining a standalone chunk codec, because chunk integrity belongs to the binary frame format.",
+          "pr": 137
+        }
+      ]
+    },
+    {
+      "number": 138,
+      "title": "Receive resumable daemon result transfers",
+      "body": "## Context\n\nPhase 14 isolated daemon wire framing and validation, but `LocalDaemonTransport` still owned result manifests, durable resume offsets, digest checks, and client output storage. This PR separates those stateful responsibilities without changing wire bytes, retry classification, output bytes, or lifecycle behavior.\n\n## Shape\n\nBefore — the socket facade retained every result-transfer concern:\n\n```mermaid\nflowchart LR\n    Caller[\"Execution caller\"] -->|\"uses\"| Transport[\"LocalDaemonTransport\"]\n    Transport -->|\"uses\"| Codec[\"DaemonWireCodec<br/>+ validator\"]\n    Transport -->|\"owns\"| Receipt[\"Manifest, offset,<br/>digest, storage\"]\n    Receipt -->|\"returns\"| Output[\"LocalDaemonOutput\"]\n\n    classDef removed fill:#ffebe9,stroke:#cf222e,color:#24292f\n    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n    class Transport changed\n    class Receipt,Output removed\n```\n\nAfter — one receiver survives reconnection while capture owns durable output:\n\n```mermaid\nflowchart LR\n    Caller[\"Execution caller\"] -->|\"uses\"| Transport[\"LocalDaemonTransport\"]\n    Transport -->|\"uses\"| Codec[\"DaemonWireCodec<br/>+ validator\"]\n    Transport -->|\"uses\"| Receiver[\"DaemonResultTransferReceiver\"]\n    Receiver -->|\"uses\"| Capture[\"DaemonClientResultCapture\"]\n    Capture -->|\"returns\"| Output[\"DaemonExecutorOutput\"]\n\n    classDef added fill:#dafbe1,stroke:#1a7f37,color:#24292f\n    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n    class Receiver,Capture added\n    class Transport,Output changed\n```\n\nLegend: green = added owner; red = removed embedded owner; yellow = changed responsibility or contract; default = unchanged.\n\n## Where it lives\n\n```text\n.\n└── apps/cli/\n    ├── src/\n    │   ├── ** command-execution-result.ts                 # replays the daemon executor output contract\n    │   └── daemon/\n    │       ├── ++ daemon-client-result-capture.ts         # durable inline/file capture and replay\n    │       ├── ++ daemon-result-transfer-receiver.ts      # resumable manifest/chunk/end state\n    │       ├── ** local-daemon-transport.ts               # delegates receipt and capture ownership\n    │       ├── -- local-daemon-output.ts                  # replaced by daemon-scoped capture\n    │       └── ** ... 2 dispatch contracts                # carry daemon executor results\n    └── test/e2e/daemon/\n        └── ** ... 2 parity suites                         # consume the opaque output contract\n```\n\nLegend: `++` added, `**` changed, `~~` moved, `--` removed.\n\n## Decisions\n\n- Chose daemon-scoped capture over extending CLI `OrderedCommandOutput`, because warm result storage must not depend on cold-command output internals.\n- Chose to advance resume offsets after awaited append over advancing on frame receipt, because fetch must restart at the first record not durably stored.\n- Chose one receiver across initial and fetch connections over rebuilding receipt state, because manifest identity, digest progress, and offsets must survive reconnection.\n- Chose fresh wire decoders per connection over retaining decoder state, because framing state ends at the socket boundary while transfer state continues.\n- Chose caller ownership after successful finish over receiver-owned cleanup, because replay and acknowledgement failures need one explicit disposal path.\n\n## Look here\n\n- `apps/cli/src/daemon/daemon-client-result-capture.ts:63`\n- `apps/cli/src/daemon/daemon-result-transfer-receiver.ts:41`\n- `apps/cli/src/daemon/local-daemon-transport.ts:263`\n",
+      "commits": [
+        {
+          "sha": "5446679649c905ff8b5ca4b1e15955d494b4c1a4",
+          "subject": "Define daemon client result capture contracts",
+          "body": ""
+        },
+        {
+          "sha": "50a305c3cd6aff229f7d3445a2f1b79ae3c4ac97",
+          "subject": "Specify daemon client result storage",
+          "body": ""
+        },
+        {
+          "sha": "2fb52b9653933e5350d7f4c47f51f9bcf03b3059",
+          "subject": "Store daemon client results independently",
+          "body": ""
+        },
+        {
+          "sha": "a5131e835a4ad9048ef6b5e57d7f13a12dd787ac",
+          "subject": "Specify daemon client result capacity",
+          "body": ""
+        },
+        {
+          "sha": "525e3f03e700bc2d8d07db2b5491c7faee776f18",
+          "subject": "Bound daemon client result storage",
+          "body": ""
+        },
+        {
+          "sha": "98671531529f079bf2081c32e85e47fa10ebe52d",
+          "subject": "Specify daemon client result replay validation",
+          "body": ""
+        },
+        {
+          "sha": "fd191155f7bbbd80214e338670614f3cc0b263d8",
+          "subject": "Validate stored daemon client results",
+          "body": ""
+        },
+        {
+          "sha": "22225c82d685a350ddcfd13d8a50af134014220e",
+          "subject": "Capture daemon transport results internally",
+          "body": ""
+        },
+        {
+          "sha": "9576779fb25536baa21c707c54507b9364c73b62",
+          "subject": "Specify resumable daemon result receipt",
+          "body": ""
+        },
+        {
+          "sha": "4c9720bf131cbbac8f3beacae31e16646e6c44bc",
+          "subject": "Receive resumable daemon result transfers",
+          "body": ""
+        },
+        {
+          "sha": "41a8115cc4482a797be9a057448610dd231bb424",
+          "subject": "Delegate resumable result receipt",
+          "body": ""
+        },
+        {
+          "sha": "4e0dc1978cc5716cbed9f95b0f2216d707885fd9",
+          "subject": "Budget twelve MiB transport test",
+          "body": ""
+        }
+      ],
+      "base": "agent/daemon-architecture-refactor-part-14-transport-framing",
+      "head": "agent/daemon-architecture-refactor-part-15",
+      "group": "delivery",
+      "decisions": [
+        {
+          "id": "d138-1",
+          "label": "Daemon owns warm result capture",
+          "status": "stated",
+          "text": "Chose daemon-scoped capture over extending CLI `OrderedCommandOutput`, because warm result storage must not depend on cold-command output internals.",
+          "pr": 138
+        },
+        {
+          "id": "d138-2",
+          "label": "Advance offset only after append",
+          "status": "stated",
+          "text": "Chose to advance resume offsets after awaited append over advancing on frame receipt, because fetch must restart at the first record not durably stored.",
+          "pr": 138
+        },
+        {
+          "id": "d138-3",
+          "label": "One receiver across reconnects",
+          "status": "stated",
+          "text": "Chose one receiver across initial and fetch connections over rebuilding receipt state, because manifest identity, digest progress, and offsets must survive reconnection.",
+          "pr": 138
+        },
+        {
+          "id": "d138-4",
+          "label": "Fresh decoder for each connection",
+          "status": "stated",
+          "text": "Chose fresh wire decoders per connection over retaining decoder state, because framing state ends at the socket boundary while transfer state continues.",
+          "pr": 138
+        },
+        {
+          "id": "d138-5",
+          "label": "Caller disposes completed output",
+          "status": "stated",
+          "text": "Chose caller ownership after successful finish over receiver-owned cleanup, because replay and acknowledgement failures need one explicit disposal path.",
+          "pr": 138
+        }
+      ]
+    },
+    {
+      "number": 139,
+      "title": "Route outbound daemon sockets through one client",
+      "body": "## Context\n\n`LocalDaemonTransport` repeated Node socket connection, timeout, read-flow, write-backpressure, and closure mechanics across five outbound paths. One low-level client now owns those mechanics while protocol and delivery decisions remain in the transport façade.\n\n## Shape\n\nBefore — each outbound exchange managed a raw socket:\n\n```mermaid\nflowchart LR\n    Transport[\"LocalDaemonTransport\"] -->|\"opens\"| Lifecycle[\"Lifecycle socket\"]\n    Transport -->|\"opens\"| Execution[\"Execution socket\"]\n    Transport -->|\"opens\"| Results[\"Result and acknowledgement sockets\"]\n    Transport -->|\"opens\"| Probe[\"Endpoint probe\"]\n\n    classDef removed fill:#ffebe9,stroke:#cf222e,color:#24292f\n    class Lifecycle,Execution,Results,Probe removed\n```\n\nAfter — all outbound paths consume one byte-connection port:\n\n```mermaid\nflowchart LR\n    Transport[\"LocalDaemonTransport\"] -->|\"uses\"| Port[\"DaemonSocketClient\"]\n    Client[\"LocalDaemonSocketClient\"] -->|\"implements\"| Port\n    Client -->|\"owns\"| Socket[\"node:net Socket\"]\n    Transport -->|\"retains\"| Protocol[\"Codec, validation, delivery state\"]\n\n    classDef added fill:#dafbe1,stroke:#1a7f37,color:#24292f\n    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n    class Client added\n    class Transport changed\n```\n\nLegend: green = added; yellow = changed; red = removed; default = unchanged.\n\n## Where it lives\n\n```text\n.\n└── apps/cli/src/daemon/\n    ├── ++ local-daemon-socket-client.ts                 # sole outbound Node socket owner\n    ├── ++ local-daemon-socket-client.test.ts            # byte flow, timeout, backpressure, and closure\n    ├── ++ local-daemon-transport-socket-client.test.ts  # delegation across five outbound paths\n    ├── ** local-daemon-transport.ts                     # retains protocol and delivery semantics\n    └── ** ... 2 transport test files                    # remove superseded private helper coverage\n```\n\nLegend: `++` added, `**` changed, `~~` moved, `--` removed.\n\n## Public surface\n\n```ts\nexport class LocalDaemonSocketClient implements DaemonSocketClient {\n  connect(endpoint: string, timeoutMs?: number): Promise<DaemonSocketConnection>;\n}\n```\n\n## Decisions\n\n- Chose a pull-driven async iterator over forwarded `data` events, because consumer demand now controls socket resume and each delivered chunk pauses reads again.\n- Chose a connection-owned FIFO over façade-owned drain handling, because frames must preserve write-call order across backpressure.\n- Kept protocol decoding and delivery-state translation in `LocalDaemonTransport` over moving them into the socket client, because raw EOF and errors cannot classify request correlation or retry safety.\n- Kept inbound server sockets in `LocalDaemonTransport` over extracting both directions together, because server binding and shutdown form the separate Phase 18 boundary.\n\n## Look here\n\n- `apps/cli/src/daemon/local-daemon-socket-client.ts:25`\n- `apps/cli/src/daemon/local-daemon-socket-client.ts:51`\n- `apps/cli/src/daemon/local-daemon-transport.ts:270`\n",
+      "commits": [
+        {
+          "sha": "354f4dd7609ed83df6fe39aead05795108d95db5",
+          "subject": "Specify daemon socket byte connections",
+          "body": ""
+        },
+        {
+          "sha": "4408567f972da3f01c6c0e5a2f004e41e7cbd2f4",
+          "subject": "Connect daemon socket byte streams",
+          "body": ""
+        },
+        {
+          "sha": "005f07624f624f94cc78a46ebc0db01e6f6ee13d",
+          "subject": "Specify pull-driven daemon socket reads",
+          "body": ""
+        },
+        {
+          "sha": "37df9db46671d06da2ecbb0bb4eba604d782c2ae",
+          "subject": "Pause daemon sockets between consumer reads",
+          "body": ""
+        },
+        {
+          "sha": "8a22b38e8c107ba5705c193ee65216975ff3558a",
+          "subject": "Specify ordered daemon socket writes",
+          "body": ""
+        },
+        {
+          "sha": "37ad54d6e3e09e6bccabb7864d055dfa12d62e5f",
+          "subject": "Queue daemon socket writes through drain",
+          "body": ""
+        },
+        {
+          "sha": "43aac15d378cf81065ea2cbb4a640539ebad0f6a",
+          "subject": "Specify daemon socket connection refusal",
+          "body": ""
+        },
+        {
+          "sha": "53dbc2cb7f6a141cb549fa6baeec612cbe78a561",
+          "subject": "Reject refused daemon socket connections",
+          "body": ""
+        },
+        {
+          "sha": "2cb84193aace20dc6307b5c3cd02eea5e7b54403",
+          "subject": "Specify daemon socket connection timeouts",
+          "body": ""
+        },
+        {
+          "sha": "5d6df744e1b18319f652c614f807cf5ab926a038",
+          "subject": "Enforce daemon socket connection timeouts",
+          "body": ""
+        },
+        {
+          "sha": "a04b57be55d288e9aaaaeabd2da83d01f474f244",
+          "subject": "Specify daemon socket reset propagation",
+          "body": ""
+        },
+        {
+          "sha": "a3b5983b79da3cdf688935bec081280345b329f4",
+          "subject": "Propagate daemon socket resets",
+          "body": ""
+        },
+        {
+          "sha": "f3b654c29e71e16573afae0a7b211faf0fe7bcbe",
+          "subject": "Specify daemon socket write failures",
+          "body": ""
+        },
+        {
+          "sha": "fa4e8cf2654a39c5a6e9c4e3ff27aac19981af6b",
+          "subject": "Propagate daemon socket write failures",
+          "body": ""
+        },
+        {
+          "sha": "621ca6065c2e5a6b9009b0d31d115e3ca3b9dfa9",
+          "subject": "Specify daemon socket drain failures",
+          "body": ""
+        },
+        {
+          "sha": "6725e12faadfded3bccaeba7a000d2b4da8fd5f3",
+          "subject": "Propagate daemon socket drain failures",
+          "body": ""
+        },
+        {
+          "sha": "38a4740f5c4b4288393cbf149b4ad23ffcd70a80",
+          "subject": "Specify idempotent daemon socket closure",
+          "body": ""
+        },
+        {
+          "sha": "6e77152f2f2e43c758d312435b7ce075c6c7f014",
+          "subject": "Make daemon socket closure idempotent",
+          "body": ""
+        },
+        {
+          "sha": "ff2af306264be21d9c0043cfddde05561eabce53",
+          "subject": "Specify lifecycle socket client delegation",
+          "body": ""
+        },
+        {
+          "sha": "6d1fc71125cda6a6b8a64d032babd661d44c5ea3",
+          "subject": "Delegate daemon lifecycle sockets",
+          "body": ""
+        },
+        {
+          "sha": "b60e50bf5c8f94dcc24086e5647ab0da06b9729f",
+          "subject": "Specify execution socket client delegation",
+          "body": ""
+        },
+        {
+          "sha": "a9d7eafa25d7a133d9d0da866003f4ddf8a169f3",
+          "subject": "Delegate daemon execution sockets",
+          "body": ""
+        },
+        {
+          "sha": "fc1f586b3ca3e76673e5e57536a58f136333b36e",
+          "subject": "Specify result socket client delegation",
+          "body": ""
+        },
+        {
+          "sha": "40d5e063b53e86c9e3a21bf9443eb74cb36072fa",
+          "subject": "Delegate daemon result sockets",
+          "body": ""
+        },
+        {
+          "sha": "e0d5d691a7dd23d01356c21e5bdea233102787d3",
+          "subject": "Specify endpoint probe socket delegation",
+          "body": ""
+        },
+        {
+          "sha": "678dae9a74d847b10050ebabc38e8863c9788208",
+          "subject": "Delegate daemon endpoint probes",
+          "body": ""
+        },
+        {
+          "sha": "29a747e95fa142aa7b88c8b84fcb9c2fd9b18d9a",
+          "subject": "Remove raw daemon client socket mechanics",
+          "body": ""
+        }
+      ],
+      "base": "agent/daemon-architecture-refactor-part-15",
+      "head": "agent/daemon-architecture-refactor-part-16-socket-client",
+      "group": "delivery",
+      "decisions": [
+        {
+          "id": "d139-1",
+          "label": "Pull-driven socket reads",
+          "status": "stated",
+          "text": "Chose a pull-driven async iterator over forwarded `data` events, because consumer demand now controls socket resume and each delivered chunk pauses reads again.",
+          "pr": 139
+        },
+        {
+          "id": "d139-2",
+          "label": "Connection-owned FIFO writes",
+          "status": "stated",
+          "text": "Chose a connection-owned FIFO over façade-owned drain handling, because frames must preserve write-call order across backpressure.",
+          "pr": 139
+        },
+        {
+          "id": "d139-3",
+          "label": "Keep protocol meaning above sockets",
+          "status": "stated",
+          "text": "Kept protocol decoding and delivery-state translation in `LocalDaemonTransport` over moving them into the socket client, because raw EOF and errors cannot classify request correlation or retry safety.",
+          "pr": 139
+        },
+        {
+          "id": "d139-4",
+          "label": "Separate inbound extraction",
+          "status": "stated",
+          "text": "Kept inbound server sockets in `LocalDaemonTransport` over extracting both directions together, because server binding and shutdown form the separate Phase 18 boundary.",
+          "pr": 139
+        }
+      ]
+    },
+    {
+      "number": 140,
+      "title": "Route daemon lifecycle exchanges through one client",
+      "body": "## Context\n\nPart 16 separated raw outbound socket mechanics, but `LocalDaemonTransport` still owned protocol-level lifecycle and acknowledgement state machines. This part gives those bounded exchanges one owner while preserving existing timeout and delivery-classification contracts.\n\n## Shape\n\nBefore — the transport façade implemented each one-response exchange:\n\n```mermaid\nflowchart LR\n    Callers[\"Observer, controller, startup, and status\"] -->|\"uses\"| Facade[\"LocalDaemonTransport\"]\n    Facade -->|\"uses\"| Lifecycle[\"Embedded lifecycle and execution-status logic\"]\n    Facade -->|\"uses\"| Acknowledgement[\"Embedded result-acknowledgement logic\"]\n    Facade -->|\"uses\"| Socket[\"DaemonSocketClient\"]\n\n    classDef removed fill:#ffebe9,stroke:#cf222e,color:#24292f\n    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n    class Lifecycle,Acknowledgement removed\n    class Facade changed\n```\n\nAfter — the façade delegates bounded exchanges to one lifecycle client:\n\n```mermaid\nflowchart LR\n    Callers[\"Observer, controller, startup, and status\"] -->|\"uses\"| Facade[\"LocalDaemonTransport\"]\n    Facade -->|\"uses\"| Client[\"DaemonLifecycleClient\"]\n    Client -->|\"uses\"| Socket[\"DaemonSocketClient\"]\n    Client -->|\"uses\"| Protocol[\"Codec and validator\"]\n\n    classDef added fill:#dafbe1,stroke:#1a7f37,color:#24292f\n    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n    class Client added\n    class Facade changed\n```\n\nLegend: green = added; yellow = changed; red = removed; default = unchanged.\n\n## Where it lives\n\n```text\n.\n└── apps/cli/src/\n    ├── commands/daemon/\n    │   └── ** register-daemon-command.ts          # injects daemon-status response timeout\n    └── daemon/\n        ├── ++ daemon-lifecycle-client.ts           # owns bounded one-response exchanges\n        ├── ++ daemon-lifecycle-client.test.ts      # locks correlation, cleanup, and delivery states\n        ├── ++ daemon-transport-error.ts             # owns shared transport failure classification\n        ├── ** local-daemon-transport.ts             # composes and delegates lifecycle requests\n        └── ** ... 7 files                           # update imports and composition oracles\n```\n\nLegend: `++` added, `**` changed, `~~` moved, `--` removed.\n\n## Public surface\n\n```ts\nexport class DaemonLifecycleClient implements DaemonLifecycleRequester {\n  constructor(options: DaemonLifecycleClientOptions);\n  request(endpoint: string, request: DaemonLifecycleRequest): Promise<DaemonLifecycleResponse>;\n  executionStatus(\n    endpoint: string,\n    request: DaemonExecutionStatusRequest,\n  ): Promise<DaemonExecutionStatus>;\n  acknowledgeResult(\n    endpoint: string,\n    request: Pick<DaemonExecuteRequest, \"protocolVersion\" | \"instanceId\" | \"processToken\" | \"requestId\">,\n    transferId: string,\n  ): Promise<void>;\n}\n```\n\n## Decisions\n\n- Chose one client for lifecycle, execution-status, and result-acknowledgement exchanges over separate request-specific clients, because all three share bounded response, correlation, timeout, and cleanup semantics.\n- Kept result acknowledgement off `DaemonLifecycleRequester` over widening the port, because only result completion needs that exchange.\n- Chose timeout injection at composition over request-kind selection, because daemon status and ordinary routing both send `ping` with different deadlines.\n- Chose semantic validation before assigning `accepted` over treating every decoded frame as accepted, because malformed shapes and authenticated protocol errors have distinct existing delivery states.\n- Chose a shared transport-error module over lifecycle-client ownership, because execution routing and record observation still consume the same failure classification.\n\n## Look here\n\n- `apps/cli/src/daemon/daemon-lifecycle-client.ts:94`\n- `apps/cli/src/daemon/daemon-lifecycle-client.ts:159`\n- `apps/cli/src/commands/daemon/register-daemon-command.ts:110`\n",
+      "commits": [
+        {
+          "sha": "3f1cee5e86f17c830069ff6370fb2041e344db32",
+          "subject": "Extract daemon transport errors",
+          "body": ""
+        },
+        {
+          "sha": "428653cac2181c124f404348a5b735419f28f9db",
+          "subject": "Specify daemon lifecycle exchanges",
+          "body": ""
+        },
+        {
+          "sha": "7d85c7f3fdf8acc7052da7e136c752ef49941e4f",
+          "subject": "Request correlated daemon lifecycle responses",
+          "body": ""
+        },
+        {
+          "sha": "d8025c617da559eeba9459586638bc7e5c57825b",
+          "subject": "Specify daemon result acknowledgement exchange",
+          "body": ""
+        },
+        {
+          "sha": "9468c5e4e1aea8182b3afbc8cd55b710959b0ade",
+          "subject": "Acknowledge daemon result transfers",
+          "body": ""
+        },
+        {
+          "sha": "67e1a59303be8ccd585f93e0a9a287834811cfd3",
+          "subject": "Specify lifecycle response timeout composition",
+          "body": ""
+        },
+        {
+          "sha": "5d33f009ee3b7897d1c00eeca120c003d0d31100",
+          "subject": "Delegate daemon lifecycle exchanges",
+          "body": ""
+        },
+        {
+          "sha": "d50909d088e9bd2c6afb687bd4780efb0992abe7",
+          "subject": "Specify lifecycle response delivery states",
+          "body": ""
+        },
+        {
+          "sha": "85d65db811b6dcb57a88e9018245c57fb9b4c61e",
+          "subject": "Preserve lifecycle response delivery states",
+          "body": ""
+        }
+      ],
+      "base": "agent/daemon-architecture-refactor-part-16-socket-client",
+      "head": "agent/daemon-architecture-refactor-part-17-lifecycle-client",
+      "group": "delivery",
+      "decisions": [
+        {
+          "id": "d140-1",
+          "label": "One client for bounded exchanges",
+          "status": "stated",
+          "text": "Chose one client for lifecycle, execution-status, and result-acknowledgement exchanges over separate request-specific clients, because all three share bounded response, correlation, timeout, and cleanup semantics.",
+          "pr": 140
+        },
+        {
+          "id": "d140-2",
+          "label": "Acknowledgement stays a narrow port",
+          "status": "stated",
+          "text": "Kept result acknowledgement off `DaemonLifecycleRequester` over widening the port, because only result completion needs that exchange.",
+          "pr": 140
+        },
+        {
+          "id": "d140-3",
+          "label": "Inject timeout by composition purpose",
+          "status": "stated",
+          "text": "Chose timeout injection at composition over request-kind selection, because daemon status and ordinary routing both send `ping` with different deadlines.",
+          "pr": 140
+        },
+        {
+          "id": "d140-4",
+          "label": "Validate before marking accepted",
+          "status": "stated",
+          "text": "Chose semantic validation before assigning `accepted` over treating every decoded frame as accepted, because malformed shapes and authenticated protocol errors have distinct existing delivery states.",
+          "pr": 140
+        },
+        {
+          "id": "d140-5",
+          "label": "Shared transport-error vocabulary",
+          "status": "stated",
+          "text": "Chose a shared transport-error module over lifecycle-client ownership, because execution routing and record observation still consume the same failure classification.",
+          "pr": 140
+        }
+      ]
+    },
+    {
+      "number": 141,
+      "title": "Route inbound daemon sockets through one server",
+      "body": "## Context\n\n`LocalDaemonTransport` still owned inbound endpoint, connection, delivery, and shutdown mechanics alongside outbound protocol clients. This part gives inbound serving one owner before accepted-execution recovery moves in the next stack layer.\n\n## Shape\n\nBefore — the transport façade embedded inbound socket mechanics:\n\n```mermaid\nflowchart LR\n    Daemon[\"WorkspaceDaemon\"] -->|\"uses request server\"| Facade[\"LocalDaemonTransport\"]\n    Facade -->|\"owns\"| Embedded[\"Embedded endpoint, connection, and shutdown mechanics\"]\n    Facade -->|\"uses\"| Socket[\"DaemonSocketClient\"]\n    Facade -->|\"uses\"| Protocol[\"Codec and validator\"]\n\n    classDef removed fill:#ffebe9,stroke:#cf222e,color:#24292f\n    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n    class Embedded removed\n    class Facade changed\n```\n\nAfter — the façade delegates inbound serving to a dedicated server:\n\n```mermaid\nflowchart LR\n    Daemon[\"WorkspaceDaemon\"] -->|\"uses request server\"| Facade[\"LocalDaemonTransport\"]\n    Facade -->|\"delegates listen and cleanup\"| Server[\"LocalDaemonSocketServer\"]\n    Server -->|\"uses endpoint probes\"| Socket[\"DaemonSocketClient\"]\n    Server -->|\"uses framing and validation\"| Protocol[\"Codec and validator\"]\n\n    classDef added fill:#dafbe1,stroke:#1a7f37,color:#24292f\n    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n    class Server added\n    class Facade changed\n```\n\nLegend: green = added; yellow = changed; red = removed; default = unchanged.\n\n## Where it lives\n\n```text\n.\n└── apps/cli/src/daemon/\n    ├── ++ local-daemon-socket-server.ts       # owns endpoint, connection, send, and shutdown mechanics\n    ├── ++ local-daemon-socket-server.test.ts  # locks server behavior and concurrent shutdown\n    ├── ** local-daemon-transport.ts           # composes and delegates to socket server\n    └── ** local-daemon-transport.test.ts      # retains transport-level integration coverage\n```\n\nLegend: `++` added, `**` changed, `~~` moved, `--` removed.\n\n## Public surface\n\n```ts\nexport class LocalDaemonSocketServer implements DaemonRequestServer {\n  constructor(options: LocalDaemonSocketServerOptions);\n  listen(endpoint: string, handler: DaemonRequestHandler): Promise<DaemonServer>;\n  removeUnavailableEndpoint(endpoint: string): Promise<boolean>;\n}\n```\n\n## Decisions\n\n- Chose a dedicated socket-server owner over retaining inbound mechanics in the transport façade, because endpoint, connection, delivery, and shutdown behavior form one boundary.\n- Chose the injected `DaemonSocketClient` over a second outbound connection path, because endpoint probes must use the existing mechanism and response timeout.\n- Chose independent per-connection response and write chains over a server-wide queue, because one connection must preserve request and background-send order without coupling clients.\n- Chose one cached shutdown promise over independent close operations, because concurrent graceful and forced callers must share settlement while force escalates an in-progress drain.\n\n## Look here\n\n- `apps/cli/src/daemon/local-daemon-socket-server.ts:31`\n- `apps/cli/src/daemon/local-daemon-socket-server.ts:50`\n- `apps/cli/src/daemon/local-daemon-socket-server.ts:91`\n",
+      "commits": [
+        {
+          "sha": "d4e962b0d265ae40c50c61cbd7b21cdf5007b25e",
+          "subject": "Characterize daemon endpoint ownership",
+          "body": ""
+        },
+        {
+          "sha": "29b8913df8fc6b425157e5eb810771fe092ab16f",
+          "subject": "Characterize serial daemon requests",
+          "body": ""
+        },
+        {
+          "sha": "7362f0923cb356ee63ee4cee1bc5b8e3fd0abf09",
+          "subject": "Characterize ordered daemon server sends",
+          "body": ""
+        },
+        {
+          "sha": "f7075b83b836585ac8e6df9bea81f35b1e2a40c7",
+          "subject": "Characterize daemon socket backpressure",
+          "body": ""
+        },
+        {
+          "sha": "33c6b525aabf41e4859984acc1573b50f27b4e79",
+          "subject": "Characterize daemon connection close listeners",
+          "body": ""
+        },
+        {
+          "sha": "fadb37acece627207ab1c5b0f70b61696e9ca909",
+          "subject": "Characterize daemon connection isolation",
+          "body": ""
+        },
+        {
+          "sha": "7ba10447cc0d7fae7e2fa3ee729000927e8a3faf",
+          "subject": "Characterize graceful daemon server shutdown",
+          "body": ""
+        },
+        {
+          "sha": "906fbdea59d4490e2111ba76d59b537fb5726b17",
+          "subject": "Specify concurrent daemon server shutdown",
+          "body": ""
+        },
+        {
+          "sha": "6e5b0400c61b74ee9f4fc69dfafd222a0e14ee78",
+          "subject": "Share concurrent daemon server shutdown",
+          "body": ""
+        },
+        {
+          "sha": "e08798f7556fbd61a0d23fa1d6e12c027942e282",
+          "subject": "Assign daemon socket server ownership",
+          "body": ""
+        },
+        {
+          "sha": "0526978ca883ccde5c1492867f1af205e7ef7474",
+          "subject": "Extract daemon socket server",
+          "body": ""
+        },
+        {
+          "sha": "f382defe6597295028fb878eb7ce1f5941f08bdc",
+          "subject": "Delegate daemon endpoint cleanup",
+          "body": ""
+        },
+        {
+          "sha": "5b71d1f25fe65dafd38aaa80af0bc7f1f7a759c8",
+          "subject": "Delegate daemon socket serving",
+          "body": ""
+        }
+      ],
+      "base": "agent/daemon-architecture-refactor-part-17-lifecycle-client",
+      "head": "agent/daemon-architecture-refactor-part-18",
+      "group": "delivery",
+      "decisions": [
+        {
+          "id": "d141-1",
+          "label": "Dedicated inbound socket server",
+          "status": "stated",
+          "text": "Chose a dedicated socket-server owner over retaining inbound mechanics in the transport façade, because endpoint, connection, delivery, and shutdown behavior form one boundary.",
+          "pr": 141
+        },
+        {
+          "id": "d141-2",
+          "label": "Probe through the outbound client",
+          "status": "stated",
+          "text": "Chose the injected `DaemonSocketClient` over a second outbound connection path, because endpoint probes must use the existing mechanism and response timeout.",
+          "pr": 141
+        },
+        {
+          "id": "d141-3",
+          "label": "Each connection has its own chains",
+          "status": "stated",
+          "text": "Chose independent per-connection response and write chains over a server-wide queue, because one connection must preserve request and background-send order without coupling clients.",
+          "pr": 141
+        },
+        {
+          "id": "d141-4",
+          "label": "Shared shutdown; force escalates drain",
+          "status": "stated",
+          "text": "Chose one cached shutdown promise over independent close operations, because concurrent graceful and forced callers must share settlement while force escalates an in-progress drain.",
+          "pr": 141
+        }
+      ]
+    },
+    {
+      "number": 142,
+      "title": "Preserve accepted execution recovery in one client",
+      "body": "## Context\n\nOutbound execution still lived in `LocalDaemonTransport` after lifecycle and socket mechanics gained dedicated owners. Accepted work requires independent recovery budgets for result fetches within an attempt and identical-request reattachments across attempts.\n\n## Shape\n\nBefore — the transport façade embedded the execution state machine:\n\n```mermaid\nflowchart LR\n    Callers[\"Daemon command callers\"] -->|\"execute\"| Facade[\"LocalDaemonTransport\"]\n    Facade -->|\"owns\"| Embedded[\"Embedded admission, transfer, acknowledgement, and recovery\"]\n    Embedded -->|\"uses\"| Socket[\"DaemonSocketClient\"]\n    Embedded -->|\"uses\"| Lifecycle[\"DaemonLifecycleClient\"]\n    Embedded -->|\"creates\"| Output[\"Result capture\"]\n\n    classDef removed fill:#ffebe9,stroke:#cf222e,color:#24292f\n    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n    class Embedded removed\n    class Facade changed\n```\n\nAfter — the façade delegates the complete state machine to one execution client:\n\n```mermaid\nflowchart LR\n    Callers[\"Daemon command callers\"] -->|\"execute\"| Facade[\"LocalDaemonTransport\"]\n    Facade -->|\"delegates\"| Client[\"DaemonExecutionClient\"]\n    Client -->|\"uses\"| Socket[\"DaemonSocketClient\"]\n    Client -->|\"acknowledges through\"| Lifecycle[\"DaemonLifecycleClient\"]\n    Client -->|\"creates per attempt\"| Output[\"Result capture\"]\n\n    classDef added fill:#dafbe1,stroke:#1a7f37,color:#24292f\n    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n    class Client added\n    class Facade changed\n```\n\nLegend: green = added; yellow = changed; red = removed; default = unchanged.\n\n## Where it lives\n\n```text\n.\n└── apps/cli/src/daemon/\n    ├── ++ daemon-execution-client.ts               # owns outbound execution and accepted recovery\n    ├── ++ daemon-execution-client.test.ts          # locks direct ownership and identical-request recovery\n    ├── ** local-daemon-transport.ts                # composes and delegates to execution client\n    └── ** local-daemon-transport-execution.test.ts # retains transport-level delivery oracles\n```\n\nLegend: `++` added, `**` changed, `~~` moved, `--` removed.\n\n## Public surface\n\n```ts\nexport class DaemonExecutionClient implements DaemonExecutionRequester {\n  constructor(options: DaemonExecutionClientOptions);\n  execute(endpoint: string, request: DaemonExecuteRequest): Promise<DaemonExecutionReceipt>;\n}\n```\n\n## Decisions\n\n- Chose a dedicated execution client over a generic response chain, because admission, accepted completion, transfer, acknowledgement, and recovery share one state machine.\n- Chose a fresh output capture per execute attempt over reusing interrupted capture state, because duplicate-request reattachment starts a new delivery while result fetch resumes the current delivery.\n- Chose independent numeric policy counters over boolean recovery flags, because fetch resumes and accepted reattachments have separate configurable budgets.\n- Chose the lifecycle client's acknowledgement-only surface over widening `DaemonLifecycleRequester`, because only result completion needs acknowledgement.\n- Chose an internal fetch-ended error over changing the public exhausted-fetch failure, because final exhaustion must retain accepted-corruption behavior without replaying execution.\n\n## Look here\n\n- `apps/cli/src/daemon/daemon-execution-client.ts:46`\n- `apps/cli/src/daemon/daemon-execution-client.ts:75`\n- `apps/cli/src/daemon/daemon-execution-client.ts:300`\n",
+      "commits": [
+        {
+          "sha": "7eb8dd4ce839affcd1d34cdc7ffd0a4e41942f3f",
+          "subject": "Characterize execution admission deadlines",
+          "body": ""
+        },
+        {
+          "sha": "30c4b5474f5737b56f61cbcece57cc02307e9aab",
+          "subject": "Specify result fetch resume budgets",
+          "body": ""
+        },
+        {
+          "sha": "f1e1d4842e96106102f2a80ff48e4a1452ed7031",
+          "subject": "Honor repeated result fetch resumes",
+          "body": ""
+        },
+        {
+          "sha": "6acb1fb1a36f0f25eb37e5c820a71ab5454b7227",
+          "subject": "Characterize execution reattachment budgets",
+          "body": ""
+        },
+        {
+          "sha": "149f4b6a04fa6d6c6c9c0cc4be3cd8b512612a24",
+          "subject": "Characterize failed execution reattachment",
+          "body": ""
+        },
+        {
+          "sha": "5419a881e35b4fcf6dbc899b8cbafcdab0986f1c",
+          "subject": "Characterize isolated execution reattachment",
+          "body": ""
+        },
+        {
+          "sha": "9330f32b5ba86e7c93d071c1e46de28f5a93da21",
+          "subject": "Characterize execution output disposal",
+          "body": ""
+        },
+        {
+          "sha": "7d972ae215621adbe2decc8a1a0b76bf9de8d877",
+          "subject": "Assign daemon execution client ownership",
+          "body": ""
+        },
+        {
+          "sha": "815bfc9d6414b45341f8ffd369d9bcc0885fde6d",
+          "subject": "Extract one-attempt daemon execution",
+          "body": ""
+        },
+        {
+          "sha": "ea64fe2dff70c1593dadb1619fb62dd0b1c2ccd2",
+          "subject": "Specify accepted execution recovery ownership",
+          "body": ""
+        },
+        {
+          "sha": "2c8829f23c041ba2d08c6fb753ba618bcbdb2d47",
+          "subject": "Own accepted execution recovery",
+          "body": ""
+        },
+        {
+          "sha": "6939ec682a53dd3b4df79ae96a314380aac48c6f",
+          "subject": "Delegate daemon execution exchanges",
+          "body": ""
+        },
+        {
+          "sha": "76eaea78b1a27d0e59e30e708fc25265e70c70fb",
+          "subject": "Specify exhausted result fetch failure",
+          "body": ""
+        },
+        {
+          "sha": "40f90692114acf55fcec8524daca93a63e9b0cdd",
+          "subject": "Preserve exhausted result fetch failures",
+          "body": ""
+        },
+        {
+          "sha": "40dc23233febc557e98e482bee073f72f162b118",
+          "subject": "Specify original accepted-close failure",
+          "body": ""
+        },
+        {
+          "sha": "5e9ee2752b12f845a9f168072d37fd388462a748",
+          "subject": "Retain original accepted-close failure",
+          "body": ""
+        }
+      ],
+      "base": "agent/daemon-architecture-refactor-part-18",
+      "head": "agent/daemon-architecture-refactor-part-19",
+      "group": "delivery",
+      "decisions": [
+        {
+          "id": "d142-1",
+          "label": "Execution recovery is a state machine",
+          "status": "stated",
+          "text": "Chose a dedicated execution client over a generic response chain, because admission, accepted completion, transfer, acknowledgement, and recovery share one state machine.",
+          "pr": 142
+        },
+        {
+          "id": "d142-2",
+          "label": "Fresh capture on reattach",
+          "status": "stated",
+          "text": "Chose a fresh output capture per execute attempt over reusing interrupted capture state, because duplicate-request reattachment starts a new delivery while result fetch resumes the current delivery.",
+          "pr": 142
+        },
+        {
+          "id": "d142-3",
+          "label": "Separate numeric recovery budgets",
+          "status": "stated",
+          "text": "Chose independent numeric policy counters over boolean recovery flags, because fetch resumes and accepted reattachments have separate configurable budgets.",
+          "pr": 142
+        },
+        {
+          "id": "d142-4",
+          "label": "Reuse acknowledgement-only port",
+          "status": "stated",
+          "text": "Chose the lifecycle client's acknowledgement-only surface over widening `DaemonLifecycleRequester`, because only result completion needs acknowledgement.",
+          "pr": 142
+        },
+        {
+          "id": "d142-5",
+          "label": "Exhausted fetch stays accepted failure",
+          "status": "stated",
+          "text": "Chose an internal fetch-ended error over changing the public exhausted-fetch failure, because final exhaustion must retain accepted-corruption behavior without replaying execution.",
+          "pr": 142
+        }
+      ]
+    },
+    {
+      "number": 143,
+      "title": "Compose local daemon transport from split owners",
+      "body": "## Context\n\nLifecycle, execution, and socket behavior already had dedicated owners, but `LocalDaemonTransport` still accepted selected policy values and retained a frame-capacity probe. The compatibility facade remains until package composition replaces it later in the stack.\n\n## Shape\n\nBefore — the facade retained legacy construction and framing seams:\n\n```mermaid\nflowchart LR\n    Sites[\"CLI composition sites\"] -->|\"pass selected values\"| Slices[\"Policy value slices\"]\n    Slices -->|\"configure\"| Facade[\"LocalDaemonTransport\"]\n    Facade -->|\"owns\"| Probe[\"Frame-capacity probe\"]\n    Facade -->|\"constructs and delegates\"| Owners[\"Split transport owners\"]\n\n    classDef removed fill:#ffebe9,stroke:#cf222e,color:#24292f\n    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n    class Slices,Probe removed\n    class Facade changed\n```\n\nAfter — one policy drives composition and the facade only delegates:\n\n```mermaid\nflowchart LR\n    Sites[\"CLI composition sites\"] -->|\"inject one object\"| Policy[\"DaemonPolicy\"]\n    Policy -->|\"configures\"| Facade[\"LocalDaemonTransport\"]\n    Seams[\"Component injection seams<br/>&lt;&lt;internal&gt;&gt;\"] -->|\"supply owners\"| Facade\n    Facade -->|\"delegates unchanged values\"| Owners[\"Split transport owners\"]\n    Owners -->|\"share\"| Dependencies[\"Codec, validator, socket client\"]\n\n    classDef added fill:#dafbe1,stroke:#1a7f37,color:#24292f\n    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n    class Seams added\n    class Facade changed\n```\n\nLegend: green = added; yellow = changed; red = removed; default = unchanged.\n\n## Where it lives\n\n```text\n.\n└── apps/cli/\n    ├── src/\n    │   ├── commands/daemon/\n    │   │   └── ** register-daemon-command.ts             # passes one policy into lifecycle composition\n    │   └── daemon/\n    │       ├── ** local-daemon-transport.ts               # composes and delegates to split owners\n    │       ├── ++ local-daemon-transport-composition.test.ts # locks wiring, identity, and ownership\n    │       ├── ** ... 2 transport tests                    # use policy-based construction\n    │       └── ** ... 2 daemon composition sites           # pass the runtime policy object\n    └── test/helpers/\n        └── ** local-daemon-transport.ts                    # keeps policy overrides test-only\n```\n\nLegend: `++` added, `**` changed, `~~` moved, `--` removed.\n\n## Public surface\n\n```ts\n// before: constructor(policy: LocalDaemonTransportPolicy, options?: LocalDaemonTransportOptions)\nconstructor(options: LocalDaemonTransportOptions);\n\n// removed\nexport type LocalDaemonTransportPolicy = Pick<DaemonPolicyValues, \"transport\" | \"delivery\" | \"output\">;\ncanFrame(value: unknown): boolean;\n```\n\n## Decisions\n\n- Chose one required `DaemonPolicy` over an optional system-policy fallback, because production composition must not bypass the injected policy snapshot.\n- Chose direct component injection over module mocking, because delegation tests compare returned promises and values by identity.\n- Chose to remove `canFrame` over delegating the probe, because `DaemonWireCodec` already owns and tests capacity behavior.\n- Chose a source architecture oracle over a line-count limit, because prohibited coordination mechanics are the boundary that must remain absent.\n\n## Look here\n\n- `apps/cli/src/daemon/local-daemon-transport.ts:51`\n- `apps/cli/src/daemon/local-daemon-transport-composition.test.ts:31`\n- `apps/cli/src/daemon/local-daemon-transport-composition.test.ts:85`\n",
+      "commits": [
+        {
+          "sha": "d1c7264be142204c6b0f3ed97e2dd630cb2cac47",
+          "subject": "Define split transport component options",
+          "body": ""
+        },
+        {
+          "sha": "dc4043e57d051c11fddd96ebee7baa148438ba75",
+          "subject": "Specify split transport delegation",
+          "body": ""
+        },
+        {
+          "sha": "c0263b1d003ab0b5d59682bbbb243e38ec0dc125",
+          "subject": "Delegate split transport components",
+          "body": ""
+        },
+        {
+          "sha": "85eb00a0cf8ac0a93ef031192a3177f17111fa50",
+          "subject": "Define split transport composition options",
+          "body": ""
+        },
+        {
+          "sha": "f2caa0e5bd2564f02b09cfa5c448f5f28eb941e8",
+          "subject": "Specify default split transport composition",
+          "body": ""
+        },
+        {
+          "sha": "e91023ac2b7bac39f9edc7dcf5d9cf0b490d0b8f",
+          "subject": "Compose split transport from one policy",
+          "body": ""
+        },
+        {
+          "sha": "669e970bfa60dea28752a6b10f9c64e5dbb98480",
+          "subject": "Forbid transport mechanics in the facade",
+          "body": ""
+        },
+        {
+          "sha": "e3fa3d8e2833454740b756ba3aecbd48bc1fe995",
+          "subject": "Keep the transport facade composition-only",
+          "body": ""
+        }
+      ],
+      "base": "agent/daemon-architecture-refactor-part-19",
+      "head": "agent/daemon-architecture-refactor-part-20",
+      "group": "delivery",
+      "decisions": [
+        {
+          "id": "d143-1",
+          "label": "One required policy in transport facade",
+          "status": "stated",
+          "text": "Chose one required `DaemonPolicy` over an optional system-policy fallback, because production composition must not bypass the injected policy snapshot.",
+          "pr": 143
+        },
+        {
+          "id": "d143-2",
+          "label": "Inject components; compare identity",
+          "status": "stated",
+          "text": "Chose direct component injection over module mocking, because delegation tests compare returned promises and values by identity.",
+          "pr": 143
+        },
+        {
+          "id": "d143-3",
+          "label": "Remove the canFrame probe",
+          "status": "stated",
+          "text": "Chose to remove `canFrame` over delegating the probe, because `DaemonWireCodec` already owns and tests capacity behavior.",
+          "pr": 143
+        },
+        {
+          "id": "d143-4",
+          "label": "Source oracle for composition boundary",
+          "status": "stated",
+          "text": "Chose a source architecture oracle over a line-count limit, because prohibited coordination mechanics are the boundary that must remain absent.",
+          "pr": 143
+        }
+      ]
+    },
+    {
+      "number": 144,
+      "title": "Project daemon activity from explicit snapshots",
+      "body": "## Context\n\n`WorkspaceDaemon` derived lifecycle detail and legacy pong fields inline from process, queue, resource, and worker state. The next worker-generation extraction needs the same worker snapshot contract without inheriting process-owned formatting.\n\n## Shape\n\nBefore — the process shell owned snapshot capture and projection:\n\n```mermaid\nflowchart LR\n    Request[\"Ping/status request\"] -->|calls| Daemon[\"WorkspaceDaemon\"]\n    Sources[\"Queue, resource, worker,<br/>clock, and process state\"] -->|supplies values| Inline[\"activitySnapshot<br/>&lt;&lt;private&gt;&gt;\"]\n    Daemon -->|calls| Inline\n    Inline -->|returns| Output[\"Activity + legacy pong\"]\n\n    classDef removed fill:#ffebe9,stroke:#cf222e,color:#24292f\n    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n    class Inline removed\n    class Daemon changed\n```\n\nAfter — the process shell captures values and one pure projector owns output shape:\n\n```mermaid\nflowchart LR\n    Request[\"Ping/status request\"] -->|calls| Daemon[\"WorkspaceDaemon\"]\n    Sources[\"Queue, resource, worker,<br/>clock, and process snapshots\"] -->|supplies values| Daemon\n    Daemon -->|passes explicit input| Projector[\"DaemonActivityProjector<br/>&lt;&lt;stateless&gt;&gt;\"]\n    Projector -->|returns frozen values| Output[\"Activity + legacy pong\"]\n\n    classDef added fill:#dafbe1,stroke:#1a7f37,color:#24292f\n    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n    class Projector added\n    class Daemon changed\n```\n\nLegend: green = added; yellow = changed; red = removed; default = unchanged.\n\n## Where it lives\n\n```text\n.\n└── apps/cli/src/daemon/\n    ├── ++ daemon-activity-projector.ts       # owns activity and pong projection\n    ├── ++ daemon-activity-projector.test.ts  # locks precedence, optionality, sampling, and freezing\n    ├── ** workspace-daemon.ts                # supplies explicit snapshot values\n    └── ** workspace-daemon-requests.test.ts  # proves runtime adoption and output identity\n```\n\nLegend: `++` added, `**` changed, `~~` moved, `--` removed.\n\n## Public surface\n\n```ts\nexport interface DaemonWorkerGenerationSnapshot {\n  readonly generation: number; readonly ready: boolean; readonly fileCount?: number;\n}\nexport interface DaemonActivityProjectionInput {\n  readonly nowMonotonicMs: number; readonly pid: number; readonly processRssBytes: number;\n  readonly startedAt: number; readonly startedMonotonicAt: number;\n  readonly lastNavigationAt?: number; readonly lastCompletedMonotonicAt?: number;\n  readonly productVersion: string; readonly instanceId: string; readonly hardProcessRssBytes: number;\n  readonly queue: WorkspaceRequestQueueSnapshot; readonly resources: DaemonResourceSnapshot;\n  readonly worker: DaemonWorkerGenerationSnapshot;\n}\nexport interface DaemonActivityProjection { readonly activity: DaemonActivitySnapshot; readonly pong: DaemonPong; }\nexport class DaemonActivityProjector {\n  static project(input: DaemonActivityProjectionInput): DaemonActivityProjection;\n}\n```\n\n## Decisions\n\n- Chose a static projector over an injected service, because projection depends only on explicit snapshot values.\n- Chose explicit clock and process values over callbacks, because the projector must remain deterministic and own no mutable dependency.\n- Chose worker snapshot generation over resource snapshot generation, because replacement status exposes the in-progress generation before resource readiness publication.\n- Chose sampled `resources.spoolBytes` over a completion-store read, because status reports the resource supervisor's last observation.\n- Kept legacy pong `fileCount` independent of worker readiness over matching activity optionality, because existing pong output retains the last supplied count during startup and replacement.\n\n## Look here\n\n- `apps/cli/src/daemon/daemon-activity-projector.ts:37`\n- `apps/cli/src/daemon/daemon-activity-projector.test.ts:127`\n- `apps/cli/src/daemon/workspace-daemon.ts:449`\n",
+      "commits": [
+        {
+          "sha": "52592b836510a41feb4d91b876092d2bc577cc54",
+          "subject": "Define daemon activity projection inputs",
+          "body": ""
+        },
+        {
+          "sha": "c6939500661c9faccedd55e2404977b7ad81bb66",
+          "subject": "Specify daemon activity lifecycle precedence",
+          "body": ""
+        },
+        {
+          "sha": "31c465b2f72caa61cd8acbade5c9031ba58ff2b7",
+          "subject": "Project daemon activity lifecycle",
+          "body": ""
+        },
+        {
+          "sha": "f8a7001f90c0d7a7ec4bbbaa6b9b1c7f6d97e2cb",
+          "subject": "Specify daemon activity detail optionality",
+          "body": ""
+        },
+        {
+          "sha": "1401bf7dce8768255d3f6960d626cb8633989e7a",
+          "subject": "Project daemon activity details",
+          "body": ""
+        },
+        {
+          "sha": "1175fc95af5dd22489d0194ef5f7ed2e9f755d4f",
+          "subject": "Specify daemon activity timing",
+          "body": ""
+        },
+        {
+          "sha": "50c0a6a4e05e24257f1cdd69b8fdc15b9037f84d",
+          "subject": "Clamp daemon activity timing",
+          "body": ""
+        },
+        {
+          "sha": "d03f78905ea77be01592c837a2a7169b4d242c96",
+          "subject": "Specify daemon activity recovery detail",
+          "body": ""
+        },
+        {
+          "sha": "75d1d8f949ce9a69644b8fff34030b09dcdb2d48",
+          "subject": "Project daemon activity recovery detail",
+          "body": ""
+        },
+        {
+          "sha": "8b91e50119355277ed6333bff8757ca3f4c413a1",
+          "subject": "Specify replacement activity generation",
+          "body": ""
+        },
+        {
+          "sha": "c6f30e7176b524a42a13998af585b3a495f02fe3",
+          "subject": "Project replacement activity generation",
+          "body": ""
+        },
+        {
+          "sha": "32ecc119d8de426840886bd0ca234007995e852e",
+          "subject": "Specify sampled activity spool bytes",
+          "body": ""
+        },
+        {
+          "sha": "39e24c7827290da22a8262e5779c8f89d2864a45",
+          "subject": "Use sampled activity spool bytes",
+          "body": ""
+        },
+        {
+          "sha": "4e4c7a97ed785e013349fcf545c2a2b192fe035b",
+          "subject": "Characterize legacy recovery activity",
+          "body": ""
+        },
+        {
+          "sha": "6ab72f2ddbd029a3e5d0e827fbeabfd6c5df6a7b",
+          "subject": "Specify frozen daemon activity projections",
+          "body": ""
+        },
+        {
+          "sha": "9b076a439d20e04111a3a97039bf30b36677676a",
+          "subject": "Freeze daemon activity projections",
+          "body": ""
+        },
+        {
+          "sha": "f0b64985d8866b5a0d5e9c54548efbd50eb82a91",
+          "subject": "Order daemon activity projection steps",
+          "body": ""
+        },
+        {
+          "sha": "dd9f503fc81262b7ece07d09c3529f8bb369ca16",
+          "subject": "Specify daemon activity projector adoption",
+          "body": ""
+        },
+        {
+          "sha": "9ea7979c2bf819a33f3257c25ba3de7c99b59fed",
+          "subject": "Delegate daemon activity projection",
+          "body": ""
+        }
+      ],
+      "base": "agent/daemon-architecture-refactor-part-20",
+      "head": "agent/daemon-architecture-refactor-part-21",
+      "group": "policy",
+      "decisions": [
+        {
+          "id": "d144-1",
+          "label": "Pure activity projector",
+          "status": "stated",
+          "text": "Chose a static projector over an injected service, because projection depends only on explicit snapshot values.",
+          "pr": 144
+        },
+        {
+          "id": "d144-2",
+          "label": "Explicit clock + process snapshots",
+          "status": "stated",
+          "text": "Chose explicit clock and process values over callbacks, because the projector must remain deterministic and own no mutable dependency.",
+          "pr": 144
+        },
+        {
+          "id": "d144-3",
+          "label": "Show in-progress worker generation",
+          "status": "stated",
+          "text": "Chose worker snapshot generation over resource snapshot generation, because replacement status exposes the in-progress generation before resource readiness publication.",
+          "pr": 144
+        },
+        {
+          "id": "d144-4",
+          "label": "Report sampled spool bytes",
+          "status": "stated",
+          "text": "Chose sampled `resources.spoolBytes` over a completion-store read, because status reports the resource supervisor's last observation.",
+          "pr": 144
+        },
+        {
+          "id": "d144-5",
+          "label": "Keep legacy pong file count",
+          "status": "stated",
+          "text": "Kept legacy pong `fileCount` independent of worker readiness over matching activity optionality, because existing pong output retains the last supplied count during startup and replacement.",
+          "pr": 144
+        }
+      ]
+    },
+    {
+      "number": 145,
+      "title": "Manage daemon worker generations explicitly",
+      "body": "## Context\n\n`WorkspaceDaemon` mixed worker-generation mechanics with process coordination, which blocked the planned daemon-package move. This Phase 22 stack layer follows activity-projector PR #144; the exact local CI-parity sequence passed 2,396 tests with eight expected skips, while focused mutation oracles lock lifecycle parity.\n\n## Shape\n\nBefore — the process shell owned worker generations and their lifecycle:\n\n```mermaid\nflowchart LR\n    Process[\"WorkspaceDaemon<br/>&lt;&lt;process shell&gt;&gt;\"] -->|calls| Worker[\"Navigation worker\"]\n    Process -->|calls| Embedded[\"Startup, execution, replacement,<br/>exit recovery, release, shutdown<br/>&lt;&lt;embedded&gt;&gt;\"]\n    Supervisor[\"DaemonResourceSupervisor<br/>&lt;&lt;policy owner&gt;&gt;\"] -->|calls| Process\n\n    classDef removed fill:#ffebe9,stroke:#cf222e,color:#24292f\n    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n    class Embedded removed\n    class Process changed\n```\n\nAfter — one manager owns mechanics behind a policy-neutral recovery port:\n\n```mermaid\nflowchart LR\n    Process[\"WorkspaceDaemon<br/>&lt;&lt;composition shell&gt;&gt;\"] -->|calls| Manager[\"DaemonWorkerGenerationManager<br/>&lt;&lt;generation owner&gt;&gt;\"]\n    Manager -->|calls| Worker[\"Current or in-progress worker\"]\n    Manager -->|calls recover| Recovery[\"DaemonWorkerExitRecovery<br/>&lt;&lt;port&gt;&gt;\"]\n    Recovery -->|calls| Supervisor[\"DaemonResourceSupervisor<br/>&lt;&lt;policy owner&gt;&gt;\"]\n    Supervisor -->|calls replace| Manager\n\n    classDef added fill:#dafbe1,stroke:#1a7f37,color:#24292f\n    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n    class Manager,Recovery added\n    class Process,Supervisor changed\n```\n\nLegend: green = added; yellow = changed; red = removed; default = unchanged.\n\n## Where it lives\n\n```text\n.\n└── apps/cli/src/daemon/\n    ├── ++ daemon-worker-generation-manager.ts       # owns worker lifecycle and snapshot state\n    ├── ++ daemon-worker-generation-manager.test.ts  # locks transitions, fencing, and shutdown\n    ├── ** daemon-resource-monitor.ts                 # implements exit-recovery policy port\n    ├── ** daemon-resource-monitor.test.ts            # locks recovery-port delegation\n    ├── ** daemon-activity-projector.ts               # consumes single worker snapshot contract\n    ├── ** daemon-activity-projector.test.ts          # prevents duplicate snapshot ownership\n    ├── ** workspace-daemon.ts                        # composes and delegates worker mechanics\n    └── ** workspace-daemon-requests.test.ts          # preserves process-level behavior\n```\n\nLegend: `++` added, `**` changed, `~~` moved, `--` removed.\n\n## Public surface\n\n```ts\nexport type DaemonWorkerReadyReport = Extract<DaemonNavigationWorkerResponse, { readonly kind: \"ready\" }>;\nexport type DaemonWorkerExecutionReport = Extract<DaemonNavigationWorkerResponse, { readonly kind: \"result\" }>;\nexport type DaemonWorkerResourceReport = Extract<DaemonNavigationWorkerResponse, { readonly kind: \"heap\" }>;\nexport interface DaemonWorkerExecuteRequest { readonly commandName: DaemonCommandName; readonly request: DaemonExecutorRequest; }\nexport interface DaemonWorkerExitRecovery { recover(exit: DaemonNavigationWorkerExit): Promise<void>; }\nexport interface DaemonWorkerGenerationSnapshot { readonly generation: number; readonly ready: boolean; readonly fileCount?: number; }\nexport interface DaemonWorkerGenerationManagerOptions {\n  readonly workspaceRoot: string;\n  readonly createWorker: (generation: number) => DaemonNavigationWorker;\n  readonly initialWorker?: DaemonNavigationWorker;\n  readonly exitRecovery: DaemonWorkerExitRecovery;\n  readonly onActiveResourceInterruption: (cause: DaemonWorkerReplacementCause) => void;\n  readonly onDiagnostic: (diagnostic: DaemonWorkerDiagnostic) => void;\n}\nexport class DaemonWorkerGenerationManager {\n  constructor(options: DaemonWorkerGenerationManagerOptions);\n  get snapshot(): DaemonWorkerGenerationSnapshot;\n  start(): Promise<DaemonWorkerReadyReport>;\n  activateReadiness(): void;\n  execute(requestId: string, request: DaemonWorkerExecuteRequest, output: DaemonOutputSink): Promise<DaemonWorkerExecutionReport>;\n  replace(cause: DaemonWorkerReplacementCause): Promise<DaemonWorkerReadyReport>;\n  releaseTransientResources(): Promise<DaemonWorkerResourceReport>;\n  close(): Promise<void>;\n  terminate(): Promise<void>;\n}\n```\n\n## Decisions\n\n- Chose one generation manager over process-shell worker fields, because startup, execution, replacement, fencing, release, and shutdown share one lifecycle state.\n- Chose a recovery port over importing the resource supervisor, because replacement-window and circuit decisions remain resource policy.\n- Chose explicit readiness activation over publishing readiness with the worker report, because warm-up sampling remains the admission and activity barrier.\n- Chose one stored replacement operation over parallel transitions, because concurrent callers must share one generation handoff.\n- Chose separate close and termination operations over one shutdown promise, because forced termination can interrupt a blocked graceful close while repeated calls retain promise identity.\n\n## Look here\n\n- `apps/cli/src/daemon/daemon-worker-generation-manager.ts:80`\n- `apps/cli/src/daemon/daemon-worker-generation-manager.ts:122`\n- `apps/cli/src/daemon/workspace-daemon.ts:223`\n",
+      "commits": [
+        {
+          "sha": "15995e65bd9ef2caa027800b77d527e4dd316f03",
+          "subject": "Characterize worker replacement order",
+          "body": ""
+        },
+        {
+          "sha": "246be5c0847c76f0e01e2ffc3f1ab2f9cbc87788",
+          "subject": "Define worker generation manager contracts",
+          "body": ""
+        },
+        {
+          "sha": "bda67590b3207ab48e433b270ae278452e5a4d0c",
+          "subject": "Specify worker generation startup",
+          "body": ""
+        },
+        {
+          "sha": "7a5e35a21622c02401c3ef34993ec2035db17b96",
+          "subject": "Manage worker generation startup",
+          "body": ""
+        },
+        {
+          "sha": "ebb12798f10fef247d26342af505dda09fd5bf9f",
+          "subject": "Specify worker generation execution",
+          "body": ""
+        },
+        {
+          "sha": "38d88f314468acfd90f929f158b7e3639f388514",
+          "subject": "Delegate worker generation execution",
+          "body": ""
+        },
+        {
+          "sha": "b69c177e643b7579d16384c64faf24d7f06ddd6e",
+          "subject": "Specify worker generation replacement",
+          "body": ""
+        },
+        {
+          "sha": "a9d438a2dcca01960e04b9ac81f5ac6716af7dac",
+          "subject": "Manage worker generation replacement",
+          "body": ""
+        },
+        {
+          "sha": "6e3804527ed388c15e4793a5365b216a7a33ad81",
+          "subject": "Specify worker generation exit recovery",
+          "body": ""
+        },
+        {
+          "sha": "f13cadfa84f6f6461faed8f7cc2b051d40ef7aa1",
+          "subject": "Fence worker generation exit recovery",
+          "body": ""
+        },
+        {
+          "sha": "377a5c7cf00b4b354661ef3eb35cc44613b47ef4",
+          "subject": "Specify worker generation resource release",
+          "body": ""
+        },
+        {
+          "sha": "75527597c0db35a6f932840df12694d448526328",
+          "subject": "Release current worker resources",
+          "body": ""
+        },
+        {
+          "sha": "f5e8c4437eeff32a24ea71bde82518a8691bb95e",
+          "subject": "Specify worker generation shutdown",
+          "body": ""
+        },
+        {
+          "sha": "03da22271244e900059ab27d66b3459e992b0658",
+          "subject": "Make worker generation shutdown idempotent",
+          "body": ""
+        },
+        {
+          "sha": "dfd7e5c6a54d2fd879277c2e46149c1857051273",
+          "subject": "Specify worker exit recovery port",
+          "body": ""
+        },
+        {
+          "sha": "dcfeaa7710b7d6866456d04bfe3d75bf157f24d1",
+          "subject": "Route worker exits through recovery port",
+          "body": ""
+        },
+        {
+          "sha": "14b7a9ea88b1814000f3b8e23230363e4a2173bb",
+          "subject": "Delegate worker generation ownership",
+          "body": ""
+        },
+        {
+          "sha": "69da4d4a55c3dfcb9945222b19f55e2f2be4f7ac",
+          "subject": "Remove embedded worker generation mechanics",
+          "body": ""
+        },
+        {
+          "sha": "3017637c2f7c6fc551e09739342163b62494b89c",
+          "subject": "Lock active worker exit classification",
+          "body": ""
+        },
+        {
+          "sha": "e4aee7e066f9331b4dec184117ff77958bc1d52f",
+          "subject": "Lock resource interruption causes",
+          "body": ""
+        },
+        {
+          "sha": "7c6d9088f754ec6bc231b10d385822b2897de87d",
+          "subject": "Colocate worker generation contracts",
+          "body": ""
+        },
+        {
+          "sha": "222d350555208733d90db93eaba4144a57809845",
+          "subject": "Specify retained worker file counts",
+          "body": ""
+        },
+        {
+          "sha": "6fd3decb0a3697cadb667b6ae6097349a6cde250",
+          "subject": "Retain worker file counts during transitions",
+          "body": ""
+        },
+        {
+          "sha": "20b214516f307c75872f8f09ffad60c862263e44",
+          "subject": "Specify warm-up readiness activation",
+          "body": ""
+        },
+        {
+          "sha": "ce2a7489b46a3fb4b5e35082ddb4803bffe7467f",
+          "subject": "Activate worker readiness after warm-up",
+          "body": ""
+        },
+        {
+          "sha": "7e090445074069d0b814a0b7b16d233a70650fc3",
+          "subject": "Specify worker snapshot contract ownership",
+          "body": ""
+        },
+        {
+          "sha": "b8e8b7b85fe0e5fd0cb5784895ee090be015afa1",
+          "subject": "Reuse worker generation snapshot contract",
+          "body": ""
+        }
+      ],
+      "base": "agent/daemon-architecture-refactor-part-21",
+      "head": "agent/daemon-architecture-refactor-part-22",
+      "group": "policy",
+      "decisions": [
+        {
+          "id": "d145-1",
+          "label": "One worker-generation owner",
+          "status": "stated",
+          "text": "Chose one generation manager over process-shell worker fields, because startup, execution, replacement, fencing, release, and shutdown share one lifecycle state.",
+          "pr": 145
+        },
+        {
+          "id": "d145-2",
+          "label": "Resource policy behind recovery port",
+          "status": "stated",
+          "text": "Chose a recovery port over importing the resource supervisor, because replacement-window and circuit decisions remain resource policy.",
+          "pr": 145
+        },
+        {
+          "id": "d145-3",
+          "label": "Activate ready after warm-up sampling",
+          "status": "stated",
+          "text": "Chose explicit readiness activation over publishing readiness with the worker report, because warm-up sampling remains the admission and activity barrier.",
+          "pr": 145
+        },
+        {
+          "id": "d145-4",
+          "label": "Share one replacement operation",
+          "status": "stated",
+          "text": "Chose one stored replacement operation over parallel transitions, because concurrent callers must share one generation handoff.",
+          "pr": 145
+        },
+        {
+          "id": "d145-5",
+          "label": "Separate graceful close + force termination",
+          "status": "stated",
+          "text": "Chose separate close and termination operations over one shutdown promise, because forced termination can interrupt a blocked graceful close while repeated calls retain promise identity.",
+          "pr": 145
+        }
+      ]
+    },
+    {
+      "number": 146,
+      "title": "Own daemon completion delivery in one session",
+      "body": "## Context\n\nImplements Phase 23 of the daemon architecture plan. This stack layer follows worker-generation PR #145 and isolates completion delivery before accepted-execution extraction. Exact local CI parity passed 2,409 tests with eight expected skips; focused delivery, process, real Unix-socket, and mutation checks preserve protocol and lifecycle behavior.\n\n## Shape\n\nBefore — `WorkspaceDaemon` coordinates completion delivery directly:\n\n```mermaid\nflowchart LR\n    Process[\"WorkspaceDaemon<br/>&lt;&lt;process and delivery owner&gt;&gt;\"] -->|uses| Ledger[\"AcceptedRequestLedger<br/>&lt;&lt;request state&gt;&gt;\"]\n    Process -->|uses| Spool[\"DaemonCompletionSpoolStore<br/>&lt;&lt;completion bytes&gt;&gt;\"]\n    Process -->|uses| Observer[\"DaemonOperationObserver<br/>&lt;&lt;delivery traces&gt;&gt;\"]\n\n    classDef removed fill:#ffebe9,stroke:#cf222e,color:#24292f\n    class Process removed\n```\n\nAfter — one session coordinates delivery over the existing data owners:\n\n```mermaid\nflowchart LR\n    Process[\"WorkspaceDaemon<br/>&lt;&lt;process shell&gt;&gt;\"] -->|uses| Session[\"DaemonDeliverySession<br/>&lt;&lt;delivery coordinator&gt;&gt;\"]\n    Session -->|uses| Ledger[\"AcceptedRequestLedger<br/>&lt;&lt;request state&gt;&gt;\"]\n    Session -->|uses| Spool[\"DaemonCompletionSpoolStore<br/>&lt;&lt;completion bytes&gt;&gt;\"]\n    Session -->|uses| Observer[\"DaemonOperationObserver<br/>&lt;&lt;delivery traces&gt;&gt;\"]\n\n    classDef added fill:#dafbe1,stroke:#1a7f37,color:#24292f\n    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n    class Session added\n    class Process changed\n```\n\nLegend: green = added; red = removed; yellow = changed; unfilled = pre-existing and unchanged.\n\n## Where it lives\n\n```text\n.\n└── apps/cli/src/daemon/\n    ├── ++ daemon-delivery-session.ts       # owns delivery coordination over injected state owners\n    ├── ++ daemon-delivery-session.test.ts  # locks transfer, retention, barrier, and cleanup behavior\n    ├── ** workspace-daemon.ts               # composes the session and delegates delivery behavior\n    └── ** workspace-daemon-requests.test.ts # preserves process-level delivery and shutdown ordering\n```\n\nLegend: `++` added, `**` changed, `~~` moved, `--` removed.\n\n## Public surface\n\nAdded:\n\n```ts\nexport interface DaemonDiagnosticRecorder {\n  record(event: DaemonDiagnosticEvent): void;\n}\nexport interface DaemonCompletionWriter {\n  append(record: DaemonSequencedOutputRecord): Promise<void>;\n  finish(exitCode: number): Promise<CompletionSpoolManifest>;\n  dispose(): Promise<void>;\n}\nexport interface DaemonDeliverySnapshot {\n  readonly spoolBytes: number;\n  readonly hasUnacknowledgedCompletions: boolean;\n}\nexport interface DaemonDeliveryAttachment {\n  readonly requestId: string;\n  readonly acceptedAt: number;\n  readonly queuePosition: number;\n}\nexport interface AcceptedExecutionJournal {\n  readonly hasUnacknowledgedCompletions: boolean;\n  entryFor(requestId: string): AcceptedRequestEntry | undefined;\n  subscribe(requestId: string, subscriber: AcceptedRequestSubscriber): () => void;\n  invalidateCompletion(requestId: string, code: DaemonExecutionFailureCode, completedAt: number): void;\n  acknowledge(requestId: string): void;\n  terminateDelivery(requestId: string): boolean;\n  isDeliveryTerminated(requestId: string): boolean;\n}\nexport type AuthenticatedDaemonResultFetchRequest = DaemonResultFetchRequest;\nexport type AuthenticatedDaemonResultAcknowledgement = DaemonResultAcknowledgement;\nexport type DaemonResultAcknowledged = Extract<DaemonResponse, { readonly kind: \"result-acknowledged\" }>;\nexport interface DaemonDeliverySessionOptions {\n  readonly coordinates: Pick<DaemonIdentityCoordinates, \"instanceId\" | \"processToken\">;\n  readonly journal: AcceptedExecutionJournal;\n  readonly spoolStore: DaemonCompletionSpoolStore;\n  readonly observer: DaemonOperationObserver;\n  readonly diagnostics: DaemonDiagnosticRecorder;\n  readonly clock: DaemonClock;\n  readonly policy: Pick<DaemonPolicyValues, \"delivery\" | \"diagnostics\" | \"shutdown\">;\n}\nexport class DaemonDeliverySession {\n  constructor(options: DaemonDeliverySessionOptions);\n  get snapshot(): DaemonDeliverySnapshot;\n  beginAcceptedTrace(requestId: string, command: DaemonCommandName, queuePosition: number, workerGeneration: number): DaemonOperationTrace;\n  createCompletion(requestId: string): Promise<DaemonCompletionWriter>;\n  attach(attachment: DaemonDeliveryAttachment, send: DaemonServerSend): Promise<void>;\n  fetch(request: AuthenticatedDaemonResultFetchRequest, send: DaemonServerSend): Promise<void>;\n  acknowledge(request: AuthenticatedDaemonResultAcknowledgement): Promise<DaemonResultAcknowledged>;\n  trackedCompletion(requestId: string): Promise<void> | undefined;\n  waitForCompletionAcknowledgements(): Promise<void>;\n  completeRetainedTraces(): void;\n  cleanupInstance(): Promise<void>;\n}\n```\n\n## Decisions\n\n- Chose one injected delivery session over process-shell delivery fields, because attachment, transfer, acknowledgement, and trace lifecycles form one coordination boundary.\n- Chose narrow ledger and spool ports over moving their data into the session, because accepted-request state and completion bytes already have authoritative owners.\n- Chose the latest per-request delivery promise over aggregating duplicate attachments, because queue completion must wait for the current stream without creating another request registry.\n- Chose retention-fenced trace handles over raw observer handles, because evicted or expired traces must ignore late diagnostics.\n- Chose physical cleanup before logical acknowledgement over conditional journal acknowledgement, because cleanup failure remains diagnostic and must not withhold protocol success.\n\n## Look here\n\n- `apps/cli/src/daemon/daemon-delivery-session.ts:189`\n- `apps/cli/src/daemon/daemon-delivery-session.ts:256`\n- `apps/cli/src/daemon/daemon-delivery-session.ts:281`\n",
+      "commits": [
+        {
+          "sha": "143416954ae9f84744ff4fdd01a20c165565b6cd",
+          "subject": "Define daemon delivery session contracts",
+          "body": ""
+        },
+        {
+          "sha": "1063d7c8e484bbf324f0f737302277c889ea3eb9",
+          "subject": "Specify delivery completion writers",
+          "body": ""
+        },
+        {
+          "sha": "42eae47804148337d3665a091376512d9d1d9648",
+          "subject": "Own delivery completion writers",
+          "body": ""
+        },
+        {
+          "sha": "a23b07b580897722873813bf537405d6db744254",
+          "subject": "Specify delivery attachment streams",
+          "body": ""
+        },
+        {
+          "sha": "d742199e8824e9a79ddcc738ae00c2228e36df7d",
+          "subject": "Own delivery attachment streams",
+          "body": ""
+        },
+        {
+          "sha": "4a968bc6fc159542326b7c0d8537b369bb7bdc73",
+          "subject": "Specify tracked completion delivery barriers",
+          "body": ""
+        },
+        {
+          "sha": "b763ccb530980cec0775423b3a08688f05110682",
+          "subject": "Expose tracked completion delivery barriers",
+          "body": ""
+        },
+        {
+          "sha": "3f7266e9db96f3e352237f5fafea06d144135b05",
+          "subject": "Specify resumable completion fetches",
+          "body": ""
+        },
+        {
+          "sha": "1eda8a944988c0baf87479d1fe5bcb5c4ccce8b1",
+          "subject": "Resume retained completion fetches",
+          "body": ""
+        },
+        {
+          "sha": "6eb44f1698d2433d0a57f70b245cbf1bee63b511",
+          "subject": "Specify completion acknowledgements",
+          "body": ""
+        },
+        {
+          "sha": "7e30e44a35c2361093a5ae82b98515cff41b494c",
+          "subject": "Own completion acknowledgements",
+          "body": ""
+        },
+        {
+          "sha": "ac20aaf1334561a3098dd503e29c8de870c8f962",
+          "subject": "Specify retained delivery traces",
+          "body": ""
+        },
+        {
+          "sha": "3a7454a4fac712e38da8915c293f4431de4627aa",
+          "subject": "Retain disconnected delivery traces",
+          "body": ""
+        },
+        {
+          "sha": "b99655a927db9456d60df8a9928a15f6c4f02b36",
+          "subject": "Specify delivery acknowledgement waiting",
+          "body": ""
+        },
+        {
+          "sha": "0ee9ce520faa3ae080992c99f110b075472d2890",
+          "subject": "Wait for delivery acknowledgements",
+          "body": ""
+        },
+        {
+          "sha": "1daa7a24a7455671387b32aedf959f9922103fd1",
+          "subject": "Specify delivery instance cleanup",
+          "body": ""
+        },
+        {
+          "sha": "ed915bc450a598a51272c001e4703ccd9515c5c1",
+          "subject": "Clean delivery instance spools",
+          "body": ""
+        },
+        {
+          "sha": "9e5280154e8b1817176559308115d8d60daa6850",
+          "subject": "Fence expired delivery traces",
+          "body": ""
+        },
+        {
+          "sha": "51893d8aef0c4ef7a17a9e539b4fee4bff91e81a",
+          "subject": "Delegate daemon delivery ownership",
+          "body": ""
+        },
+        {
+          "sha": "c0157a46a69d100a8718bf243870e84f2cde6222",
+          "subject": "Lock latest delivery process barriers",
+          "body": ""
+        },
+        {
+          "sha": "f79ba36278c77c41ca887aa4efc24fd0781e4cec",
+          "subject": "Lock worker-before-spool shutdown ordering",
+          "body": ""
+        }
+      ],
+      "base": "agent/daemon-architecture-refactor-part-22",
+      "head": "agent/daemon-architecture-refactor-part-23",
+      "group": "delivery",
+      "decisions": [
+        {
+          "id": "d146-1",
+          "label": "One delivery coordinator",
+          "status": "stated",
+          "text": "Chose one injected delivery session over process-shell delivery fields, because attachment, transfer, acknowledgement, and trace lifecycles form one coordination boundary.",
+          "pr": 146
+        },
+        {
+          "id": "d146-2",
+          "label": "Ledger + spool retain data ownership",
+          "status": "stated",
+          "text": "Chose narrow ledger and spool ports over moving their data into the session, because accepted-request state and completion bytes already have authoritative owners.",
+          "pr": 146
+        },
+        {
+          "id": "d146-3",
+          "label": "Wait on latest delivery attachment",
+          "status": "stated",
+          "text": "Chose the latest per-request delivery promise over aggregating duplicate attachments, because queue completion must wait for the current stream without creating another request registry.",
+          "pr": 146
+        },
+        {
+          "id": "d146-4",
+          "label": "Fence expired trace handles",
+          "status": "stated",
+          "text": "Chose retention-fenced trace handles over raw observer handles, because evicted or expired traces must ignore late diagnostics.",
+          "pr": 146
+        },
+        {
+          "id": "d146-5",
+          "label": "Cleanup before logical acknowledgement",
+          "status": "stated",
+          "text": "Chose physical cleanup before logical acknowledgement over conditional journal acknowledgement, because cleanup failure remains diagnostic and must not withhold protocol success.",
+          "pr": 146
+        }
+      ]
+    },
+    {
+      "number": 147,
+      "title": "Serialize accepted daemon execution in one session",
+      "body": "## Context\n\nImplements Phase 24 of the daemon architecture plan. This stack layer follows delivery-session PR #146 and isolates accepted execution before Phase 25 replaces the residual process coordinator. Exact local CI parity passed 2,414 tests with eight expected skips; focused session, transport, parity, scale, stop, commit-replay, and mutation checks preserve protocol, timing, and lifecycle behavior.\n\n## Shape\n\nBefore — `WorkspaceDaemon` coordinates accepted execution directly:\n\n```mermaid\nflowchart LR\n    Process[\"WorkspaceDaemon<br/>&lt;&lt;process and execution owner&gt;&gt;\"] -->|uses| Ledger[\"AcceptedRequestLedger<br/>&lt;&lt;request state&gt;&gt;\"]\n    Process -->|uses| Queue[\"WorkspaceRequestQueue<br/>&lt;&lt;FIFO turns&gt;&gt;\"]\n    Process -->|uses| Delivery[\"DaemonDeliverySession<br/>&lt;&lt;completion delivery&gt;&gt;\"]\n\n    classDef removed fill:#ffebe9,stroke:#cf222e,color:#24292f\n    class Process removed\n```\n\nAfter — one session coordinates accepted turns over existing owners:\n\n```mermaid\nflowchart LR\n    Process[\"WorkspaceDaemon<br/>&lt;&lt;process shell&gt;&gt;\"] -->|uses| Session[\"AcceptedExecutionSession<br/>&lt;&lt;turn coordinator&gt;&gt;\"]\n    Session -->|uses| Ledger[\"AcceptedRequestLedger<br/>&lt;&lt;request state&gt;&gt;\"]\n    Session -->|uses| Queue[\"WorkspaceRequestQueue<br/>&lt;&lt;FIFO turns&gt;&gt;\"]\n    Session -->|uses| Delivery[\"DaemonDeliverySession<br/>&lt;&lt;completion delivery&gt;&gt;\"]\n\n    classDef added fill:#dafbe1,stroke:#1a7f37,color:#24292f\n    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n    class Session added\n    class Process changed\n```\n\nLegend: green = added; red = removed; yellow = changed; unfilled = pre-existing and unchanged.\n\n## Where it lives\n\n```text\n.\n└── apps/cli/src/daemon/\n    ├── ++ accepted-execution-session-contracts.ts # defines injected session ports and snapshots\n    ├── ++ accepted-execution-session.ts           # owns admission-to-turn serialization\n    ├── ++ accepted-execution-session.test.ts      # locks timing, barriers, failures, and duplicates\n    ├── ** accepted-request-ledger.ts               # retains immutable acceptance metadata\n    └── ** workspace-daemon.ts                      # composes and delegates to the session\n```\n\nLegend: `++` added, `**` changed, `~~` moved, `--` removed.\n\n## Public surface\n\nAdded internal coordination surface:\n\n```ts\nexport class AcceptedExecutionSession {\n  constructor(options: AcceptedExecutionSessionOptions);\n  get snapshot(): AcceptedExecutionSnapshot;\n  compatibilityFor(request: DaemonExecuteRequest): AcceptedRequestCompatibility;\n  accept(request: AuthenticatedDaemonExecuteRequest): AcceptedExecutionAdmission;\n  status(requestId: string): DaemonExecutionStatus;\n  markActiveResourceInterrupted(cause: DaemonWorkerReplacementCause): void;\n  scheduleAtTurnBoundary(operation: () => Promise<void>): Promise<void>;\n  drain(): Promise<void>;\n  close(): void;\n}\n```\n\nChanged ledger entry surface:\n\n```ts\nexport interface AcceptedRequestEntry {\n  readonly acceptedAt: number;\n  readonly queuePosition: number;\n  readonly state: AcceptedRequestState;\n}\n```\n\nNo package export, CLI command, protocol shape, option, or environment surface changes.\n\n## Decisions\n\n- Chose immutable acceptance metadata on each ledger entry over a parallel process map, because queued, running, terminal, and acknowledged states share one original acceptance identity.\n- Chose an injected session over moving ledger, queue, delivery, worker, resource, lifetime, or shutdown state, because each dependency remains authoritative for its own mechanism.\n- Chose a narrow process-lifecycle port over exposing the process shell, because execution needs only shutdown classification, workspace presence, and post-delivery deletion transition.\n- Chose turn-boundary sampling inside each queued operation over post-hoc process scheduling, because sampling must gate the next FIFO turn after success or failure.\n- Chose duplicate attachment over acceptance replay, because request identity remains daemon-lifetime idempotent without another trace, queue turn, clock read, or lifetime reset.\n\n## Look here\n\n- `apps/cli/src/daemon/accepted-execution-session.ts:44`\n- `apps/cli/src/daemon/accepted-execution-session.ts:93`\n- `apps/cli/src/daemon/workspace-daemon.ts:193`\n",
+      "commits": [
+        {
+          "sha": "4143208490ac3ae8402287755a1aac9e219c79a1",
+          "subject": "Specify immutable request acceptance metadata",
+          "body": ""
+        },
+        {
+          "sha": "5866d667729f0a71454f46c522fd42c510900222",
+          "subject": "Retain acceptance metadata on ledger entries",
+          "body": ""
+        },
+        {
+          "sha": "9e4a8251c9e9615713cc3bca6571a000cff8b10d",
+          "subject": "Specify accepted execution session ownership",
+          "body": ""
+        },
+        {
+          "sha": "626697aa57ebc46625d7e3b0d97608299e78fd6d",
+          "subject": "Define accepted execution session contracts",
+          "body": ""
+        },
+        {
+          "sha": "6282cd65e09d9629b758260c43883b6060fe1db7",
+          "subject": "Own accepted execution turns in one session",
+          "body": ""
+        },
+        {
+          "sha": "ba53c8e1662fd86d198b95321c90d9c9bef10184",
+          "subject": "Delegate accepted execution from workspace daemon",
+          "body": ""
+        }
+      ],
+      "base": "agent/daemon-architecture-refactor-part-23",
+      "head": "agent/daemon-architecture-refactor-part-24",
+      "group": "delivery",
+      "decisions": [
+        {
+          "id": "d147-1",
+          "label": "Immutable acceptance metadata",
+          "status": "stated",
+          "text": "Chose immutable acceptance metadata on each ledger entry over a parallel process map, because queued, running, terminal, and acknowledged states share one original acceptance identity.",
+          "pr": 147
+        },
+        {
+          "id": "d147-2",
+          "label": "Session coordinates existing owners",
+          "status": "stated",
+          "text": "Chose an injected session over moving ledger, queue, delivery, worker, resource, lifetime, or shutdown state, because each dependency remains authoritative for its own mechanism.",
+          "pr": 147
+        },
+        {
+          "id": "d147-3",
+          "label": "Narrow process-lifecycle port",
+          "status": "stated",
+          "text": "Chose a narrow process-lifecycle port over exposing the process shell, because execution needs only shutdown classification, workspace presence, and post-delivery deletion transition.",
+          "pr": 147
+        },
+        {
+          "id": "d147-4",
+          "label": "Sample before the next FIFO turn",
+          "status": "stated",
+          "text": "Chose turn-boundary sampling inside each queued operation over post-hoc process scheduling, because sampling must gate the next FIFO turn after success or failure.",
+          "pr": 147
+        },
+        {
+          "id": "d147-5",
+          "label": "Duplicates attach; no extra execution",
+          "status": "stated",
+          "text": "Chose duplicate attachment over acceptance replay, because request identity remains daemon-lifetime idempotent without another trace, queue turn, clock read, or lifetime reset.",
+          "pr": 147
+        }
+      ]
+    },
+    {
+      "number": 148,
+      "title": "Own daemon mechanisms behind DaemonClient",
+      "body": "## Context\n\nDaemon process ownership still lived in CLI-local mechanisms, and hosts needed registry, transport, startup, and lifecycle knowledge to compose daemon execution. This group establishes the package-owned process and client boundary while leaving the active CLI consumer switch to the next PR.\n\n## Shape\n\nBefore — CLI-local mechanisms own process coordination and expose their composition burden to the host:\n\n```mermaid\nflowchart LR\n  H[CLI host] --> W[WorkspaceDaemon]\n  W --> M[CLI-local daemon mechanisms]\n  P[daemon package] --> C[Contracts and policy]\n  classDef removed fill:#ffebe9,stroke:#cf222e,color:#24292f\n  class W removed\n```\n\nAfter — package entries and a public client compose package-local mechanisms; the shipped CLI still follows its frozen compatibility graph:\n\n```mermaid\nflowchart LR\n  H[CLI host] --> F[Frozen compatibility graph]\n  P[daemon package] --> D[DaemonClient public facade]\n  D --> M[Private routing and lifecycle mechanisms]\n  E[Process and worker entries] --> M\n  classDef added fill:#dafbe1,stroke:#1a7f37,color:#24292f\n  classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n  class D,M,E added\n  class F changed\n```\n\nLegend: green = added; red = removed; yellow = changed; unfilled = pre-existing and unchanged.\n\n## Where it lives\n\n```text\n.\n├── apps/cli/src/daemon/\n│   ├── ~~ daemon-process-coordinator.ts # renamed from workspace-daemon.ts; owns process lifecycle\n│   ├── ** daemon-clock.ts               # owns wall and monotonic time sources\n│   ├── ** daemon-registry.ts            # owns startup-lock equality\n│   └── ** ... 9 files                   # coordinated compatibility mechanisms, then frozen\n├── packages/daemon/\n│   ├── ** package.json                  # exposes real process and worker entry subpaths\n│   ├── src/\n│   │   ├── ++ client/ ... 8 files       # public facade and private routing/runtime composition\n│   │   ├── ++ delivery/, diagnostics/, execution/, lifecycle/\n│   │   ├── ++ process/, registry/, resources/, transport/, worker/ # package mechanism owners\n│   │   ├── ~~ ... 37 test files         # moved from apps/cli/src/daemon/\n│   │   ├── ++ process-entry.ts\n│   │   ├── ++ worker-entry.ts\n│   │   └── ** index.ts                  # exports the host-facing client surface\n│   └── ++ test/ ... 24 files            # generic executor and built-entry integration fixtures\n├── meta-tests/src/\n│   └── ++ daemon-compatibility-copy.test.ts # freezes 38 app-local production copies\n└── plans/005/\n    └── ** daemon-follow-ups-functional-spec.md # records deferred idle-accounting changes\n```\n\n## Public surface\n\n```ts\nexport type {\n  DaemonClientExecuteRequest,\n  DaemonClientExecuteResult,\n  DaemonClientOptions,\n  DaemonControlRequest,\n} from \"./client/daemon-client-contracts.js\";\nexport { DaemonClient } from \"./client/daemon-client.js\";\n\nexport class DaemonClient {\n  constructor(options: DaemonClientOptions);\n  execute(request: DaemonClientExecuteRequest): Promise<DaemonClientExecuteResult>;\n  control(\n    request: Extract<DaemonControlRequest, { readonly action: \"start\" }>,\n  ): Promise<DaemonStartResult>;\n  control(\n    request: Extract<DaemonControlRequest, { readonly action: \"status\" }>,\n  ): Promise<readonly RunningDaemonStatus[]>;\n  control(\n    request: Extract<DaemonControlRequest, { readonly action: \"stop\" }>,\n  ): Promise<DaemonStopResult>;\n}\n```\n\n## Decisions\n\n- Chose a Node-free public façade with a dynamically loaded internal runtime over exposing Node-backed mechanisms, because host declarations must not acquire Node ambient dependencies.\n- Chose ordered lazy routing guards over eager registry and transport observation, because the first routing decision must prevent every later side effect.\n- Chose package staging with a frozen CLI compatibility graph over switching production consumers during relocation, because mechanism ownership and host invocation coordination need separate review boundaries.\n- Chose package-owned result capture and controlled failure outputs over host-provided storage or output factories, because warm transfer cleanup and replay safety belong to the daemon client.\n- Chose to preserve acceptance-based idle timing over correcting it during extraction, because readiness- and completion-based lifetime changes are explicitly deferred behavior.\n\n## Look here\n\n- `packages/daemon/src/process/process-coordinator.ts:84`\n- `packages/daemon/src/client/daemon-client-runtime.ts:139`\n- `packages/daemon/src/client/daemon-client.ts:20`\n",
+      "commits": [
+        {
+          "sha": "5fb83c449d05b9f567e42c5248bf60d06d3c11bd",
+          "subject": "Specify daemon lifetime clock ownership",
+          "body": ""
+        },
+        {
+          "sha": "61fa2d70f8beff2a3fb8724e42eada8382cb7bd0",
+          "subject": "Give daemon lifetime its wall clock",
+          "body": ""
+        },
+        {
+          "sha": "aec3f7c02a591e710c80814d99ef2b50051c970d",
+          "subject": "Specify registry startup ownership authority",
+          "body": ""
+        },
+        {
+          "sha": "c3796a65090baa7fc1a67491c4045a48a8040c8b",
+          "subject": "Centralize registry startup ownership checks",
+          "body": ""
+        },
+        {
+          "sha": "7e860218e55963852a0d5afe497ccde702e5f4a5",
+          "subject": "Rename workspace daemon as process coordinator",
+          "body": ""
+        },
+        {
+          "sha": "3d25c347f1778ecccf8ca9314e224bac71f9fa1c",
+          "subject": "Specify process request authentication order",
+          "body": ""
+        },
+        {
+          "sha": "7fd93d33c1f74da7541a37f14d5673a5d1d74518",
+          "subject": "Specify validated process coordinate adoption",
+          "body": ""
+        },
+        {
+          "sha": "0a3d57c6f6b2c8d807cd8d34c0163a8b7c915d72",
+          "subject": "Adopt validated process coordinates",
+          "body": ""
+        },
+        {
+          "sha": "bdaff55dc8f541e90a86da64512bd7941a59ade3",
+          "subject": "Specify daemon clock source ownership",
+          "body": ""
+        },
+        {
+          "sha": "f6f942ef7a57a6c1632752aef3e685f66a496de1",
+          "subject": "Route daemon timing through its clock",
+          "body": ""
+        },
+        {
+          "sha": "516cb9b91c44ab97117b31dde9777099d8d95cab",
+          "subject": "Characterize process callback composition",
+          "body": ""
+        },
+        {
+          "sha": "25ddbe22d120013e627a66772601e8cbd9b8d6dc",
+          "subject": "Specify canonical startup ownership authority",
+          "body": ""
+        },
+        {
+          "sha": "b46872384d0981f0df87d8885fc4e40c152a2c1c",
+          "subject": "Centralize all startup ownership decisions",
+          "body": ""
+        },
+        {
+          "sha": "4a0b280649a62c26f0f712166709e086dda74b74",
+          "subject": "Specify narrow startup ownership coordinates",
+          "body": ""
+        },
+        {
+          "sha": "f2bda0b61ff09ceaea12eb3a7d5f666d83d5ac48",
+          "subject": "Stage daemon mechanism compatibility copies",
+          "body": ""
+        },
+        {
+          "sha": "8a21dd5b425727b91cf61ad3ad78ad6748e36a13",
+          "subject": "Organize daemon mechanisms by ownership",
+          "body": ""
+        },
+        {
+          "sha": "36ef14651a616e10bb7f3097932d4ad088a81d09",
+          "subject": "Add daemon package executable entries",
+          "body": ""
+        },
+        {
+          "sha": "b855f6be930d9b2ddcab766caba19c6d41e45e03",
+          "subject": "Prove built daemon entry resolution",
+          "body": ""
+        },
+        {
+          "sha": "e0425f842d6c8051b91ef85b34444704fdefe693",
+          "subject": "Retire flat daemon staging copies",
+          "body": ""
+        },
+        {
+          "sha": "ed3baa7f1003a25b177a105102a84afc9630a645",
+          "subject": "Relocate daemon mechanism ownership tests",
+          "body": ""
+        },
+        {
+          "sha": "501c5b5e769966feb45170ce65c3b44a35820287",
+          "subject": "Retire app-owned daemon mechanism tests",
+          "body": ""
+        },
+        {
+          "sha": "68fbaace0bd962ad451c803c29d04901dfc9c866",
+          "subject": "Keep executor fixture package-independent",
+          "body": ""
+        },
+        {
+          "sha": "6629b30f879da58db646d14bd0d44768632fe7b2",
+          "subject": "Conform daemon staging tests to lint rules",
+          "body": ""
+        },
+        {
+          "sha": "dad9676feea612dac85c33e7b890355f3cb98fd1",
+          "subject": "Specify exhaustive daemon entry exports",
+          "body": ""
+        },
+        {
+          "sha": "e1dc8725f40e1e14f9959b5df8295dc003d21b7e",
+          "subject": "Prove built daemon process entry execution",
+          "body": ""
+        },
+        {
+          "sha": "0f31a619e806dcadd81207de6643b92bd353e716",
+          "subject": "Restore CLI executor version rejection oracle",
+          "body": ""
+        },
+        {
+          "sha": "70c7bea75c15581aa696adbddcb2a1ba8c2c598e",
+          "subject": "Specify ordered daemon routing decisions",
+          "body": ""
+        },
+        {
+          "sha": "d8703664779d06200f2190ee65632fc9afdd1b73",
+          "subject": "Own ordered daemon routing decisions",
+          "body": ""
+        },
+        {
+          "sha": "cd94bd488a39b14a29a4d9e0eb44b0c2164c5aef",
+          "subject": "Define daemon client host contracts",
+          "body": ""
+        },
+        {
+          "sha": "2c7a42178376434fe2cccc676d924096ce5d2678",
+          "subject": "Specify daemon client execution ownership",
+          "body": ""
+        },
+        {
+          "sha": "18e2f4ade3e424158bdf781f18ddf183a4fec7f8",
+          "subject": "Route execution through DaemonClient",
+          "body": ""
+        },
+        {
+          "sha": "ea52cfbb9b344f601ae9b3d14f2998018bed4ec1",
+          "subject": "Specify daemon client lifecycle control",
+          "body": ""
+        },
+        {
+          "sha": "c41d2e20074e907801b5556793ec5cfa260d1674",
+          "subject": "Own daemon lifecycle composition in DaemonClient",
+          "body": ""
+        },
+        {
+          "sha": "6762c7f819a80272e67c60b2b5b0b5c151e94bcd",
+          "subject": "Specify host-owned daemon readiness probe",
+          "body": ""
+        },
+        {
+          "sha": "a29be148b5b6b6a6ec58831fcb1e7b98cc60b5ad",
+          "subject": "Route host readiness probes through startup",
+          "body": ""
+        },
+        {
+          "sha": "f2a9d157c96cba64e65937909f63abbb5b4b63b6",
+          "subject": "Compose warm result capture in DaemonClient",
+          "body": ""
+        },
+        {
+          "sha": "f6030ed6f1dc188e9a8a05088ead957d7932cb8f",
+          "subject": "Expose the Node-free DaemonClient facade",
+          "body": ""
+        },
+        {
+          "sha": "bca036f0ad16ede54127ad25e9c31928af26dc76",
+          "subject": "Lock the public DaemonClient boundary",
+          "body": ""
+        },
+        {
+          "sha": "32152f1da945995fbc152a406320d3f8af342eac",
+          "subject": "Represent disabled daemon routing",
+          "body": ""
+        },
+        {
+          "sha": "4b414b37516fdeb314d067e0041b06ea1a17720f",
+          "subject": "Complete daemon client routing characterization",
+          "body": ""
+        },
+        {
+          "sha": "3cb60059251dd336fde21f8e1796fb1fcd550816",
+          "subject": "Specify missing warm output handling",
+          "body": ""
+        },
+        {
+          "sha": "73c0f1c8aaa1d2d4df9e22b2ceda0d4588fa6e5c",
+          "subject": "Lock daemon control overload return types",
+          "body": ""
+        },
+        {
+          "sha": "80d4afe0c24c96f30c47ff16a57d9068f04d4213",
+          "subject": "Specify portable daemon compatibility hashing",
+          "body": ""
+        },
+        {
+          "sha": "cef673008deef942b379543be48307ec2379d6b6",
+          "subject": "Normalize daemon compatibility source line endings",
+          "body": ""
+        },
+        {
+          "sha": "20838f8dbf413e04767543eb2380d0d114da6c60",
+          "subject": "Specify Windows process entry cleanup ownership",
+          "body": ""
+        }
+      ],
+      "base": "agent/daemon-architecture-refactor-part-24",
+      "head": "agent/daemon-architecture-refactor-part-25",
+      "group": "cutover",
+      "decisions": [
+        {
+          "id": "d148-1",
+          "label": "Node-free facade; dynamic Node runtime",
+          "status": "stated",
+          "text": "Chose a Node-free public façade with a dynamically loaded internal runtime over exposing Node-backed mechanisms, because host declarations must not acquire Node ambient dependencies.",
+          "pr": 148
+        },
+        {
+          "id": "d148-2",
+          "label": "Lazy ordered routing guards",
+          "status": "stated",
+          "text": "Chose ordered lazy routing guards over eager registry and transport observation, because the first routing decision must prevent every later side effect.",
+          "pr": 148
+        },
+        {
+          "id": "d148-3",
+          "label": "Stage package; freeze CLI copies",
+          "status": "stated",
+          "text": "Chose package staging with a frozen CLI compatibility graph over switching production consumers during relocation, because mechanism ownership and host invocation coordination need separate review boundaries.",
+          "pr": 148
+        },
+        {
+          "id": "d148-4",
+          "label": "Client owns capture + controlled output",
+          "status": "stated",
+          "text": "Chose package-owned result capture and controlled failure outputs over host-provided storage or output factories, because warm transfer cleanup and replay safety belong to the daemon client.",
+          "pr": 148
+        },
+        {
+          "id": "d148-5",
+          "label": "Preserve acceptance-based idle timing",
+          "status": "stated",
+          "text": "Chose to preserve acceptance-based idle timing over correcting it during extraction, because readiness- and completion-based lifetime changes are explicitly deferred behavior.",
+          "pr": 148
+        }
+      ]
+    },
+    {
+      "number": 149,
+      "title": "Enforce physical daemon package ownership",
+      "body": "## Context\n\n[PR #148](https://github.com/mohasarc/symnav/pull/148) establishes the package `DaemonClient` and stages daemon mechanisms, but the shipped CLI and external test consumers still retain app-local ownership paths. This PR makes `@symnav/daemon` the sole mechanism owner while preserving command output, telemetry, execution modes, and lifecycle behavior.\n\n## Shape\n\nBefore — CLI runtime and external tests still cross the app-local daemon boundary:\n\n```mermaid\nflowchart LR\n  E[CLI entry] -->|calls| D[CLI daemon dispatcher]\n  D -->|calls| A[App-local daemon copies]\n  T[CLI tests and benchmark] -->|calls| A\n  P[DaemonClient package root] -->|calls| M[Staged package mechanisms]\n  classDef removed fill:#ffebe9,stroke:#cf222e,color:#24292f\n  classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n  class D,A removed\n  class E,T changed\n```\n\nAfter — CLI coordinates invocations through the package root, and tests observe package state through a read-only subpath:\n\n```mermaid\nflowchart LR\n  E[CLI entry] -->|calls| C[CLI invocation coordinator]\n  C -->|calls| P[DaemonClient package root]\n  P -->|calls| M[Package-owned mechanisms]\n  T[CLI tests and benchmark] -->|calls| I[Read-only testing inspector]\n  I -->|calls| M\n  classDef added fill:#dafbe1,stroke:#1a7f37,color:#24292f\n  classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n  class C,I added\n  class E,T,M changed\n```\n\nLegend: green = added; red = removed; yellow = changed; unfilled = pre-existing and unchanged.\n\n- Atomic frozen install, build, 2,696 tests with 8 expected skips, lint, and typecheck pass at the exact head.\n- Explicit cold and warm suites each pass 355 tests with 8 expected skips.\n- Scale-1 daemon benchmark passes parity, freshness, responsiveness, continuity, telemetry, resource, and spool-cleanup gates.\n\n## Where it lives\n\n```text\n.\n├── apps/cli/\n│   ├── src/\n│   │   ├── ++ cli-invocation-coordinator.ts       # owns local/control/workspace routing\n│   │   ├── ~~ invocation-workspace-selector.ts   # moved from src/daemon/\n│   │   ├── ** cli.ts                              # composes one public daemon client\n│   │   ├── ** commands/daemon/register-daemon-command.ts # calls public lifecycle controls\n│   │   └── -- daemon/ ... 45 files                # removes app-owned mechanism copies\n│   └── ** test/ ... 34 files                      # uses public behavior or testing inspector\n├── packages/daemon/\n│   ├── ** package.json                            # exposes exactly four package paths\n│   ├── ++ src/testing/ ... 3 files                # read-only state inspection boundary\n│   ├── ** src/transport/ ... 16 files             # replaces compatibility facade\n│   ├── ++ test/actors/daemon-accepted-caller.ts   # package-owned accepted caller\n│   └── ~~ test/actors/ ... 6 files                # moved from apps/cli/test/helpers/\n├── meta-tests/src/\n│   ├── ++ cli-daemon-reachability.test.ts         # locks production import graph\n│   ├── ++ daemon-storage-boundary.test.ts         # locks testing storage boundary\n│   └── ** ... 3 files                             # locks exports, deletion, and lint rules\n├── ** AGENTS.md                                   # records final package ownership\n└── ** plans/000/symnav-stages.md                  # records completed architecture milestone\n```\n\n## Public surface\n\n```ts\nexport class DaemonTestingInspector {\n  constructor(canonicalStateDirectory: string);\n  listInstances(): readonly DaemonTestingInstance[];\n  hasStateArtifacts(): boolean;\n  readDiagnostics(canonicalWorkspaceRoot: string, cursor?: number): DaemonTestingDiagnosticPage;\n  completionSpoolUsage(canonicalWorkspaceRoot: string): DaemonTestingSpoolUsage;\n}\n\n// Removed from DaemonPolicy:\nstatic fromSerialized(value: unknown): DaemonPolicy;\ntoSerialized(): Readonly<SerializedDaemonPolicy>;\n```\n\n## Decisions\n\n- Chose a CLI invocation coordinator over the app-local daemon dispatcher, because argv classification and workspace discovery remain host responsibilities while execution belongs behind `DaemonClient`.\n- Chose a read-only testing inspector over exposing registry, diagnostic, or spool paths, because external assertions need observability without storage or mutation authority.\n- Chose package-owned actors with an injected executor URL over package tests naming CLI build artifacts, because daemon tests must not depend on app layout.\n- Chose focused package transport composition over retaining `LocalDaemonTransport`, because lifecycle, execution, result transfer, and socket owners now have one package boundary.\n- Chose exact compiler-backed import, export, clock, and storage inventories over regex or compatibility aliases, because ordinary TypeScript syntax must not bypass final ownership rules.\n\n## Look here\n\n- `apps/cli/src/cli-invocation-coordinator.ts:17`\n- `packages/daemon/src/testing/daemon-testing-inspector.ts:35`\n- `meta-tests/src/daemon-storage-boundary.test.ts:215`\n",
+      "commits": [
+        {
+          "sha": "e09553a8269267cdd8ebec95ea4c00fc66712f75",
+          "subject": "Specify CLI invocation coordination",
+          "body": ""
+        },
+        {
+          "sha": "65371fbba380b21a5077d13a2fa1a3666cc6877e",
+          "subject": "Move invocation selection into CLI",
+          "body": ""
+        },
+        {
+          "sha": "da4261619d7ff38b753b9a4ae6270ba4a3d154d4",
+          "subject": "Route CLI invocations through DaemonClient",
+          "body": ""
+        },
+        {
+          "sha": "2f914dada453f486c2037fe51ac0bb1f3eb07a57",
+          "subject": "Specify public daemon lifecycle commands",
+          "body": ""
+        },
+        {
+          "sha": "49ab7c945737136498f3a476288c79871947dfe5",
+          "subject": "Delegate daemon commands to DaemonClient",
+          "body": ""
+        },
+        {
+          "sha": "ab417b09807c4e7978b2cc056984d775fa5c5c71",
+          "subject": "Lock top-level daemon composition",
+          "body": ""
+        },
+        {
+          "sha": "75c9a72d5ae5f3e9f5b093583efc9c23b900952a",
+          "subject": "Lock the reachable CLI daemon boundary",
+          "body": ""
+        },
+        {
+          "sha": "803c02bbcb731ffaa88ce8ab4d020ce1e69a91ae",
+          "subject": "Specify relative daemon control cwd",
+          "body": ""
+        },
+        {
+          "sha": "ffa0bb284d2f62bf5182ba58abe779d3be40efe8",
+          "subject": "Normalize daemon control cwd",
+          "body": ""
+        },
+        {
+          "sha": "cbcebf52c31b53e326ed7f69660d4fbf500a5d20",
+          "subject": "Align CLI coordinator boundary",
+          "body": ""
+        },
+        {
+          "sha": "9945d596c052b1a7f89da4ddedc901ec82e37700",
+          "subject": "Exercise diagnostics through package daemon entry",
+          "body": ""
+        },
+        {
+          "sha": "6d81d76fa7951f4a3f2fa147802533e5aac1006a",
+          "subject": "Satisfy CLI test lint contracts",
+          "body": ""
+        },
+        {
+          "sha": "5b940bd0e25a0534bddf2ce6aa7cb71ccc1a0fbf",
+          "subject": "Specify daemon import syntax boundary",
+          "body": ""
+        },
+        {
+          "sha": "17b00cd2375347cdc2ad00d08945f2ab0cb26e11",
+          "subject": "Enforce daemon import syntax boundary",
+          "body": ""
+        },
+        {
+          "sha": "0a38145da68ebb8326db013bff10ec7a4b13f63f",
+          "subject": "Specify syntax-complete daemon import detection",
+          "body": ""
+        },
+        {
+          "sha": "e5f99828c066f30293374f1122e21fabd7b0e472",
+          "subject": "Parse TypeScript imports for daemon boundaries",
+          "body": ""
+        },
+        {
+          "sha": "054424b3f5dd5e5ff40c8e6fc9db82e97f02481c",
+          "subject": "Specify read-only daemon testing inspection",
+          "body": ""
+        },
+        {
+          "sha": "d7f60b07fdce1cc039ffeb83802dcb2654f63ad5",
+          "subject": "Expose read-only daemon testing inspection",
+          "body": ""
+        },
+        {
+          "sha": "6e441e4b4dbb742fe9361f8f1d98c8c53aa270c5",
+          "subject": "Specify test-only daemon inspector imports",
+          "body": ""
+        },
+        {
+          "sha": "9e80c3d365099f1fcc95b8f88cac48435e57301f",
+          "subject": "Restrict daemon inspector to tests",
+          "body": ""
+        },
+        {
+          "sha": "be272702a940c937179923634d08b47d346bed5f",
+          "subject": "Inspect daemon e2e state through testing API",
+          "body": ""
+        },
+        {
+          "sha": "20559201afa9872c419222c3ca5723e60dc4ce65",
+          "subject": "Inspect daemon benchmark state through testing API",
+          "body": ""
+        },
+        {
+          "sha": "d04aa0f7a6257690acfc1191978aac8fc4a91ea7",
+          "subject": "Own test process cleanup outside daemon mechanisms",
+          "body": ""
+        },
+        {
+          "sha": "0afd69187db20001d18cac2487a2fc5870704c02",
+          "subject": "Specify rotated diagnostic inspection order",
+          "body": ""
+        },
+        {
+          "sha": "fb6d864d3a20af5d5a8b4f44cf61007c76044e4f",
+          "subject": "Inspect rotated daemon diagnostics chronologically",
+          "body": ""
+        },
+        {
+          "sha": "86761bd6454434448eb055df9b8d4a2378290563",
+          "subject": "Inspect daemon isolation through testing API",
+          "body": ""
+        },
+        {
+          "sha": "a567e24453aa2ab27bc32c9d87e0a74cc20d4fcc",
+          "subject": "Move daemon state actors into daemon package",
+          "body": ""
+        },
+        {
+          "sha": "9e31259fa8a43337ee5c5d1f09c8db2e637e6cf9",
+          "subject": "Move controlled daemon actor into daemon package",
+          "body": ""
+        },
+        {
+          "sha": "9284116a4bb2be984054d9b3af010b31b61a90b2",
+          "subject": "Use package-owned daemon parity actors",
+          "body": ""
+        },
+        {
+          "sha": "3b739006ef3e0b0896756358a9fbb5ecaa379473",
+          "subject": "Inspect persistent pressure through public status",
+          "body": ""
+        },
+        {
+          "sha": "d698b1a55d0ce2e46c7bb716d0b7d4f866276516",
+          "subject": "Internalize daemon policy serialization",
+          "body": ""
+        },
+        {
+          "sha": "9f4886435a5f71e2dbced0db83814529b10c414f",
+          "subject": "Remove CLI-owned daemon mechanisms",
+          "body": ""
+        },
+        {
+          "sha": "ff2888997bcb8a427960b4aa58de07cc6b7fc105",
+          "subject": "Replace daemon transport compatibility facade",
+          "body": ""
+        },
+        {
+          "sha": "4d9755a425805d6a00d62770a7b2a2c44ead60d5",
+          "subject": "Lock final daemon package surface",
+          "body": ""
+        },
+        {
+          "sha": "a92afc1a96d9b22fad3a8dbce93de85252c1e600",
+          "subject": "Handle invalid inspector state paths",
+          "body": ""
+        },
+        {
+          "sha": "e72f3b10904ea371e7fdeddfce366245e123c5eb",
+          "subject": "Format daemon testing lint cases",
+          "body": ""
+        },
+        {
+          "sha": "fdc718dc8f7b91423487b8bcb8ba770de343e834",
+          "subject": "Specify invalid daemon inspector state reads",
+          "body": ""
+        },
+        {
+          "sha": "d01799054780a684f9e197489d256c519c0f3276",
+          "subject": "Normalize invalid daemon inspector state reads",
+          "body": ""
+        },
+        {
+          "sha": "4ed1de0052b29ec776a33e6e7101f1226d47f563",
+          "subject": "Specify exhaustive daemon export inventory",
+          "body": ""
+        },
+        {
+          "sha": "a7d46afd33f45c9c4286f0f21810e5c9b68f2619",
+          "subject": "Inventory every TypeScript export form",
+          "body": ""
+        },
+        {
+          "sha": "0ab7e9d011fd80fbada3485ae5176905cef6fe0b",
+          "subject": "Lock daemon source and declaration exports",
+          "body": ""
+        },
+        {
+          "sha": "ff983397427c3ba699899145d90796d00d83c84a",
+          "subject": "Lock emitted daemon policy surface",
+          "body": ""
+        },
+        {
+          "sha": "ac8fd267890b41820a5cd8e41e749950aaaa629a",
+          "subject": "Specify equivalent daemon clock sources",
+          "body": ""
+        },
+        {
+          "sha": "b6761ee46e629b0d66d1a2f39090f631b155cd2c",
+          "subject": "Detect syntax-aware daemon clock sources",
+          "body": ""
+        },
+        {
+          "sha": "2e06c2aa9720e715ca26349d3c74f284a453cb89",
+          "subject": "Specify adversarial daemon peer integration",
+          "body": ""
+        },
+        {
+          "sha": "0ff9276304571e862c74260e870911500455122e",
+          "subject": "Run adversarial peers through daemon client",
+          "body": ""
+        },
+        {
+          "sha": "7e3dca4b03013d26a2fc02ed6f23c17192541bd6",
+          "subject": "Format invalid daemon inspector cases",
+          "body": ""
+        },
+        {
+          "sha": "8976d7409f194904a3bf62653eb6bc98fc3b68ab",
+          "subject": "Specify import-equals daemon reachability",
+          "body": ""
+        },
+        {
+          "sha": "7db908eb985844967b82d22674a1651b0b574aae",
+          "subject": "Parse import-equals daemon dependencies",
+          "body": ""
+        },
+        {
+          "sha": "e49515135b2154bb27b38515f652755420ae3e08",
+          "subject": "Specify import-equals export inventory",
+          "body": ""
+        },
+        {
+          "sha": "3af983dfece4ede0f1ecedc25ba5e8baf5311c5d",
+          "subject": "Inventory import-equals exports",
+          "body": ""
+        },
+        {
+          "sha": "3b9a572f4ee20111d388f3c49bbc36fc30c4455e",
+          "subject": "Specify every inspector filesystem failure",
+          "body": ""
+        },
+        {
+          "sha": "b56a4ea1d8f5f4af0f0bea361235ddadfb25f4fe",
+          "subject": "Classify inspector artifact read failures",
+          "body": ""
+        },
+        {
+          "sha": "7235fff84c81c5198cd7ba6586122a7b25c22d1b",
+          "subject": "Specify semantic daemon clock sources",
+          "body": ""
+        },
+        {
+          "sha": "63fdc227468de95ef89f28c831fd6fb7744541d9",
+          "subject": "Resolve daemon clock identifiers lexically",
+          "body": ""
+        },
+        {
+          "sha": "5a5198db54764760e996f777d4d6e2b717a00680",
+          "subject": "Specify package test executor independence",
+          "body": ""
+        },
+        {
+          "sha": "aea44a091f28ea01a26c2985630e7449d35ec024",
+          "subject": "Inject controlled daemon executor URL",
+          "body": ""
+        },
+        {
+          "sha": "1eb3916559058fbf6294043dbad0f3e25f4444fe",
+          "subject": "Specify runtime import-equals exports",
+          "body": ""
+        },
+        {
+          "sha": "7ab16df4faf4d96e0440a10ada34d5835a42d3fb",
+          "subject": "Classify import-equals exports semantically",
+          "body": ""
+        },
+        {
+          "sha": "3d32eb0eecaaaa7e997258c45f58fef8a078faac",
+          "subject": "Specify import-equals daemon clock aliases",
+          "body": ""
+        },
+        {
+          "sha": "6b6632726ca97ee6d402bd3d33eada1372981365",
+          "subject": "Resolve import-equals daemon clock aliases",
+          "body": ""
+        },
+        {
+          "sha": "b54aeca64d66ce5c248393f7c9a24a181ec9117a",
+          "subject": "Specify external daemon storage boundary",
+          "body": ""
+        },
+        {
+          "sha": "65bdd226ee069bedca46e3023847bd22a678a4d5",
+          "subject": "Inspect telemetry daemon state through testing API",
+          "body": ""
+        },
+        {
+          "sha": "64aea4d5fbbd73d2bd62b6f2b576bce24903f45a",
+          "subject": "Document final daemon package ownership",
+          "body": ""
+        },
+        {
+          "sha": "688173885455dd0779b123bfbe90b7c5400b36fc",
+          "subject": "Specify dynamic daemon clock imports",
+          "body": ""
+        },
+        {
+          "sha": "21cb6cfda698e3edd072041cdb1140e52ca335ce",
+          "subject": "Reject dynamic daemon clock imports",
+          "body": ""
+        },
+        {
+          "sha": "279b629d8418a24161fb1fdf5a7ddd3a7ce37427",
+          "subject": "Specify computed daemon clock members",
+          "body": ""
+        },
+        {
+          "sha": "fc3dc695bc8fd9de850781e6a2e030bb0864ee24",
+          "subject": "Classify computed daemon clock members",
+          "body": ""
+        },
+        {
+          "sha": "7730a9feb527357e0a055631601e99ec1c06d350",
+          "subject": "Specify platform daemon path builders",
+          "body": ""
+        },
+        {
+          "sha": "68a6240a80d653ceae9cd3299a88e28cb03d9532",
+          "subject": "Classify platform daemon path builders",
+          "body": ""
+        },
+        {
+          "sha": "1d76592bbef9ba86bd827dbb64d523d8696fbf9a",
+          "subject": "Specify contextual daemon storage paths",
+          "body": ""
+        },
+        {
+          "sha": "a592cb32a44983538f3e82efe774dc0cfb26dd37",
+          "subject": "Classify contextual daemon storage paths",
+          "body": ""
+        },
+        {
+          "sha": "8ddb833b3e1970598a3f523a4f02e1550546aec2",
+          "subject": "Specify aliased daemon clock sources",
+          "body": ""
+        },
+        {
+          "sha": "40c8ab9dad7da6e8d38d8d8726a112ef8f754d97",
+          "subject": "Resolve aliased daemon clock sources",
+          "body": ""
+        },
+        {
+          "sha": "44080a7563f3f7bafb268a7562028c3c7c627d32",
+          "subject": "Specify semantic daemon storage access",
+          "body": ""
+        },
+        {
+          "sha": "bcfc89488ff8bf07bc8e3b8f5cff164725b422f0",
+          "subject": "Resolve semantic daemon storage access",
+          "body": ""
+        },
+        {
+          "sha": "4f2ab33c179b5c6e321bbfd613bf79dbc0fb49d1",
+          "subject": "Specify callable daemon wall clocks",
+          "body": ""
+        },
+        {
+          "sha": "fe36df025e9cb5ca17cf48d761c6d080c33d5f57",
+          "subject": "Classify callable daemon wall clocks",
+          "body": ""
+        },
+        {
+          "sha": "25b93bac45053a3242f8e3f200a1ba26754c8c62",
+          "subject": "Specify dynamic daemon storage access",
+          "body": ""
+        },
+        {
+          "sha": "69e1cd07c1245f5ff28c42e74adeee49a1086bc5",
+          "subject": "Classify dynamic daemon storage access",
+          "body": ""
+        },
+        {
+          "sha": "0049b660538c3ea118c686e86b5d53e37ea42e51",
+          "subject": "Specify invoked daemon wall clocks",
+          "body": ""
+        },
+        {
+          "sha": "ec5e4b7547c8a34effdc948beddcba9ad39d5cbe",
+          "subject": "Classify invoked daemon wall clocks",
+          "body": ""
+        },
+        {
+          "sha": "0ac6d1da7125858f26d69461d41fc0c463b0039d",
+          "subject": "Specify promised daemon storage access",
+          "body": ""
+        },
+        {
+          "sha": "b8a09975a59c9f7cdb8ddb4a66e418e3df856aa8",
+          "subject": "Classify promised daemon storage access",
+          "body": ""
+        },
+        {
+          "sha": "748529679b40310b665720cbf13d217598778860",
+          "subject": "Specify default dynamic daemon storage access",
+          "body": ""
+        },
+        {
+          "sha": "ea6c6321a634fdccfd10cdd1d67890c04a63bbbc",
+          "subject": "Classify default dynamic daemon storage access",
+          "body": ""
+        },
+        {
+          "sha": "e71da400a18c7972a09fa8d1bacc8a9fc807a59f",
+          "subject": "Specify callback-body daemon storage access",
+          "body": ""
+        },
+        {
+          "sha": "5cbc1cde6ffcd802ab4e30750df3c2001a4ed04a",
+          "subject": "Classify callback-body daemon storage access",
+          "body": ""
+        },
+        {
+          "sha": "c7f36b1b49115972d97ff20def8019a9ec1323a5",
+          "subject": "Specify aliased callback daemon storage access",
+          "body": ""
+        },
+        {
+          "sha": "673208bc0b510581b6aff988fdc608335c1f77df",
+          "subject": "Resolve aliased callback daemon storage access",
+          "body": ""
+        },
+        {
+          "sha": "66f3c9053f705238dda202dfd9ec1401c72c3db2",
+          "subject": "Use native paths in CLI reachability gate",
+          "body": ""
+        },
+        {
+          "sha": "eb512e8ea7a57fcc58f8709f8dadf152e725d3d7",
+          "subject": "Read daemon clock inventory from file URLs",
+          "body": ""
+        },
+        {
+          "sha": "1599252152c565631066bcdc312f8669438beacd",
+          "subject": "Align daemon test workspace path dialect",
+          "body": ""
+        },
+        {
+          "sha": "d07002357d3e9596bfaae910a1ac63b77981620b",
+          "subject": "Track disconnected daemon actor directly",
+          "body": ""
+        }
+      ],
+      "base": "agent/daemon-architecture-refactor-part-25",
+      "head": "agent/daemon-architecture-refactor-part-28",
+      "group": "cutover",
+      "decisions": [
+        {
+          "id": "d149-1",
+          "label": "Switch CLI through invocation coordinator",
+          "status": "stated",
+          "text": "Chose a CLI invocation coordinator over the app-local daemon dispatcher, because argv classification and workspace discovery remain host responsibilities while execution belongs behind `DaemonClient`.",
+          "pr": 149
+        },
+        {
+          "id": "d149-2",
+          "label": "Read-only testing inspector",
+          "status": "stated",
+          "text": "Chose a read-only testing inspector over exposing registry, diagnostic, or spool paths, because external assertions need observability without storage or mutation authority.",
+          "pr": 149
+        },
+        {
+          "id": "d149-3",
+          "label": "Package actors take an executor URL",
+          "status": "stated",
+          "text": "Chose package-owned actors with an injected executor URL over package tests naming CLI build artifacts, because daemon tests must not depend on app layout.",
+          "pr": 149
+        },
+        {
+          "id": "d149-4",
+          "label": "Delete transport compatibility facade",
+          "status": "stated",
+          "text": "Chose focused package transport composition over retaining `LocalDaemonTransport`, because lifecycle, execution, result transfer, and socket owners now have one package boundary.",
+          "pr": 149
+        },
+        {
+          "id": "d149-5",
+          "label": "Compiler inventories enforce ownership",
+          "status": "stated",
+          "text": "Chose exact compiler-backed import, export, clock, and storage inventories over regex or compatibility aliases, because ordinary TypeScript syntax must not bypass final ownership rules.",
+          "pr": 149
+        }
+      ]
+    }
+  ],
+  "scenes": [
+    {
+      "id": "owners",
+      "title": "The boxes move. The commands stay.",
+      "short": "Owners",
+      "time": 0,
+      "group": "cutover",
+      "lines": [
+        "Symnav navigates TypeScript code. Picture a workshop separating its front desk, machinery, and reusable tools. This metaphor is approximate.",
+        "Core takes shared state; daemon takes process machinery. The CLI composes; the renderer formats. The stated goal is unchanged behavior."
+      ],
+      "cue": "Commands preserve their behavior; ownership moves."
+    },
+    {
+      "id": "host",
+      "title": "The host supplies the executor.",
+      "short": "Host seam",
+      "time": 15,
+      "group": "host",
+      "lines": [
+        "The daemon imports no other Symnav package. The CLI resolves the state directory, classifies arguments, and supplies an executor module URL.",
+        "A worker loads that module. Arguments go in; ordered bytes, exit codes, and opaque diagnostics come out."
+      ],
+      "cue": "Package dependency and runtime loading are different boundaries."
+    },
+    {
+      "id": "state",
+      "title": "Keep a session. Renew a turn.",
+      "short": "State",
+      "time": 30,
+      "group": "state",
+      "lines": [
+        "Warm means keeping a core session alive. Core owns transactional indexes, project membership, and six cache lifetimes. TypeScript keeps the algorithms.",
+        "Failed refresh preserves the semantic turn. Clear before release; selection still evicts sibling bytes; sequential file preparation keeps earlier progress."
+      ],
+      "cue": "Warm retention means an object stays alive."
+    },
+    {
+      "id": "delivery",
+      "title": "Acceptance changes what recovery means.",
+      "short": "Recovery",
+      "time": 45,
+      "group": "delivery",
+      "lines": [
+        "Admission checks authentication, readiness, pressure, queue state, then duplicate compatibility. Command and failure vocabularies each have one owner.",
+        "After acceptance, recover the same request without replaying execution. Fetch resumes after durable append; reattachment gets fresh capture. Each has its own budget."
+      ],
+      "cue": "A new connection need not mean new work."
+    },
+    {
+      "id": "policy",
+      "title": "One policy. Explicit lifetimes.",
+      "short": "Policy",
+      "time": 60,
+      "group": "policy",
+      "lines": [
+        "One immutable policy configures daemon processes and workers. Deadlines differ by purpose; some waits have none. There are no user threshold knobs.",
+        "Separate owners handle worker generations, FIFO execution, resource sampling, delivery, and activity. Idle timing still begins before readiness and resets on acceptance."
+      ],
+      "cue": "No deadline for accepted completion; 30 minutes for idle lifetime."
+    },
+    {
+      "id": "cutover",
+      "title": "The last move activates the boundary.",
+      "short": "Cutover",
+      "time": 75,
+      "group": "cutover",
+      "lines": [
+        "Part twenty-five stages the package. The final pull request switches the CLI, removes copies, and enforces ownership. Retention, startup, readiness, endpoint, election, and idle changes remain deferred.",
+        "Removed end-to-end scenarios, relaxed test budgets, and a template rewrite also need attention. Reasons are incomplete."
+      ],
+      "cue": "The architecture move includes decisions about evidence and scope."
+    }
+  ],
+  "extras": [
+    {
+      "id": "x-template",
+      "label": "Rewrite the PR template during source-cache extraction",
+      "status": "unexplained",
+      "group": "cutover",
+      "pr": 123,
+      "text": "The delta replaces the change-tree image/fallback guidance, removes Reading order, and adds a Visuals section. Commit 78dd77de2 is titled ‘Update pull request template’; its body is empty. The supplied architecture contract does not request this template rewrite. No reason for coupling it to source-cache extraction was found in the bundle or inspected commits.",
+      "commit": "78dd77de23445e73bc3ae0ccd24a44c884a3fea5",
+      "paths": [
+        ".github/PULL_REQUEST_TEMPLATE.md"
+      ],
+      "patch": "commit-78dd77de2.patch"
+    },
+    {
+      "id": "x-budgets",
+      "label": "Relax test timing: executor 15 s; transfer 20 → 60 s",
+      "status": "unexplained",
+      "group": "cutover",
+      "pr": 135,
+      "text": "Commit 323888b8d adds explicit 15,000 ms limits to two executor tests; 4e0dc1978 increases the twelve-MiB transport test from 20,000 to 60,000 ms. These are test runner budgets, not production timeouts. The subjects say ‘Budget…’ but give no reason for the chosen durations. Assertions remain in these hunks.",
+      "commit": "323888b8df93cedde4f49494c4e56c42a9410d6f",
+      "paths": [
+        "apps/cli/src/daemon-executor.test.ts"
+      ],
+      "patch": "commit-323888b8d.patch"
+    },
+    {
+      "id": "x-sync",
+      "label": "Poll matching startup ownership; status test 15 → 30 s",
+      "status": "stated",
+      "group": "cutover",
+      "pr": 129,
+      "text": "Commit b0a6ce67e says ‘Stabilize daemon startup ownership oracle’. It waits for matching daemon identity and a changed heartbeat revision rather than trusting one read, and raises the enclosing limit from 15 to 30 seconds. A separate fixture change waits for all three request files. The stabilization purpose is recorded; a reason for the exact time budget is not.",
+      "commit": "b0a6ce67e50f0356138c658e149a269731c75d5b",
+      "paths": [],
+      "patch": "commit-b0a6ce67e.patch"
+    },
+    {
+      "id": "x-budget30",
+      "label": "Choose a 30 s startup test budget",
+      "status": "unexplained",
+      "group": "cutover",
+      "pr": 129,
+      "text": "The stabilization commit explains the purpose of polling but not why the enclosing status test receives 30 seconds instead of its previous 15. Treat the new duration separately from the stated synchronization change.",
+      "commit": "b0a6ce67e50f0356138c658e149a269731c75d5b",
+      "paths": [],
+      "patch": "commit-b0a6ce67e.patch"
+    },
+    {
+      "id": "x-tests",
+      "label": "Remove 7 CLI status + 3 CLI stop scenarios",
+      "status": "unexplained",
+      "group": "cutover",
+      "pr": 149,
+      "text": "Commit 9284116a4 removes seven named status cases and three named stop cases from the CLI e2e files. Package tests cover related mechanisms and three new adversarial-peer cases call DaemonClient. The PR states package-owned testing as the reason for the boundary change. No per-scenario rationale for losing the built-CLI observation boundary was found; related coverage is not proof of equivalent coverage.",
+      "commit": "9284116a4bb2be984054d9b3af010b31b61a90b2",
+      "paths": [
+        "apps/cli/test/e2e/daemon/status.test.ts",
+        "apps/cli/test/e2e/daemon/stop.test.ts",
+        "packages/daemon/test/integration/adversarial-daemon-peers.test.ts"
+      ],
+      "patch": "commit-9284116a4.patch"
+    },
+    {
+      "id": "x-actor",
+      "label": "Drop a completion-file wait; observe telemetry after caller exit",
+      "status": "unexplained",
+      "group": "cutover",
+      "pr": 149,
+      "text": "Tip commit d07002357 changes the accepted-caller launch to node --import tsx and removes the explicit completion-file wait. The remaining test waits for one telemetry record and checks daemon continuity. Its subject says ‘Track disconnected daemon actor directly’; no body explains why the completion-file observation can be dropped.",
+      "commit": "d07002357d3e9596bfaae910a1ac63b77981620b",
+      "paths": [
+        "apps/cli/test/e2e/daemon/parity.test.ts"
+      ],
+      "patch": "commit-d07002357.patch"
+    },
+    {
+      "id": "x-clock",
+      "label": "Daemon owns clocks + registry lock identity",
+      "status": "stated",
+      "group": "policy",
+      "pr": 148,
+      "text": "The architecture spec explicitly assigns daemon wall and monotonic clocks and one lock-ownership check to the daemon. PR #148 centralizes startup identity and routes timing through DaemonClock; idle accounting deliberately remains wall-clock and acceptance based.",
+      "paths": [
+        "packages/daemon/src/lifecycle/daemon-clock.ts",
+        "packages/daemon/src/lifecycle/daemon-lifetime.ts",
+        "packages/daemon/src/registry/registry.ts"
+      ]
+    },
+    {
+      "id": "x-codec",
+      "label": "Final public surface removes policy serialization + test factory",
+      "status": "stated",
+      "group": "cutover",
+      "pr": 149,
+      "text": "The final policy record says serialization is package-internal and test factories are package-local. The four final package export paths are root, process-entry, worker-entry, and testing. PR #130’s policy-testing entry and public codec are historical stages, not final APIs.",
+      "commit": "d698b1a55d0ce2e46c7bb716d0b7d4f866276516",
+      "paths": [
+        "packages/daemon/package.json",
+        "plans/005/daemon-policy.md"
+      ],
+      "patch": "commit-d698b1a55.patch"
+    },
+    {
+      "id": "x-localpolicy",
+      "label": "CLI executor constructs its own default policy",
+      "status": "unexplained",
+      "group": "policy",
+      "pr": 135,
+      "text": "The daemon process and worker propagate the complete injected snapshot. Separately, createDaemonExecutor calls createDefaultDependencies with DaemonPolicy.currentSystem(). Its factory options carry stateDirectory, productVersion and sampleResources, not the injected policy. No rationale for this host-side recomputation was found. ‘One snapshot’ in the film refers to daemon transport/process/worker configuration, not every host-side capture object.",
+      "paths": [
+        "apps/cli/src/daemon-executor.ts",
+        "packages/daemon/src/daemon-executor.ts"
+      ]
+    },
+    {
+      "id": "x-node",
+      "label": "Node-free declarations; Node still runs the implementation",
+      "status": "stated",
+      "group": "host",
+      "pr": 148,
+      "text": "PR #148 states that the dynamic runtime protects host declarations from Node ambient dependencies. The package still implements processes, worker threads, sockets and filesystem storage with Node. The injected module establishes a runtime host boundary, not a sandbox or a browser runtime.",
+      "paths": [
+        "packages/daemon/src/client/daemon-client.ts",
+        "packages/daemon/src/client/daemon-client-runtime.ts"
+      ]
+    },
+    {
+      "id": "x-publication",
+      "label": "Source cache, graph and backend index publish separately",
+      "status": "unexplained",
+      "group": "state",
+      "pr": 124,
+      "text": "TypeScriptBackend.refresh refreshes source bytes first, then the project graph for workspace coverage, then the backend state, then begins a semantic turn. Each extracted transactional owner has its own boundary. Their individual responsibilities are stated; the reason for retaining this cross-owner publication sequence without an aggregate transaction is not explained in the inspected PR decision lists. Transactional indexes do not imply global workspace atomicity.",
+      "paths": [
+        "packages/backend-typescript/src/typescript-backend/typescript-backend.ts",
+        "packages/core/src/backend/revisioned-backend-state.ts",
+        "packages/core/src/workspace/project-graph.ts"
+      ]
+    }
+  ],
+  "deferred": [
+    [
+      "Ledger eviction",
+      "Acknowledged requests still remain in the daemon-lifetime ledger.",
+      "Remove acknowledged entries and expire unacknowledged ones after completion."
+    ],
+    [
+      "Startup silence bound",
+      "A live silent startup has no silence deadline.",
+      "Add a six-hour silence bound; healthy progress still has no overall deadline."
+    ],
+    [
+      "Control-plane readiness",
+      "Explicit start still uses a queued readiness execution.",
+      "Report readiness from the control plane without waiting behind navigation."
+    ],
+    [
+      "Endpoints under state directory",
+      "Endpoint placement remains the existing platform-specific scheme.",
+      "Move endpoint ownership under state-directory identity and removal semantics."
+    ],
+    [
+      "Selection-aware byte retention",
+      "A selected snapshot drops omitted cached source bytes.",
+      "Retain omitted sibling bytes until the next authoritative workspace refresh."
+    ],
+    [
+      "Readiness-armed idle",
+      "Idle accounting begins when lifetime is constructed.",
+      "Start the idle interval only after warm-up and ready publication."
+    ],
+    [
+      "Completion-based idle",
+      "Navigation acceptance resets the idle deadline.",
+      "Reset it at navigation completion instead."
+    ],
+    [
+      "Socket-bind election evaluation",
+      "File-lease startup election remains.",
+      "Evaluate using endpoint bind ownership; adopt only if existing guarantees hold."
+    ]
+  ],
+  "e2e": [
+    [
+      "Status: live cross-process startup owner",
+      "New package adversarial-peer test exercises publication through DaemonClient.",
+      "packages/daemon/test/integration/adversarial-daemon-peers.test.ts",
+      12
+    ],
+    [
+      "Status: initiating caller is killed",
+      "Package startup test covers caller exit; exact SIGKILL + built CLI path was not established as equivalent.",
+      "packages/daemon/src/registry/startup-coordinator.test.ts",
+      459
+    ],
+    [
+      "Status: stale current-schema record",
+      "Controller and registry tests cover stale cleanup; observation level changes.",
+      "packages/daemon/src/process/controller.test.ts",
+      252
+    ],
+    [
+      "Status: stuck live daemon promptly",
+      "Package process/controller tests exercise stuck work; exact original CLI scenario is removed.",
+      "packages/daemon/src/process/process-coordinator.test.ts",
+      112
+    ],
+    [
+      "Status: live daemon stops answering ping",
+      "New adversarial-peer test covers ownership preservation through DaemonClient.",
+      "packages/daemon/test/integration/adversarial-daemon-peers.test.ts",
+      31
+    ],
+    [
+      "Status: malformed authenticated activity",
+      "New adversarial-peer test covers redaction and ownership through DaemonClient.",
+      "packages/daemon/test/integration/adversarial-daemon-peers.test.ts",
+      53
+    ],
+    [
+      "Status: workspace deletion → cold error + exit",
+      "Related process/session deletion behavior exists; the original built-CLI combined assertion is removed.",
+      "packages/daemon/src/process/process-coordinator.test.ts",
+      358
+    ],
+    [
+      "Stop: launched startup process exits",
+      "Controller test uses controlled process termination.",
+      "packages/daemon/src/process/controller.test.ts",
+      95
+    ],
+    [
+      "Stop: in-flight result before rendered success",
+      "Package process test covers result-before-exit ordering; CLI rendering is tested separately.",
+      "packages/daemon/src/process/process-coordinator.test.ts",
+      49
+    ],
+    [
+      "Stop: forced kill before rendered success",
+      "Package process test force-stops a real stuck child; the original built-CLI composition assertion is removed.",
+      "packages/daemon/src/process/process-coordinator.test.ts",
+      187
+    ]
+  ],
+  "evidence": {
+    "coordinator": {
+      "path": "apps/cli/src/cli-invocation-coordinator.ts",
+      "start": 1,
+      "end": 44,
+      "text": "import type { DaemonClient, DaemonClientExecuteResult } from \"@symnav/daemon\";\nimport type { CliProgramExecutor } from \"./cli-program-executor.js\";\nimport type { CliExecutionRequest } from \"./command-execution-result.js\";\nimport { InvocationWorkspaceSelector } from \"./invocation-workspace-selector.js\";\n\nexport interface CliInvocationCoordinatorOptions {\n  readonly daemonClient: DaemonClient;\n  readonly createLocalExecutor: () => CliProgramExecutor;\n  readonly resolveWorkspaceRoot: (startDirectory: string) => Promise<string>;\n}\n\nexport class CliInvocationCoordinator {\n  private readonly selector = new InvocationWorkspaceSelector();\n\n  constructor(private readonly options: CliInvocationCoordinatorOptions) {}\n\n  async execute(request: CliExecutionRequest): Promise<DaemonClientExecuteResult> {\n    const selected = this.selector.select(request.argv, request.cwd);\n    if (selected.route.kind !== \"workspace\") {\n      return this.executeLocally(request);\n    }\n    const workspaceRequest: CliExecutionRequest = { ...request, argv: selected.argv };\n    let workspaceRoot: string;\n    try {\n      workspaceRoot = await this.options.resolveWorkspaceRoot(selected.route.startDirectory);\n    } catch {\n      return this.executeLocally(workspaceRequest);\n    }\n    return this.options.daemonClient.execute({\n      workspaceRoot,\n      commandName: selected.route.commandName,\n      argv: selected.argv,\n      cwd: request.cwd,\n      telemetryEnabled: request.telemetryEnabled,\n    });\n  }\n\n  private async executeLocally(request: CliExecutionRequest): Promise<DaemonClientExecuteResult> {\n    const result = await this.options\n      .createLocalExecutor()\n      .execute({ ...request, executionMode: \"cold\" });\n    return { mode: \"cold\", result };\n  }\n}",
+      "sha": "d07002357d3e9596bfaae910a1ac63b77981620b"
+    },
+    "host": {
+      "path": "apps/cli/src/daemon-executor.ts",
+      "start": 41,
+      "end": 92,
+      "text": "  private latestRefresh: BackendRefreshSummary = {\n    added: 0,\n    changed: 0,\n    removed: 0,\n    unchanged: 0,\n  };\n  private latestCommandDurations: CommandPhaseDurations = {\n    freshnessMs: 0,\n    navigationMs: 0,\n    renderMs: 0,\n  };\n\n  constructor(dependencies: ProgramDependencies, sampleResources: () => void) {\n    const backends = dependencies.backends();\n    this.workspaceSession = new WorkspaceSession({\n      fileSystem: dependencies.fs,\n      backends,\n      discoveryRetention: \"session\",\n    });\n    this.programExecutor = new CliProgramExecutor(\n      {\n        ...dependencies,\n        backends: () => backends,\n        backendRefreshed: (refresh) => {\n          this.latestRefresh = refresh;\n        },\n        commandPhasesObserved: (durations) => {\n          this.latestCommandDurations = durations;\n          sampleResources();\n        },\n      },\n      this.workspaceSession,\n    );\n  }\n\n  initialize(workspaceRoot: string): Promise<DaemonExecutorInitializationResult> {\n    this.initialization ??= this.prepare(workspaceRoot);\n    return this.initialization;\n  }\n\n  async execute(request: DaemonExecutorRequest): Promise<DaemonExecutorExecutionResult> {\n    this.latestCommandDurations = { freshnessMs: 0, navigationMs: 0, renderMs: 0 };\n    const result = await this.programExecutor.execute(request);\n    return {\n      exitCode: result.exitCode,\n      output: new CliDaemonExecutorOutput(result.output),\n      diagnostics: this.executionDiagnostics(),\n    };\n  }\n\n  releaseTransientResources(): Promise<void> {\n    return this.workspaceSession.releaseTransientResources();",
+      "sha": "d07002357d3e9596bfaae910a1ac63b77981620b"
+    },
+    "host-policy": {
+      "path": "apps/cli/src/daemon-executor.ts",
+      "start": 130,
+      "end": 150,
+      "text": "export function createDaemonExecutor(options: DaemonExecutorFactoryOptions): DaemonExecutor {\n  const dependencies = createDefaultDependencies(\n    options.stateDirectory,\n    DaemonPolicy.currentSystem(),\n  );\n  return createDaemonExecutorFromDependencies(options, dependencies);\n}\n\nexport function createDaemonExecutorFromDependencies(\n  options: DaemonExecutorFactoryOptions,\n  dependencies: ProgramDependencies,\n): DaemonExecutor {\n  if (dependencies.symnavVersion !== options.productVersion) {\n    throw new Error(\"Daemon executor version does not match host product\");\n  }\n  return new CliDaemonExecutor(dependencies, options.sampleResources);\n}\n\nexport function daemonExecutorModuleUrl(): DaemonExecutorModuleUrl {\n  return new URL(\"./daemon-executor.js\", import.meta.url).href;\n}",
+      "sha": "d07002357d3e9596bfaae910a1ac63b77981620b"
+    },
+    "session": {
+      "path": "packages/core/src/workspace/workspace-session.ts",
+      "start": 32,
+      "end": 81,
+      "text": "export class WorkspaceSession {\n  readonly #fileSystem: FileSystem;\n  readonly #backends: readonly LanguageBackend[];\n  readonly #catalog: WorkspaceCatalog | undefined;\n\n  constructor(options: {\n    readonly fileSystem: FileSystem;\n    readonly backends: readonly LanguageBackend[];\n    readonly discoveryRetention: WorkspaceDiscoveryRetention;\n  }) {\n    this.#fileSystem = options.fileSystem;\n    this.#backends = Object.freeze([...options.backends]);\n    this.#catalog =\n      options.discoveryRetention === \"session\"\n        ? new WorkspaceCatalog(options.fileSystem)\n        : undefined;\n  }\n\n  async prepare(\n    startDirectory: string,\n    preparation: WorkspacePreparation = { coverage: \"workspace\" },\n  ): Promise<PreparedWorkspaceScope> {\n    const workspace = await this.openWorkspace(startDirectory, preparation.coverage);\n    return this.prepareWorkspace(workspace, preparation);\n  }\n\n  openWorkspace(startDirectory: string, coverage: BackendRefreshCoverage): Promise<Workspace> {\n    if (coverage === \"selection\" || this.#catalog === undefined) {\n      return createWorkspace({ startDir: startDirectory, fs: this.#fileSystem });\n    }\n    return this.#catalog.refresh(startDirectory);\n  }\n\n  async prepareWorkspace(\n    workspace: Workspace,\n    preparation: WorkspacePreparation,\n  ): Promise<PreparedWorkspaceScope> {\n    const router = new BackendRouter(this.#backends);\n    const snapshot =\n      preparation.coverage === \"selection\"\n        ? await preparation.selectSnapshot(workspace, router)\n        : await workspace.snapshot();\n    const refresh = await router.refresh(snapshot, preparation.coverage);\n    return { workspace, snapshot, router, refresh };\n  }\n\n  async releaseTransientResources(): Promise<void> {\n    await Promise.all(this.#backends.map((backend) => backend.releaseTransientResources()));\n  }\n}",
+      "sha": "d07002357d3e9596bfaae910a1ac63b77981620b"
+    },
+    "cache": {
+      "path": "packages/core/src/backend/turn-scoped-cache-scope.ts",
+      "start": 1,
+      "end": 46,
+      "text": "export interface TurnScopedCache<Key, Value> {\n  getOrCreate(key: Key, createValue: () => Value): Value;\n}\n\ninterface ClearableTurnScopedCache {\n  clear(): void;\n}\n\nclass TurnScopedCacheHandle<Key, Value>\n  implements TurnScopedCache<Key, Value>, ClearableTurnScopedCache\n{\n  private readonly values = new Map<Key, Value>();\n\n  getOrCreate(key: Key, createValue: () => Value): Value {\n    if (this.values.has(key)) return this.values.get(key) as Value;\n    const value = createValue();\n    this.values.set(key, value);\n    return value;\n  }\n\n  clear(): void {\n    this.values.clear();\n  }\n}\n\nexport class TurnScopedCacheScope {\n  private readonly caches: ClearableTurnScopedCache[] = [];\n\n  createCache<Key, Value>(): TurnScopedCache<Key, Value> {\n    const cache = new TurnScopedCacheHandle<Key, Value>();\n    this.caches.push(cache);\n    return cache;\n  }\n\n  beginTurn(): void {\n    this.clear();\n  }\n\n  releaseTransientResources(): void {\n    this.clear();\n  }\n\n  private clear(): void {\n    for (const cache of this.caches) cache.clear();\n  }\n}",
+      "sha": "d07002357d3e9596bfaae910a1ac63b77981620b"
+    },
+    "refresh": {
+      "path": "packages/backend-typescript/src/typescript-backend/typescript-backend.ts",
+      "start": 79,
+      "end": 93,
+      "text": "  async refresh(request: BackendRefreshRequest): Promise<BackendRefreshSummary> {\n    this.sourceCache?.refresh(request.snapshot);\n    if (request.coverage === \"workspace\") await this.projectGraph?.refresh(request.snapshot);\n    const summary = await this.state.refresh(request.snapshot.files, request.coverage);\n    this.semanticQueries.beginTurn(request.snapshot.files);\n    return summary;\n  }\n\n  async releaseTransientResources(): Promise<void> {\n    await this.semanticQueries.releaseTransientResources();\n  }\n\n  async fileEntries(file: ResolvedPath): Promise<OverviewFileEntries> {\n    if (!this.fs.existsSync(file.absolute) || this.fs.isDirectorySync(file.absolute)) {\n      throw new FileNotFoundError(file.relative);",
+      "sha": "d07002357d3e9596bfaae910a1ac63b77981620b"
+    },
+    "transaction": {
+      "path": "packages/core/src/backend/revisioned-backend-state.ts",
+      "start": 59,
+      "end": 108,
+      "text": "    diagnosticsByRelativePath: new Map(),\n    relativePathByAbsolute: new Map(),\n  };\n\n  protected constructor(private readonly fileSystem: FileSystem) {}\n\n  async refresh(\n    files: readonly WorkspaceFile[],\n    coverage: BackendRefreshCoverage = \"workspace\",\n  ): Promise<BackendRefreshSummary> {\n    const request = this.preparationRequest(files, coverage);\n    const preparation = this.createPreparation(request);\n    try {\n      const preparedFiles = await preparation.prepare();\n      const candidate = this.candidateIndex(request, preparedFiles);\n      await preparation.commit();\n      this.index = candidate;\n    } catch (error) {\n      await preparation.rollback();\n      throw error;\n    }\n    return this.refreshSummary(request, files);\n  }\n\n  async ensureFiles(files: readonly ResolvedPath[]): Promise<void> {\n    for (const file of files) {\n      if (this.index.byRelativePath.has(file.relative)) continue;\n      const metadata = await this.fileSystem.metadata(file.absolute);\n      await this.refresh([{ ...file, metadata }], \"selection\");\n    }\n  }\n\n  async fileEntries(file: ResolvedPath): Promise<OverviewFileEntries> {\n    await this.ensureFiles([file]);\n    const prepared = this.index.byRelativePath.get(file.relative);\n    if (!prepared) throw new FileNotFoundError(file.relative);\n    return prepared.entries;\n  }\n\n  async declarations(files: readonly ResolvedPath[]): Promise<readonly SymbolOverviewNode[]> {\n    await this.ensureFiles(files);\n    return files.flatMap((file) => this.index.declarationsByRelativePath.get(file.relative) ?? []);\n  }\n\n  diagnostics(file: ResolvedPath): readonly NavigationDiagnostic[] {\n    return this.index.diagnosticsByRelativePath.get(file.relative) ?? [];\n  }\n\n  declarationsIn(relativePath: string): readonly SymbolOverviewNode[] | undefined {\n    return this.index.declarationsByRelativePath.get(relativePath);",
+      "sha": "d07002357d3e9596bfaae910a1ac63b77981620b"
+    },
+    "graph": {
+      "path": "packages/core/src/workspace/project-graph.ts",
+      "start": 99,
+      "end": 157,
+      "text": "  protected async refreshProjectGraph(\n    snapshot: WorkspaceSnapshot,\n  ): Promise<ProjectGraphRefreshSummary> {\n    if (this.projectStateUnchanged(snapshot)) return this.currentSummary(0);\n    const inputCollector = new ProjectInputCollector(this.fileSystem);\n    const discovered = await this.discoverConfigurations(snapshot, inputCollector);\n    const candidateConfigurations = discovered.map(({ path, parsed }) => ({\n      path,\n      configuration: parsed.configuration,\n      files: this.filesForConfiguration(parsed.configuration, snapshot),\n    }));\n    const configurations = ProjectGraph.canonicalizeMembership(snapshot, candidateConfigurations);\n    const ownedRelativePaths = new Set(\n      configurations.flatMap((configuration) => configuration.files.map((file) => file.relative)),\n    );\n    const inferredFiles = snapshot.files.filter((file) => !ownedRelativePaths.has(file.relative));\n    const prepared = await this.prepareProjects({\n      snapshot,\n      configurations,\n      inferredFiles,\n      inputCollector,\n    });\n    this.validatePreparedProjectCount(configurations, prepared);\n    const activeInputs = [...discovered.flatMap(({ parsed }) => parsed.inputs), ...prepared.inputs];\n    const observations = inputCollector.observations();\n    ProjectGraph.validateActiveInputs(activeInputs, observations);\n    const inputsByPath = ProjectGraph.collectInputs(activeInputs);\n    const changedInputCount = ProjectGraph.changedInputCount(\n      this.state?.inputsByPath ?? new Map(),\n      inputsByPath,\n    );\n    const ownership = ProjectGraph.buildOwnership(configurations, prepared.configuredProjects);\n    this.state = {\n      root: snapshot.root,\n      filesByRelativePath: new Map(snapshot.files.map((file) => [file.relative, file])),\n      configuredProjects: prepared.configuredProjects,\n      ...ownership,\n      inferredProject: prepared.inferredProject,\n      inferredFileCount: inferredFiles.length,\n      inputsByPath,\n      observations,\n    };\n    return this.currentSummary(changedInputCount);\n  }\n\n  async releaseTransientResources(): Promise<void> {\n    if (!this.state) return;\n    for (const project of this.state.configuredProjects) {\n      const release = project.releaseTransientResources();\n      if (release) await release;\n    }\n    const inferredRelease = this.state.inferredProject.releaseTransientResources();\n    if (inferredRelease) await inferredRelease;\n  }\n\n  protected primaryProjectFor(relativePath: string): Project | undefined {\n    const file = this.state?.filesByRelativePath.get(relativePath);\n    if (!file) return undefined;\n    return (",
+      "sha": "d07002357d3e9596bfaae910a1ac63b77981620b"
+    },
+    "admission": {
+      "path": "packages/daemon/src/daemon-admission.ts",
+      "start": 85,
+      "end": 129,
+      "text": "  decide(context: DaemonAdmissionContext): DaemonAdmissionDecision {\n    for (const guard of this.guards) {\n      const rejection = guard.rejectionFor(context);\n      if (rejection === undefined) continue;\n      if (rejection === \"authentication\") return { kind: \"disconnect\", code: rejection };\n      return { kind: \"reject\", code: rejection };\n    }\n    return { kind: \"accept\" };\n  }\n}\n\nexport class DaemonAdmissionRejections {\n  private static readonly retrySafety: Readonly<Record<DaemonExecuteRejectionCode, boolean>> =\n    Object.freeze({\n      \"not-ready\": true,\n      draining: true,\n      \"resource-pressure\": true,\n      incompatible: false,\n    });\n\n  static retrySafe(code: DaemonExecuteRejectionCode): boolean {\n    return DaemonAdmissionRejections.retrySafety[code];\n  }\n\n  static frame(\n    code: DaemonExecuteRejectionCode,\n    coordinates: DaemonExecutionCoordinates,\n  ): DaemonRejectedExecutionFrame {\n    return {\n      kind: \"rejected\",\n      ...coordinates,\n      code,\n      retrySafe: DaemonAdmissionRejections.retrySafe(code),\n    };\n  }\n\n  static assertConsistent(frame: DaemonRejectedExecutionFrame): void {\n    if (\n      !Object.hasOwn(DaemonAdmissionRejections.retrySafety, frame.code) ||\n      frame.retrySafe !== DaemonAdmissionRejections.retrySafety[frame.code]\n    ) {\n      throw new Error(\"Inconsistent daemon execution rejection\");\n    }\n  }\n}",
+      "sha": "d07002357d3e9596bfaae910a1ac63b77981620b"
+    },
+    "routing": {
+      "path": "packages/daemon/src/client/daemon-routing-policy.ts",
+      "start": 137,
+      "end": 137,
+      "text": "}",
+      "sha": "d07002357d3e9596bfaae910a1ac63b77981620b"
+    },
+    "receiver": {
+      "path": "packages/daemon/src/transport/result-transfer-receiver.ts",
+      "start": 64,
+      "end": 132,
+      "text": "  async acceptChunk(chunk: DaemonResultChunk): Promise<void> {\n    const manifest = this.expectedManifest;\n    if (\n      !this.manifestReceived ||\n      this.terminalReceived ||\n      manifest === undefined ||\n      chunk.requestId !== this.requestId ||\n      chunk.transferId !== manifest.transferId ||\n      chunk.offset !== this.nextRecordOffset ||\n      chunk.sequence !== this.nextRecordOffset\n    ) {\n      throw new Error(\"Daemon returned an invalid result chunk\");\n    }\n    await this.output.append({\n      sequence: chunk.sequence,\n      stream: chunk.stream,\n      bytes: chunk.bytes,\n    });\n    this.nextRecordOffset += 1;\n  }\n\n  acceptEnd(frame: ResultEndFrame): void {\n    const manifest = this.expectedManifest;\n    if (\n      !this.manifestReceived ||\n      this.terminalReceived ||\n      manifest === undefined ||\n      frame.instanceId !== manifest.instanceId ||\n      frame.requestId !== this.requestId ||\n      frame.transferId !== manifest.transferId ||\n      frame.rawBytes !== manifest.rawBytes ||\n      frame.recordCount !== manifest.recordCount ||\n      frame.sha256 !== manifest.sha256 ||\n      this.nextRecordOffset !== manifest.recordCount\n    ) {\n      throw new Error(\"Daemon result transfer did not match its manifest\");\n    }\n    this.terminalReceived = true;\n  }\n\n  async finish(): Promise<DaemonExecutorExecutionResult> {\n    const manifest = this.expectedManifest;\n    if (!this.terminalReceived || manifest === undefined) {\n      throw new Error(\"Daemon result transfer is incomplete\");\n    }\n    try {\n      const captured = await this.output.finish(manifest.exitCode);\n      if (!DaemonResultTransferReceiver.summariesMatch(captured.summary, manifest)) {\n        this.disposal = captured.result.output.dispose();\n        await this.disposal;\n        throw new Error(\"Daemon result transfer failed digest validation\");\n      }\n      this.completed = true;\n      return captured.result;\n    } catch (error) {\n      await this.dispose();\n      throw error;\n    }\n  }\n\n  dispose(): Promise<void> {\n    if (this.completed) return Promise.resolve();\n    this.disposal ??= this.output.dispose();\n    return this.disposal;\n  }\n\n  private static manifestsMatch(\n    expected: CompletionSpoolManifest,\n    actual: CompletionSpoolManifest,",
+      "sha": "d07002357d3e9596bfaae910a1ac63b77981620b"
+    },
+    "recovery": {
+      "path": "packages/daemon/src/transport/execution-client.ts",
+      "start": 38,
+      "end": 101,
+      "text": "  constructor(private readonly options: DaemonExecutionClientOptions) {}\n\n  execute(endpoint: string, request: DaemonExecuteRequest): Promise<DaemonExecutionReceipt> {\n    return this.executeOnce(endpoint, request).then((receipt) => ({\n      acceptance: receipt.acceptance,\n      completion: this.completeWithReattachments(endpoint, request, receipt.completion),\n    }));\n  }\n\n  private async completeWithReattachments(\n    endpoint: string,\n    request: DaemonExecuteRequest,\n    completion: DaemonExecutionReceipt[\"completion\"],\n  ): DaemonExecutionReceipt[\"completion\"] {\n    let currentCompletion = completion;\n    let originalAcceptedClose: DaemonTransportError | undefined;\n    let reattachmentCount = 0;\n    while (true) {\n      try {\n        return await currentCompletion;\n      } catch (error) {\n        if (!DaemonExecutionClient.isAcceptedConnectionClose(error, request)) throw error;\n        originalAcceptedClose ??= error;\n        if (\n          reattachmentCount >= this.options.deliveryPolicy.postAcceptanceExecutionReattachmentLimit\n        )\n          throw originalAcceptedClose;\n        try {\n          const reattached = await this.executeOnce(endpoint, request);\n          currentCompletion = reattached.completion;\n          reattachmentCount += 1;\n        } catch {\n          throw originalAcceptedClose;\n        }\n      }\n    }\n  }\n\n  private executeOnce(\n    endpoint: string,\n    request: DaemonExecuteRequest,\n  ): Promise<DaemonExecutionReceipt> {\n    this.options.validator.request(request);\n    return new Promise((resolve, reject) => {\n      const decoder = this.options.codec.transferDecoder();\n      const transfer = new DaemonResultTransferReceiver(\n        request.requestId,\n        this.options.createOutput(),\n      );\n      let connection: Awaited<ReturnType<DaemonSocketClient[\"connect\"]>> | undefined;\n      let delivery: DaemonDeliveryState = \"not-submitted\";\n      let acceptance: DaemonExecutionAcceptance | undefined;\n      let terminal = false;\n      let outerSettled = false;\n      let completionSettled = false;\n      let resumeCount = 0;\n      let resolveCompletion!: (value: Awaited<DaemonExecutionReceipt[\"completion\"]>) => void;\n      let rejectCompletion!: (error: DaemonTransportError) => void;\n      const completion = new Promise<Awaited<DaemonExecutionReceipt[\"completion\"]>>(\n        (completionResolve, completionReject) => {\n          resolveCompletion = completionResolve;\n          rejectCompletion = completionReject;\n        },\n      );",
+      "sha": "d07002357d3e9596bfaae910a1ac63b77981620b"
+    },
+    "lifetime": {
+      "path": "packages/daemon/src/lifecycle/daemon-lifetime.ts",
+      "start": 1,
+      "end": 60,
+      "text": "import type { DaemonPolicyValues } from \"@symnav/daemon\";\nimport type { DaemonClock } from \"./daemon-clock.js\";\n\nexport class DaemonLifetime {\n  private timer: ReturnType<typeof setTimeout> | undefined;\n  private deadline: number;\n  private navigationActive = false;\n  private stopped = false;\n  private idleTriggered = false;\n\n  constructor(\n    private readonly clock: Pick<DaemonClock, \"wallNowMs\">,\n    policy: Pick<DaemonPolicyValues[\"shutdown\"], \"idleTimeoutMs\">,\n    private readonly onIdle: () => Promise<void>,\n  ) {\n    this.idleTimeoutMs = policy.idleTimeoutMs;\n    this.deadline = this.clock.wallNowMs() + this.idleTimeoutMs;\n    this.schedule();\n  }\n\n  private readonly idleTimeoutMs: number;\n\n  navigationAccepted(): void {\n    if (this.stopped) return;\n    this.navigationActive = true;\n    this.deadline = this.clock.wallNowMs() + this.idleTimeoutMs;\n    this.schedule();\n  }\n\n  queueBecameIdle(): void {\n    if (this.stopped) return;\n    this.navigationActive = false;\n    if (this.clock.wallNowMs() >= this.deadline) this.triggerIdle();\n  }\n\n  stop(): void {\n    this.stopped = true;\n    if (this.timer !== undefined) clearTimeout(this.timer);\n    this.timer = undefined;\n  }\n\n  private schedule(): void {\n    if (this.timer !== undefined) clearTimeout(this.timer);\n    const remainingMs = Math.max(0, this.deadline - this.clock.wallNowMs());\n    this.timer = setTimeout(() => this.deadlineReached(), remainingMs);\n    this.timer.unref?.();\n  }\n\n  private deadlineReached(): void {\n    this.timer = undefined;\n    if (this.stopped || this.navigationActive) return;\n    this.triggerIdle();\n  }\n\n  private triggerIdle(): void {\n    if (this.idleTriggered) return;\n    this.idleTriggered = true;\n    void this.onIdle();\n  }\n}",
+      "sha": "d07002357d3e9596bfaae910a1ac63b77981620b"
+    },
+    "ledger": {
+      "path": "packages/daemon/src/execution/accepted-request-ledger.ts",
+      "start": 153,
+      "end": 175,
+      "text": "    const entry = this.entries.get(requestId);\n    if (entry === undefined) return { state: \"unknown\" };\n    const state = entry.state;\n    if (state.state === \"queued\") {\n      return { state: \"queued\", queuePosition: entry.queuePosition };\n    }\n    if (state.state === \"running\") return { state: \"running\", startedAt: state.startedAt };\n    if (state.state === \"completed\") return { state: \"completed\" };\n    return { state: \"failed\", code: state.code };\n  }\n\n  acknowledge(requestId: string): void {\n    const entry = this.entry(requestId);\n    if (entry.state.state !== \"completed\" && entry.state.state !== \"failed\") {\n      throw new Error(`Accepted request ${requestId} is not terminal`);\n    }\n    this.acknowledged.add(requestId);\n  }\n\n  isAcknowledged(requestId: string): boolean {\n    return this.acknowledged.has(requestId);\n  }\n",
+      "sha": "d07002357d3e9596bfaae910a1ac63b77981620b"
+    },
+    "facade": {
+      "path": "packages/daemon/src/client/daemon-client.ts",
+      "start": 19,
+      "end": 64,
+      "text": "\nclass DaemonClientRuntimeLoader {\n  static async load(options: DaemonClientOptions): Promise<DaemonClientRuntimePort> {\n    const runtimeModuleUrl: string = \"./daemon-client-runtime.js\";\n    const loaded: unknown = await import(runtimeModuleUrl);\n    if (\n      typeof loaded !== \"object\" ||\n      loaded === null ||\n      !(\"DaemonClientRuntime\" in loaded) ||\n      typeof loaded.DaemonClientRuntime !== \"function\"\n    ) {\n      throw new Error(\"Daemon client runtime is unavailable\");\n    }\n    const Runtime = loaded.DaemonClientRuntime as new (\n      options: DaemonClientOptions,\n    ) => DaemonClientRuntimePort;\n    return new Runtime(options);\n  }\n}\n\nexport class DaemonClient {\n  private readonly runtime: Promise<DaemonClientRuntimePort>;\n\n  constructor(options: DaemonClientOptions) {\n    this.runtime = DaemonClientRuntimeLoader.load(options);\n  }\n\n  async execute(request: DaemonClientExecuteRequest): Promise<DaemonClientExecuteResult> {\n    return (await this.runtime).execute(request);\n  }\n\n  control(\n    request: Extract<DaemonControlRequest, { readonly action: \"start\" }>,\n  ): Promise<DaemonStartResult>;\n  control(\n    request: Extract<DaemonControlRequest, { readonly action: \"status\" }>,\n  ): Promise<readonly RunningDaemonStatus[]>;\n  control(\n    request: Extract<DaemonControlRequest, { readonly action: \"stop\" }>,\n  ): Promise<DaemonStopResult>;\n  async control(\n    request: DaemonControlRequest,\n  ): Promise<DaemonStartResult | readonly RunningDaemonStatus[] | DaemonStopResult> {\n    return (await this.runtime).control(request);\n  }\n}",
+      "sha": "d07002357d3e9596bfaae910a1ac63b77981620b"
+    },
+    "manifest": {
+      "path": "packages/daemon/package.json",
+      "start": 1,
+      "end": 38,
+      "text": "{\n  \"name\": \"@symnav/daemon\",\n  \"version\": \"0.0.0\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"main\": \"./dist/index.js\",\n  \"types\": \"./dist/index.d.ts\",\n  \"exports\": {\n    \".\": {\n      \"types\": \"./dist/index.d.ts\",\n      \"default\": \"./dist/index.js\"\n    },\n    \"./process-entry\": {\n      \"types\": \"./dist/process-entry.d.ts\",\n      \"default\": \"./dist/process-entry.js\"\n    },\n    \"./worker-entry\": {\n      \"types\": \"./dist/worker-entry.d.ts\",\n      \"default\": \"./dist/worker-entry.js\"\n    },\n    \"./testing\": {\n      \"types\": \"./dist/testing/index.d.ts\",\n      \"default\": \"./dist/testing/index.js\"\n    }\n  },\n  \"files\": [\"dist\"],\n  \"scripts\": {\n    \"test\": \"vitest run\",\n    \"build\": \"tsc --build\",\n    \"typecheck\": \"tsc --build\",\n    \"lint\": \"eslint src\",\n    \"typecheck:test\": \"tsc -p tsconfig.test.json --noEmit\"\n  },\n  \"devDependencies\": {\n    \"@symnav/testing\": \"workspace:*\",\n    \"tsx\": \"^4.21.0\"\n  }\n}",
+      "sha": "d07002357d3e9596bfaae910a1ac63b77981620b"
+    },
+    "inspector": {
+      "path": "packages/daemon/src/testing/daemon-testing-inspector.ts",
+      "start": 1,
+      "end": 139,
+      "text": "import { lstatSync, readFileSync, readdirSync, statSync } from \"node:fs\";\nimport { join } from \"node:path\";\nimport type { DaemonDiagnosticValue } from \"../daemon-diagnostics.js\";\nimport { DaemonDiagnosticValues } from \"../daemon-diagnostics.js\";\nimport { DaemonPolicy } from \"../daemon-policy.js\";\nimport { DaemonRegistry } from \"../registry/registry.js\";\nimport { DaemonWorkspaceIdentity } from \"../registry/workspace-identity.js\";\n\nexport interface DaemonTestingInstance {\n  readonly workspaceRoot: string;\n  readonly pid: number;\n  readonly instanceId: string;\n  readonly state: \"starting\" | \"ready\";\n}\n\nexport type DaemonTestingDiagnosticEvent = Readonly<Record<string, DaemonDiagnosticValue>>;\n\nexport interface DaemonTestingDiagnosticPage {\n  readonly events: readonly DaemonTestingDiagnosticEvent[];\n  readonly nextCursor: number;\n}\n\nexport interface DaemonTestingSpoolUsage {\n  readonly fileCount: number;\n  readonly bytes: number;\n}\n\nexport class DaemonTestingInspector {\n  readonly #stateDirectory: string;\n\n  constructor(canonicalStateDirectory: string) {\n    this.#stateDirectory = canonicalStateDirectory;\n  }\n\n  listInstances(): readonly DaemonTestingInstance[] {\n    try {\n      return new DaemonRegistry(\n        DaemonWorkspaceIdentity.registryDirectory(this.#stateDirectory),\n        DaemonPolicy.currentSystem().values.startup,\n      )\n        .list()\n        .map(({ workspaceRoot, pid, instanceId, state }) => ({\n          workspaceRoot,\n          pid,\n          instanceId,\n          state,\n        }))\n        .sort(\n          (left, right) =>\n            left.workspaceRoot.localeCompare(right.workspaceRoot) ||\n            left.instanceId.localeCompare(right.instanceId),\n        );\n    } catch (error) {\n      if ([\"ENOENT\", \"ENOTDIR\"].includes(DaemonTestingInspector.errorCode(error) ?? \"\")) return [];\n      throw error;\n    }\n  }\n\n  hasStateArtifacts(): boolean {\n    try {\n      statSync(DaemonWorkspaceIdentity.registryDirectory(this.#stateDirectory));\n      return true;\n    } catch (error) {\n      if ([\"ENOENT\", \"ENOTDIR\"].includes(DaemonTestingInspector.errorCode(error) ?? \"\")) {\n        return false;\n      }\n      throw error;\n    }\n  }\n\n  readDiagnostics(canonicalWorkspaceRoot: string, cursor = 0): DaemonTestingDiagnosticPage {\n    if (!Number.isSafeInteger(cursor) || cursor < 0) throw new Error(\"Invalid diagnostic cursor\");\n    const identity = DaemonWorkspaceIdentity.from(canonicalWorkspaceRoot, this.#stateDirectory);\n    const events = DaemonTestingInspector.diagnosticEvents(identity);\n    return { events: events.slice(cursor), nextCursor: events.length };\n  }\n\n  completionSpoolUsage(canonicalWorkspaceRoot: string): DaemonTestingSpoolUsage {\n    const identity = DaemonWorkspaceIdentity.from(canonicalWorkspaceRoot, this.#stateDirectory);\n    return DaemonTestingInspector.directoryUsage(identity.spoolDirectory);\n  }\n\n  private static diagnosticEvents(\n    identity: DaemonWorkspaceIdentity,\n  ): readonly DaemonTestingDiagnosticEvent[] {\n    return DaemonTestingInspector.diagnosticPaths(identity).flatMap((path) =>\n      DaemonTestingInspector.diagnosticEventsFrom(path),\n    );\n  }\n\n  private static diagnosticPaths(identity: DaemonWorkspaceIdentity): readonly string[] {\n    let names: readonly string[];\n    try {\n      names = readdirSync(identity.identityDirectory);\n    } catch (error) {\n      if ([\"ENOENT\", \"ENOTDIR\"].includes(DaemonTestingInspector.errorCode(error) ?? \"\")) return [];\n      throw error;\n    }\n    const backupPattern = /^daemon\\.log\\.(\\d+)$/;\n    const backups = names\n      .flatMap((name) => {\n        const match = backupPattern.exec(name);\n        return match === null ? [] : [{ name, index: Number(match[1]) }];\n      })\n      .sort((left, right) => right.index - left.index)\n      .map(({ name }) => join(identity.identityDirectory, name));\n    return names.includes(\"daemon.log\") ? [...backups, identity.logPath] : backups;\n  }\n\n  private static diagnosticEventsFrom(path: string): readonly DaemonTestingDiagnosticEvent[] {\n    let contents: string;\n    try {\n      contents = readFileSync(path, \"utf8\");\n    } catch (error) {\n      if (DaemonTestingInspector.errorCode(error) === \"ENOENT\") return [];\n      throw error;\n    }\n    return contents\n      .split(\"\\n\")\n      .filter((line) => line.length > 0)\n      .flatMap((line) => {\n        try {\n          const value: unknown = JSON.parse(line);\n          return DaemonDiagnosticValues.isDiagnostics(value) ? [value] : [];\n        } catch (error) {\n          if (error instanceof SyntaxError) return [];\n          throw error;\n        }\n      });\n  }\n\n  private static directoryUsage(directory: string): DaemonTestingSpoolUsage {\n    let entries;\n    try {\n      entries = readdirSync(directory, { withFileTypes: true });\n    } catch (error) {\n      if ([\"ENOENT\", \"ENOTDIR\"].includes(DaemonTestingInspector.errorCode(error) ?? \"\")) {\n        return { fileCount: 0, bytes: 0 };\n      }",
+      "sha": "d07002357d3e9596bfaae910a1ac63b77981620b"
+    }
+  },
+  "policy": [
+    [
+      "transport.singleResponseTimeoutMs",
+      "250 ms",
+      "Ordinary lifecycle and execution-status exchanges",
+      "Bound one-response local socket waits",
+      "Transport timeout characterization"
+    ],
+    [
+      "transport.statusResponseTimeoutMs",
+      "100 ms",
+      "Status observer lifecycle exchange",
+      "Keep status aggregation responsive independently of routing",
+      "Status timeout characterization"
+    ],
+    [
+      "transport.executionAdmissionTimeoutMs",
+      "5 s",
+      "Execute submission until acceptance",
+      "Bound admission without timing accepted completion",
+      "Long-command transport characterization"
+    ],
+    [
+      "transport.maximumJsonPayloadBytes",
+      "8 MiB",
+      "Ordinary JSON control frames",
+      "Bound decoded control input",
+      "Transport frame-cap tests"
+    ],
+    [
+      "transport.maximumExecutionControlPayloadBytes",
+      "256 KiB",
+      "Execution transfer control frames",
+      "Keep binary-transfer control bounded separately",
+      "Transfer codec tests"
+    ],
+    [
+      "startup.coordinationGraceMs",
+      "15 s",
+      "Startup ownership and missing-owner observation",
+      "Preserve election recovery grace",
+      "Registry/startup suites"
+    ],
+    [
+      "startup.heartbeatIntervalMs",
+      "100 ms",
+      "Startup-owner heartbeat",
+      "Maintain live ownership while warming",
+      "Startup heartbeat tests"
+    ],
+    [
+      "startup.authorizationPollIntervalMs",
+      "10 ms",
+      "Process authorization wait",
+      "Preserve the distinct fast authorization cadence",
+      "Authorization cadence characterization"
+    ],
+    [
+      "startup.observationPollIntervalMs",
+      "20 ms",
+      "Launcher readiness observation",
+      "Preserve current readiness polling cadence",
+      "Startup observation tests"
+    ],
+    [
+      "startup.previousInstanceTerminationTimeoutMs",
+      "5 min",
+      "Replacement of a previous instance",
+      "Allow controlled termination before new ownership proceeds",
+      "Startup replacement tests"
+    ],
+    [
+      "startup.childFailureRetryLimit",
+      "1 retry",
+      "Explicit startup child failure",
+      "Preserve one fresh launch after a failed child",
+      "Startup retry tests"
+    ],
+    [
+      "shutdown.idleTimeoutMs",
+      "30 min",
+      "Warm daemon idle lifetime",
+      "Release retained resources after inactivity",
+      "Lifetime tests"
+    ],
+    [
+      "shutdown.stopTimeoutMs",
+      "5 s",
+      "User-requested stop",
+      "Bound graceful stop and forced escalation together",
+      "Controller stop tests"
+    ],
+    [
+      "shutdown.forcedTerminationReserveMaximumMs",
+      "500 ms",
+      "Stop escalation reserve",
+      "Leave bounded time for authenticated force termination",
+      "Controller deadline tests"
+    ],
+    [
+      "recipe.forcedTerminationReserve",
+      "min(forcedTerminationReserveMaximumMs, floor(stopTimeoutMs / 2))",
+      "Effective stop escalation reserve",
+      "Preserve small overridden stop windows",
+      "Controller deadline tests"
+    ],
+    [
+      "shutdown.controllerPollIntervalMs",
+      "20 ms",
+      "Controller process/registry observation",
+      "Preserve control-plane polling cadence",
+      "Controller polling tests"
+    ],
+    [
+      "shutdown.processSignalExitTimeoutMs",
+      "500 ms after SIGTERM and 500 ms after SIGKILL",
+      "Direct process termination",
+      "Give each signal a bounded exit interval",
+      "Process terminator tests"
+    ],
+    [
+      "shutdown.processExitPollIntervalMs",
+      "20 ms",
+      "Direct process termination",
+      "Preserve process-exit polling cadence independently",
+      "Process terminator tests"
+    ],
+    [
+      "shutdown.resourceDrainAcknowledgementGraceMs",
+      "250 ms",
+      "Completion acknowledgement during drain",
+      "Permit an attached client to acknowledge before cleanup",
+      "Shutdown acknowledgement tests"
+    ],
+    [
+      "shutdown.resourceDrainAcknowledgementPollIntervalMs",
+      "5 ms",
+      "Completion acknowledgement during drain",
+      "Preserve the distinct fast acknowledgement cadence",
+      "Acknowledgement cadence characterization"
+    ],
+    [
+      "delivery.postAcceptanceExecutionReattachmentLimit",
+      "1 reattachment",
+      "Authenticated close after acceptance",
+      "Recover the accepted request without local replay",
+      "Reattachment tests"
+    ],
+    [
+      "delivery.resultTransferResumeLimitPerExecutionAttempt",
+      "1 fetch resume per execute attempt",
+      "Interrupted manifest transfer",
+      "Resume one transfer independently for each execute attempt",
+      "Two-scope resume tests"
+    ],
+    [
+      "output.maximumChunkRawBytes",
+      "64 KiB",
+      "Worker and result chunks",
+      "Bound one raw output record",
+      "Chunk codec and spool tests"
+    ],
+    [
+      "output.inlineRawBytes",
+      "256 KiB",
+      "Inline result storage",
+      "Avoid files for small results",
+      "Spool threshold tests"
+    ],
+    [
+      "output.maximumResultRawBytes",
+      "256 MiB",
+      "One completed result",
+      "Bound retained output for one request",
+      "Result-cap tests"
+    ],
+    [
+      "output.maximumAggregateSpoolRawBytes",
+      "512 MiB",
+      "All retained completions for one daemon",
+      "Bound aggregate spool pressure",
+      "Aggregate-cap tests"
+    ],
+    [
+      "recipe.effectiveMemorySelection",
+      "Use constrained bytes only when positive and smaller than total bytes; preserve selected raw bytes",
+      "Memory derivation input",
+      "Respect real lower constraints without rounding identity",
+      "Policy derivation table"
+    ],
+    [
+      "resources.effectiveMemoryBytes",
+      "Selected raw effective bytes",
+      "Resource reports and derived thresholds",
+      "Preserve non-MiB-aligned system information exactly",
+      "Policy derivation table"
+    ],
+    [
+      "recipe.effectiveMemoryMiB",
+      "max(1, floor(effectiveMemoryBytes / MiB))",
+      "Memory threshold derivation",
+      "Give sub-MiB inputs a stable minimum",
+      "Policy boundary tests"
+    ],
+    [
+      "recipe.hardProcessRss",
+      "clamp(floor(effectiveMemoryMiB / 2), 256, 8192) * MiB",
+      "Hard daemon RSS limit",
+      "Reserve memory for the host while bounding small and large systems",
+      "Policy boundary tests"
+    ],
+    [
+      "resources.hardProcessRssBytes",
+      "Hard-process-RSS recipe",
+      "Process replacement and worker launch",
+      "Trigger controlled replacement before OOM",
+      "Resource supervision tests"
+    ],
+    [
+      "resources.softProcessRssBytes",
+      "floor(hardProcessRssMiB * 0.8) * MiB",
+      "Transient resource shedding",
+      "Shed before hard replacement",
+      "Resource hysteresis tests"
+    ],
+    [
+      "resources.resumeProcessRssBytes",
+      "floor(hardProcessRssMiB * 0.7) * MiB",
+      "Admission resumption",
+      "Require lower RSS before resuming work",
+      "Resource hysteresis tests"
+    ],
+    [
+      "recipe.workerOldGeneration",
+      "clamp(floor(effectiveMemoryMiB / 4), 128, 4096) MiB",
+      "Worker V8 old generation",
+      "Bound worker heap within process budget",
+      "Worker launch tests"
+    ],
+    [
+      "resources.workerMaxOldGenerationSizeMiB",
+      "Worker-old-generation recipe",
+      "Worker resource limits",
+      "Pass the derived V8 limit unchanged",
+      "Process/worker snapshot test"
+    ],
+    [
+      "resources.supervisionIntervalMs",
+      "250 ms",
+      "Process RSS and spool sampling",
+      "Detect sustained pressure without per-operation overhead",
+      "Resource cadence tests"
+    ],
+    [
+      "resources.replacementWindowMs",
+      "10 min",
+      "Replacement circuit",
+      "Count only recent replacements",
+      "Replacement-window tests"
+    ],
+    [
+      "resources.replacementLimit",
+      "2 replacements; third drains",
+      "Replacement circuit",
+      "Stop persistent replacement churn",
+      "Persistent-pressure tests"
+    ],
+    [
+      "resources.workerHeapSampleIntervalMs",
+      "25 ms",
+      "Active worker heap high-water sampling",
+      "Observe short-lived heap peaks",
+      "Worker cadence characterization"
+    ],
+    [
+      "diagnostics.logRotateBytes",
+      "10 MiB",
+      "Diagnostic log rotation",
+      "Bound active diagnostic file size",
+      "Logger rotation tests"
+    ],
+    [
+      "diagnostics.logBackupCount",
+      "4 backups plus active log",
+      "Diagnostic log rotation",
+      "Retain a bounded diagnostic history",
+      "Logger backup tests"
+    ],
+    [
+      "diagnostics.maximumQueuedEvents",
+      "1,024",
+      "Pending diagnostic writes",
+      "Bound memory when storage is slow",
+      "Logger queue tests"
+    ],
+    [
+      "diagnostics.disconnectedTraceRetentionMs",
+      "5 min",
+      "Disconnected operation traces",
+      "Retain reconnect evidence without changing result retention",
+      "Trace expiry tests"
+    ],
+    [
+      "diagnostics.maximumDisconnectedTraces",
+      "1,024 with effective minimum 1",
+      "Disconnected operation traces",
+      "Bound diagnostic-only retention",
+      "Trace capacity tests"
+    ]
+  ]
+};

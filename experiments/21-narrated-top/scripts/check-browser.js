@@ -1,0 +1,75 @@
+async (page) => {
+  const output='/Users/moyaseen/projects/rich-review-v2/experiments/21-narrated-top';
+  const result={checks:[],errors:[]};
+  const check=(value,name)=>{if(!value)throw new Error(name);result.checks.push(name);};
+  const context=await page.context().browser().newContext({viewport:{width:1440,height:1400},deviceScaleFactor:1});
+  const p=await context.newPage();p.on('pageerror',e=>result.errors.push(e.message));
+  try{
+    await p.goto('http://127.0.0.1:8721/',{waitUntil:'networkidle'});
+    check(await p.locator('.decision-card').count()===26,'26 PR cards visible');
+    check(await p.locator('.decision-choices [data-decision]').count()===117,'117 explicit PR decisions visible');
+    check(await p.locator('.extra-card').count()===11,'11 additional source choices visible');
+    check(await p.locator('#deferred tr').count()===8,'All 8 follow-ups visible');
+    check(await p.locator('#test-scenario-names span').count()===10,'All 10 removed CLI scenarios previewed');
+    check(Math.abs(await p.locator('audio').evaluate(a=>a.duration)-90)<.1,'Audio duration is 90 seconds');
+    check(await p.evaluate(()=>document.documentElement.scrollWidth===innerWidth),'Desktop has no horizontal page overflow');
+    await p.screenshot({path:`${output}/screenshots/01-opening.png`});
+    await p.locator('#play').click();
+    await p.waitForFunction(()=>reviewPlayer.position>.3);
+    check(await p.evaluate(()=>!reviewPlayer.silent),'Native audio plays');
+    await p.locator('#play').click();
+    check(await p.evaluate(()=>!reviewPlayer.playing),'Play button pauses');
+    for(let i=0;i<6;i++){
+      await p.locator(`[data-chapter="${i}"]`).click();
+      check(await p.evaluate(()=>Math.floor(reviewPlayer.position/15))===i,`Chapter ${i+1} seeks correctly`);
+    }
+    await p.locator('[data-chapter="0"]').click();
+    await p.locator('[data-decision="d127-3"]').click();
+    check(await p.locator('dialog').evaluate(d=>d.open),'Decision dialog opens');
+    check((await p.locator('#dialog-content').innerText()).includes('synchronous cache clearing'),'Recorded rationale is present');
+    await p.keyboard.press('Escape');
+    check(!await p.locator('dialog').evaluate(d=>d.open),'Escape closes dialog');
+    check(await p.evaluate(()=>document.activeElement?.getAttribute('data-decision'))==='d127-3','Dialog restores keyboard focus');
+    await p.locator('#decision-map').scrollIntoViewIfNeeded();
+    await p.screenshot({path:`${output}/screenshots/02-decision-map.png`});
+    await p.locator('#state-case').selectOption('failure');
+    check((await p.locator('#state-results').innerText()).includes('Prior successful turn'),'Failed refresh preserves semantic turn model');
+    await p.locator('#state-case').selectOption('selection');
+    check((await p.locator('#state-results').innerText()).includes('Omitted B is evicted'),'Selection model distinguishes byte and index retention');
+    await p.locator('#guard-0').uncheck();await p.locator('#guard-1').uncheck();
+    check((await p.locator('#guard-outcome').innerText()).includes('Disconnect'),'Authentication precedes readiness in model');
+    await p.locator('#guard-0').check();
+    check((await p.locator('#guard-outcome').innerText()).includes('not-ready'),'Readiness rejection is derived');
+    await p.locator('#guard-1').check();await p.locator('#guard-4').uncheck();
+    check((await p.locator('#guard-outcome').innerText()).includes('retrySafe = false'),'Conflicting duplicate is not retry-safe');
+    await p.locator('#delivery-case').selectOption('resume');
+    check((await p.locator('#delivery-results').innerText()).includes('1 / 0'),'Fetch has an independent recovery counter');
+    await p.locator('#delivery-case').selectOption('reattach');
+    check((await p.locator('#delivery-results').innerText()).includes('0 / 1'),'Reattachment renews per-attempt fetch counter');
+    await p.locator('#m-delivery').scrollIntoViewIfNeeded();
+    await p.screenshot({path:`${output}/screenshots/03-recovery.png`});
+    await p.locator('#delivery-case').selectOption('exhausted');
+    check((await p.locator('#delivery-results').innerText()).includes('0 replays'),'Accepted exhaustion does not model local replay');
+    await p.locator('[data-source="host-policy"]').click();
+    check((await p.locator('#source-view').innerText()).includes('DaemonPolicy.currentSystem()'),'Source excerpt contains host-side policy recomputation');
+    const links=await p.evaluate(()=>[...document.querySelectorAll('a[href^="#"]')].map(a=>a.getAttribute('href')).filter(h=>h.length>1&&!document.getElementById(h.slice(1))));
+    check(links.length===0,'All in-page anchor targets exist');
+    await p.goto(`file://${output}/index.html`,{waitUntil:'load'});
+    await p.waitForFunction(()=>typeof reviewPlayer==='object');
+    check(await p.locator('.decision-card').count()===26,'Direct file opening loads the review inventory');
+    check(await p.locator('audio').evaluate(a=>a.error===null),'Direct file opening loads the audio without CORS');
+    await p.locator('[data-chapter="3"]').click();
+    check(await p.locator('#film').getAttribute('data-scene')==='delivery','Direct file opening supports chapter navigation');
+    const mobile=await page.context().browser().newContext({viewport:{width:390,height:844},deviceScaleFactor:1,isMobile:true,hasTouch:true,reducedMotion:'reduce'});
+    const m=await mobile.newPage();m.on('pageerror',e=>result.errors.push(e.message));
+    await m.goto('http://127.0.0.1:8721/',{waitUntil:'networkidle'});
+    check(await m.evaluate(()=>document.documentElement.scrollWidth===innerWidth),'390px mobile has no horizontal page overflow');
+    check(await m.locator('#live-caption').isVisible(),'Mobile has readable captions outside the scaled diagram');
+    await m.screenshot({path:`${output}/screenshots/04-mobile.png`});
+    await m.locator('#state-case').selectOption('partial');
+    check((await m.locator('#state-results').innerText()).includes('A remains published'),'Mobile model controls work');
+    await mobile.close();
+    check(result.errors.length===0,'No JavaScript exceptions across desktop, mobile and file opening');
+    return result;
+  } finally {await context.close();}
+}
