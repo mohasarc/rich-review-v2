@@ -1,0 +1,987 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>apps/cli/src/daemon/daemon-registry.ts</title><link rel="stylesheet" href="../../style.css"></head><body><main class="source-file"><a href="../../receipts.html">← Return to receipt index</a><p>head · 20838f8dbf413e04767543eb2380d0d114da6c60</p><h1>apps/cli/src/daemon/daemon-registry.ts</h1><p>Git blob <code>c544957c3a54bd061716dc5139ace2ed880c0f11</code><br>SHA-256 <code>40502e234692acf886fc81f47d1731fa7d022470203351ed91804c7281dfbffa</code></p><a href="../sources/head-live-registry.txt">Raw pinned text</a><pre><span id="L1"><a href="#L1" aria-label="Line 1">1</a> import {</span>
+<span id="L2"><a href="#L2" aria-label="Line 2">2</a>   existsSync,</span>
+<span id="L3"><a href="#L3" aria-label="Line 3">3</a>   mkdirSync,</span>
+<span id="L4"><a href="#L4" aria-label="Line 4">4</a>   readFileSync,</span>
+<span id="L5"><a href="#L5" aria-label="Line 5">5</a>   readdirSync,</span>
+<span id="L6"><a href="#L6" aria-label="Line 6">6</a>   renameSync,</span>
+<span id="L7"><a href="#L7" aria-label="Line 7">7</a>   rmSync,</span>
+<span id="L8"><a href="#L8" aria-label="Line 8">8</a>   writeFileSync,</span>
+<span id="L9"><a href="#L9" aria-label="Line 9">9</a> } from &quot;node:fs&quot;;</span>
+<span id="L10"><a href="#L10" aria-label="Line 10">10</a> import { randomUUID } from &quot;node:crypto&quot;;</span>
+<span id="L11"><a href="#L11" aria-label="Line 11">11</a> import { dirname, join } from &quot;node:path&quot;;</span>
+<span id="L12"><a href="#L12" aria-label="Line 12">12</a> import type { DaemonPolicyValues } from &quot;@symnav/daemon&quot;;</span>
+<span id="L13"><a href="#L13" aria-label="Line 13">13</a> import { NodeDaemonClock, type DaemonClock } from &quot;./daemon-clock.js&quot;;</span>
+<span id="L14"><a href="#L14" aria-label="Line 14">14</a> import {</span>
+<span id="L15"><a href="#L15" aria-label="Line 15">15</a>   DAEMON_PROTOCOL_VERSION,</span>
+<span id="L16"><a href="#L16" aria-label="Line 16">16</a>   DAEMON_RECORD_SCHEMA_VERSION,</span>
+<span id="L17"><a href="#L17" aria-label="Line 17">17</a>   type DaemonRecord,</span>
+<span id="L18"><a href="#L18" aria-label="Line 18">18</a> } from &quot;./daemon-protocol.js&quot;;</span>
+<span id="L19"><a href="#L19" aria-label="Line 19">19</a> import { DaemonWorkspaceIdentity } from &quot;./daemon-workspace-identity.js&quot;;</span>
+<span id="L20"><a href="#L20" aria-label="Line 20">20</a> </span>
+<span id="L21"><a href="#L21" aria-label="Line 21">21</a> export interface DaemonStartupOwner {</span>
+<span id="L22"><a href="#L22" aria-label="Line 22">22</a>   readonly identityKey: string;</span>
+<span id="L23"><a href="#L23" aria-label="Line 23">23</a>   readonly instanceId: string;</span>
+<span id="L24"><a href="#L24" aria-label="Line 24">24</a>   readonly processToken: string;</span>
+<span id="L25"><a href="#L25" aria-label="Line 25">25</a>   readonly ownerPid: number;</span>
+<span id="L26"><a href="#L26" aria-label="Line 26">26</a>   readonly ownerKind: &quot;launcher&quot; | &quot;daemon&quot;;</span>
+<span id="L27"><a href="#L27" aria-label="Line 27">27</a>   readonly heartbeatAt: number;</span>
+<span id="L28"><a href="#L28" aria-label="Line 28">28</a>   readonly acquiredAt: number;</span>
+<span id="L29"><a href="#L29" aria-label="Line 29">29</a>   readonly revision: string;</span>
+<span id="L30"><a href="#L30" aria-label="Line 30">30</a> }</span>
+<span id="L31"><a href="#L31" aria-label="Line 31">31</a> </span>
+<span id="L32"><a href="#L32" aria-label="Line 32">32</a> export type StartupOwner = DaemonStartupOwner;</span>
+<span id="L33"><a href="#L33" aria-label="Line 33">33</a> </span>
+<span id="L34"><a href="#L34" aria-label="Line 34">34</a> export interface DaemonStartupLease {</span>
+<span id="L35"><a href="#L35" aria-label="Line 35">35</a>   readonly owner: DaemonStartupOwner;</span>
+<span id="L36"><a href="#L36" aria-label="Line 36">36</a>   readonly instanceId: string;</span>
+<span id="L37"><a href="#L37" aria-label="Line 37">37</a>   transferToDaemon(pid: number, processToken: string): boolean;</span>
+<span id="L38"><a href="#L38" aria-label="Line 38">38</a>   heartbeat(): boolean;</span>
+<span id="L39"><a href="#L39" aria-label="Line 39">39</a>   release(): boolean;</span>
+<span id="L40"><a href="#L40" aria-label="Line 40">40</a> }</span>
+<span id="L41"><a href="#L41" aria-label="Line 41">41</a> </span>
+<span id="L42"><a href="#L42" aria-label="Line 42">42</a> export type StartupLease = DaemonStartupLease;</span>
+<span id="L43"><a href="#L43" aria-label="Line 43">43</a> </span>
+<span id="L44"><a href="#L44" aria-label="Line 44">44</a> interface StartupMutationOwner {</span>
+<span id="L45"><a href="#L45" aria-label="Line 45">45</a>   readonly ownerPid: number;</span>
+<span id="L46"><a href="#L46" aria-label="Line 46">46</a>   readonly acquiredAt: number;</span>
+<span id="L47"><a href="#L47" aria-label="Line 47">47</a>   readonly token: string;</span>
+<span id="L48"><a href="#L48" aria-label="Line 48">48</a> }</span>
+<span id="L49"><a href="#L49" aria-label="Line 49">49</a> </span>
+<span id="L50"><a href="#L50" aria-label="Line 50">50</a> interface StartupOwnershipExpectation {</span>
+<span id="L51"><a href="#L51" aria-label="Line 51">51</a>   readonly identityKey: string;</span>
+<span id="L52"><a href="#L52" aria-label="Line 52">52</a>   readonly instanceId: string;</span>
+<span id="L53"><a href="#L53" aria-label="Line 53">53</a>   readonly processToken?: string;</span>
+<span id="L54"><a href="#L54" aria-label="Line 54">54</a>   readonly ownerKind?: DaemonStartupOwner[&quot;ownerKind&quot;];</span>
+<span id="L55"><a href="#L55" aria-label="Line 55">55</a>   readonly ownerPid?: number;</span>
+<span id="L56"><a href="#L56" aria-label="Line 56">56</a>   readonly acquiredAt?: number;</span>
+<span id="L57"><a href="#L57" aria-label="Line 57">57</a>   readonly heartbeatAt?: number;</span>
+<span id="L58"><a href="#L58" aria-label="Line 58">58</a>   readonly revision?: string;</span>
+<span id="L59"><a href="#L59" aria-label="Line 59">59</a> }</span>
+<span id="L60"><a href="#L60" aria-label="Line 60">60</a> </span>
+<span id="L61"><a href="#L61" aria-label="Line 61">61</a> class RegistryStartupMutationLease {</span>
+<span id="L62"><a href="#L62" aria-label="Line 62">62</a>   private released = false;</span>
+<span id="L63"><a href="#L63" aria-label="Line 63">63</a> </span>
+<span id="L64"><a href="#L64" aria-label="Line 64">64</a>   constructor(</span>
+<span id="L65"><a href="#L65" aria-label="Line 65">65</a>     private readonly registry: DaemonRegistry,</span>
+<span id="L66"><a href="#L66" aria-label="Line 66">66</a>     private readonly identity: DaemonWorkspaceIdentity,</span>
+<span id="L67"><a href="#L67" aria-label="Line 67">67</a>     private readonly owner: StartupMutationOwner,</span>
+<span id="L68"><a href="#L68" aria-label="Line 68">68</a>   ) {}</span>
+<span id="L69"><a href="#L69" aria-label="Line 69">69</a> </span>
+<span id="L70"><a href="#L70" aria-label="Line 70">70</a>   isOwned(): boolean {</span>
+<span id="L71"><a href="#L71" aria-label="Line 71">71</a>     return this.registry.isStartupMutationOwner(this.identity, this.owner);</span>
+<span id="L72"><a href="#L72" aria-label="Line 72">72</a>   }</span>
+<span id="L73"><a href="#L73" aria-label="Line 73">73</a> </span>
+<span id="L74"><a href="#L74" aria-label="Line 74">74</a>   release(): void {</span>
+<span id="L75"><a href="#L75" aria-label="Line 75">75</a>     if (this.released) return;</span>
+<span id="L76"><a href="#L76" aria-label="Line 76">76</a>     this.released = true;</span>
+<span id="L77"><a href="#L77" aria-label="Line 77">77</a>     this.registry.releaseStartupMutation(this.identity, this.owner);</span>
+<span id="L78"><a href="#L78" aria-label="Line 78">78</a>   }</span>
+<span id="L79"><a href="#L79" aria-label="Line 79">79</a> }</span>
+<span id="L80"><a href="#L80" aria-label="Line 80">80</a> </span>
+<span id="L81"><a href="#L81" aria-label="Line 81">81</a> class RegistryStartupLease implements StartupLease {</span>
+<span id="L82"><a href="#L82" aria-label="Line 82">82</a>   private released = false;</span>
+<span id="L83"><a href="#L83" aria-label="Line 83">83</a> </span>
+<span id="L84"><a href="#L84" aria-label="Line 84">84</a>   constructor(</span>
+<span id="L85"><a href="#L85" aria-label="Line 85">85</a>     private readonly registry: DaemonRegistry,</span>
+<span id="L86"><a href="#L86" aria-label="Line 86">86</a>     private readonly identity: DaemonWorkspaceIdentity,</span>
+<span id="L87"><a href="#L87" aria-label="Line 87">87</a>     private currentOwner: StartupOwner,</span>
+<span id="L88"><a href="#L88" aria-label="Line 88">88</a>   ) {}</span>
+<span id="L89"><a href="#L89" aria-label="Line 89">89</a> </span>
+<span id="L90"><a href="#L90" aria-label="Line 90">90</a>   get owner(): StartupOwner {</span>
+<span id="L91"><a href="#L91" aria-label="Line 91">91</a>     return this.currentOwner;</span>
+<span id="L92"><a href="#L92" aria-label="Line 92">92</a>   }</span>
+<span id="L93"><a href="#L93" aria-label="Line 93">93</a> </span>
+<span id="L94"><a href="#L94" aria-label="Line 94">94</a>   get instanceId(): string {</span>
+<span id="L95"><a href="#L95" aria-label="Line 95">95</a>     return this.currentOwner.instanceId;</span>
+<span id="L96"><a href="#L96" aria-label="Line 96">96</a>   }</span>
+<span id="L97"><a href="#L97" aria-label="Line 97">97</a> </span>
+<span id="L98"><a href="#L98" aria-label="Line 98">98</a>   transferToDaemon(pid: number, processToken: string): boolean {</span>
+<span id="L99"><a href="#L99" aria-label="Line 99">99</a>     if (this.released) return false;</span>
+<span id="L100"><a href="#L100" aria-label="Line 100">100</a>     return this.registry.transferStartupToDaemon(</span>
+<span id="L101"><a href="#L101" aria-label="Line 101">101</a>       this.identity,</span>
+<span id="L102"><a href="#L102" aria-label="Line 102">102</a>       this.currentOwner,</span>
+<span id="L103"><a href="#L103" aria-label="Line 103">103</a>       pid,</span>
+<span id="L104"><a href="#L104" aria-label="Line 104">104</a>       processToken,</span>
+<span id="L105"><a href="#L105" aria-label="Line 105">105</a>     );</span>
+<span id="L106"><a href="#L106" aria-label="Line 106">106</a>   }</span>
+<span id="L107"><a href="#L107" aria-label="Line 107">107</a> </span>
+<span id="L108"><a href="#L108" aria-label="Line 108">108</a>   heartbeat(): boolean {</span>
+<span id="L109"><a href="#L109" aria-label="Line 109">109</a>     if (this.released) return false;</span>
+<span id="L110"><a href="#L110" aria-label="Line 110">110</a>     const renewedOwner = this.registry.heartbeatStartupOwner(this.identity, this.currentOwner);</span>
+<span id="L111"><a href="#L111" aria-label="Line 111">111</a>     if (renewedOwner === undefined) return false;</span>
+<span id="L112"><a href="#L112" aria-label="Line 112">112</a>     this.currentOwner = renewedOwner;</span>
+<span id="L113"><a href="#L113" aria-label="Line 113">113</a>     return true;</span>
+<span id="L114"><a href="#L114" aria-label="Line 114">114</a>   }</span>
+<span id="L115"><a href="#L115" aria-label="Line 115">115</a> </span>
+<span id="L116"><a href="#L116" aria-label="Line 116">116</a>   release(): boolean {</span>
+<span id="L117"><a href="#L117" aria-label="Line 117">117</a>     if (this.released) return false;</span>
+<span id="L118"><a href="#L118" aria-label="Line 118">118</a>     this.released = true;</span>
+<span id="L119"><a href="#L119" aria-label="Line 119">119</a>     return this.registry.removeStartupLockIfOwner(this.identity, this.currentOwner);</span>
+<span id="L120"><a href="#L120" aria-label="Line 120">120</a>   }</span>
+<span id="L121"><a href="#L121" aria-label="Line 121">121</a> }</span>
+<span id="L122"><a href="#L122" aria-label="Line 122">122</a> </span>
+<span id="L123"><a href="#L123" aria-label="Line 123">123</a> export class DaemonRegistry {</span>
+<span id="L124"><a href="#L124" aria-label="Line 124">124</a>   private readonly platform: NodeJS.Platform;</span>
+<span id="L125"><a href="#L125" aria-label="Line 125">125</a>   private readonly renamePath: typeof renameSync;</span>
+<span id="L126"><a href="#L126" aria-label="Line 126">126</a>   private readonly startupPolicy: DaemonPolicyValues[&quot;startup&quot;];</span>
+<span id="L127"><a href="#L127" aria-label="Line 127">127</a> </span>
+<span id="L128"><a href="#L128" aria-label="Line 128">128</a>   constructor(</span>
+<span id="L129"><a href="#L129" aria-label="Line 129">129</a>     private readonly registryDirectory: string,</span>
+<span id="L130"><a href="#L130" aria-label="Line 130">130</a>     startupPolicy: DaemonPolicyValues[&quot;startup&quot;],</span>
+<span id="L131"><a href="#L131" aria-label="Line 131">131</a>     private readonly clock: Pick&lt;DaemonClock, &quot;wallNowMs&quot;&gt; = new NodeDaemonClock(),</span>
+<span id="L132"><a href="#L132" aria-label="Line 132">132</a>     platform: NodeJS.Platform = process.platform,</span>
+<span id="L133"><a href="#L133" aria-label="Line 133">133</a>     renamePath: typeof renameSync = renameSync,</span>
+<span id="L134"><a href="#L134" aria-label="Line 134">134</a>   ) {</span>
+<span id="L135"><a href="#L135" aria-label="Line 135">135</a>     this.platform = platform;</span>
+<span id="L136"><a href="#L136" aria-label="Line 136">136</a>     this.renamePath = renamePath;</span>
+<span id="L137"><a href="#L137" aria-label="Line 137">137</a>     this.startupPolicy = startupPolicy;</span>
+<span id="L138"><a href="#L138" aria-label="Line 138">138</a>   }</span>
+<span id="L139"><a href="#L139" aria-label="Line 139">139</a> </span>
+<span id="L140"><a href="#L140" aria-label="Line 140">140</a>   read(identity: DaemonWorkspaceIdentity): DaemonRecord | undefined {</span>
+<span id="L141"><a href="#L141" aria-label="Line 141">141</a>     return this.records(identity).find((record) =&gt; DaemonRegistry.isCurrentRecord(record));</span>
+<span id="L142"><a href="#L142" aria-label="Line 142">142</a>   }</span>
+<span id="L143"><a href="#L143" aria-label="Line 143">143</a> </span>
+<span id="L144"><a href="#L144" aria-label="Line 144">144</a>   readInstance(identity: DaemonWorkspaceIdentity, instanceId: string): DaemonRecord | undefined {</span>
+<span id="L145"><a href="#L145" aria-label="Line 145">145</a>     const record = this.readStoredPath(identity.recordPath(instanceId));</span>
+<span id="L146"><a href="#L146" aria-label="Line 146">146</a>     return record !== undefined &amp;&amp;</span>
+<span id="L147"><a href="#L147" aria-label="Line 147">147</a>       DaemonRegistry.isCurrentRecord(record) &amp;&amp;</span>
+<span id="L148"><a href="#L148" aria-label="Line 148">148</a>       DaemonRegistry.matchesIdentity(record, identity)</span>
+<span id="L149"><a href="#L149" aria-label="Line 149">149</a>       ? record</span>
+<span id="L150"><a href="#L150" aria-label="Line 150">150</a>       : undefined;</span>
+<span id="L151"><a href="#L151" aria-label="Line 151">151</a>   }</span>
+<span id="L152"><a href="#L152" aria-label="Line 152">152</a> </span>
+<span id="L153"><a href="#L153" aria-label="Line 153">153</a>   readStored(identity: DaemonWorkspaceIdentity): DaemonRecord | undefined {</span>
+<span id="L154"><a href="#L154" aria-label="Line 154">154</a>     return this.records(identity)[0];</span>
+<span id="L155"><a href="#L155" aria-label="Line 155">155</a>   }</span>
+<span id="L156"><a href="#L156" aria-label="Line 156">156</a> </span>
+<span id="L157"><a href="#L157" aria-label="Line 157">157</a>   readStoredInstance(</span>
+<span id="L158"><a href="#L158" aria-label="Line 158">158</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L159"><a href="#L159" aria-label="Line 159">159</a>     instanceId: string,</span>
+<span id="L160"><a href="#L160" aria-label="Line 160">160</a>   ): DaemonRecord | undefined {</span>
+<span id="L161"><a href="#L161" aria-label="Line 161">161</a>     const record = this.readStoredPath(identity.recordPath(instanceId));</span>
+<span id="L162"><a href="#L162" aria-label="Line 162">162</a>     return record !== undefined &amp;&amp; DaemonRegistry.matchesIdentity(record, identity)</span>
+<span id="L163"><a href="#L163" aria-label="Line 163">163</a>       ? record</span>
+<span id="L164"><a href="#L164" aria-label="Line 164">164</a>       : undefined;</span>
+<span id="L165"><a href="#L165" aria-label="Line 165">165</a>   }</span>
+<span id="L166"><a href="#L166" aria-label="Line 166">166</a> </span>
+<span id="L167"><a href="#L167" aria-label="Line 167">167</a>   write(record: DaemonRecord): void {</span>
+<span id="L168"><a href="#L168" aria-label="Line 168">168</a>     const identity = DaemonWorkspaceIdentity.from(</span>
+<span id="L169"><a href="#L169" aria-label="Line 169">169</a>       record.workspaceRoot,</span>
+<span id="L170"><a href="#L170" aria-label="Line 170">170</a>       dirname(this.registryDirectory),</span>
+<span id="L171"><a href="#L171" aria-label="Line 171">171</a>     );</span>
+<span id="L172"><a href="#L172" aria-label="Line 172">172</a>     mkdirSync(identity.identityDirectory, { recursive: true, mode: 0o700 });</span>
+<span id="L173"><a href="#L173" aria-label="Line 173">173</a>     const recordPath = identity.recordPath(record.instanceId);</span>
+<span id="L174"><a href="#L174" aria-label="Line 174">174</a>     const temporaryPath = `${recordPath}.${process.pid}.${randomUUID()}.tmp`;</span>
+<span id="L175"><a href="#L175" aria-label="Line 175">175</a>     writeFileSync(temporaryPath, JSON.stringify(record), { encoding: &quot;utf8&quot;, mode: 0o600 });</span>
+<span id="L176"><a href="#L176" aria-label="Line 176">176</a>     renameSync(temporaryPath, recordPath);</span>
+<span id="L177"><a href="#L177" aria-label="Line 177">177</a>   }</span>
+<span id="L178"><a href="#L178" aria-label="Line 178">178</a> </span>
+<span id="L179"><a href="#L179" aria-label="Line 179">179</a>   writeIfStartupOwner(identity: DaemonWorkspaceIdentity, record: DaemonRecord): boolean {</span>
+<span id="L180"><a href="#L180" aria-label="Line 180">180</a>     const owner = this.startupOwnershipMatches(identity, {</span>
+<span id="L181"><a href="#L181" aria-label="Line 181">181</a>       identityKey: identity.identityKey,</span>
+<span id="L182"><a href="#L182" aria-label="Line 182">182</a>       instanceId: record.instanceId,</span>
+<span id="L183"><a href="#L183" aria-label="Line 183">183</a>       processToken: record.processToken,</span>
+<span id="L184"><a href="#L184" aria-label="Line 184">184</a>       ownerKind: &quot;daemon&quot;,</span>
+<span id="L185"><a href="#L185" aria-label="Line 185">185</a>       ownerPid: record.pid,</span>
+<span id="L186"><a href="#L186" aria-label="Line 186">186</a>     });</span>
+<span id="L187"><a href="#L187" aria-label="Line 187">187</a>     if (owner === undefined) return false;</span>
+<span id="L188"><a href="#L188" aria-label="Line 188">188</a>     const current = this.readInstance(identity, record.instanceId);</span>
+<span id="L189"><a href="#L189" aria-label="Line 189">189</a>     if (current?.state !== &quot;starting&quot;) return false;</span>
+<span id="L190"><a href="#L190" aria-label="Line 190">190</a>     this.write(record);</span>
+<span id="L191"><a href="#L191" aria-label="Line 191">191</a>     if (this.startupOwnershipMatches(identity, owner) !== undefined) return true;</span>
+<span id="L192"><a href="#L192" aria-label="Line 192">192</a>     this.removeIfProcess(identity, record.instanceId, record.processToken);</span>
+<span id="L193"><a href="#L193" aria-label="Line 193">193</a>     return false;</span>
+<span id="L194"><a href="#L194" aria-label="Line 194">194</a>   }</span>
+<span id="L195"><a href="#L195" aria-label="Line 195">195</a> </span>
+<span id="L196"><a href="#L196" aria-label="Line 196">196</a>   writeStartingIfStartupOwner(identity: DaemonWorkspaceIdentity, record: DaemonRecord): boolean {</span>
+<span id="L197"><a href="#L197" aria-label="Line 197">197</a>     if (record.state !== &quot;starting&quot;) {</span>
+<span id="L198"><a href="#L198" aria-label="Line 198">198</a>       return false;</span>
+<span id="L199"><a href="#L199" aria-label="Line 199">199</a>     }</span>
+<span id="L200"><a href="#L200" aria-label="Line 200">200</a>     const owner = this.startupOwnershipMatches(identity, {</span>
+<span id="L201"><a href="#L201" aria-label="Line 201">201</a>       identityKey: identity.identityKey,</span>
+<span id="L202"><a href="#L202" aria-label="Line 202">202</a>       instanceId: record.instanceId,</span>
+<span id="L203"><a href="#L203" aria-label="Line 203">203</a>     });</span>
+<span id="L204"><a href="#L204" aria-label="Line 204">204</a>     if (owner === undefined) return false;</span>
+<span id="L205"><a href="#L205" aria-label="Line 205">205</a>     if (record.pid &gt; 0) {</span>
+<span id="L206"><a href="#L206" aria-label="Line 206">206</a>       const daemonOwner = this.startupOwnershipMatches(identity, {</span>
+<span id="L207"><a href="#L207" aria-label="Line 207">207</a>         identityKey: identity.identityKey,</span>
+<span id="L208"><a href="#L208" aria-label="Line 208">208</a>         instanceId: record.instanceId,</span>
+<span id="L209"><a href="#L209" aria-label="Line 209">209</a>         processToken: record.processToken,</span>
+<span id="L210"><a href="#L210" aria-label="Line 210">210</a>         ownerKind: &quot;daemon&quot;,</span>
+<span id="L211"><a href="#L211" aria-label="Line 211">211</a>         ownerPid: record.pid,</span>
+<span id="L212"><a href="#L212" aria-label="Line 212">212</a>       });</span>
+<span id="L213"><a href="#L213" aria-label="Line 213">213</a>       if (daemonOwner !== undefined) {</span>
+<span id="L214"><a href="#L214" aria-label="Line 214">214</a>         this.write(record);</span>
+<span id="L215"><a href="#L215" aria-label="Line 215">215</a>         return this.startupOwnershipMatches(identity, daemonOwner) !== undefined;</span>
+<span id="L216"><a href="#L216" aria-label="Line 216">216</a>       }</span>
+<span id="L217"><a href="#L217" aria-label="Line 217">217</a>       return this.writeClaimedStartingRecord(identity, record);</span>
+<span id="L218"><a href="#L218" aria-label="Line 218">218</a>     }</span>
+<span id="L219"><a href="#L219" aria-label="Line 219">219</a>     this.write(record);</span>
+<span id="L220"><a href="#L220" aria-label="Line 220">220</a>     if (this.startupOwnershipMatches(identity, owner) !== undefined) return true;</span>
+<span id="L221"><a href="#L221" aria-label="Line 221">221</a>     this.removeIfProcess(identity, record.instanceId, record.processToken);</span>
+<span id="L222"><a href="#L222" aria-label="Line 222">222</a>     return false;</span>
+<span id="L223"><a href="#L223" aria-label="Line 223">223</a>   }</span>
+<span id="L224"><a href="#L224" aria-label="Line 224">224</a> </span>
+<span id="L225"><a href="#L225" aria-label="Line 225">225</a>   armStartingProcessLaunch(identity: DaemonWorkspaceIdentity, record: DaemonRecord): boolean {</span>
+<span id="L226"><a href="#L226" aria-label="Line 226">226</a>     if (record.state !== &quot;starting&quot; || record.pid !== 0) return false;</span>
+<span id="L227"><a href="#L227" aria-label="Line 227">227</a>     return this.writeClaimedStartingRecord(identity, record);</span>
+<span id="L228"><a href="#L228" aria-label="Line 228">228</a>   }</span>
+<span id="L229"><a href="#L229" aria-label="Line 229">229</a> </span>
+<span id="L230"><a href="#L230" aria-label="Line 230">230</a>   private writeClaimedStartingRecord(</span>
+<span id="L231"><a href="#L231" aria-label="Line 231">231</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L232"><a href="#L232" aria-label="Line 232">232</a>     record: DaemonRecord,</span>
+<span id="L233"><a href="#L233" aria-label="Line 233">233</a>   ): boolean {</span>
+<span id="L234"><a href="#L234" aria-label="Line 234">234</a>     const mutation = this.beginStartupMutation(identity);</span>
+<span id="L235"><a href="#L235" aria-label="Line 235">235</a>     if (mutation === undefined) return false;</span>
+<span id="L236"><a href="#L236" aria-label="Line 236">236</a>     try {</span>
+<span id="L237"><a href="#L237" aria-label="Line 237">237</a>       const owner = this.startupOwnershipMatches(identity, {</span>
+<span id="L238"><a href="#L238" aria-label="Line 238">238</a>         identityKey: identity.identityKey,</span>
+<span id="L239"><a href="#L239" aria-label="Line 239">239</a>         instanceId: record.instanceId,</span>
+<span id="L240"><a href="#L240" aria-label="Line 240">240</a>       });</span>
+<span id="L241"><a href="#L241" aria-label="Line 241">241</a>       if (owner === undefined) return false;</span>
+<span id="L242"><a href="#L242" aria-label="Line 242">242</a>       const adoptedOwner: StartupOwner = {</span>
+<span id="L243"><a href="#L243" aria-label="Line 243">243</a>         ...owner,</span>
+<span id="L244"><a href="#L244" aria-label="Line 244">244</a>         identityKey: identity.identityKey,</span>
+<span id="L245"><a href="#L245" aria-label="Line 245">245</a>         ownerPid: record.pid &gt; 0 ? record.pid : owner.ownerPid,</span>
+<span id="L246"><a href="#L246" aria-label="Line 246">246</a>         processToken: record.processToken,</span>
+<span id="L247"><a href="#L247" aria-label="Line 247">247</a>         ownerKind: record.pid &gt; 0 ? &quot;daemon&quot; : &quot;launcher&quot;,</span>
+<span id="L248"><a href="#L248" aria-label="Line 248">248</a>         heartbeatAt: this.clock.wallNowMs(),</span>
+<span id="L249"><a href="#L249" aria-label="Line 249">249</a>         revision: randomUUID(),</span>
+<span id="L250"><a href="#L250" aria-label="Line 250">250</a>       };</span>
+<span id="L251"><a href="#L251" aria-label="Line 251">251</a>       const ownerPath = identity.startupOwnerPath(identity.lockPath);</span>
+<span id="L252"><a href="#L252" aria-label="Line 252">252</a>       const temporaryPath = `${identity.lockPath}.${process.pid}.${randomUUID()}.owner.tmp`;</span>
+<span id="L253"><a href="#L253" aria-label="Line 253">253</a>       writeFileSync(temporaryPath, JSON.stringify(adoptedOwner), {</span>
+<span id="L254"><a href="#L254" aria-label="Line 254">254</a>         encoding: &quot;utf8&quot;,</span>
+<span id="L255"><a href="#L255" aria-label="Line 255">255</a>         mode: 0o600,</span>
+<span id="L256"><a href="#L256" aria-label="Line 256">256</a>       });</span>
+<span id="L257"><a href="#L257" aria-label="Line 257">257</a>       if (!mutation.isOwned() || this.startupOwnershipMatches(identity, owner) === undefined) {</span>
+<span id="L258"><a href="#L258" aria-label="Line 258">258</a>         rmSync(temporaryPath, { force: true });</span>
+<span id="L259"><a href="#L259" aria-label="Line 259">259</a>         return false;</span>
+<span id="L260"><a href="#L260" aria-label="Line 260">260</a>       }</span>
+<span id="L261"><a href="#L261" aria-label="Line 261">261</a>       this.write(record);</span>
+<span id="L262"><a href="#L262" aria-label="Line 262">262</a>       try {</span>
+<span id="L263"><a href="#L263" aria-label="Line 263">263</a>         this.replaceStartupOwner(temporaryPath, ownerPath);</span>
+<span id="L264"><a href="#L264" aria-label="Line 264">264</a>       } catch (error) {</span>
+<span id="L265"><a href="#L265" aria-label="Line 265">265</a>         rmSync(temporaryPath, { force: true });</span>
+<span id="L266"><a href="#L266" aria-label="Line 266">266</a>         if (DaemonRegistry.errorCode(error) === &quot;ENOENT&quot;) return false;</span>
+<span id="L267"><a href="#L267" aria-label="Line 267">267</a>         throw error;</span>
+<span id="L268"><a href="#L268" aria-label="Line 268">268</a>       }</span>
+<span id="L269"><a href="#L269" aria-label="Line 269">269</a>       return this.startupOwnershipMatches(identity, adoptedOwner) !== undefined;</span>
+<span id="L270"><a href="#L270" aria-label="Line 270">270</a>     } finally {</span>
+<span id="L271"><a href="#L271" aria-label="Line 271">271</a>       mutation.release();</span>
+<span id="L272"><a href="#L272" aria-label="Line 272">272</a>     }</span>
+<span id="L273"><a href="#L273" aria-label="Line 273">273</a>   }</span>
+<span id="L274"><a href="#L274" aria-label="Line 274">274</a> </span>
+<span id="L275"><a href="#L275" aria-label="Line 275">275</a>   acquireStartup(</span>
+<span id="L276"><a href="#L276" aria-label="Line 276">276</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L277"><a href="#L277" aria-label="Line 277">277</a>     candidate: Omit&lt;DaemonStartupOwner, &quot;acquiredAt&quot; | &quot;revision&quot;&gt;,</span>
+<span id="L278"><a href="#L278" aria-label="Line 278">278</a>   ): StartupLease | undefined;</span>
+<span id="L279"><a href="#L279" aria-label="Line 279">279</a>   acquireStartup(identity: DaemonWorkspaceIdentity, instanceId: string): StartupLease | undefined;</span>
+<span id="L280"><a href="#L280" aria-label="Line 280">280</a>   acquireStartup(</span>
+<span id="L281"><a href="#L281" aria-label="Line 281">281</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L282"><a href="#L282" aria-label="Line 282">282</a>     candidate: Omit&lt;DaemonStartupOwner, &quot;acquiredAt&quot; | &quot;revision&quot;&gt; | string,</span>
+<span id="L283"><a href="#L283" aria-label="Line 283">283</a>   ): StartupLease | undefined {</span>
+<span id="L284"><a href="#L284" aria-label="Line 284">284</a>     mkdirSync(identity.identityDirectory, { recursive: true, mode: 0o700 });</span>
+<span id="L285"><a href="#L285" aria-label="Line 285">285</a>     const acquiredAt = this.clock.wallNowMs();</span>
+<span id="L286"><a href="#L286" aria-label="Line 286">286</a>     const suppliedOwner =</span>
+<span id="L287"><a href="#L287" aria-label="Line 287">287</a>       typeof candidate === &quot;string&quot;</span>
+<span id="L288"><a href="#L288" aria-label="Line 288">288</a>         ? {</span>
+<span id="L289"><a href="#L289" aria-label="Line 289">289</a>             identityKey: identity.identityKey,</span>
+<span id="L290"><a href="#L290" aria-label="Line 290">290</a>             instanceId: candidate,</span>
+<span id="L291"><a href="#L291" aria-label="Line 291">291</a>             processToken: &quot;&quot;,</span>
+<span id="L292"><a href="#L292" aria-label="Line 292">292</a>             ownerPid: process.pid,</span>
+<span id="L293"><a href="#L293" aria-label="Line 293">293</a>             ownerKind: &quot;launcher&quot; as const,</span>
+<span id="L294"><a href="#L294" aria-label="Line 294">294</a>             heartbeatAt: acquiredAt,</span>
+<span id="L295"><a href="#L295" aria-label="Line 295">295</a>           }</span>
+<span id="L296"><a href="#L296" aria-label="Line 296">296</a>         : candidate;</span>
+<span id="L297"><a href="#L297" aria-label="Line 297">297</a>     if (</span>
+<span id="L298"><a href="#L298" aria-label="Line 298">298</a>       suppliedOwner.identityKey !== identity.identityKey ||</span>
+<span id="L299"><a href="#L299" aria-label="Line 299">299</a>       suppliedOwner.ownerKind !== &quot;launcher&quot;</span>
+<span id="L300"><a href="#L300" aria-label="Line 300">300</a>     ) {</span>
+<span id="L301"><a href="#L301" aria-label="Line 301">301</a>       return undefined;</span>
+<span id="L302"><a href="#L302" aria-label="Line 302">302</a>     }</span>
+<span id="L303"><a href="#L303" aria-label="Line 303">303</a>     const owner: StartupOwner = {</span>
+<span id="L304"><a href="#L304" aria-label="Line 304">304</a>       ...suppliedOwner,</span>
+<span id="L305"><a href="#L305" aria-label="Line 305">305</a>       acquiredAt,</span>
+<span id="L306"><a href="#L306" aria-label="Line 306">306</a>       revision: randomUUID(),</span>
+<span id="L307"><a href="#L307" aria-label="Line 307">307</a>     };</span>
+<span id="L308"><a href="#L308" aria-label="Line 308">308</a>     const claimPath = identity.startupClaimPath(owner.instanceId);</span>
+<span id="L309"><a href="#L309" aria-label="Line 309">309</a>     mkdirSync(claimPath, { mode: 0o700 });</span>
+<span id="L310"><a href="#L310" aria-label="Line 310">310</a>     writeFileSync(identity.startupOwnerPath(claimPath), JSON.stringify(owner), {</span>
+<span id="L311"><a href="#L311" aria-label="Line 311">311</a>       encoding: &quot;utf8&quot;,</span>
+<span id="L312"><a href="#L312" aria-label="Line 312">312</a>       flag: &quot;wx&quot;,</span>
+<span id="L313"><a href="#L313" aria-label="Line 313">313</a>       mode: 0o600,</span>
+<span id="L314"><a href="#L314" aria-label="Line 314">314</a>     });</span>
+<span id="L315"><a href="#L315" aria-label="Line 315">315</a>     try {</span>
+<span id="L316"><a href="#L316" aria-label="Line 316">316</a>       renameSync(claimPath, identity.lockPath);</span>
+<span id="L317"><a href="#L317" aria-label="Line 317">317</a>       return new RegistryStartupLease(this, identity, owner);</span>
+<span id="L318"><a href="#L318" aria-label="Line 318">318</a>     } catch (error) {</span>
+<span id="L319"><a href="#L319" aria-label="Line 319">319</a>       rmSync(claimPath, { recursive: true, force: true });</span>
+<span id="L320"><a href="#L320" aria-label="Line 320">320</a>       if (existsSync(identity.lockPath)) return undefined;</span>
+<span id="L321"><a href="#L321" aria-label="Line 321">321</a>       throw error;</span>
+<span id="L322"><a href="#L322" aria-label="Line 322">322</a>     }</span>
+<span id="L323"><a href="#L323" aria-label="Line 323">323</a>   }</span>
+<span id="L324"><a href="#L324" aria-label="Line 324">324</a> </span>
+<span id="L325"><a href="#L325" aria-label="Line 325">325</a>   claimStartupForDaemon(</span>
+<span id="L326"><a href="#L326" aria-label="Line 326">326</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L327"><a href="#L327" aria-label="Line 327">327</a>     instanceId: string,</span>
+<span id="L328"><a href="#L328" aria-label="Line 328">328</a>     processToken: string,</span>
+<span id="L329"><a href="#L329" aria-label="Line 329">329</a>     pid: number,</span>
+<span id="L330"><a href="#L330" aria-label="Line 330">330</a>   ): DaemonStartupLease | undefined {</span>
+<span id="L331"><a href="#L331" aria-label="Line 331">331</a>     if (!Number.isInteger(pid) || pid &lt;= 0) return undefined;</span>
+<span id="L332"><a href="#L332" aria-label="Line 332">332</a>     const daemonOwner = this.startupOwnershipMatches(identity, {</span>
+<span id="L333"><a href="#L333" aria-label="Line 333">333</a>       identityKey: identity.identityKey,</span>
+<span id="L334"><a href="#L334" aria-label="Line 334">334</a>       instanceId,</span>
+<span id="L335"><a href="#L335" aria-label="Line 335">335</a>       processToken,</span>
+<span id="L336"><a href="#L336" aria-label="Line 336">336</a>       ownerKind: &quot;daemon&quot;,</span>
+<span id="L337"><a href="#L337" aria-label="Line 337">337</a>       ownerPid: pid,</span>
+<span id="L338"><a href="#L338" aria-label="Line 338">338</a>     });</span>
+<span id="L339"><a href="#L339" aria-label="Line 339">339</a>     if (daemonOwner !== undefined) return new RegistryStartupLease(this, identity, daemonOwner);</span>
+<span id="L340"><a href="#L340" aria-label="Line 340">340</a>     const launcherOwner = this.startupOwnershipMatches(identity, {</span>
+<span id="L341"><a href="#L341" aria-label="Line 341">341</a>       identityKey: identity.identityKey,</span>
+<span id="L342"><a href="#L342" aria-label="Line 342">342</a>       instanceId,</span>
+<span id="L343"><a href="#L343" aria-label="Line 343">343</a>       processToken,</span>
+<span id="L344"><a href="#L344" aria-label="Line 344">344</a>       ownerKind: &quot;launcher&quot;,</span>
+<span id="L345"><a href="#L345" aria-label="Line 345">345</a>     });</span>
+<span id="L346"><a href="#L346" aria-label="Line 346">346</a>     if (launcherOwner === undefined) return undefined;</span>
+<span id="L347"><a href="#L347" aria-label="Line 347">347</a>     const transferredOwner = this.replaceStartupOwnerIfOwner(identity, launcherOwner, {</span>
+<span id="L348"><a href="#L348" aria-label="Line 348">348</a>       ...launcherOwner,</span>
+<span id="L349"><a href="#L349" aria-label="Line 349">349</a>       ownerPid: pid,</span>
+<span id="L350"><a href="#L350" aria-label="Line 350">350</a>       ownerKind: &quot;daemon&quot;,</span>
+<span id="L351"><a href="#L351" aria-label="Line 351">351</a>       heartbeatAt: this.clock.wallNowMs(),</span>
+<span id="L352"><a href="#L352" aria-label="Line 352">352</a>       revision: randomUUID(),</span>
+<span id="L353"><a href="#L353" aria-label="Line 353">353</a>     });</span>
+<span id="L354"><a href="#L354" aria-label="Line 354">354</a>     return transferredOwner === undefined</span>
+<span id="L355"><a href="#L355" aria-label="Line 355">355</a>       ? undefined</span>
+<span id="L356"><a href="#L356" aria-label="Line 356">356</a>       : new RegistryStartupLease(this, identity, transferredOwner);</span>
+<span id="L357"><a href="#L357" aria-label="Line 357">357</a>   }</span>
+<span id="L358"><a href="#L358" aria-label="Line 358">358</a> </span>
+<span id="L359"><a href="#L359" aria-label="Line 359">359</a>   transferStartupToDaemon(</span>
+<span id="L360"><a href="#L360" aria-label="Line 360">360</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L361"><a href="#L361" aria-label="Line 361">361</a>     launcherOwner: StartupOwner,</span>
+<span id="L362"><a href="#L362" aria-label="Line 362">362</a>     pid: number,</span>
+<span id="L363"><a href="#L363" aria-label="Line 363">363</a>     processToken: string,</span>
+<span id="L364"><a href="#L364" aria-label="Line 364">364</a>   ): boolean {</span>
+<span id="L365"><a href="#L365" aria-label="Line 365">365</a>     if (!Number.isInteger(pid) || pid &lt;= 0) return false;</span>
+<span id="L366"><a href="#L366" aria-label="Line 366">366</a>     const currentLauncher = this.startupOwnershipMatches(identity, {</span>
+<span id="L367"><a href="#L367" aria-label="Line 367">367</a>       ...launcherOwner,</span>
+<span id="L368"><a href="#L368" aria-label="Line 368">368</a>       identityKey: identity.identityKey,</span>
+<span id="L369"><a href="#L369" aria-label="Line 369">369</a>       processToken,</span>
+<span id="L370"><a href="#L370" aria-label="Line 370">370</a>       ownerKind: &quot;launcher&quot;,</span>
+<span id="L371"><a href="#L371" aria-label="Line 371">371</a>     });</span>
+<span id="L372"><a href="#L372" aria-label="Line 372">372</a>     if (currentLauncher === undefined) return false;</span>
+<span id="L373"><a href="#L373" aria-label="Line 373">373</a>     return (</span>
+<span id="L374"><a href="#L374" aria-label="Line 374">374</a>       this.replaceStartupOwnerIfOwner(identity, currentLauncher, {</span>
+<span id="L375"><a href="#L375" aria-label="Line 375">375</a>         ...currentLauncher,</span>
+<span id="L376"><a href="#L376" aria-label="Line 376">376</a>         ownerPid: pid,</span>
+<span id="L377"><a href="#L377" aria-label="Line 377">377</a>         ownerKind: &quot;daemon&quot;,</span>
+<span id="L378"><a href="#L378" aria-label="Line 378">378</a>         heartbeatAt: this.clock.wallNowMs(),</span>
+<span id="L379"><a href="#L379" aria-label="Line 379">379</a>         revision: randomUUID(),</span>
+<span id="L380"><a href="#L380" aria-label="Line 380">380</a>       }) !== undefined</span>
+<span id="L381"><a href="#L381" aria-label="Line 381">381</a>     );</span>
+<span id="L382"><a href="#L382" aria-label="Line 382">382</a>   }</span>
+<span id="L383"><a href="#L383" aria-label="Line 383">383</a> </span>
+<span id="L384"><a href="#L384" aria-label="Line 384">384</a>   heartbeatStartupOwner(</span>
+<span id="L385"><a href="#L385" aria-label="Line 385">385</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L386"><a href="#L386" aria-label="Line 386">386</a>     owner: StartupOwner,</span>
+<span id="L387"><a href="#L387" aria-label="Line 387">387</a>   ): StartupOwner | undefined {</span>
+<span id="L388"><a href="#L388" aria-label="Line 388">388</a>     return this.replaceStartupOwnerIfOwner(identity, owner, {</span>
+<span id="L389"><a href="#L389" aria-label="Line 389">389</a>       ...owner,</span>
+<span id="L390"><a href="#L390" aria-label="Line 390">390</a>       heartbeatAt: this.clock.wallNowMs(),</span>
+<span id="L391"><a href="#L391" aria-label="Line 391">391</a>       revision: randomUUID(),</span>
+<span id="L392"><a href="#L392" aria-label="Line 392">392</a>     });</span>
+<span id="L393"><a href="#L393" aria-label="Line 393">393</a>   }</span>
+<span id="L394"><a href="#L394" aria-label="Line 394">394</a> </span>
+<span id="L395"><a href="#L395" aria-label="Line 395">395</a>   refreshStartupOwner(identity: DaemonWorkspaceIdentity, instanceId: string): boolean {</span>
+<span id="L396"><a href="#L396" aria-label="Line 396">396</a>     const owner = this.startupOwnershipMatches(identity, {</span>
+<span id="L397"><a href="#L397" aria-label="Line 397">397</a>       identityKey: identity.identityKey,</span>
+<span id="L398"><a href="#L398" aria-label="Line 398">398</a>       instanceId,</span>
+<span id="L399"><a href="#L399" aria-label="Line 399">399</a>     });</span>
+<span id="L400"><a href="#L400" aria-label="Line 400">400</a>     if (owner === undefined) return false;</span>
+<span id="L401"><a href="#L401" aria-label="Line 401">401</a>     return this.heartbeatStartupOwner(identity, owner) !== undefined;</span>
+<span id="L402"><a href="#L402" aria-label="Line 402">402</a>   }</span>
+<span id="L403"><a href="#L403" aria-label="Line 403">403</a> </span>
+<span id="L404"><a href="#L404" aria-label="Line 404">404</a>   startupOwnerIsWithinGrace(</span>
+<span id="L405"><a href="#L405" aria-label="Line 405">405</a>     owner: StartupOwner,</span>
+<span id="L406"><a href="#L406" aria-label="Line 406">406</a>     graceMs = this.startupPolicy.coordinationGraceMs,</span>
+<span id="L407"><a href="#L407" aria-label="Line 407">407</a>     now = this.clock.wallNowMs(),</span>
+<span id="L408"><a href="#L408" aria-label="Line 408">408</a>   ): boolean {</span>
+<span id="L409"><a href="#L409" aria-label="Line 409">409</a>     return now - owner.heartbeatAt &lt;= graceMs;</span>
+<span id="L410"><a href="#L410" aria-label="Line 410">410</a>   }</span>
+<span id="L411"><a href="#L411" aria-label="Line 411">411</a> </span>
+<span id="L412"><a href="#L412" aria-label="Line 412">412</a>   startupOwner(identity: DaemonWorkspaceIdentity): StartupOwner | undefined {</span>
+<span id="L413"><a href="#L413" aria-label="Line 413">413</a>     try {</span>
+<span id="L414"><a href="#L414" aria-label="Line 414">414</a>       const value: unknown = JSON.parse(</span>
+<span id="L415"><a href="#L415" aria-label="Line 415">415</a>         readFileSync(identity.startupOwnerPath(identity.lockPath), &quot;utf8&quot;),</span>
+<span id="L416"><a href="#L416" aria-label="Line 416">416</a>       );</span>
+<span id="L417"><a href="#L417" aria-label="Line 417">417</a>       return DaemonRegistry.isStartupOwner(value) ? value : undefined;</span>
+<span id="L418"><a href="#L418" aria-label="Line 418">418</a>     } catch (error) {</span>
+<span id="L419"><a href="#L419" aria-label="Line 419">419</a>       if (DaemonRegistry.errorCode(error) === &quot;ENOENT&quot; || error instanceof SyntaxError) {</span>
+<span id="L420"><a href="#L420" aria-label="Line 420">420</a>         return undefined;</span>
+<span id="L421"><a href="#L421" aria-label="Line 421">421</a>       }</span>
+<span id="L422"><a href="#L422" aria-label="Line 422">422</a>       throw error;</span>
+<span id="L423"><a href="#L423" aria-label="Line 423">423</a>     }</span>
+<span id="L424"><a href="#L424" aria-label="Line 424">424</a>   }</span>
+<span id="L425"><a href="#L425" aria-label="Line 425">425</a> </span>
+<span id="L426"><a href="#L426" aria-label="Line 426">426</a>   daemonOwnsStartupProcess(</span>
+<span id="L427"><a href="#L427" aria-label="Line 427">427</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L428"><a href="#L428" aria-label="Line 428">428</a>     instanceId: string,</span>
+<span id="L429"><a href="#L429" aria-label="Line 429">429</a>     processToken: string,</span>
+<span id="L430"><a href="#L430" aria-label="Line 430">430</a>     pid: number,</span>
+<span id="L431"><a href="#L431" aria-label="Line 431">431</a>   ): boolean {</span>
+<span id="L432"><a href="#L432" aria-label="Line 432">432</a>     return (</span>
+<span id="L433"><a href="#L433" aria-label="Line 433">433</a>       this.startupOwnershipMatches(identity, {</span>
+<span id="L434"><a href="#L434" aria-label="Line 434">434</a>         identityKey: identity.identityKey,</span>
+<span id="L435"><a href="#L435" aria-label="Line 435">435</a>         instanceId,</span>
+<span id="L436"><a href="#L436" aria-label="Line 436">436</a>         processToken,</span>
+<span id="L437"><a href="#L437" aria-label="Line 437">437</a>         ownerKind: &quot;daemon&quot;,</span>
+<span id="L438"><a href="#L438" aria-label="Line 438">438</a>         ownerPid: pid,</span>
+<span id="L439"><a href="#L439" aria-label="Line 439">439</a>       }) !== undefined</span>
+<span id="L440"><a href="#L440" aria-label="Line 440">440</a>     );</span>
+<span id="L441"><a href="#L441" aria-label="Line 441">441</a>   }</span>
+<span id="L442"><a href="#L442" aria-label="Line 442">442</a> </span>
+<span id="L443"><a href="#L443" aria-label="Line 443">443</a>   startupOwnerForInstance(</span>
+<span id="L444"><a href="#L444" aria-label="Line 444">444</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L445"><a href="#L445" aria-label="Line 445">445</a>     instanceId: string,</span>
+<span id="L446"><a href="#L446" aria-label="Line 446">446</a>   ): StartupOwner | undefined {</span>
+<span id="L447"><a href="#L447" aria-label="Line 447">447</a>     return this.startupOwnershipMatches(identity, {</span>
+<span id="L448"><a href="#L448" aria-label="Line 448">448</a>       identityKey: identity.identityKey,</span>
+<span id="L449"><a href="#L449" aria-label="Line 449">449</a>       instanceId,</span>
+<span id="L450"><a href="#L450" aria-label="Line 450">450</a>     });</span>
+<span id="L451"><a href="#L451" aria-label="Line 451">451</a>   }</span>
+<span id="L452"><a href="#L452" aria-label="Line 452">452</a> </span>
+<span id="L453"><a href="#L453" aria-label="Line 453">453</a>   startupOwnerForRecordCredentials(</span>
+<span id="L454"><a href="#L454" aria-label="Line 454">454</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L455"><a href="#L455" aria-label="Line 455">455</a>     record: DaemonRecord,</span>
+<span id="L456"><a href="#L456" aria-label="Line 456">456</a>   ): StartupOwner | undefined {</span>
+<span id="L457"><a href="#L457" aria-label="Line 457">457</a>     return this.startupOwnershipMatches(identity, {</span>
+<span id="L458"><a href="#L458" aria-label="Line 458">458</a>       identityKey: identity.identityKey,</span>
+<span id="L459"><a href="#L459" aria-label="Line 459">459</a>       instanceId: record.instanceId,</span>
+<span id="L460"><a href="#L460" aria-label="Line 460">460</a>       processToken: record.processToken,</span>
+<span id="L461"><a href="#L461" aria-label="Line 461">461</a>     });</span>
+<span id="L462"><a href="#L462" aria-label="Line 462">462</a>   }</span>
+<span id="L463"><a href="#L463" aria-label="Line 463">463</a> </span>
+<span id="L464"><a href="#L464" aria-label="Line 464">464</a>   recordForProcess(</span>
+<span id="L465"><a href="#L465" aria-label="Line 465">465</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L466"><a href="#L466" aria-label="Line 466">466</a>     instanceId: string,</span>
+<span id="L467"><a href="#L467" aria-label="Line 467">467</a>     processToken: string,</span>
+<span id="L468"><a href="#L468" aria-label="Line 468">468</a>   ): DaemonRecord | undefined {</span>
+<span id="L469"><a href="#L469" aria-label="Line 469">469</a>     const record = this.readStoredInstance(identity, instanceId);</span>
+<span id="L470"><a href="#L470" aria-label="Line 470">470</a>     return record?.processToken === processToken ? record : undefined;</span>
+<span id="L471"><a href="#L471" aria-label="Line 471">471</a>   }</span>
+<span id="L472"><a href="#L472" aria-label="Line 472">472</a> </span>
+<span id="L473"><a href="#L473" aria-label="Line 473">473</a>   startingRecordForProcess(</span>
+<span id="L474"><a href="#L474" aria-label="Line 474">474</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L475"><a href="#L475" aria-label="Line 475">475</a>     instanceId: string,</span>
+<span id="L476"><a href="#L476" aria-label="Line 476">476</a>     processToken: string,</span>
+<span id="L477"><a href="#L477" aria-label="Line 477">477</a>   ): DaemonRecord | undefined {</span>
+<span id="L478"><a href="#L478" aria-label="Line 478">478</a>     const record = this.recordForProcess(identity, instanceId, processToken);</span>
+<span id="L479"><a href="#L479" aria-label="Line 479">479</a>     return record?.state === &quot;starting&quot; ? record : undefined;</span>
+<span id="L480"><a href="#L480" aria-label="Line 480">480</a>   }</span>
+<span id="L481"><a href="#L481" aria-label="Line 481">481</a> </span>
+<span id="L482"><a href="#L482" aria-label="Line 482">482</a>   removeStartupLockIfLauncher(</span>
+<span id="L483"><a href="#L483" aria-label="Line 483">483</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L484"><a href="#L484" aria-label="Line 484">484</a>     instanceId: string,</span>
+<span id="L485"><a href="#L485" aria-label="Line 485">485</a>     processToken: string,</span>
+<span id="L486"><a href="#L486" aria-label="Line 486">486</a>   ): boolean {</span>
+<span id="L487"><a href="#L487" aria-label="Line 487">487</a>     const owner = this.startupOwnershipMatches(identity, {</span>
+<span id="L488"><a href="#L488" aria-label="Line 488">488</a>       identityKey: identity.identityKey,</span>
+<span id="L489"><a href="#L489" aria-label="Line 489">489</a>       instanceId,</span>
+<span id="L490"><a href="#L490" aria-label="Line 490">490</a>       processToken,</span>
+<span id="L491"><a href="#L491" aria-label="Line 491">491</a>       ownerKind: &quot;launcher&quot;,</span>
+<span id="L492"><a href="#L492" aria-label="Line 492">492</a>     });</span>
+<span id="L493"><a href="#L493" aria-label="Line 493">493</a>     return owner === undefined ? false : this.removeStartupLockIfOwner(identity, owner);</span>
+<span id="L494"><a href="#L494" aria-label="Line 494">494</a>   }</span>
+<span id="L495"><a href="#L495" aria-label="Line 495">495</a> </span>
+<span id="L496"><a href="#L496" aria-label="Line 496">496</a>   removeAbandonedStartupOwner(</span>
+<span id="L497"><a href="#L497" aria-label="Line 497">497</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L498"><a href="#L498" aria-label="Line 498">498</a>     observedOwner: StartupOwner,</span>
+<span id="L499"><a href="#L499" aria-label="Line 499">499</a>   ): boolean {</span>
+<span id="L500"><a href="#L500" aria-label="Line 500">500</a>     const owner = this.startupOwnershipMatches(identity, observedOwner);</span>
+<span id="L501"><a href="#L501" aria-label="Line 501">501</a>     if (owner === undefined) return false;</span>
+<span id="L502"><a href="#L502" aria-label="Line 502">502</a>     const record = this.readStoredInstance(identity, owner.instanceId);</span>
+<span id="L503"><a href="#L503" aria-label="Line 503">503</a>     if (</span>
+<span id="L504"><a href="#L504" aria-label="Line 504">504</a>       record !== undefined &amp;&amp;</span>
+<span id="L505"><a href="#L505" aria-label="Line 505">505</a>       ((owner.processToken.length &gt; 0 &amp;&amp; record.processToken !== owner.processToken) ||</span>
+<span id="L506"><a href="#L506" aria-label="Line 506">506</a>         (owner.ownerKind === &quot;daemon&quot; &amp;&amp; record.pid !== owner.ownerPid))</span>
+<span id="L507"><a href="#L507" aria-label="Line 507">507</a>     ) {</span>
+<span id="L508"><a href="#L508" aria-label="Line 508">508</a>       return false;</span>
+<span id="L509"><a href="#L509" aria-label="Line 509">509</a>     }</span>
+<span id="L510"><a href="#L510" aria-label="Line 510">510</a>     if (!this.removeStartupLockIfOwner(identity, owner)) return false;</span>
+<span id="L511"><a href="#L511" aria-label="Line 511">511</a>     if (record !== undefined)</span>
+<span id="L512"><a href="#L512" aria-label="Line 512">512</a>       this.removeIfProcess(identity, record.instanceId, record.processToken);</span>
+<span id="L513"><a href="#L513" aria-label="Line 513">513</a>     return true;</span>
+<span id="L514"><a href="#L514" aria-label="Line 514">514</a>   }</span>
+<span id="L515"><a href="#L515" aria-label="Line 515">515</a> </span>
+<span id="L516"><a href="#L516" aria-label="Line 516">516</a>   isStartupOwner(identity: DaemonWorkspaceIdentity, instanceId: string): boolean {</span>
+<span id="L517"><a href="#L517" aria-label="Line 517">517</a>     return (</span>
+<span id="L518"><a href="#L518" aria-label="Line 518">518</a>       this.startupOwnershipMatches(identity, {</span>
+<span id="L519"><a href="#L519" aria-label="Line 519">519</a>         identityKey: identity.identityKey,</span>
+<span id="L520"><a href="#L520" aria-label="Line 520">520</a>         instanceId,</span>
+<span id="L521"><a href="#L521" aria-label="Line 521">521</a>       }) !== undefined</span>
+<span id="L522"><a href="#L522" aria-label="Line 522">522</a>     );</span>
+<span id="L523"><a href="#L523" aria-label="Line 523">523</a>   }</span>
+<span id="L524"><a href="#L524" aria-label="Line 524">524</a> </span>
+<span id="L525"><a href="#L525" aria-label="Line 525">525</a>   startupOwnerMatchesProcess(identity: DaemonWorkspaceIdentity, record: DaemonRecord): boolean {</span>
+<span id="L526"><a href="#L526" aria-label="Line 526">526</a>     if (record.pid &lt;= 0) return false;</span>
+<span id="L527"><a href="#L527" aria-label="Line 527">527</a>     const owner = this.startupOwnershipMatches(identity, {</span>
+<span id="L528"><a href="#L528" aria-label="Line 528">528</a>       identityKey: identity.identityKey,</span>
+<span id="L529"><a href="#L529" aria-label="Line 529">529</a>       instanceId: record.instanceId,</span>
+<span id="L530"><a href="#L530" aria-label="Line 530">530</a>       processToken: record.processToken,</span>
+<span id="L531"><a href="#L531" aria-label="Line 531">531</a>       ownerKind: &quot;daemon&quot;,</span>
+<span id="L532"><a href="#L532" aria-label="Line 532">532</a>       ownerPid: record.pid,</span>
+<span id="L533"><a href="#L533" aria-label="Line 533">533</a>     });</span>
+<span id="L534"><a href="#L534" aria-label="Line 534">534</a>     const stored = this.readStoredInstance(identity, record.instanceId);</span>
+<span id="L535"><a href="#L535" aria-label="Line 535">535</a>     return (</span>
+<span id="L536"><a href="#L536" aria-label="Line 536">536</a>       owner !== undefined &amp;&amp;</span>
+<span id="L537"><a href="#L537" aria-label="Line 537">537</a>       stored?.pid === record.pid &amp;&amp;</span>
+<span id="L538"><a href="#L538" aria-label="Line 538">538</a>       stored.processToken === record.processToken &amp;&amp;</span>
+<span id="L539"><a href="#L539" aria-label="Line 539">539</a>       stored.startedAt === record.startedAt</span>
+<span id="L540"><a href="#L540" aria-label="Line 540">540</a>     );</span>
+<span id="L541"><a href="#L541" aria-label="Line 541">541</a>   }</span>
+<span id="L542"><a href="#L542" aria-label="Line 542">542</a> </span>
+<span id="L543"><a href="#L543" aria-label="Line 543">543</a>   removeStartupLockIfProcess(identity: DaemonWorkspaceIdentity, record: DaemonRecord): boolean {</span>
+<span id="L544"><a href="#L544" aria-label="Line 544">544</a>     const owner = this.startupOwnershipMatches(identity, {</span>
+<span id="L545"><a href="#L545" aria-label="Line 545">545</a>       identityKey: identity.identityKey,</span>
+<span id="L546"><a href="#L546" aria-label="Line 546">546</a>       instanceId: record.instanceId,</span>
+<span id="L547"><a href="#L547" aria-label="Line 547">547</a>       processToken: record.processToken,</span>
+<span id="L548"><a href="#L548" aria-label="Line 548">548</a>       ownerKind: &quot;daemon&quot;,</span>
+<span id="L549"><a href="#L549" aria-label="Line 549">549</a>       ownerPid: record.pid,</span>
+<span id="L550"><a href="#L550" aria-label="Line 550">550</a>     });</span>
+<span id="L551"><a href="#L551" aria-label="Line 551">551</a>     if (owner === undefined || !this.startupOwnerMatchesProcess(identity, record)) return false;</span>
+<span id="L552"><a href="#L552" aria-label="Line 552">552</a>     return this.removeStartupLockIfOwner(identity, owner);</span>
+<span id="L553"><a href="#L553" aria-label="Line 553">553</a>   }</span>
+<span id="L554"><a href="#L554" aria-label="Line 554">554</a> </span>
+<span id="L555"><a href="#L555" aria-label="Line 555">555</a>   removeStartupLockIfInstance(identity: DaemonWorkspaceIdentity, instanceId: string): boolean {</span>
+<span id="L556"><a href="#L556" aria-label="Line 556">556</a>     const releasedPath = identity.releasedStartupLockPath(instanceId);</span>
+<span id="L557"><a href="#L557" aria-label="Line 557">557</a>     const owner = this.startupOwnershipMatches(identity, {</span>
+<span id="L558"><a href="#L558" aria-label="Line 558">558</a>       identityKey: identity.identityKey,</span>
+<span id="L559"><a href="#L559" aria-label="Line 559">559</a>       instanceId,</span>
+<span id="L560"><a href="#L560" aria-label="Line 560">560</a>     });</span>
+<span id="L561"><a href="#L561" aria-label="Line 561">561</a>     if (owner === undefined) {</span>
+<span id="L562"><a href="#L562" aria-label="Line 562">562</a>       return DaemonRegistry.readStartupOwner(identity, releasedPath)?.instanceId === instanceId;</span>
+<span id="L563"><a href="#L563" aria-label="Line 563">563</a>     }</span>
+<span id="L564"><a href="#L564" aria-label="Line 564">564</a>     try {</span>
+<span id="L565"><a href="#L565" aria-label="Line 565">565</a>       renameSync(identity.lockPath, releasedPath);</span>
+<span id="L566"><a href="#L566" aria-label="Line 566">566</a>       return true;</span>
+<span id="L567"><a href="#L567" aria-label="Line 567">567</a>     } catch (error) {</span>
+<span id="L568"><a href="#L568" aria-label="Line 568">568</a>       if (DaemonRegistry.readStartupOwner(identity, releasedPath)?.instanceId === instanceId) {</span>
+<span id="L569"><a href="#L569" aria-label="Line 569">569</a>         return true;</span>
+<span id="L570"><a href="#L570" aria-label="Line 570">570</a>       }</span>
+<span id="L571"><a href="#L571" aria-label="Line 571">571</a>       throw error;</span>
+<span id="L572"><a href="#L572" aria-label="Line 572">572</a>     }</span>
+<span id="L573"><a href="#L573" aria-label="Line 573">573</a>   }</span>
+<span id="L574"><a href="#L574" aria-label="Line 574">574</a> </span>
+<span id="L575"><a href="#L575" aria-label="Line 575">575</a>   removeStartupLockIfOwner(</span>
+<span id="L576"><a href="#L576" aria-label="Line 576">576</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L577"><a href="#L577" aria-label="Line 577">577</a>     observedOwner: StartupOwner,</span>
+<span id="L578"><a href="#L578" aria-label="Line 578">578</a>   ): boolean {</span>
+<span id="L579"><a href="#L579" aria-label="Line 579">579</a>     const mutation = this.beginStartupMutation(identity);</span>
+<span id="L580"><a href="#L580" aria-label="Line 580">580</a>     if (mutation === undefined) return false;</span>
+<span id="L581"><a href="#L581" aria-label="Line 581">581</a>     try {</span>
+<span id="L582"><a href="#L582" aria-label="Line 582">582</a>       if (</span>
+<span id="L583"><a href="#L583" aria-label="Line 583">583</a>         !mutation.isOwned() ||</span>
+<span id="L584"><a href="#L584" aria-label="Line 584">584</a>         this.startupOwnershipMatches(identity, observedOwner) === undefined</span>
+<span id="L585"><a href="#L585" aria-label="Line 585">585</a>       ) {</span>
+<span id="L586"><a href="#L586" aria-label="Line 586">586</a>         return false;</span>
+<span id="L587"><a href="#L587" aria-label="Line 587">587</a>       }</span>
+<span id="L588"><a href="#L588" aria-label="Line 588">588</a>       return this.removeStartupLockIfInstance(identity, observedOwner.instanceId);</span>
+<span id="L589"><a href="#L589" aria-label="Line 589">589</a>     } finally {</span>
+<span id="L590"><a href="#L590" aria-label="Line 590">590</a>       mutation.release();</span>
+<span id="L591"><a href="#L591" aria-label="Line 591">591</a>     }</span>
+<span id="L592"><a href="#L592" aria-label="Line 592">592</a>   }</span>
+<span id="L593"><a href="#L593" aria-label="Line 593">593</a> </span>
+<span id="L594"><a href="#L594" aria-label="Line 594">594</a>   removeIfInstance(identity: DaemonWorkspaceIdentity, instanceId: string): void {</span>
+<span id="L595"><a href="#L595" aria-label="Line 595">595</a>     rmSync(identity.recordPath(instanceId), { force: true });</span>
+<span id="L596"><a href="#L596" aria-label="Line 596">596</a>   }</span>
+<span id="L597"><a href="#L597" aria-label="Line 597">597</a> </span>
+<span id="L598"><a href="#L598" aria-label="Line 598">598</a>   removeIfProcess(</span>
+<span id="L599"><a href="#L599" aria-label="Line 599">599</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L600"><a href="#L600" aria-label="Line 600">600</a>     instanceId: string,</span>
+<span id="L601"><a href="#L601" aria-label="Line 601">601</a>     processToken: string,</span>
+<span id="L602"><a href="#L602" aria-label="Line 602">602</a>   ): boolean {</span>
+<span id="L603"><a href="#L603" aria-label="Line 603">603</a>     const record = this.readStoredInstance(identity, instanceId);</span>
+<span id="L604"><a href="#L604" aria-label="Line 604">604</a>     if (record?.processToken !== processToken) return false;</span>
+<span id="L605"><a href="#L605" aria-label="Line 605">605</a>     this.removeIfInstance(identity, instanceId);</span>
+<span id="L606"><a href="#L606" aria-label="Line 606">606</a>     return true;</span>
+<span id="L607"><a href="#L607" aria-label="Line 607">607</a>   }</span>
+<span id="L608"><a href="#L608" aria-label="Line 608">608</a> </span>
+<span id="L609"><a href="#L609" aria-label="Line 609">609</a>   list(): readonly DaemonRecord[] {</span>
+<span id="L610"><a href="#L610" aria-label="Line 610">610</a>     return this.recordPaths()</span>
+<span id="L611"><a href="#L611" aria-label="Line 611">611</a>       .map((path) =&gt; ({ path, record: this.readStoredPath(path) }))</span>
+<span id="L612"><a href="#L612" aria-label="Line 612">612</a>       .filter(</span>
+<span id="L613"><a href="#L613" aria-label="Line 613">613</a>         (entry): entry is { readonly path: string; readonly record: DaemonRecord } =&gt;</span>
+<span id="L614"><a href="#L614" aria-label="Line 614">614</a>           entry.record !== undefined &amp;&amp;</span>
+<span id="L615"><a href="#L615" aria-label="Line 615">615</a>           DaemonRegistry.isCurrentRecord(entry.record) &amp;&amp;</span>
+<span id="L616"><a href="#L616" aria-label="Line 616">616</a>           this.recordMatchesFile(entry.path, entry.record),</span>
+<span id="L617"><a href="#L617" aria-label="Line 617">617</a>       )</span>
+<span id="L618"><a href="#L618" aria-label="Line 618">618</a>       .map(({ record }) =&gt; record);</span>
+<span id="L619"><a href="#L619" aria-label="Line 619">619</a>   }</span>
+<span id="L620"><a href="#L620" aria-label="Line 620">620</a> </span>
+<span id="L621"><a href="#L621" aria-label="Line 621">621</a>   private records(identity: DaemonWorkspaceIdentity): readonly DaemonRecord[] {</span>
+<span id="L622"><a href="#L622" aria-label="Line 622">622</a>     return this.recordPathsIn(identity.identityDirectory)</span>
+<span id="L623"><a href="#L623" aria-label="Line 623">623</a>       .map((path) =&gt; this.readStoredPath(path))</span>
+<span id="L624"><a href="#L624" aria-label="Line 624">624</a>       .filter(</span>
+<span id="L625"><a href="#L625" aria-label="Line 625">625</a>         (record): record is DaemonRecord =&gt;</span>
+<span id="L626"><a href="#L626" aria-label="Line 626">626</a>           record !== undefined &amp;&amp; DaemonRegistry.matchesIdentity(record, identity),</span>
+<span id="L627"><a href="#L627" aria-label="Line 627">627</a>       )</span>
+<span id="L628"><a href="#L628" aria-label="Line 628">628</a>       .sort(</span>
+<span id="L629"><a href="#L629" aria-label="Line 629">629</a>         (left, right) =&gt;</span>
+<span id="L630"><a href="#L630" aria-label="Line 630">630</a>           right.startedAt - left.startedAt || right.instanceId.localeCompare(left.instanceId),</span>
+<span id="L631"><a href="#L631" aria-label="Line 631">631</a>       );</span>
+<span id="L632"><a href="#L632" aria-label="Line 632">632</a>   }</span>
+<span id="L633"><a href="#L633" aria-label="Line 633">633</a> </span>
+<span id="L634"><a href="#L634" aria-label="Line 634">634</a>   isStartupMutationOwner(identity: DaemonWorkspaceIdentity, owner: StartupMutationOwner): boolean {</span>
+<span id="L635"><a href="#L635" aria-label="Line 635">635</a>     return DaemonRegistry.sameStartupMutationOwner(</span>
+<span id="L636"><a href="#L636" aria-label="Line 636">636</a>       DaemonRegistry.readStartupMutationOwner(identity, identity.startupMutationPath),</span>
+<span id="L637"><a href="#L637" aria-label="Line 637">637</a>       owner,</span>
+<span id="L638"><a href="#L638" aria-label="Line 638">638</a>     );</span>
+<span id="L639"><a href="#L639" aria-label="Line 639">639</a>   }</span>
+<span id="L640"><a href="#L640" aria-label="Line 640">640</a> </span>
+<span id="L641"><a href="#L641" aria-label="Line 641">641</a>   releaseStartupMutation(identity: DaemonWorkspaceIdentity, owner: StartupMutationOwner): void {</span>
+<span id="L642"><a href="#L642" aria-label="Line 642">642</a>     if (!this.isStartupMutationOwner(identity, owner)) return;</span>
+<span id="L643"><a href="#L643" aria-label="Line 643">643</a>     const releasedPath = identity.releasedStartupMutationPath(owner.token);</span>
+<span id="L644"><a href="#L644" aria-label="Line 644">644</a>     try {</span>
+<span id="L645"><a href="#L645" aria-label="Line 645">645</a>       renameSync(identity.startupMutationPath, releasedPath);</span>
+<span id="L646"><a href="#L646" aria-label="Line 646">646</a>       if (</span>
+<span id="L647"><a href="#L647" aria-label="Line 647">647</a>         DaemonRegistry.sameStartupMutationOwner(</span>
+<span id="L648"><a href="#L648" aria-label="Line 648">648</a>           DaemonRegistry.readStartupMutationOwner(identity, releasedPath),</span>
+<span id="L649"><a href="#L649" aria-label="Line 649">649</a>           owner,</span>
+<span id="L650"><a href="#L650" aria-label="Line 650">650</a>         )</span>
+<span id="L651"><a href="#L651" aria-label="Line 651">651</a>       ) {</span>
+<span id="L652"><a href="#L652" aria-label="Line 652">652</a>         rmSync(releasedPath, { recursive: true, force: true });</span>
+<span id="L653"><a href="#L653" aria-label="Line 653">653</a>       }</span>
+<span id="L654"><a href="#L654" aria-label="Line 654">654</a>     } catch (error) {</span>
+<span id="L655"><a href="#L655" aria-label="Line 655">655</a>       if (DaemonRegistry.errorCode(error) === &quot;ENOENT&quot;) return;</span>
+<span id="L656"><a href="#L656" aria-label="Line 656">656</a>       throw error;</span>
+<span id="L657"><a href="#L657" aria-label="Line 657">657</a>     }</span>
+<span id="L658"><a href="#L658" aria-label="Line 658">658</a>   }</span>
+<span id="L659"><a href="#L659" aria-label="Line 659">659</a> </span>
+<span id="L660"><a href="#L660" aria-label="Line 660">660</a>   private beginStartupMutation(</span>
+<span id="L661"><a href="#L661" aria-label="Line 661">661</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L662"><a href="#L662" aria-label="Line 662">662</a>   ): RegistryStartupMutationLease | undefined {</span>
+<span id="L663"><a href="#L663" aria-label="Line 663">663</a>     const claimed = this.claimStartupMutation(identity);</span>
+<span id="L664"><a href="#L664" aria-label="Line 664">664</a>     if (claimed !== undefined) return claimed;</span>
+<span id="L665"><a href="#L665" aria-label="Line 665">665</a>     const observedOwner = DaemonRegistry.readStartupMutationOwner(</span>
+<span id="L666"><a href="#L666" aria-label="Line 666">666</a>       identity,</span>
+<span id="L667"><a href="#L667" aria-label="Line 667">667</a>       identity.startupMutationPath,</span>
+<span id="L668"><a href="#L668" aria-label="Line 668">668</a>     );</span>
+<span id="L669"><a href="#L669" aria-label="Line 669">669</a>     if (</span>
+<span id="L670"><a href="#L670" aria-label="Line 670">670</a>       observedOwner !== undefined &amp;&amp;</span>
+<span id="L671"><a href="#L671" aria-label="Line 671">671</a>       DaemonRegistry.processIsAlive(observedOwner.ownerPid) &amp;&amp;</span>
+<span id="L672"><a href="#L672" aria-label="Line 672">672</a>       this.clock.wallNowMs() - observedOwner.acquiredAt &lt;= this.startupPolicy.coordinationGraceMs</span>
+<span id="L673"><a href="#L673" aria-label="Line 673">673</a>     ) {</span>
+<span id="L674"><a href="#L674" aria-label="Line 674">674</a>       return undefined;</span>
+<span id="L675"><a href="#L675" aria-label="Line 675">675</a>     }</span>
+<span id="L676"><a href="#L676" aria-label="Line 676">676</a>     if (!this.recoverStartupMutation(identity, observedOwner)) return undefined;</span>
+<span id="L677"><a href="#L677" aria-label="Line 677">677</a>     return this.claimStartupMutation(identity);</span>
+<span id="L678"><a href="#L678" aria-label="Line 678">678</a>   }</span>
+<span id="L679"><a href="#L679" aria-label="Line 679">679</a> </span>
+<span id="L680"><a href="#L680" aria-label="Line 680">680</a>   private claimStartupMutation(</span>
+<span id="L681"><a href="#L681" aria-label="Line 681">681</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L682"><a href="#L682" aria-label="Line 682">682</a>   ): RegistryStartupMutationLease | undefined {</span>
+<span id="L683"><a href="#L683" aria-label="Line 683">683</a>     mkdirSync(identity.identityDirectory, { recursive: true, mode: 0o700 });</span>
+<span id="L684"><a href="#L684" aria-label="Line 684">684</a>     const token = randomUUID();</span>
+<span id="L685"><a href="#L685" aria-label="Line 685">685</a>     const owner: StartupMutationOwner = {</span>
+<span id="L686"><a href="#L686" aria-label="Line 686">686</a>       ownerPid: process.pid,</span>
+<span id="L687"><a href="#L687" aria-label="Line 687">687</a>       acquiredAt: this.clock.wallNowMs(),</span>
+<span id="L688"><a href="#L688" aria-label="Line 688">688</a>       token,</span>
+<span id="L689"><a href="#L689" aria-label="Line 689">689</a>     };</span>
+<span id="L690"><a href="#L690" aria-label="Line 690">690</a>     const claimPath = identity.startupMutationClaimPath(token);</span>
+<span id="L691"><a href="#L691" aria-label="Line 691">691</a>     mkdirSync(claimPath, { mode: 0o700 });</span>
+<span id="L692"><a href="#L692" aria-label="Line 692">692</a>     writeFileSync(identity.startupOwnerPath(claimPath), JSON.stringify(owner), {</span>
+<span id="L693"><a href="#L693" aria-label="Line 693">693</a>       encoding: &quot;utf8&quot;,</span>
+<span id="L694"><a href="#L694" aria-label="Line 694">694</a>       flag: &quot;wx&quot;,</span>
+<span id="L695"><a href="#L695" aria-label="Line 695">695</a>       mode: 0o600,</span>
+<span id="L696"><a href="#L696" aria-label="Line 696">696</a>     });</span>
+<span id="L697"><a href="#L697" aria-label="Line 697">697</a>     try {</span>
+<span id="L698"><a href="#L698" aria-label="Line 698">698</a>       renameSync(claimPath, identity.startupMutationPath);</span>
+<span id="L699"><a href="#L699" aria-label="Line 699">699</a>       return new RegistryStartupMutationLease(this, identity, owner);</span>
+<span id="L700"><a href="#L700" aria-label="Line 700">700</a>     } catch (error) {</span>
+<span id="L701"><a href="#L701" aria-label="Line 701">701</a>       rmSync(claimPath, { recursive: true, force: true });</span>
+<span id="L702"><a href="#L702" aria-label="Line 702">702</a>       if (DaemonRegistry.startupMutationClaimWasContended(error)) return undefined;</span>
+<span id="L703"><a href="#L703" aria-label="Line 703">703</a>       if (existsSync(identity.startupMutationPath)) return undefined;</span>
+<span id="L704"><a href="#L704" aria-label="Line 704">704</a>       throw error;</span>
+<span id="L705"><a href="#L705" aria-label="Line 705">705</a>     }</span>
+<span id="L706"><a href="#L706" aria-label="Line 706">706</a>   }</span>
+<span id="L707"><a href="#L707" aria-label="Line 707">707</a> </span>
+<span id="L708"><a href="#L708" aria-label="Line 708">708</a>   private static startupMutationClaimWasContended(error: unknown): boolean {</span>
+<span id="L709"><a href="#L709" aria-label="Line 709">709</a>     const code = DaemonRegistry.errorCode(error);</span>
+<span id="L710"><a href="#L710" aria-label="Line 710">710</a>     return code === &quot;EEXIST&quot; || code === &quot;ENOTEMPTY&quot;;</span>
+<span id="L711"><a href="#L711" aria-label="Line 711">711</a>   }</span>
+<span id="L712"><a href="#L712" aria-label="Line 712">712</a> </span>
+<span id="L713"><a href="#L713" aria-label="Line 713">713</a>   private recoverStartupMutation(</span>
+<span id="L714"><a href="#L714" aria-label="Line 714">714</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L715"><a href="#L715" aria-label="Line 715">715</a>     observedOwner: StartupMutationOwner | undefined,</span>
+<span id="L716"><a href="#L716" aria-label="Line 716">716</a>   ): boolean {</span>
+<span id="L717"><a href="#L717" aria-label="Line 717">717</a>     const currentOwner = DaemonRegistry.readStartupMutationOwner(</span>
+<span id="L718"><a href="#L718" aria-label="Line 718">718</a>       identity,</span>
+<span id="L719"><a href="#L719" aria-label="Line 719">719</a>       identity.startupMutationPath,</span>
+<span id="L720"><a href="#L720" aria-label="Line 720">720</a>     );</span>
+<span id="L721"><a href="#L721" aria-label="Line 721">721</a>     if (!DaemonRegistry.sameOptionalStartupMutationOwner(currentOwner, observedOwner)) return false;</span>
+<span id="L722"><a href="#L722" aria-label="Line 722">722</a>     const recoveryToken = observedOwner?.token ?? &quot;ownerless&quot;;</span>
+<span id="L723"><a href="#L723" aria-label="Line 723">723</a>     const releasedPath = identity.releasedStartupMutationPath(recoveryToken);</span>
+<span id="L724"><a href="#L724" aria-label="Line 724">724</a>     try {</span>
+<span id="L725"><a href="#L725" aria-label="Line 725">725</a>       renameSync(identity.startupMutationPath, releasedPath);</span>
+<span id="L726"><a href="#L726" aria-label="Line 726">726</a>       return true;</span>
+<span id="L727"><a href="#L727" aria-label="Line 727">727</a>     } catch (error) {</span>
+<span id="L728"><a href="#L728" aria-label="Line 728">728</a>       if (existsSync(releasedPath)) return true;</span>
+<span id="L729"><a href="#L729" aria-label="Line 729">729</a>       if (DaemonRegistry.errorCode(error) === &quot;ENOENT&quot;) return false;</span>
+<span id="L730"><a href="#L730" aria-label="Line 730">730</a>       throw error;</span>
+<span id="L731"><a href="#L731" aria-label="Line 731">731</a>     }</span>
+<span id="L732"><a href="#L732" aria-label="Line 732">732</a>   }</span>
+<span id="L733"><a href="#L733" aria-label="Line 733">733</a> </span>
+<span id="L734"><a href="#L734" aria-label="Line 734">734</a>   private recordPaths(): readonly string[] {</span>
+<span id="L735"><a href="#L735" aria-label="Line 735">735</a>     try {</span>
+<span id="L736"><a href="#L736" aria-label="Line 736">736</a>       return readdirSync(this.registryDirectory, { withFileTypes: true }).flatMap((entry) =&gt;</span>
+<span id="L737"><a href="#L737" aria-label="Line 737">737</a>         entry.isDirectory() ? this.recordPathsIn(join(this.registryDirectory, entry.name)) : [],</span>
+<span id="L738"><a href="#L738" aria-label="Line 738">738</a>       );</span>
+<span id="L739"><a href="#L739" aria-label="Line 739">739</a>     } catch (error) {</span>
+<span id="L740"><a href="#L740" aria-label="Line 740">740</a>       if (DaemonRegistry.errorCode(error) === &quot;ENOENT&quot;) return [];</span>
+<span id="L741"><a href="#L741" aria-label="Line 741">741</a>       throw error;</span>
+<span id="L742"><a href="#L742" aria-label="Line 742">742</a>     }</span>
+<span id="L743"><a href="#L743" aria-label="Line 743">743</a>   }</span>
+<span id="L744"><a href="#L744" aria-label="Line 744">744</a> </span>
+<span id="L745"><a href="#L745" aria-label="Line 745">745</a>   private recordPathsIn(identityDirectory: string): readonly string[] {</span>
+<span id="L746"><a href="#L746" aria-label="Line 746">746</a>     try {</span>
+<span id="L747"><a href="#L747" aria-label="Line 747">747</a>       return readdirSync(identityDirectory, { withFileTypes: true }).flatMap((entry) =&gt;</span>
+<span id="L748"><a href="#L748" aria-label="Line 748">748</a>         entry.isFile() &amp;&amp; entry.name.endsWith(&quot;.json&quot;) ? [join(identityDirectory, entry.name)] : [],</span>
+<span id="L749"><a href="#L749" aria-label="Line 749">749</a>       );</span>
+<span id="L750"><a href="#L750" aria-label="Line 750">750</a>     } catch (error) {</span>
+<span id="L751"><a href="#L751" aria-label="Line 751">751</a>       if (DaemonRegistry.errorCode(error) === &quot;ENOENT&quot;) return [];</span>
+<span id="L752"><a href="#L752" aria-label="Line 752">752</a>       throw error;</span>
+<span id="L753"><a href="#L753" aria-label="Line 753">753</a>     }</span>
+<span id="L754"><a href="#L754" aria-label="Line 754">754</a>   }</span>
+<span id="L755"><a href="#L755" aria-label="Line 755">755</a> </span>
+<span id="L756"><a href="#L756" aria-label="Line 756">756</a>   private readStoredPath(recordPath: string): DaemonRecord | undefined {</span>
+<span id="L757"><a href="#L757" aria-label="Line 757">757</a>     try {</span>
+<span id="L758"><a href="#L758" aria-label="Line 758">758</a>       const value: unknown = JSON.parse(readFileSync(recordPath, &quot;utf8&quot;));</span>
+<span id="L759"><a href="#L759" aria-label="Line 759">759</a>       return DaemonRegistry.isStoredRecord(value) ? value : undefined;</span>
+<span id="L760"><a href="#L760" aria-label="Line 760">760</a>     } catch (error) {</span>
+<span id="L761"><a href="#L761" aria-label="Line 761">761</a>       if (DaemonRegistry.errorCode(error) === &quot;ENOENT&quot; || error instanceof SyntaxError) {</span>
+<span id="L762"><a href="#L762" aria-label="Line 762">762</a>         return undefined;</span>
+<span id="L763"><a href="#L763" aria-label="Line 763">763</a>       }</span>
+<span id="L764"><a href="#L764" aria-label="Line 764">764</a>       throw error;</span>
+<span id="L765"><a href="#L765" aria-label="Line 765">765</a>     }</span>
+<span id="L766"><a href="#L766" aria-label="Line 766">766</a>   }</span>
+<span id="L767"><a href="#L767" aria-label="Line 767">767</a> </span>
+<span id="L768"><a href="#L768" aria-label="Line 768">768</a>   private recordMatchesFile(path: string, record: DaemonRecord): boolean {</span>
+<span id="L769"><a href="#L769" aria-label="Line 769">769</a>     const expectedIdentity = DaemonWorkspaceIdentity.from(</span>
+<span id="L770"><a href="#L770" aria-label="Line 770">770</a>       record.workspaceRoot,</span>
+<span id="L771"><a href="#L771" aria-label="Line 771">771</a>       dirname(this.registryDirectory),</span>
+<span id="L772"><a href="#L772" aria-label="Line 772">772</a>     );</span>
+<span id="L773"><a href="#L773" aria-label="Line 773">773</a>     return (</span>
+<span id="L774"><a href="#L774" aria-label="Line 774">774</a>       expectedIdentity.registryDirectory === this.registryDirectory &amp;&amp;</span>
+<span id="L775"><a href="#L775" aria-label="Line 775">775</a>       DaemonRegistry.matchesIdentity(record, expectedIdentity) &amp;&amp;</span>
+<span id="L776"><a href="#L776" aria-label="Line 776">776</a>       path === expectedIdentity.recordPath(record.instanceId)</span>
+<span id="L777"><a href="#L777" aria-label="Line 777">777</a>     );</span>
+<span id="L778"><a href="#L778" aria-label="Line 778">778</a>   }</span>
+<span id="L779"><a href="#L779" aria-label="Line 779">779</a> </span>
+<span id="L780"><a href="#L780" aria-label="Line 780">780</a>   private static matchesIdentity(record: DaemonRecord, identity: DaemonWorkspaceIdentity): boolean {</span>
+<span id="L781"><a href="#L781" aria-label="Line 781">781</a>     return (</span>
+<span id="L782"><a href="#L782" aria-label="Line 782">782</a>       record.workspaceRoot === identity.workspaceRoot &amp;&amp;</span>
+<span id="L783"><a href="#L783" aria-label="Line 783">783</a>       record.workspaceKey === identity.workspaceKey &amp;&amp;</span>
+<span id="L784"><a href="#L784" aria-label="Line 784">784</a>       record.stateKey === identity.stateKey &amp;&amp;</span>
+<span id="L785"><a href="#L785" aria-label="Line 785">785</a>       record.identityKey === identity.identityKey &amp;&amp;</span>
+<span id="L786"><a href="#L786" aria-label="Line 786">786</a>       record.endpoint === identity.endpoint(record.instanceId)</span>
+<span id="L787"><a href="#L787" aria-label="Line 787">787</a>     );</span>
+<span id="L788"><a href="#L788" aria-label="Line 788">788</a>   }</span>
+<span id="L789"><a href="#L789" aria-label="Line 789">789</a> </span>
+<span id="L790"><a href="#L790" aria-label="Line 790">790</a>   private static isCurrentRecord(record: DaemonRecord): boolean {</span>
+<span id="L791"><a href="#L791" aria-label="Line 791">791</a>     if (</span>
+<span id="L792"><a href="#L792" aria-label="Line 792">792</a>       record.schemaVersion !== DAEMON_RECORD_SCHEMA_VERSION ||</span>
+<span id="L793"><a href="#L793" aria-label="Line 793">793</a>       record.protocolVersion !== DAEMON_PROTOCOL_VERSION</span>
+<span id="L794"><a href="#L794" aria-label="Line 794">794</a>     )</span>
+<span id="L795"><a href="#L795" aria-label="Line 795">795</a>       return false;</span>
+<span id="L796"><a href="#L796" aria-label="Line 796">796</a>     if (record.state === &quot;starting&quot;) {</span>
+<span id="L797"><a href="#L797" aria-label="Line 797">797</a>       return record.readyAt === undefined &amp;&amp; record.fileCount === undefined;</span>
+<span id="L798"><a href="#L798" aria-label="Line 798">798</a>     }</span>
+<span id="L799"><a href="#L799" aria-label="Line 799">799</a>     return typeof record.readyAt === &quot;number&quot; &amp;&amp; typeof record.fileCount === &quot;number&quot;;</span>
+<span id="L800"><a href="#L800" aria-label="Line 800">800</a>   }</span>
+<span id="L801"><a href="#L801" aria-label="Line 801">801</a> </span>
+<span id="L802"><a href="#L802" aria-label="Line 802">802</a>   private static isStoredRecord(value: unknown): value is DaemonRecord {</span>
+<span id="L803"><a href="#L803" aria-label="Line 803">803</a>     if (typeof value !== &quot;object&quot; || value === null) return false;</span>
+<span id="L804"><a href="#L804" aria-label="Line 804">804</a>     const record = value as Record&lt;string, unknown&gt;;</span>
+<span id="L805"><a href="#L805" aria-label="Line 805">805</a>     return (</span>
+<span id="L806"><a href="#L806" aria-label="Line 806">806</a>       Number.isInteger(record.schemaVersion) &amp;&amp;</span>
+<span id="L807"><a href="#L807" aria-label="Line 807">807</a>       Number.isInteger(record.protocolVersion) &amp;&amp;</span>
+<span id="L808"><a href="#L808" aria-label="Line 808">808</a>       typeof record.symnavVersion === &quot;string&quot; &amp;&amp;</span>
+<span id="L809"><a href="#L809" aria-label="Line 809">809</a>       typeof record.workspaceRoot === &quot;string&quot; &amp;&amp;</span>
+<span id="L810"><a href="#L810" aria-label="Line 810">810</a>       typeof record.workspaceKey === &quot;string&quot; &amp;&amp;</span>
+<span id="L811"><a href="#L811" aria-label="Line 811">811</a>       typeof record.stateKey === &quot;string&quot; &amp;&amp;</span>
+<span id="L812"><a href="#L812" aria-label="Line 812">812</a>       typeof record.identityKey === &quot;string&quot; &amp;&amp;</span>
+<span id="L813"><a href="#L813" aria-label="Line 813">813</a>       typeof record.instanceId === &quot;string&quot; &amp;&amp;</span>
+<span id="L814"><a href="#L814" aria-label="Line 814">814</a>       typeof record.processToken === &quot;string&quot; &amp;&amp;</span>
+<span id="L815"><a href="#L815" aria-label="Line 815">815</a>       typeof record.endpoint === &quot;string&quot; &amp;&amp;</span>
+<span id="L816"><a href="#L816" aria-label="Line 816">816</a>       Number.isInteger(record.pid) &amp;&amp;</span>
+<span id="L817"><a href="#L817" aria-label="Line 817">817</a>       (record.state === &quot;starting&quot; || record.state === &quot;ready&quot;) &amp;&amp;</span>
+<span id="L818"><a href="#L818" aria-label="Line 818">818</a>       typeof record.startedAt === &quot;number&quot; &amp;&amp;</span>
+<span id="L819"><a href="#L819" aria-label="Line 819">819</a>       typeof record.memoryCapBytes === &quot;number&quot; &amp;&amp;</span>
+<span id="L820"><a href="#L820" aria-label="Line 820">820</a>       (record.readyAt === undefined || typeof record.readyAt === &quot;number&quot;) &amp;&amp;</span>
+<span id="L821"><a href="#L821" aria-label="Line 821">821</a>       (record.fileCount === undefined || typeof record.fileCount === &quot;number&quot;) &amp;&amp;</span>
+<span id="L822"><a href="#L822" aria-label="Line 822">822</a>       (record.memoryBytes === undefined || typeof record.memoryBytes === &quot;number&quot;) &amp;&amp;</span>
+<span id="L823"><a href="#L823" aria-label="Line 823">823</a>       (record.lastNavigationAt === undefined || typeof record.lastNavigationAt === &quot;number&quot;)</span>
+<span id="L824"><a href="#L824" aria-label="Line 824">824</a>     );</span>
+<span id="L825"><a href="#L825" aria-label="Line 825">825</a>   }</span>
+<span id="L826"><a href="#L826" aria-label="Line 826">826</a> </span>
+<span id="L827"><a href="#L827" aria-label="Line 827">827</a>   private static isStartupOwner(value: unknown): value is StartupOwner {</span>
+<span id="L828"><a href="#L828" aria-label="Line 828">828</a>     if (typeof value !== &quot;object&quot; || value === null) return false;</span>
+<span id="L829"><a href="#L829" aria-label="Line 829">829</a>     const owner = value as Record&lt;string, unknown&gt;;</span>
+<span id="L830"><a href="#L830" aria-label="Line 830">830</a>     return (</span>
+<span id="L831"><a href="#L831" aria-label="Line 831">831</a>       typeof owner.identityKey === &quot;string&quot; &amp;&amp;</span>
+<span id="L832"><a href="#L832" aria-label="Line 832">832</a>       typeof owner.instanceId === &quot;string&quot; &amp;&amp;</span>
+<span id="L833"><a href="#L833" aria-label="Line 833">833</a>       Number.isInteger(owner.ownerPid) &amp;&amp;</span>
+<span id="L834"><a href="#L834" aria-label="Line 834">834</a>       typeof owner.processToken === &quot;string&quot; &amp;&amp;</span>
+<span id="L835"><a href="#L835" aria-label="Line 835">835</a>       (owner.ownerKind === &quot;launcher&quot; || owner.ownerKind === &quot;daemon&quot;) &amp;&amp;</span>
+<span id="L836"><a href="#L836" aria-label="Line 836">836</a>       typeof owner.acquiredAt === &quot;number&quot; &amp;&amp;</span>
+<span id="L837"><a href="#L837" aria-label="Line 837">837</a>       typeof owner.heartbeatAt === &quot;number&quot; &amp;&amp;</span>
+<span id="L838"><a href="#L838" aria-label="Line 838">838</a>       typeof owner.revision === &quot;string&quot;</span>
+<span id="L839"><a href="#L839" aria-label="Line 839">839</a>     );</span>
+<span id="L840"><a href="#L840" aria-label="Line 840">840</a>   }</span>
+<span id="L841"><a href="#L841" aria-label="Line 841">841</a> </span>
+<span id="L842"><a href="#L842" aria-label="Line 842">842</a>   private startupOwnershipMatches(</span>
+<span id="L843"><a href="#L843" aria-label="Line 843">843</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L844"><a href="#L844" aria-label="Line 844">844</a>     expectation: StartupOwnershipExpectation,</span>
+<span id="L845"><a href="#L845" aria-label="Line 845">845</a>   ): StartupOwner | undefined {</span>
+<span id="L846"><a href="#L846" aria-label="Line 846">846</a>     const owner = this.startupOwner(identity);</span>
+<span id="L847"><a href="#L847" aria-label="Line 847">847</a>     if (</span>
+<span id="L848"><a href="#L848" aria-label="Line 848">848</a>       owner?.identityKey !== expectation.identityKey ||</span>
+<span id="L849"><a href="#L849" aria-label="Line 849">849</a>       owner.instanceId !== expectation.instanceId ||</span>
+<span id="L850"><a href="#L850" aria-label="Line 850">850</a>       (expectation.processToken !== undefined &amp;&amp; owner.processToken !== expectation.processToken) ||</span>
+<span id="L851"><a href="#L851" aria-label="Line 851">851</a>       (expectation.ownerKind !== undefined &amp;&amp; owner.ownerKind !== expectation.ownerKind) ||</span>
+<span id="L852"><a href="#L852" aria-label="Line 852">852</a>       (expectation.ownerPid !== undefined &amp;&amp; owner.ownerPid !== expectation.ownerPid) ||</span>
+<span id="L853"><a href="#L853" aria-label="Line 853">853</a>       (expectation.acquiredAt !== undefined &amp;&amp; owner.acquiredAt !== expectation.acquiredAt) ||</span>
+<span id="L854"><a href="#L854" aria-label="Line 854">854</a>       (expectation.heartbeatAt !== undefined &amp;&amp; owner.heartbeatAt !== expectation.heartbeatAt) ||</span>
+<span id="L855"><a href="#L855" aria-label="Line 855">855</a>       (expectation.revision !== undefined &amp;&amp; owner.revision !== expectation.revision)</span>
+<span id="L856"><a href="#L856" aria-label="Line 856">856</a>     ) {</span>
+<span id="L857"><a href="#L857" aria-label="Line 857">857</a>       return undefined;</span>
+<span id="L858"><a href="#L858" aria-label="Line 858">858</a>     }</span>
+<span id="L859"><a href="#L859" aria-label="Line 859">859</a>     return owner;</span>
+<span id="L860"><a href="#L860" aria-label="Line 860">860</a>   }</span>
+<span id="L861"><a href="#L861" aria-label="Line 861">861</a> </span>
+<span id="L862"><a href="#L862" aria-label="Line 862">862</a>   private static sameStartupMutationOwner(</span>
+<span id="L863"><a href="#L863" aria-label="Line 863">863</a>     current: StartupMutationOwner | undefined,</span>
+<span id="L864"><a href="#L864" aria-label="Line 864">864</a>     observed: StartupMutationOwner,</span>
+<span id="L865"><a href="#L865" aria-label="Line 865">865</a>   ): boolean {</span>
+<span id="L866"><a href="#L866" aria-label="Line 866">866</a>     return (</span>
+<span id="L867"><a href="#L867" aria-label="Line 867">867</a>       current?.ownerPid === observed.ownerPid &amp;&amp;</span>
+<span id="L868"><a href="#L868" aria-label="Line 868">868</a>       current.acquiredAt === observed.acquiredAt &amp;&amp;</span>
+<span id="L869"><a href="#L869" aria-label="Line 869">869</a>       current.token === observed.token</span>
+<span id="L870"><a href="#L870" aria-label="Line 870">870</a>     );</span>
+<span id="L871"><a href="#L871" aria-label="Line 871">871</a>   }</span>
+<span id="L872"><a href="#L872" aria-label="Line 872">872</a> </span>
+<span id="L873"><a href="#L873" aria-label="Line 873">873</a>   private static sameOptionalStartupMutationOwner(</span>
+<span id="L874"><a href="#L874" aria-label="Line 874">874</a>     current: StartupMutationOwner | undefined,</span>
+<span id="L875"><a href="#L875" aria-label="Line 875">875</a>     observed: StartupMutationOwner | undefined,</span>
+<span id="L876"><a href="#L876" aria-label="Line 876">876</a>   ): boolean {</span>
+<span id="L877"><a href="#L877" aria-label="Line 877">877</a>     if (current === undefined || observed === undefined) return current === observed;</span>
+<span id="L878"><a href="#L878" aria-label="Line 878">878</a>     return DaemonRegistry.sameStartupMutationOwner(current, observed);</span>
+<span id="L879"><a href="#L879" aria-label="Line 879">879</a>   }</span>
+<span id="L880"><a href="#L880" aria-label="Line 880">880</a> </span>
+<span id="L881"><a href="#L881" aria-label="Line 881">881</a>   private static readStartupOwner(</span>
+<span id="L882"><a href="#L882" aria-label="Line 882">882</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L883"><a href="#L883" aria-label="Line 883">883</a>     path: string,</span>
+<span id="L884"><a href="#L884" aria-label="Line 884">884</a>   ): StartupOwner | undefined {</span>
+<span id="L885"><a href="#L885" aria-label="Line 885">885</a>     try {</span>
+<span id="L886"><a href="#L886" aria-label="Line 886">886</a>       const value: unknown = JSON.parse(readFileSync(identity.startupOwnerPath(path), &quot;utf8&quot;));</span>
+<span id="L887"><a href="#L887" aria-label="Line 887">887</a>       return DaemonRegistry.isStartupOwner(value) ? value : undefined;</span>
+<span id="L888"><a href="#L888" aria-label="Line 888">888</a>     } catch {</span>
+<span id="L889"><a href="#L889" aria-label="Line 889">889</a>       return undefined;</span>
+<span id="L890"><a href="#L890" aria-label="Line 890">890</a>     }</span>
+<span id="L891"><a href="#L891" aria-label="Line 891">891</a>   }</span>
+<span id="L892"><a href="#L892" aria-label="Line 892">892</a> </span>
+<span id="L893"><a href="#L893" aria-label="Line 893">893</a>   private static readStartupMutationOwner(</span>
+<span id="L894"><a href="#L894" aria-label="Line 894">894</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L895"><a href="#L895" aria-label="Line 895">895</a>     path: string,</span>
+<span id="L896"><a href="#L896" aria-label="Line 896">896</a>   ): StartupMutationOwner | undefined {</span>
+<span id="L897"><a href="#L897" aria-label="Line 897">897</a>     try {</span>
+<span id="L898"><a href="#L898" aria-label="Line 898">898</a>       const value: unknown = JSON.parse(readFileSync(identity.startupOwnerPath(path), &quot;utf8&quot;));</span>
+<span id="L899"><a href="#L899" aria-label="Line 899">899</a>       return DaemonRegistry.isStartupMutationOwner(value) ? value : undefined;</span>
+<span id="L900"><a href="#L900" aria-label="Line 900">900</a>     } catch {</span>
+<span id="L901"><a href="#L901" aria-label="Line 901">901</a>       return undefined;</span>
+<span id="L902"><a href="#L902" aria-label="Line 902">902</a>     }</span>
+<span id="L903"><a href="#L903" aria-label="Line 903">903</a>   }</span>
+<span id="L904"><a href="#L904" aria-label="Line 904">904</a> </span>
+<span id="L905"><a href="#L905" aria-label="Line 905">905</a>   private static isStartupMutationOwner(value: unknown): value is StartupMutationOwner {</span>
+<span id="L906"><a href="#L906" aria-label="Line 906">906</a>     if (typeof value !== &quot;object&quot; || value === null) return false;</span>
+<span id="L907"><a href="#L907" aria-label="Line 907">907</a>     const owner = value as Record&lt;string, unknown&gt;;</span>
+<span id="L908"><a href="#L908" aria-label="Line 908">908</a>     return (</span>
+<span id="L909"><a href="#L909" aria-label="Line 909">909</a>       Number.isInteger(owner.ownerPid) &amp;&amp;</span>
+<span id="L910"><a href="#L910" aria-label="Line 910">910</a>       typeof owner.acquiredAt === &quot;number&quot; &amp;&amp;</span>
+<span id="L911"><a href="#L911" aria-label="Line 911">911</a>       typeof owner.token === &quot;string&quot;</span>
+<span id="L912"><a href="#L912" aria-label="Line 912">912</a>     );</span>
+<span id="L913"><a href="#L913" aria-label="Line 913">913</a>   }</span>
+<span id="L914"><a href="#L914" aria-label="Line 914">914</a> </span>
+<span id="L915"><a href="#L915" aria-label="Line 915">915</a>   private static processIsAlive(pid: number): boolean {</span>
+<span id="L916"><a href="#L916" aria-label="Line 916">916</a>     if (!Number.isInteger(pid) || pid &lt;= 0) return false;</span>
+<span id="L917"><a href="#L917" aria-label="Line 917">917</a>     try {</span>
+<span id="L918"><a href="#L918" aria-label="Line 918">918</a>       process.kill(pid, 0);</span>
+<span id="L919"><a href="#L919" aria-label="Line 919">919</a>       return true;</span>
+<span id="L920"><a href="#L920" aria-label="Line 920">920</a>     } catch (error) {</span>
+<span id="L921"><a href="#L921" aria-label="Line 921">921</a>       return DaemonRegistry.errorCode(error) === &quot;EPERM&quot;;</span>
+<span id="L922"><a href="#L922" aria-label="Line 922">922</a>     }</span>
+<span id="L923"><a href="#L923" aria-label="Line 923">923</a>   }</span>
+<span id="L924"><a href="#L924" aria-label="Line 924">924</a> </span>
+<span id="L925"><a href="#L925" aria-label="Line 925">925</a>   private replaceStartupOwner(temporaryPath: string, ownerPath: string): void {</span>
+<span id="L926"><a href="#L926" aria-label="Line 926">926</a>     if (this.platform !== &quot;win32&quot;) {</span>
+<span id="L927"><a href="#L927" aria-label="Line 927">927</a>       this.renamePath(temporaryPath, ownerPath);</span>
+<span id="L928"><a href="#L928" aria-label="Line 928">928</a>       return;</span>
+<span id="L929"><a href="#L929" aria-label="Line 929">929</a>     }</span>
+<span id="L930"><a href="#L930" aria-label="Line 930">930</a>     const previousPath = `${ownerPath}.${process.pid}.${randomUUID()}.previous`;</span>
+<span id="L931"><a href="#L931" aria-label="Line 931">931</a>     this.renamePath(ownerPath, previousPath);</span>
+<span id="L932"><a href="#L932" aria-label="Line 932">932</a>     try {</span>
+<span id="L933"><a href="#L933" aria-label="Line 933">933</a>       this.renamePath(temporaryPath, ownerPath);</span>
+<span id="L934"><a href="#L934" aria-label="Line 934">934</a>     } catch (error) {</span>
+<span id="L935"><a href="#L935" aria-label="Line 935">935</a>       try {</span>
+<span id="L936"><a href="#L936" aria-label="Line 936">936</a>         this.renamePath(previousPath, ownerPath);</span>
+<span id="L937"><a href="#L937" aria-label="Line 937">937</a>       } catch {}</span>
+<span id="L938"><a href="#L938" aria-label="Line 938">938</a>       throw error;</span>
+<span id="L939"><a href="#L939" aria-label="Line 939">939</a>     }</span>
+<span id="L940"><a href="#L940" aria-label="Line 940">940</a>     try {</span>
+<span id="L941"><a href="#L941" aria-label="Line 941">941</a>       rmSync(previousPath, { force: true });</span>
+<span id="L942"><a href="#L942" aria-label="Line 942">942</a>     } catch {}</span>
+<span id="L943"><a href="#L943" aria-label="Line 943">943</a>   }</span>
+<span id="L944"><a href="#L944" aria-label="Line 944">944</a> </span>
+<span id="L945"><a href="#L945" aria-label="Line 945">945</a>   private replaceStartupOwnerIfOwner(</span>
+<span id="L946"><a href="#L946" aria-label="Line 946">946</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L947"><a href="#L947" aria-label="Line 947">947</a>     observedOwner: StartupOwner,</span>
+<span id="L948"><a href="#L948" aria-label="Line 948">948</a>     replacementOwner: StartupOwner,</span>
+<span id="L949"><a href="#L949" aria-label="Line 949">949</a>   ): StartupOwner | undefined {</span>
+<span id="L950"><a href="#L950" aria-label="Line 950">950</a>     const mutation = this.beginStartupMutation(identity);</span>
+<span id="L951"><a href="#L951" aria-label="Line 951">951</a>     if (mutation === undefined) return undefined;</span>
+<span id="L952"><a href="#L952" aria-label="Line 952">952</a>     const ownerPath = identity.startupOwnerPath(identity.lockPath);</span>
+<span id="L953"><a href="#L953" aria-label="Line 953">953</a>     const temporaryPath = `${identity.lockPath}.${process.pid}.${randomUUID()}.owner.tmp`;</span>
+<span id="L954"><a href="#L954" aria-label="Line 954">954</a>     try {</span>
+<span id="L955"><a href="#L955" aria-label="Line 955">955</a>       writeFileSync(temporaryPath, JSON.stringify(replacementOwner), {</span>
+<span id="L956"><a href="#L956" aria-label="Line 956">956</a>         encoding: &quot;utf8&quot;,</span>
+<span id="L957"><a href="#L957" aria-label="Line 957">957</a>         mode: 0o600,</span>
+<span id="L958"><a href="#L958" aria-label="Line 958">958</a>       });</span>
+<span id="L959"><a href="#L959" aria-label="Line 959">959</a>       if (</span>
+<span id="L960"><a href="#L960" aria-label="Line 960">960</a>         !mutation.isOwned() ||</span>
+<span id="L961"><a href="#L961" aria-label="Line 961">961</a>         this.startupOwnershipMatches(identity, observedOwner) === undefined</span>
+<span id="L962"><a href="#L962" aria-label="Line 962">962</a>       ) {</span>
+<span id="L963"><a href="#L963" aria-label="Line 963">963</a>         rmSync(temporaryPath, { force: true });</span>
+<span id="L964"><a href="#L964" aria-label="Line 964">964</a>         return undefined;</span>
+<span id="L965"><a href="#L965" aria-label="Line 965">965</a>       }</span>
+<span id="L966"><a href="#L966" aria-label="Line 966">966</a>       try {</span>
+<span id="L967"><a href="#L967" aria-label="Line 967">967</a>         this.replaceStartupOwner(temporaryPath, ownerPath);</span>
+<span id="L968"><a href="#L968" aria-label="Line 968">968</a>       } catch (error) {</span>
+<span id="L969"><a href="#L969" aria-label="Line 969">969</a>         rmSync(temporaryPath, { force: true });</span>
+<span id="L970"><a href="#L970" aria-label="Line 970">970</a>         if (DaemonRegistry.errorCode(error) === &quot;ENOENT&quot;) return undefined;</span>
+<span id="L971"><a href="#L971" aria-label="Line 971">971</a>         throw error;</span>
+<span id="L972"><a href="#L972" aria-label="Line 972">972</a>       }</span>
+<span id="L973"><a href="#L973" aria-label="Line 973">973</a>       return this.startupOwnershipMatches(identity, replacementOwner) !== undefined</span>
+<span id="L974"><a href="#L974" aria-label="Line 974">974</a>         ? replacementOwner</span>
+<span id="L975"><a href="#L975" aria-label="Line 975">975</a>         : undefined;</span>
+<span id="L976"><a href="#L976" aria-label="Line 976">976</a>     } finally {</span>
+<span id="L977"><a href="#L977" aria-label="Line 977">977</a>       mutation.release();</span>
+<span id="L978"><a href="#L978" aria-label="Line 978">978</a>     }</span>
+<span id="L979"><a href="#L979" aria-label="Line 979">979</a>   }</span>
+<span id="L980"><a href="#L980" aria-label="Line 980">980</a> </span>
+<span id="L981"><a href="#L981" aria-label="Line 981">981</a>   private static errorCode(error: unknown): string | undefined {</span>
+<span id="L982"><a href="#L982" aria-label="Line 982">982</a>     if (typeof error !== &quot;object&quot; || error === null) return undefined;</span>
+<span id="L983"><a href="#L983" aria-label="Line 983">983</a>     return (error as { readonly code?: string }).code;</span>
+<span id="L984"><a href="#L984" aria-label="Line 984">984</a>   }</span>
+<span id="L985"><a href="#L985" aria-label="Line 985">985</a> }</span>
+</pre><a href="../../receipts.html">← Return to receipt index</a></main></body></html>

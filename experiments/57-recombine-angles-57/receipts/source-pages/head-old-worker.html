@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>apps/cli/src/daemon/daemon-navigation-worker.ts</title><link rel="stylesheet" href="../../style.css"></head><body><main class="source-file"><a href="../../receipts.html">← Return to receipt index</a><p>head · 20838f8dbf413e04767543eb2380d0d114da6c60</p><h1>apps/cli/src/daemon/daemon-navigation-worker.ts</h1><p>Git blob <code>4f656089611ad08cbda8ba10d8a25a44d303556d</code><br>SHA-256 <code>ff3401cb1dde3e58ad64d94bcff31024f721860a7597629ac2fc1ae085131d15</code></p><a href="../sources/head-old-worker.txt">Raw pinned text</a><pre><span id="L1"><a href="#L1" aria-label="Line 1">1</a> import { Worker } from &quot;node:worker_threads&quot;;</span>
+<span id="L2"><a href="#L2" aria-label="Line 2">2</a> import {</span>
+<span id="L3"><a href="#L3" aria-label="Line 3">3</a>   DaemonPolicy,</span>
+<span id="L4"><a href="#L4" aria-label="Line 4">4</a>   type DaemonCommandName,</span>
+<span id="L5"><a href="#L5" aria-label="Line 5">5</a>   type DaemonExecutorRequest,</span>
+<span id="L6"><a href="#L6" aria-label="Line 6">6</a>   type DaemonExecutorModuleUrl,</span>
+<span id="L7"><a href="#L7" aria-label="Line 7">7</a>   type DaemonOutputSink,</span>
+<span id="L8"><a href="#L8" aria-label="Line 8">8</a>   type DaemonSequencedOutputRecord,</span>
+<span id="L9"><a href="#L9" aria-label="Line 9">9</a> } from &quot;@symnav/daemon&quot;;</span>
+<span id="L10"><a href="#L10" aria-label="Line 10">10</a> import {</span>
+<span id="L11"><a href="#L11" aria-label="Line 11">11</a>   DaemonNavigationWorkerProtocol,</span>
+<span id="L12"><a href="#L12" aria-label="Line 12">12</a>   type DaemonNavigationWorkerRequest,</span>
+<span id="L13"><a href="#L13" aria-label="Line 13">13</a>   type DaemonNavigationWorkerResponse,</span>
+<span id="L14"><a href="#L14" aria-label="Line 14">14</a> } from &quot;./daemon-navigation-worker-protocol.js&quot;;</span>
+<span id="L15"><a href="#L15" aria-label="Line 15">15</a> </span>
+<span id="L16"><a href="#L16" aria-label="Line 16">16</a> export interface DaemonNavigationWorkerExit {</span>
+<span id="L17"><a href="#L17" aria-label="Line 17">17</a>   readonly generation: number;</span>
+<span id="L18"><a href="#L18" aria-label="Line 18">18</a>   readonly cause: &quot;closed&quot; | &quot;terminated&quot; | &quot;out-of-memory&quot; | &quot;error&quot;;</span>
+<span id="L19"><a href="#L19" aria-label="Line 19">19</a>   readonly errorName?: string;</span>
+<span id="L20"><a href="#L20" aria-label="Line 20">20</a> }</span>
+<span id="L21"><a href="#L21" aria-label="Line 21">21</a> </span>
+<span id="L22"><a href="#L22" aria-label="Line 22">22</a> export class DaemonNavigationWorkerExitedError extends Error {</span>
+<span id="L23"><a href="#L23" aria-label="Line 23">23</a>   constructor(</span>
+<span id="L24"><a href="#L24" aria-label="Line 24">24</a>     readonly exit: DaemonNavigationWorkerExit,</span>
+<span id="L25"><a href="#L25" aria-label="Line 25">25</a>     message = `Daemon navigation worker exited (${exit.cause})`,</span>
+<span id="L26"><a href="#L26" aria-label="Line 26">26</a>   ) {</span>
+<span id="L27"><a href="#L27" aria-label="Line 27">27</a>     super(message);</span>
+<span id="L28"><a href="#L28" aria-label="Line 28">28</a>     this.name = &quot;DaemonNavigationWorkerExitedError&quot;;</span>
+<span id="L29"><a href="#L29" aria-label="Line 29">29</a>   }</span>
+<span id="L30"><a href="#L30" aria-label="Line 30">30</a> }</span>
+<span id="L31"><a href="#L31" aria-label="Line 31">31</a> </span>
+<span id="L32"><a href="#L32" aria-label="Line 32">32</a> export interface DaemonNavigationWorker {</span>
+<span id="L33"><a href="#L33" aria-label="Line 33">33</a>   readonly generation: number;</span>
+<span id="L34"><a href="#L34" aria-label="Line 34">34</a>   readonly exited: Promise&lt;DaemonNavigationWorkerExit&gt;;</span>
+<span id="L35"><a href="#L35" aria-label="Line 35">35</a>   start(workspaceRoot: string): Promise&lt;DaemonNavigationWorkerResponse&gt;;</span>
+<span id="L36"><a href="#L36" aria-label="Line 36">36</a>   execute(</span>
+<span id="L37"><a href="#L37" aria-label="Line 37">37</a>     requestId: string,</span>
+<span id="L38"><a href="#L38" aria-label="Line 38">38</a>     commandName: DaemonCommandName,</span>
+<span id="L39"><a href="#L39" aria-label="Line 39">39</a>     request: DaemonExecutorRequest,</span>
+<span id="L40"><a href="#L40" aria-label="Line 40">40</a>     output: DaemonOutputSink,</span>
+<span id="L41"><a href="#L41" aria-label="Line 41">41</a>   ): Promise&lt;DaemonNavigationWorkerResponse&gt;;</span>
+<span id="L42"><a href="#L42" aria-label="Line 42">42</a>   releaseTransientResources(): Promise&lt;DaemonNavigationWorkerResponse&gt;;</span>
+<span id="L43"><a href="#L43" aria-label="Line 43">43</a>   drainAndClose(): Promise&lt;void&gt;;</span>
+<span id="L44"><a href="#L44" aria-label="Line 44">44</a>   terminate(): Promise&lt;void&gt;;</span>
+<span id="L45"><a href="#L45" aria-label="Line 45">45</a> }</span>
+<span id="L46"><a href="#L46" aria-label="Line 46">46</a> </span>
+<span id="L47"><a href="#L47" aria-label="Line 47">47</a> export interface DaemonNavigationWorkerConfiguration {</span>
+<span id="L48"><a href="#L48" aria-label="Line 48">48</a>   readonly stateDirectory: string;</span>
+<span id="L49"><a href="#L49" aria-label="Line 49">49</a>   readonly productVersion: string;</span>
+<span id="L50"><a href="#L50" aria-label="Line 50">50</a>   readonly executorModuleUrl: DaemonExecutorModuleUrl;</span>
+<span id="L51"><a href="#L51" aria-label="Line 51">51</a>   readonly policy: ReturnType&lt;DaemonPolicy[&quot;toSerialized&quot;]&gt;;</span>
+<span id="L52"><a href="#L52" aria-label="Line 52">52</a> }</span>
+<span id="L53"><a href="#L53" aria-label="Line 53">53</a> </span>
+<span id="L54"><a href="#L54" aria-label="Line 54">54</a> export interface NodeDaemonNavigationWorkerOptions {</span>
+<span id="L55"><a href="#L55" aria-label="Line 55">55</a>   readonly generation: number;</span>
+<span id="L56"><a href="#L56" aria-label="Line 56">56</a>   readonly configuration: DaemonNavigationWorkerConfiguration;</span>
+<span id="L57"><a href="#L57" aria-label="Line 57">57</a>   readonly resourceLimits: {</span>
+<span id="L58"><a href="#L58" aria-label="Line 58">58</a>     readonly maxOldGenerationSizeMb: number;</span>
+<span id="L59"><a href="#L59" aria-label="Line 59">59</a>   };</span>
+<span id="L60"><a href="#L60" aria-label="Line 60">60</a>   readonly entryUrl?: URL;</span>
+<span id="L61"><a href="#L61" aria-label="Line 61">61</a>   readonly workerData?: Readonly&lt;Record&lt;string, unknown&gt;&gt;;</span>
+<span id="L62"><a href="#L62" aria-label="Line 62">62</a> }</span>
+<span id="L63"><a href="#L63" aria-label="Line 63">63</a> </span>
+<span id="L64"><a href="#L64" aria-label="Line 64">64</a> interface PendingWorkerResponse {</span>
+<span id="L65"><a href="#L65" aria-label="Line 65">65</a>   readonly resolve: (response: DaemonNavigationWorkerResponse) =&gt; void;</span>
+<span id="L66"><a href="#L66" aria-label="Line 66">66</a>   readonly reject: (error: Error) =&gt; void;</span>
+<span id="L67"><a href="#L67" aria-label="Line 67">67</a>   readonly appendOutput: (record: DaemonSequencedOutputRecord) =&gt; Promise&lt;void&gt;;</span>
+<span id="L68"><a href="#L68" aria-label="Line 68">68</a>   nextSequence: number;</span>
+<span id="L69"><a href="#L69" aria-label="Line 69">69</a>   chunkInFlight: boolean;</span>
+<span id="L70"><a href="#L70" aria-label="Line 70">70</a> }</span>
+<span id="L71"><a href="#L71" aria-label="Line 71">71</a> </span>
+<span id="L72"><a href="#L72" aria-label="Line 72">72</a> export class NodeDaemonNavigationWorker implements DaemonNavigationWorker {</span>
+<span id="L73"><a href="#L73" aria-label="Line 73">73</a>   readonly generation: number;</span>
+<span id="L74"><a href="#L74" aria-label="Line 74">74</a>   readonly exited: Promise&lt;DaemonNavigationWorkerExit&gt;;</span>
+<span id="L75"><a href="#L75" aria-label="Line 75">75</a>   private readonly worker: Worker;</span>
+<span id="L76"><a href="#L76" aria-label="Line 76">76</a>   private readonly pending = new Map&lt;string, PendingWorkerResponse&gt;();</span>
+<span id="L77"><a href="#L77" aria-label="Line 77">77</a>   private readonly completed = new Set&lt;string&gt;();</span>
+<span id="L78"><a href="#L78" aria-label="Line 78">78</a>   private resolveExited!: (exit: DaemonNavigationWorkerExit) =&gt; void;</span>
+<span id="L79"><a href="#L79" aria-label="Line 79">79</a>   private exit: DaemonNavigationWorkerExit | undefined;</span>
+<span id="L80"><a href="#L80" aria-label="Line 80">80</a>   private terminating = false;</span>
+<span id="L81"><a href="#L81" aria-label="Line 81">81</a>   private closeAcknowledged = false;</span>
+<span id="L82"><a href="#L82" aria-label="Line 82">82</a>   private communicationFailure: Error | undefined;</span>
+<span id="L83"><a href="#L83" aria-label="Line 83">83</a>   private communicationFailureCode: string | undefined;</span>
+<span id="L84"><a href="#L84" aria-label="Line 84">84</a>   private releaseSequence = 0;</span>
+<span id="L85"><a href="#L85" aria-label="Line 85">85</a>   private readonly maximumChunkRawBytes: number;</span>
+<span id="L86"><a href="#L86" aria-label="Line 86">86</a> </span>
+<span id="L87"><a href="#L87" aria-label="Line 87">87</a>   constructor(options: NodeDaemonNavigationWorkerOptions) {</span>
+<span id="L88"><a href="#L88" aria-label="Line 88">88</a>     this.generation = options.generation;</span>
+<span id="L89"><a href="#L89" aria-label="Line 89">89</a>     this.maximumChunkRawBytes = DaemonPolicy.fromSerialized(</span>
+<span id="L90"><a href="#L90" aria-label="Line 90">90</a>       options.configuration.policy,</span>
+<span id="L91"><a href="#L91" aria-label="Line 91">91</a>     ).values.output.maximumChunkRawBytes;</span>
+<span id="L92"><a href="#L92" aria-label="Line 92">92</a>     this.exited = new Promise((resolve) =&gt; {</span>
+<span id="L93"><a href="#L93" aria-label="Line 93">93</a>       this.resolveExited = resolve;</span>
+<span id="L94"><a href="#L94" aria-label="Line 94">94</a>     });</span>
+<span id="L95"><a href="#L95" aria-label="Line 95">95</a>     this.worker = new Worker(</span>
+<span id="L96"><a href="#L96" aria-label="Line 96">96</a>       options.entryUrl ?? new URL(&quot;./daemon-navigation-worker-entry.js&quot;, import.meta.url),</span>
+<span id="L97"><a href="#L97" aria-label="Line 97">97</a>       {</span>
+<span id="L98"><a href="#L98" aria-label="Line 98">98</a>         workerData: {</span>
+<span id="L99"><a href="#L99" aria-label="Line 99">99</a>           ...options.workerData,</span>
+<span id="L100"><a href="#L100" aria-label="Line 100">100</a>           stateDirectory: options.configuration.stateDirectory,</span>
+<span id="L101"><a href="#L101" aria-label="Line 101">101</a>           generation: options.generation,</span>
+<span id="L102"><a href="#L102" aria-label="Line 102">102</a>           productVersion: options.configuration.productVersion,</span>
+<span id="L103"><a href="#L103" aria-label="Line 103">103</a>           executorModuleUrl: options.configuration.executorModuleUrl,</span>
+<span id="L104"><a href="#L104" aria-label="Line 104">104</a>           policy: options.configuration.policy,</span>
+<span id="L105"><a href="#L105" aria-label="Line 105">105</a>         },</span>
+<span id="L106"><a href="#L106" aria-label="Line 106">106</a>         resourceLimits: options.resourceLimits,</span>
+<span id="L107"><a href="#L107" aria-label="Line 107">107</a>       },</span>
+<span id="L108"><a href="#L108" aria-label="Line 108">108</a>     );</span>
+<span id="L109"><a href="#L109" aria-label="Line 109">109</a>     this.worker.on(&quot;message&quot;, (value: unknown) =&gt; void this.receive(value));</span>
+<span id="L110"><a href="#L110" aria-label="Line 110">110</a>     this.worker.once(&quot;error&quot;, (error) =&gt; this.failCommunication(error));</span>
+<span id="L111"><a href="#L111" aria-label="Line 111">111</a>     this.worker.once(&quot;exit&quot;, () =&gt; this.finishExit());</span>
+<span id="L112"><a href="#L112" aria-label="Line 112">112</a>   }</span>
+<span id="L113"><a href="#L113" aria-label="Line 113">113</a> </span>
+<span id="L114"><a href="#L114" aria-label="Line 114">114</a>   start(workspaceRoot: string): Promise&lt;DaemonNavigationWorkerResponse&gt; {</span>
+<span id="L115"><a href="#L115" aria-label="Line 115">115</a>     return this.send(&quot;initialize&quot;, {</span>
+<span id="L116"><a href="#L116" aria-label="Line 116">116</a>       kind: &quot;initialize&quot;,</span>
+<span id="L117"><a href="#L117" aria-label="Line 117">117</a>       generation: this.generation,</span>
+<span id="L118"><a href="#L118" aria-label="Line 118">118</a>       workspaceRoot,</span>
+<span id="L119"><a href="#L119" aria-label="Line 119">119</a>     });</span>
+<span id="L120"><a href="#L120" aria-label="Line 120">120</a>   }</span>
+<span id="L121"><a href="#L121" aria-label="Line 121">121</a> </span>
+<span id="L122"><a href="#L122" aria-label="Line 122">122</a>   execute(</span>
+<span id="L123"><a href="#L123" aria-label="Line 123">123</a>     requestId: string,</span>
+<span id="L124"><a href="#L124" aria-label="Line 124">124</a>     commandName: DaemonCommandName,</span>
+<span id="L125"><a href="#L125" aria-label="Line 125">125</a>     request: DaemonExecutorRequest,</span>
+<span id="L126"><a href="#L126" aria-label="Line 126">126</a>     output: DaemonOutputSink,</span>
+<span id="L127"><a href="#L127" aria-label="Line 127">127</a>   ): Promise&lt;DaemonNavigationWorkerResponse&gt; {</span>
+<span id="L128"><a href="#L128" aria-label="Line 128">128</a>     return this.send(</span>
+<span id="L129"><a href="#L129" aria-label="Line 129">129</a>       `execute:${requestId}`,</span>
+<span id="L130"><a href="#L130" aria-label="Line 130">130</a>       {</span>
+<span id="L131"><a href="#L131" aria-label="Line 131">131</a>         kind: &quot;execute&quot;,</span>
+<span id="L132"><a href="#L132" aria-label="Line 132">132</a>         generation: this.generation,</span>
+<span id="L133"><a href="#L133" aria-label="Line 133">133</a>         requestId,</span>
+<span id="L134"><a href="#L134" aria-label="Line 134">134</a>         commandName,</span>
+<span id="L135"><a href="#L135" aria-label="Line 135">135</a>         request,</span>
+<span id="L136"><a href="#L136" aria-label="Line 136">136</a>       },</span>
+<span id="L137"><a href="#L137" aria-label="Line 137">137</a>       output.append.bind(output),</span>
+<span id="L138"><a href="#L138" aria-label="Line 138">138</a>     );</span>
+<span id="L139"><a href="#L139" aria-label="Line 139">139</a>   }</span>
+<span id="L140"><a href="#L140" aria-label="Line 140">140</a> </span>
+<span id="L141"><a href="#L141" aria-label="Line 141">141</a>   releaseTransientResources(): Promise&lt;DaemonNavigationWorkerResponse&gt; {</span>
+<span id="L142"><a href="#L142" aria-label="Line 142">142</a>     const operationId = `${this.generation}:${this.releaseSequence}`;</span>
+<span id="L143"><a href="#L143" aria-label="Line 143">143</a>     this.releaseSequence += 1;</span>
+<span id="L144"><a href="#L144" aria-label="Line 144">144</a>     return this.send(`release-transient:${operationId}`, {</span>
+<span id="L145"><a href="#L145" aria-label="Line 145">145</a>       kind: &quot;release-transient&quot;,</span>
+<span id="L146"><a href="#L146" aria-label="Line 146">146</a>       generation: this.generation,</span>
+<span id="L147"><a href="#L147" aria-label="Line 147">147</a>       operationId,</span>
+<span id="L148"><a href="#L148" aria-label="Line 148">148</a>     });</span>
+<span id="L149"><a href="#L149" aria-label="Line 149">149</a>   }</span>
+<span id="L150"><a href="#L150" aria-label="Line 150">150</a> </span>
+<span id="L151"><a href="#L151" aria-label="Line 151">151</a>   async drainAndClose(): Promise&lt;void&gt; {</span>
+<span id="L152"><a href="#L152" aria-label="Line 152">152</a>     if (this.exit !== undefined) return;</span>
+<span id="L153"><a href="#L153" aria-label="Line 153">153</a>     await this.send(&quot;close&quot;, { kind: &quot;close&quot;, generation: this.generation });</span>
+<span id="L154"><a href="#L154" aria-label="Line 154">154</a>     await this.exited;</span>
+<span id="L155"><a href="#L155" aria-label="Line 155">155</a>   }</span>
+<span id="L156"><a href="#L156" aria-label="Line 156">156</a> </span>
+<span id="L157"><a href="#L157" aria-label="Line 157">157</a>   async terminate(): Promise&lt;void&gt; {</span>
+<span id="L158"><a href="#L158" aria-label="Line 158">158</a>     if (this.exit !== undefined) return;</span>
+<span id="L159"><a href="#L159" aria-label="Line 159">159</a>     this.terminating = true;</span>
+<span id="L160"><a href="#L160" aria-label="Line 160">160</a>     await this.worker.terminate();</span>
+<span id="L161"><a href="#L161" aria-label="Line 161">161</a>     await this.exited;</span>
+<span id="L162"><a href="#L162" aria-label="Line 162">162</a>   }</span>
+<span id="L163"><a href="#L163" aria-label="Line 163">163</a> </span>
+<span id="L164"><a href="#L164" aria-label="Line 164">164</a>   private send(</span>
+<span id="L165"><a href="#L165" aria-label="Line 165">165</a>     key: string,</span>
+<span id="L166"><a href="#L166" aria-label="Line 166">166</a>     request: DaemonNavigationWorkerRequest,</span>
+<span id="L167"><a href="#L167" aria-label="Line 167">167</a>     appendOutput: ((record: DaemonSequencedOutputRecord) =&gt; Promise&lt;void&gt;) | undefined = undefined,</span>
+<span id="L168"><a href="#L168" aria-label="Line 168">168</a>   ): Promise&lt;DaemonNavigationWorkerResponse&gt; {</span>
+<span id="L169"><a href="#L169" aria-label="Line 169">169</a>     if (this.exit !== undefined)</span>
+<span id="L170"><a href="#L170" aria-label="Line 170">170</a>       return Promise.reject(new Error(&quot;Daemon navigation worker exited&quot;));</span>
+<span id="L171"><a href="#L171" aria-label="Line 171">171</a>     if (this.pending.has(key) || this.completed.has(key)) {</span>
+<span id="L172"><a href="#L172" aria-label="Line 172">172</a>       return Promise.reject(new Error(`Duplicate daemon navigation worker request: ${key}`));</span>
+<span id="L173"><a href="#L173" aria-label="Line 173">173</a>     }</span>
+<span id="L174"><a href="#L174" aria-label="Line 174">174</a>     const response = new Promise&lt;DaemonNavigationWorkerResponse&gt;((resolve, reject) =&gt; {</span>
+<span id="L175"><a href="#L175" aria-label="Line 175">175</a>       this.pending.set(key, {</span>
+<span id="L176"><a href="#L176" aria-label="Line 176">176</a>         resolve,</span>
+<span id="L177"><a href="#L177" aria-label="Line 177">177</a>         reject,</span>
+<span id="L178"><a href="#L178" aria-label="Line 178">178</a>         appendOutput:</span>
+<span id="L179"><a href="#L179" aria-label="Line 179">179</a>           appendOutput ?? (() =&gt; Promise.reject(new Error(&quot;Worker output sink is unavailable&quot;))),</span>
+<span id="L180"><a href="#L180" aria-label="Line 180">180</a>         nextSequence: 0,</span>
+<span id="L181"><a href="#L181" aria-label="Line 181">181</a>         chunkInFlight: false,</span>
+<span id="L182"><a href="#L182" aria-label="Line 182">182</a>       });</span>
+<span id="L183"><a href="#L183" aria-label="Line 183">183</a>     });</span>
+<span id="L184"><a href="#L184" aria-label="Line 184">184</a>     this.worker.postMessage(DaemonNavigationWorkerProtocol.request(request));</span>
+<span id="L185"><a href="#L185" aria-label="Line 185">185</a>     return response;</span>
+<span id="L186"><a href="#L186" aria-label="Line 186">186</a>   }</span>
+<span id="L187"><a href="#L187" aria-label="Line 187">187</a> </span>
+<span id="L188"><a href="#L188" aria-label="Line 188">188</a>   private async receive(value: unknown): Promise&lt;void&gt; {</span>
+<span id="L189"><a href="#L189" aria-label="Line 189">189</a>     let response: DaemonNavigationWorkerResponse;</span>
+<span id="L190"><a href="#L190" aria-label="Line 190">190</a>     try {</span>
+<span id="L191"><a href="#L191" aria-label="Line 191">191</a>       response = DaemonNavigationWorkerProtocol.response(value, this.maximumChunkRawBytes);</span>
+<span id="L192"><a href="#L192" aria-label="Line 192">192</a>     } catch (error) {</span>
+<span id="L193"><a href="#L193" aria-label="Line 193">193</a>       this.failCommunication(error);</span>
+<span id="L194"><a href="#L194" aria-label="Line 194">194</a>       return;</span>
+<span id="L195"><a href="#L195" aria-label="Line 195">195</a>     }</span>
+<span id="L196"><a href="#L196" aria-label="Line 196">196</a>     if (response.generation !== this.generation) return;</span>
+<span id="L197"><a href="#L197" aria-label="Line 197">197</a>     if (response.kind === &quot;output-chunk&quot;) {</span>
+<span id="L198"><a href="#L198" aria-label="Line 198">198</a>       await this.receiveOutputChunk(response);</span>
+<span id="L199"><a href="#L199" aria-label="Line 199">199</a>       return;</span>
+<span id="L200"><a href="#L200" aria-label="Line 200">200</a>     }</span>
+<span id="L201"><a href="#L201" aria-label="Line 201">201</a>     const key = NodeDaemonNavigationWorker.responseKey(response);</span>
+<span id="L202"><a href="#L202" aria-label="Line 202">202</a>     if (this.completed.has(key)) {</span>
+<span id="L203"><a href="#L203" aria-label="Line 203">203</a>       this.failCommunication(new Error(`Duplicate daemon navigation worker response: ${key}`));</span>
+<span id="L204"><a href="#L204" aria-label="Line 204">204</a>       return;</span>
+<span id="L205"><a href="#L205" aria-label="Line 205">205</a>     }</span>
+<span id="L206"><a href="#L206" aria-label="Line 206">206</a>     const pending = this.pending.get(key);</span>
+<span id="L207"><a href="#L207" aria-label="Line 207">207</a>     if (pending === undefined) {</span>
+<span id="L208"><a href="#L208" aria-label="Line 208">208</a>       this.failCommunication(new Error(`Uncorrelated daemon navigation worker response: ${key}`));</span>
+<span id="L209"><a href="#L209" aria-label="Line 209">209</a>       return;</span>
+<span id="L210"><a href="#L210" aria-label="Line 210">210</a>     }</span>
+<span id="L211"><a href="#L211" aria-label="Line 211">211</a>     this.pending.delete(key);</span>
+<span id="L212"><a href="#L212" aria-label="Line 212">212</a>     this.completed.add(key);</span>
+<span id="L213"><a href="#L213" aria-label="Line 213">213</a>     if (response.kind === &quot;failed&quot;) {</span>
+<span id="L214"><a href="#L214" aria-label="Line 214">214</a>       pending.reject(new Error(`Daemon navigation worker ${response.failureCode} failure`));</span>
+<span id="L215"><a href="#L215" aria-label="Line 215">215</a>       return;</span>
+<span id="L216"><a href="#L216" aria-label="Line 216">216</a>     }</span>
+<span id="L217"><a href="#L217" aria-label="Line 217">217</a>     if (response.kind === &quot;closed&quot;) this.closeAcknowledged = true;</span>
+<span id="L218"><a href="#L218" aria-label="Line 218">218</a>     pending.resolve(response);</span>
+<span id="L219"><a href="#L219" aria-label="Line 219">219</a>   }</span>
+<span id="L220"><a href="#L220" aria-label="Line 220">220</a> </span>
+<span id="L221"><a href="#L221" aria-label="Line 221">221</a>   private async receiveOutputChunk(</span>
+<span id="L222"><a href="#L222" aria-label="Line 222">222</a>     response: Extract&lt;DaemonNavigationWorkerResponse, { kind: &quot;output-chunk&quot; }&gt;,</span>
+<span id="L223"><a href="#L223" aria-label="Line 223">223</a>   ): Promise&lt;void&gt; {</span>
+<span id="L224"><a href="#L224" aria-label="Line 224">224</a>     const key = `execute:${response.requestId}`;</span>
+<span id="L225"><a href="#L225" aria-label="Line 225">225</a>     const pending = this.pending.get(key);</span>
+<span id="L226"><a href="#L226" aria-label="Line 226">226</a>     if (</span>
+<span id="L227"><a href="#L227" aria-label="Line 227">227</a>       pending === undefined ||</span>
+<span id="L228"><a href="#L228" aria-label="Line 228">228</a>       pending.chunkInFlight ||</span>
+<span id="L229"><a href="#L229" aria-label="Line 229">229</a>       response.sequence !== pending.nextSequence</span>
+<span id="L230"><a href="#L230" aria-label="Line 230">230</a>     ) {</span>
+<span id="L231"><a href="#L231" aria-label="Line 231">231</a>       this.failCommunication(new Error(`Unexpected daemon navigation worker output: ${key}`));</span>
+<span id="L232"><a href="#L232" aria-label="Line 232">232</a>       return;</span>
+<span id="L233"><a href="#L233" aria-label="Line 233">233</a>     }</span>
+<span id="L234"><a href="#L234" aria-label="Line 234">234</a>     pending.chunkInFlight = true;</span>
+<span id="L235"><a href="#L235" aria-label="Line 235">235</a>     try {</span>
+<span id="L236"><a href="#L236" aria-label="Line 236">236</a>       const record: DaemonSequencedOutputRecord = {</span>
+<span id="L237"><a href="#L237" aria-label="Line 237">237</a>         sequence: response.sequence,</span>
+<span id="L238"><a href="#L238" aria-label="Line 238">238</a>         stream: response.stream,</span>
+<span id="L239"><a href="#L239" aria-label="Line 239">239</a>         bytes: response.bytes,</span>
+<span id="L240"><a href="#L240" aria-label="Line 240">240</a>       };</span>
+<span id="L241"><a href="#L241" aria-label="Line 241">241</a>       await pending.appendOutput(record);</span>
+<span id="L242"><a href="#L242" aria-label="Line 242">242</a>       pending.nextSequence += 1;</span>
+<span id="L243"><a href="#L243" aria-label="Line 243">243</a>       pending.chunkInFlight = false;</span>
+<span id="L244"><a href="#L244" aria-label="Line 244">244</a>       const acknowledgement: DaemonNavigationWorkerRequest = {</span>
+<span id="L245"><a href="#L245" aria-label="Line 245">245</a>         kind: &quot;output-ack&quot;,</span>
+<span id="L246"><a href="#L246" aria-label="Line 246">246</a>         generation: this.generation,</span>
+<span id="L247"><a href="#L247" aria-label="Line 247">247</a>         requestId: response.requestId,</span>
+<span id="L248"><a href="#L248" aria-label="Line 248">248</a>         sequence: response.sequence,</span>
+<span id="L249"><a href="#L249" aria-label="Line 249">249</a>       };</span>
+<span id="L250"><a href="#L250" aria-label="Line 250">250</a>       this.worker.postMessage(DaemonNavigationWorkerProtocol.request(acknowledgement));</span>
+<span id="L251"><a href="#L251" aria-label="Line 251">251</a>     } catch (error) {</span>
+<span id="L252"><a href="#L252" aria-label="Line 252">252</a>       this.failCommunication(error);</span>
+<span id="L253"><a href="#L253" aria-label="Line 253">253</a>     }</span>
+<span id="L254"><a href="#L254" aria-label="Line 254">254</a>   }</span>
+<span id="L255"><a href="#L255" aria-label="Line 255">255</a> </span>
+<span id="L256"><a href="#L256" aria-label="Line 256">256</a>   private failCommunication(error: unknown): void {</span>
+<span id="L257"><a href="#L257" aria-label="Line 257">257</a>     if (this.exit !== undefined) return;</span>
+<span id="L258"><a href="#L258" aria-label="Line 258">258</a>     const failure = error instanceof Error ? error : new Error(String(error));</span>
+<span id="L259"><a href="#L259" aria-label="Line 259">259</a>     this.communicationFailure = failure;</span>
+<span id="L260"><a href="#L260" aria-label="Line 260">260</a>     this.communicationFailureCode =</span>
+<span id="L261"><a href="#L261" aria-label="Line 261">261</a>       typeof error === &quot;object&quot; &amp;&amp;</span>
+<span id="L262"><a href="#L262" aria-label="Line 262">262</a>       error !== null &amp;&amp;</span>
+<span id="L263"><a href="#L263" aria-label="Line 263">263</a>       &quot;code&quot; in error &amp;&amp;</span>
+<span id="L264"><a href="#L264" aria-label="Line 264">264</a>       typeof error.code === &quot;string&quot;</span>
+<span id="L265"><a href="#L265" aria-label="Line 265">265</a>         ? error.code</span>
+<span id="L266"><a href="#L266" aria-label="Line 266">266</a>         : undefined;</span>
+<span id="L267"><a href="#L267" aria-label="Line 267">267</a>     void this.worker.terminate();</span>
+<span id="L268"><a href="#L268" aria-label="Line 268">268</a>   }</span>
+<span id="L269"><a href="#L269" aria-label="Line 269">269</a> </span>
+<span id="L270"><a href="#L270" aria-label="Line 270">270</a>   private finishExit(): void {</span>
+<span id="L271"><a href="#L271" aria-label="Line 271">271</a>     if (this.exit !== undefined) return;</span>
+<span id="L272"><a href="#L272" aria-label="Line 272">272</a>     const communicationErrorName = this.communicationFailure?.name;</span>
+<span id="L273"><a href="#L273" aria-label="Line 273">273</a>     const communicationFailureIdentity = this.communicationFailureCode ?? communicationErrorName;</span>
+<span id="L274"><a href="#L274" aria-label="Line 274">274</a>     const cause = communicationFailureIdentity</span>
+<span id="L275"><a href="#L275" aria-label="Line 275">275</a>       ? communicationFailureIdentity === &quot;ERR_WORKER_OUT_OF_MEMORY&quot;</span>
+<span id="L276"><a href="#L276" aria-label="Line 276">276</a>         ? &quot;out-of-memory&quot;</span>
+<span id="L277"><a href="#L277" aria-label="Line 277">277</a>         : &quot;error&quot;</span>
+<span id="L278"><a href="#L278" aria-label="Line 278">278</a>       : this.terminating</span>
+<span id="L279"><a href="#L279" aria-label="Line 279">279</a>         ? &quot;terminated&quot;</span>
+<span id="L280"><a href="#L280" aria-label="Line 280">280</a>         : this.closeAcknowledged</span>
+<span id="L281"><a href="#L281" aria-label="Line 281">281</a>           ? &quot;closed&quot;</span>
+<span id="L282"><a href="#L282" aria-label="Line 282">282</a>           : &quot;error&quot;;</span>
+<span id="L283"><a href="#L283" aria-label="Line 283">283</a>     this.exit = {</span>
+<span id="L284"><a href="#L284" aria-label="Line 284">284</a>       generation: this.generation,</span>
+<span id="L285"><a href="#L285" aria-label="Line 285">285</a>       cause,</span>
+<span id="L286"><a href="#L286" aria-label="Line 286">286</a>       ...(communicationFailureIdentity === undefined</span>
+<span id="L287"><a href="#L287" aria-label="Line 287">287</a>         ? {}</span>
+<span id="L288"><a href="#L288" aria-label="Line 288">288</a>         : { errorName: communicationFailureIdentity }),</span>
+<span id="L289"><a href="#L289" aria-label="Line 289">289</a>     };</span>
+<span id="L290"><a href="#L290" aria-label="Line 290">290</a>     const failure = new DaemonNavigationWorkerExitedError(</span>
+<span id="L291"><a href="#L291" aria-label="Line 291">291</a>       this.exit,</span>
+<span id="L292"><a href="#L292" aria-label="Line 292">292</a>       this.communicationFailure?.message,</span>
+<span id="L293"><a href="#L293" aria-label="Line 293">293</a>     );</span>
+<span id="L294"><a href="#L294" aria-label="Line 294">294</a>     for (const pending of this.pending.values()) pending.reject(failure);</span>
+<span id="L295"><a href="#L295" aria-label="Line 295">295</a>     this.pending.clear();</span>
+<span id="L296"><a href="#L296" aria-label="Line 296">296</a>     this.resolveExited(this.exit);</span>
+<span id="L297"><a href="#L297" aria-label="Line 297">297</a>   }</span>
+<span id="L298"><a href="#L298" aria-label="Line 298">298</a> </span>
+<span id="L299"><a href="#L299" aria-label="Line 299">299</a>   private static responseKey(response: DaemonNavigationWorkerResponse): string {</span>
+<span id="L300"><a href="#L300" aria-label="Line 300">300</a>     if (response.kind === &quot;ready&quot;) return &quot;initialize&quot;;</span>
+<span id="L301"><a href="#L301" aria-label="Line 301">301</a>     if (response.kind === &quot;result&quot;) return `execute:${response.requestId}`;</span>
+<span id="L302"><a href="#L302" aria-label="Line 302">302</a>     if (response.kind === &quot;heap&quot;) return `release-transient:${response.operationId}`;</span>
+<span id="L303"><a href="#L303" aria-label="Line 303">303</a>     if (response.kind === &quot;closed&quot;) return &quot;close&quot;;</span>
+<span id="L304"><a href="#L304" aria-label="Line 304">304</a>     if (response.kind === &quot;failed&quot; &amp;&amp; response.operationId !== undefined) {</span>
+<span id="L305"><a href="#L305" aria-label="Line 305">305</a>       return `release-transient:${response.operationId}`;</span>
+<span id="L306"><a href="#L306" aria-label="Line 306">306</a>     }</span>
+<span id="L307"><a href="#L307" aria-label="Line 307">307</a>     return response.requestId === undefined ? &quot;initialize&quot; : `execute:${response.requestId}`;</span>
+<span id="L308"><a href="#L308" aria-label="Line 308">308</a>   }</span>
+<span id="L309"><a href="#L309" aria-label="Line 309">309</a> }</span>
+</pre><a href="../../receipts.html">← Return to receipt index</a></main></body></html>

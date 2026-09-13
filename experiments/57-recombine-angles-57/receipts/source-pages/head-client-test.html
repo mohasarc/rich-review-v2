@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>packages/daemon/src/client/daemon-client.test.ts</title><link rel="stylesheet" href="../../style.css"></head><body><main class="source-file"><a href="../../receipts.html">← Return to receipt index</a><p>head · 20838f8dbf413e04767543eb2380d0d114da6c60</p><h1>packages/daemon/src/client/daemon-client.test.ts</h1><p>Git blob <code>9f14584720cfbf49a2d4c05f65e45fe4947ebac9</code><br>SHA-256 <code>f17bdd78a377298953eaf9d3e46c66e9a2cc889093cf1d4606529b34b9977f49</code></p><a href="../sources/head-client-test.txt">Raw pinned text</a><pre><span id="L1"><a href="#L1" aria-label="Line 1">1</a> import { afterEach, describe, expect, it, vi } from &quot;vitest&quot;;</span>
+<span id="L2"><a href="#L2" aria-label="Line 2">2</a> import { tmpdir } from &quot;node:os&quot;;</span>
+<span id="L3"><a href="#L3" aria-label="Line 3">3</a> import type {</span>
+<span id="L4"><a href="#L4" aria-label="Line 4">4</a>   DaemonExecutionFailureCode,</span>
+<span id="L5"><a href="#L5" aria-label="Line 5">5</a>   DaemonExecutor,</span>
+<span id="L6"><a href="#L6" aria-label="Line 6">6</a>   DaemonExecutorExecutionResult,</span>
+<span id="L7"><a href="#L7" aria-label="Line 7">7</a>   DaemonExecutorRequest,</span>
+<span id="L8"><a href="#L8" aria-label="Line 8">8</a> } from &quot;@symnav/daemon&quot;;</span>
+<span id="L9"><a href="#L9" aria-label="Line 9">9</a> import { DaemonPolicy } from &quot;../daemon-policy.js&quot;;</span>
+<span id="L10"><a href="#L10" aria-label="Line 10">10</a> import { CommandOutputSnapshot } from &quot;../../test/helpers/executor-output.js&quot;;</span>
+<span id="L11"><a href="#L11" aria-label="Line 11">11</a> import { DaemonStartupCoordinator } from &quot;../registry/startup-coordinator.js&quot;;</span>
+<span id="L12"><a href="#L12" aria-label="Line 12">12</a> import { DaemonRecordObserver, type DaemonObservation } from &quot;../registry/record-observer.js&quot;;</span>
+<span id="L13"><a href="#L13" aria-label="Line 13">13</a> import { DaemonRegistry } from &quot;../registry/registry.js&quot;;</span>
+<span id="L14"><a href="#L14" aria-label="Line 14">14</a> import { LocalDaemonTransport } from &quot;../transport/local-transport.js&quot;;</span>
+<span id="L15"><a href="#L15" aria-label="Line 15">15</a> import type { DaemonOutputCapture } from &quot;../transport/client-result-capture.js&quot;;</span>
+<span id="L16"><a href="#L16" aria-label="Line 16">16</a> import {</span>
+<span id="L17"><a href="#L17" aria-label="Line 17">17</a>   DAEMON_PROTOCOL_VERSION,</span>
+<span id="L18"><a href="#L18" aria-label="Line 18">18</a>   DAEMON_RECORD_SCHEMA_VERSION,</span>
+<span id="L19"><a href="#L19" aria-label="Line 19">19</a>   type DaemonPong,</span>
+<span id="L20"><a href="#L20" aria-label="Line 20">20</a>   type DaemonRecord,</span>
+<span id="L21"><a href="#L21" aria-label="Line 21">21</a> } from &quot;../transport/protocol.js&quot;;</span>
+<span id="L22"><a href="#L22" aria-label="Line 22">22</a> import { DaemonTransportError } from &quot;../transport/transport-error.js&quot;;</span>
+<span id="L23"><a href="#L23" aria-label="Line 23">23</a> import { DaemonClientRuntime as DaemonClient } from &quot;./daemon-client-runtime.js&quot;;</span>
+<span id="L24"><a href="#L24" aria-label="Line 24">24</a> </span>
+<span id="L25"><a href="#L25" aria-label="Line 25">25</a> const success: DaemonExecutorExecutionResult = {</span>
+<span id="L26"><a href="#L26" aria-label="Line 26">26</a>   exitCode: 0,</span>
+<span id="L27"><a href="#L27" aria-label="Line 27">27</a>   output: new CommandOutputSnapshot([{ stream: &quot;stdout&quot;, bytes: Buffer.from(&quot;answer\n&quot;) }]),</span>
+<span id="L28"><a href="#L28" aria-label="Line 28">28</a> };</span>
+<span id="L29"><a href="#L29" aria-label="Line 29">29</a> </span>
+<span id="L30"><a href="#L30" aria-label="Line 30">30</a> describe(&quot;DaemonClient execution&quot;, () =&gt; {</span>
+<span id="L31"><a href="#L31" aria-label="Line 31">31</a>   afterEach(() =&gt; vi.restoreAllMocks());</span>
+<span id="L32"><a href="#L32" aria-label="Line 32">32</a> </span>
+<span id="L33"><a href="#L33" aria-label="Line 33">33</a>   it.each([</span>
+<span id="L34"><a href="#L34" aria-label="Line 34">34</a>     [&quot;disabled&quot;, { daemonEnabled: false }, &quot;cold&quot;, &quot;cold&quot;, 1, 0, 0, 0, 0, 0],</span>
+<span id="L35"><a href="#L35" aria-label="Line 35">35</a>     [&quot;absent&quot;, { record: undefined }, &quot;cold&quot;, &quot;cold&quot;, 1, 0, 1, 1, 0, 0],</span>
+<span id="L36"><a href="#L36" aria-label="Line 36">36</a>     [</span>
+<span id="L37"><a href="#L37" aria-label="Line 37">37</a>       &quot;registry recovery&quot;,</span>
+<span id="L38"><a href="#L38" aria-label="Line 38">38</a>       { readFailure: new Error(&quot;registry unavailable&quot;) },</span>
+<span id="L39"><a href="#L39" aria-label="Line 39">39</a>       &quot;cold&quot;,</span>
+<span id="L40"><a href="#L40" aria-label="Line 40">40</a>       &quot;cold&quot;,</span>
+<span id="L41"><a href="#L41" aria-label="Line 41">41</a>       1,</span>
+<span id="L42"><a href="#L42" aria-label="Line 42">42</a>       0,</span>
+<span id="L43"><a href="#L43" aria-label="Line 43">43</a>       0,</span>
+<span id="L44"><a href="#L44" aria-label="Line 44">44</a>       1,</span>
+<span id="L45"><a href="#L45" aria-label="Line 45">45</a>       0,</span>
+<span id="L46"><a href="#L46" aria-label="Line 46">46</a>       0,</span>
+<span id="L47"><a href="#L47" aria-label="Line 47">47</a>     ],</span>
+<span id="L48"><a href="#L48" aria-label="Line 48">48</a>     [</span>
+<span id="L49"><a href="#L49" aria-label="Line 49">49</a>       &quot;starting record&quot;,</span>
+<span id="L50"><a href="#L50" aria-label="Line 50">50</a>       { record: daemonRecord({ state: &quot;starting&quot; }) },</span>
+<span id="L51"><a href="#L51" aria-label="Line 51">51</a>       &quot;cold&quot;,</span>
+<span id="L52"><a href="#L52" aria-label="Line 52">52</a>       &quot;cold&quot;,</span>
+<span id="L53"><a href="#L53" aria-label="Line 53">53</a>       1,</span>
+<span id="L54"><a href="#L54" aria-label="Line 54">54</a>       0,</span>
+<span id="L55"><a href="#L55" aria-label="Line 55">55</a>       0,</span>
+<span id="L56"><a href="#L56" aria-label="Line 56">56</a>       1,</span>
+<span id="L57"><a href="#L57" aria-label="Line 57">57</a>       0,</span>
+<span id="L58"><a href="#L58" aria-label="Line 58">58</a>       0,</span>
+<span id="L59"><a href="#L59" aria-label="Line 59">59</a>     ],</span>
+<span id="L60"><a href="#L60" aria-label="Line 60">60</a>     [&quot;ready idle&quot;, {}, &quot;warm&quot;, undefined, 0, 1, 0, 1, 1, 0],</span>
+<span id="L61"><a href="#L61" aria-label="Line 61">61</a>     [&quot;ready busy&quot;, { pongState: &quot;busy&quot; }, &quot;warm&quot;, undefined, 0, 1, 0, 1, 1, 0],</span>
+<span id="L62"><a href="#L62" aria-label="Line 62">62</a>     [&quot;responsive starting&quot;, { pongState: &quot;starting&quot; }, &quot;cold&quot;, &quot;cold&quot;, 1, 0, 0, 1, 1, 0],</span>
+<span id="L63"><a href="#L63" aria-label="Line 63">63</a>     [&quot;unresponsive&quot;, { observationKind: &quot;unresponsive&quot; }, &quot;cold&quot;, &quot;cold&quot;, 1, 0, 0, 1, 1, 0],</span>
+<span id="L64"><a href="#L64" aria-label="Line 64">64</a>     [&quot;exited&quot;, { observationKind: &quot;exited&quot; }, &quot;fallback&quot;, &quot;fallback&quot;, 1, 0, 1, 1, 1, 1],</span>
+<span id="L65"><a href="#L65" aria-label="Line 65">65</a>     [</span>
+<span id="L66"><a href="#L66" aria-label="Line 66">66</a>       &quot;record version mismatch&quot;,</span>
+<span id="L67"><a href="#L67" aria-label="Line 67">67</a>       { record: daemonRecord({ symnavVersion: &quot;0.0.9&quot; }) },</span>
+<span id="L68"><a href="#L68" aria-label="Line 68">68</a>       &quot;fallback&quot;,</span>
+<span id="L69"><a href="#L69" aria-label="Line 69">69</a>       &quot;fallback&quot;,</span>
+<span id="L70"><a href="#L70" aria-label="Line 70">70</a>       1,</span>
+<span id="L71"><a href="#L71" aria-label="Line 71">71</a>       0,</span>
+<span id="L72"><a href="#L72" aria-label="Line 72">72</a>       1,</span>
+<span id="L73"><a href="#L73" aria-label="Line 73">73</a>       1,</span>
+<span id="L74"><a href="#L74" aria-label="Line 74">74</a>       0,</span>
+<span id="L75"><a href="#L75" aria-label="Line 75">75</a>       0,</span>
+<span id="L76"><a href="#L76" aria-label="Line 76">76</a>     ],</span>
+<span id="L77"><a href="#L77" aria-label="Line 77">77</a>     [&quot;pong version mismatch&quot;, { pongVersion: &quot;0.0.9&quot; }, &quot;fallback&quot;, &quot;fallback&quot;, 1, 0, 1, 1, 1, 0],</span>
+<span id="L78"><a href="#L78" aria-label="Line 78">78</a>     [</span>
+<span id="L79"><a href="#L79" aria-label="Line 79">79</a>       &quot;invalid observation&quot;,</span>
+<span id="L80"><a href="#L80" aria-label="Line 80">80</a>       { observationKind: &quot;corrupt&quot; },</span>
+<span id="L81"><a href="#L81" aria-label="Line 81">81</a>       &quot;fallback&quot;,</span>
+<span id="L82"><a href="#L82" aria-label="Line 82">82</a>       &quot;fallback&quot;,</span>
+<span id="L83"><a href="#L83" aria-label="Line 83">83</a>       1,</span>
+<span id="L84"><a href="#L84" aria-label="Line 84">84</a>       0,</span>
+<span id="L85"><a href="#L85" aria-label="Line 85">85</a>       1,</span>
+<span id="L86"><a href="#L86" aria-label="Line 86">86</a>       1,</span>
+<span id="L87"><a href="#L87" aria-label="Line 87">87</a>       1,</span>
+<span id="L88"><a href="#L88" aria-label="Line 88">88</a>       0,</span>
+<span id="L89"><a href="#L89" aria-label="Line 89">89</a>     ],</span>
+<span id="L90"><a href="#L90" aria-label="Line 90">90</a>   ] as const)(</span>
+<span id="L91"><a href="#L91" aria-label="Line 91">91</a>     &quot;routes %s with exact execution and first-decision effects&quot;,</span>
+<span id="L92"><a href="#L92" aria-label="Line 92">92</a>     async (</span>
+<span id="L93"><a href="#L93" aria-label="Line 93">93</a>       _name,</span>
+<span id="L94"><a href="#L94" aria-label="Line 94">94</a>       options,</span>
+<span id="L95"><a href="#L95" aria-label="Line 95">95</a>       mode,</span>
+<span id="L96"><a href="#L96" aria-label="Line 96">96</a>       executionMode,</span>
+<span id="L97"><a href="#L97" aria-label="Line 97">97</a>       localExecutions,</span>
+<span id="L98"><a href="#L98" aria-label="Line 98">98</a>       warmExecutions,</span>
+<span id="L99"><a href="#L99" aria-label="Line 99">99</a>       triggers,</span>
+<span id="L100"><a href="#L100" aria-label="Line 100">100</a>       reads,</span>
+<span id="L101"><a href="#L101" aria-label="Line 101">101</a>       observations,</span>
+<span id="L102"><a href="#L102" aria-label="Line 102">102</a>       removals,</span>
+<span id="L103"><a href="#L103" aria-label="Line 103">103</a>     ) =&gt; {</span>
+<span id="L104"><a href="#L104" aria-label="Line 104">104</a>       const harness = new ClientHarness(options);</span>
+<span id="L105"><a href="#L105" aria-label="Line 105">105</a> </span>
+<span id="L106"><a href="#L106" aria-label="Line 106">106</a>       await expect(harness.client.execute(harness.request())).resolves.toEqual({</span>
+<span id="L107"><a href="#L107" aria-label="Line 107">107</a>         mode,</span>
+<span id="L108"><a href="#L108" aria-label="Line 108">108</a>         result: success,</span>
+<span id="L109"><a href="#L109" aria-label="Line 109">109</a>       });</span>
+<span id="L110"><a href="#L110" aria-label="Line 110">110</a> </span>
+<span id="L111"><a href="#L111" aria-label="Line 111">111</a>       expect(harness.executorFactory).toHaveBeenCalledTimes(localExecutions);</span>
+<span id="L112"><a href="#L112" aria-label="Line 112">112</a>       expect(harness.localRequests).toHaveLength(localExecutions);</span>
+<span id="L113"><a href="#L113" aria-label="Line 113">113</a>       if (executionMode !== undefined) {</span>
+<span id="L114"><a href="#L114" aria-label="Line 114">114</a>         expect(harness.localRequests).toEqual([</span>
+<span id="L115"><a href="#L115" aria-label="Line 115">115</a>           expect.objectContaining({ executionMode, telemetryEnabled: true }),</span>
+<span id="L116"><a href="#L116" aria-label="Line 116">116</a>         ]);</span>
+<span id="L117"><a href="#L117" aria-label="Line 117">117</a>       }</span>
+<span id="L118"><a href="#L118" aria-label="Line 118">118</a>       expect(harness.warmRequests).toHaveLength(warmExecutions);</span>
+<span id="L119"><a href="#L119" aria-label="Line 119">119</a>       expect(harness.trigger).toHaveBeenCalledTimes(triggers);</span>
+<span id="L120"><a href="#L120" aria-label="Line 120">120</a>       expect(harness.registryRead).toHaveBeenCalledTimes(reads);</span>
+<span id="L121"><a href="#L121" aria-label="Line 121">121</a>       expect(harness.observe).toHaveBeenCalledTimes(observations);</span>
+<span id="L122"><a href="#L122" aria-label="Line 122">122</a>       expect(harness.removeIfProcess).toHaveBeenCalledTimes(removals);</span>
+<span id="L123"><a href="#L123" aria-label="Line 123">123</a>     },</span>
+<span id="L124"><a href="#L124" aria-label="Line 124">124</a>   );</span>
+<span id="L125"><a href="#L125" aria-label="Line 125">125</a> </span>
+<span id="L126"><a href="#L126" aria-label="Line 126">126</a>   it(&quot;does not await independent warmup or switch a chosen cold route&quot;, async () =&gt; {</span>
+<span id="L127"><a href="#L127" aria-label="Line 127">127</a>     const harness = new ClientHarness({ record: undefined, neverResolveTrigger: true });</span>
+<span id="L128"><a href="#L128" aria-label="Line 128">128</a> </span>
+<span id="L129"><a href="#L129" aria-label="Line 129">129</a>     await expect(harness.client.execute(harness.request())).resolves.toEqual({</span>
+<span id="L130"><a href="#L130" aria-label="Line 130">130</a>       mode: &quot;cold&quot;,</span>
+<span id="L131"><a href="#L131" aria-label="Line 131">131</a>       result: success,</span>
+<span id="L132"><a href="#L132" aria-label="Line 132">132</a>     });</span>
+<span id="L133"><a href="#L133" aria-label="Line 133">133</a> </span>
+<span id="L134"><a href="#L134" aria-label="Line 134">134</a>     expect(harness.executorFactory).toHaveBeenCalledOnce();</span>
+<span id="L135"><a href="#L135" aria-label="Line 135">135</a>     expect(harness.warmRequests).toHaveLength(0);</span>
+<span id="L136"><a href="#L136" aria-label="Line 136">136</a>   });</span>
+<span id="L137"><a href="#L137" aria-label="Line 137">137</a> </span>
+<span id="L138"><a href="#L138" aria-label="Line 138">138</a>   it(&quot;creates a new executor for every local attempt&quot;, async () =&gt; {</span>
+<span id="L139"><a href="#L139" aria-label="Line 139">139</a>     const harness = new ClientHarness({ record: undefined });</span>
+<span id="L140"><a href="#L140" aria-label="Line 140">140</a> </span>
+<span id="L141"><a href="#L141" aria-label="Line 141">141</a>     await harness.client.execute(harness.request());</span>
+<span id="L142"><a href="#L142" aria-label="Line 142">142</a>     await harness.client.execute(harness.request());</span>
+<span id="L143"><a href="#L143" aria-label="Line 143">143</a> </span>
+<span id="L144"><a href="#L144" aria-label="Line 144">144</a>     expect(harness.executorFactory).toHaveBeenCalledTimes(2);</span>
+<span id="L145"><a href="#L145" aria-label="Line 145">145</a>     expect(harness.executors).toHaveLength(2);</span>
+<span id="L146"><a href="#L146" aria-label="Line 146">146</a>     expect(harness.executors[0]).not.toBe(harness.executors[1]);</span>
+<span id="L147"><a href="#L147" aria-label="Line 147">147</a>   });</span>
+<span id="L148"><a href="#L148" aria-label="Line 148">148</a> </span>
+<span id="L149"><a href="#L149" aria-label="Line 149">149</a>   it(&quot;composes fresh warm result captures from output policy in the OS temporary directory&quot;, () =&gt; {</span>
+<span id="L150"><a href="#L150" aria-label="Line 150">150</a>     const harness = new ClientHarness({});</span>
+<span id="L151"><a href="#L151" aria-label="Line 151">151</a>     const createOutput = ClientCaptureInspection.createOutput(harness.client);</span>
+<span id="L152"><a href="#L152" aria-label="Line 152">152</a> </span>
+<span id="L153"><a href="#L153" aria-label="Line 153">153</a>     const first = createOutput();</span>
+<span id="L154"><a href="#L154" aria-label="Line 154">154</a>     const second = createOutput();</span>
+<span id="L155"><a href="#L155" aria-label="Line 155">155</a> </span>
+<span id="L156"><a href="#L156" aria-label="Line 156">156</a>     expect(first).not.toBe(second);</span>
+<span id="L157"><a href="#L157" aria-label="Line 157">157</a>     expect(ClientCaptureInspection.capture(first)).toMatchObject({</span>
+<span id="L158"><a href="#L158" aria-label="Line 158">158</a>       directory: tmpdir(),</span>
+<span id="L159"><a href="#L159" aria-label="Line 159">159</a>       maximumChunkRawBytes: DaemonPolicy.currentSystem().values.output.maximumChunkRawBytes,</span>
+<span id="L160"><a href="#L160" aria-label="Line 160">160</a>       inlineRawBytes: DaemonPolicy.currentSystem().values.output.inlineRawBytes,</span>
+<span id="L161"><a href="#L161" aria-label="Line 161">161</a>       maximumResultRawBytes: DaemonPolicy.currentSystem().values.output.maximumResultRawBytes,</span>
+<span id="L162"><a href="#L162" aria-label="Line 162">162</a>     });</span>
+<span id="L163"><a href="#L163" aria-label="Line 163">163</a>     expect(harness.executorFactory).not.toHaveBeenCalled();</span>
+<span id="L164"><a href="#L164" aria-label="Line 164">164</a>   });</span>
+<span id="L165"><a href="#L165" aria-label="Line 165">165</a> </span>
+<span id="L166"><a href="#L166" aria-label="Line 166">166</a>   it(&quot;executes ready requests warm without creating a host executor&quot;, async () =&gt; {</span>
+<span id="L167"><a href="#L167" aria-label="Line 167">167</a>     const harness = new ClientHarness({});</span>
+<span id="L168"><a href="#L168" aria-label="Line 168">168</a> </span>
+<span id="L169"><a href="#L169" aria-label="Line 169">169</a>     await expect(harness.client.execute(harness.request())).resolves.toEqual({</span>
+<span id="L170"><a href="#L170" aria-label="Line 170">170</a>       mode: &quot;warm&quot;,</span>
+<span id="L171"><a href="#L171" aria-label="Line 171">171</a>       result: success,</span>
+<span id="L172"><a href="#L172" aria-label="Line 172">172</a>     });</span>
+<span id="L173"><a href="#L173" aria-label="Line 173">173</a> </span>
+<span id="L174"><a href="#L174" aria-label="Line 174">174</a>     expect(harness.executorFactory).not.toHaveBeenCalled();</span>
+<span id="L175"><a href="#L175" aria-label="Line 175">175</a>     expect(harness.warmRequests).toEqual([</span>
+<span id="L176"><a href="#L176" aria-label="Line 176">176</a>       expect.objectContaining({</span>
+<span id="L177"><a href="#L177" aria-label="Line 177">177</a>         commandName: &quot;overview&quot;,</span>
+<span id="L178"><a href="#L178" aria-label="Line 178">178</a>         request: {</span>
+<span id="L179"><a href="#L179" aria-label="Line 179">179</a>           argv: [&quot;overview&quot;, &quot;src/a.ts&quot;],</span>
+<span id="L180"><a href="#L180" aria-label="Line 180">180</a>           cwd: &quot;/workspace&quot;,</span>
+<span id="L181"><a href="#L181" aria-label="Line 181">181</a>           telemetryEnabled: true,</span>
+<span id="L182"><a href="#L182" aria-label="Line 182">182</a>           executionMode: &quot;warm&quot;,</span>
+<span id="L183"><a href="#L183" aria-label="Line 183">183</a>         },</span>
+<span id="L184"><a href="#L184" aria-label="Line 184">184</a>       }),</span>
+<span id="L185"><a href="#L185" aria-label="Line 185">185</a>     ]);</span>
+<span id="L186"><a href="#L186" aria-label="Line 186">186</a>   });</span>
+<span id="L187"><a href="#L187" aria-label="Line 187">187</a> </span>
+<span id="L188"><a href="#L188" aria-label="Line 188">188</a>   it.each([</span>
+<span id="L189"><a href="#L189" aria-label="Line 189">189</a>     new DaemonTransportError(&quot;unreachable&quot;, &quot;not-submitted&quot;, &quot;connection refused&quot;),</span>
+<span id="L190"><a href="#L190" aria-label="Line 190">190</a>     new DaemonTransportError(</span>
+<span id="L191"><a href="#L191" aria-label="Line 191">191</a>       &quot;rejected&quot;,</span>
+<span id="L192"><a href="#L192" aria-label="Line 192">192</a>       &quot;submitted-unconfirmed&quot;,</span>
+<span id="L193"><a href="#L193" aria-label="Line 193">193</a>       &quot;not ready&quot;,</span>
+<span id="L194"><a href="#L194" aria-label="Line 194">194</a>       &quot;instance-1&quot;,</span>
+<span id="L195"><a href="#L195" aria-label="Line 195">195</a>       &quot;not-ready&quot;,</span>
+<span id="L196"><a href="#L196" aria-label="Line 196">196</a>     ),</span>
+<span id="L197"><a href="#L197" aria-label="Line 197">197</a>   ])(&quot;falls back once after retry-safe warm failure %#&quot;, async (failure) =&gt; {</span>
+<span id="L198"><a href="#L198" aria-label="Line 198">198</a>     const harness = new ClientHarness({ warmFailure: failure });</span>
+<span id="L199"><a href="#L199" aria-label="Line 199">199</a> </span>
+<span id="L200"><a href="#L200" aria-label="Line 200">200</a>     await expect(harness.client.execute(harness.request())).resolves.toEqual({</span>
+<span id="L201"><a href="#L201" aria-label="Line 201">201</a>       mode: &quot;fallback&quot;,</span>
+<span id="L202"><a href="#L202" aria-label="Line 202">202</a>       result: success,</span>
+<span id="L203"><a href="#L203" aria-label="Line 203">203</a>     });</span>
+<span id="L204"><a href="#L204" aria-label="Line 204">204</a> </span>
+<span id="L205"><a href="#L205" aria-label="Line 205">205</a>     expect(harness.executorFactory).toHaveBeenCalledOnce();</span>
+<span id="L206"><a href="#L206" aria-label="Line 206">206</a>     expect(harness.localRequests).toHaveLength(1);</span>
+<span id="L207"><a href="#L207" aria-label="Line 207">207</a>   });</span>
+<span id="L208"><a href="#L208" aria-label="Line 208">208</a> </span>
+<span id="L209"><a href="#L209" aria-label="Line 209">209</a>   it.each([</span>
+<span id="L210"><a href="#L210" aria-label="Line 210">210</a>     new DaemonTransportError(&quot;timeout&quot;, &quot;submitted-unconfirmed&quot;, &quot;request timed out&quot;),</span>
+<span id="L211"><a href="#L211" aria-label="Line 211">211</a>     new DaemonTransportError(&quot;closed&quot;, &quot;accepted&quot;, &quot;request closed&quot;, &quot;instance-1&quot;),</span>
+<span id="L212"><a href="#L212" aria-label="Line 212">212</a>     new DaemonTransportError(</span>
+<span id="L213"><a href="#L213" aria-label="Line 213">213</a>       &quot;rejected&quot;,</span>
+<span id="L214"><a href="#L214" aria-label="Line 214">214</a>       &quot;submitted-unconfirmed&quot;,</span>
+<span id="L215"><a href="#L215" aria-label="Line 215">215</a>       &quot;incompatible&quot;,</span>
+<span id="L216"><a href="#L216" aria-label="Line 216">216</a>       &quot;instance-1&quot;,</span>
+<span id="L217"><a href="#L217" aria-label="Line 217">217</a>       &quot;incompatible&quot;,</span>
+<span id="L218"><a href="#L218" aria-label="Line 218">218</a>     ),</span>
+<span id="L219"><a href="#L219" aria-label="Line 219">219</a>     new Error(&quot;malformed response&quot;),</span>
+<span id="L220"><a href="#L220" aria-label="Line 220">220</a>   ])(&quot;does not replay uncertain warm failure %#&quot;, async (failure) =&gt; {</span>
+<span id="L221"><a href="#L221" aria-label="Line 221">221</a>     const harness = new ClientHarness({ warmFailure: failure });</span>
+<span id="L222"><a href="#L222" aria-label="Line 222">222</a> </span>
+<span id="L223"><a href="#L223" aria-label="Line 223">223</a>     const result = await harness.client.execute(harness.request());</span>
+<span id="L224"><a href="#L224" aria-label="Line 224">224</a> </span>
+<span id="L225"><a href="#L225" aria-label="Line 225">225</a>     expect(result.mode).toBe(&quot;warm&quot;);</span>
+<span id="L226"><a href="#L226" aria-label="Line 226">226</a>     expect(result.result.exitCode).toBe(1);</span>
+<span id="L227"><a href="#L227" aria-label="Line 227">227</a>     await expect(outputText(result.result)).resolves.toBe(</span>
+<span id="L228"><a href="#L228" aria-label="Line 228">228</a>       &quot;Cannot answer: accepted daemon request did not complete.\n&quot;,</span>
+<span id="L229"><a href="#L229" aria-label="Line 229">229</a>     );</span>
+<span id="L230"><a href="#L230" aria-label="Line 230">230</a>     expect(harness.executorFactory).not.toHaveBeenCalled();</span>
+<span id="L231"><a href="#L231" aria-label="Line 231">231</a>   });</span>
+<span id="L232"><a href="#L232" aria-label="Line 232">232</a> </span>
+<span id="L233"><a href="#L233" aria-label="Line 233">233</a>   it.each([</span>
+<span id="L234"><a href="#L234" aria-label="Line 234">234</a>     [&quot;controlled-resource&quot;, &quot;Cannot answer: daemon workspace capacity exceeded.\n&quot;],</span>
+<span id="L235"><a href="#L235" aria-label="Line 235">235</a>     [&quot;response-capacity&quot;, &quot;Cannot answer: daemon response capacity exceeded.\n&quot;],</span>
+<span id="L236"><a href="#L236" aria-label="Line 236">236</a>     [&quot;worker-exit&quot;, &quot;Cannot answer: accepted daemon request did not complete.\n&quot;],</span>
+<span id="L237"><a href="#L237" aria-label="Line 237">237</a>     [&quot;stopping&quot;, &quot;Cannot answer: accepted daemon request did not complete.\n&quot;],</span>
+<span id="L238"><a href="#L238" aria-label="Line 238">238</a>     [&quot;internal&quot;, &quot;Cannot answer: accepted daemon request did not complete.\n&quot;],</span>
+<span id="L239"><a href="#L239" aria-label="Line 239">239</a>   ] as const)(&quot;owns the exact controlled result for %s&quot;, async (code, message) =&gt; {</span>
+<span id="L240"><a href="#L240" aria-label="Line 240">240</a>     const harness = new ClientHarness({ terminalFailure: code });</span>
+<span id="L241"><a href="#L241" aria-label="Line 241">241</a> </span>
+<span id="L242"><a href="#L242" aria-label="Line 242">242</a>     const result = await harness.client.execute(harness.request());</span>
+<span id="L243"><a href="#L243" aria-label="Line 243">243</a> </span>
+<span id="L244"><a href="#L244" aria-label="Line 244">244</a>     expect(result.mode).toBe(&quot;warm&quot;);</span>
+<span id="L245"><a href="#L245" aria-label="Line 245">245</a>     expect(result.result.exitCode).toBe(1);</span>
+<span id="L246"><a href="#L246" aria-label="Line 246">246</a>     await expect(outputText(result.result)).resolves.toBe(message);</span>
+<span id="L247"><a href="#L247" aria-label="Line 247">247</a>     expect(harness.executorFactory).not.toHaveBeenCalled();</span>
+<span id="L248"><a href="#L248" aria-label="Line 248">248</a>   });</span>
+<span id="L249"><a href="#L249" aria-label="Line 249">249</a> </span>
+<span id="L250"><a href="#L250" aria-label="Line 250">250</a>   it(&quot;disposes malformed warm output before returning its controlled result&quot;, async () =&gt; {</span>
+<span id="L251"><a href="#L251" aria-label="Line 251">251</a>     const output = new CommandOutputSnapshot([]);</span>
+<span id="L252"><a href="#L252" aria-label="Line 252">252</a>     const dispose = vi.spyOn(output, &quot;dispose&quot;);</span>
+<span id="L253"><a href="#L253" aria-label="Line 253">253</a>     const harness = new ClientHarness({ warmResult: { exitCode: 1.5, output } });</span>
+<span id="L254"><a href="#L254" aria-label="Line 254">254</a> </span>
+<span id="L255"><a href="#L255" aria-label="Line 255">255</a>     const result = await harness.client.execute(harness.request());</span>
+<span id="L256"><a href="#L256" aria-label="Line 256">256</a> </span>
+<span id="L257"><a href="#L257" aria-label="Line 257">257</a>     expect(result.mode).toBe(&quot;warm&quot;);</span>
+<span id="L258"><a href="#L258" aria-label="Line 258">258</a>     expect(result.result.exitCode).toBe(1);</span>
+<span id="L259"><a href="#L259" aria-label="Line 259">259</a>     expect(dispose).toHaveBeenCalledOnce();</span>
+<span id="L260"><a href="#L260" aria-label="Line 260">260</a>   });</span>
+<span id="L261"><a href="#L261" aria-label="Line 261">261</a> </span>
+<span id="L262"><a href="#L262" aria-label="Line 262">262</a>   it(&quot;replaces a completed warm result without output and does not replay or mutate&quot;, async () =&gt; {</span>
+<span id="L263"><a href="#L263" aria-label="Line 263">263</a>     const harness = new ClientHarness({</span>
+<span id="L264"><a href="#L264" aria-label="Line 264">264</a>       warmResult: { exitCode: 0, output: undefined } as unknown as DaemonExecutorExecutionResult,</span>
+<span id="L265"><a href="#L265" aria-label="Line 265">265</a>     });</span>
+<span id="L266"><a href="#L266" aria-label="Line 266">266</a> </span>
+<span id="L267"><a href="#L267" aria-label="Line 267">267</a>     const result = await harness.client.execute(harness.request());</span>
+<span id="L268"><a href="#L268" aria-label="Line 268">268</a> </span>
+<span id="L269"><a href="#L269" aria-label="Line 269">269</a>     expect(result.mode).toBe(&quot;warm&quot;);</span>
+<span id="L270"><a href="#L270" aria-label="Line 270">270</a>     expect(result.result.exitCode).toBe(1);</span>
+<span id="L271"><a href="#L271" aria-label="Line 271">271</a>     await expect(outputText(result.result)).resolves.toBe(</span>
+<span id="L272"><a href="#L272" aria-label="Line 272">272</a>       &quot;Cannot answer: accepted daemon request did not complete.\n&quot;,</span>
+<span id="L273"><a href="#L273" aria-label="Line 273">273</a>     );</span>
+<span id="L274"><a href="#L274" aria-label="Line 274">274</a>     expect(harness.executorFactory).not.toHaveBeenCalled();</span>
+<span id="L275"><a href="#L275" aria-label="Line 275">275</a>     expect(harness.trigger).not.toHaveBeenCalled();</span>
+<span id="L276"><a href="#L276" aria-label="Line 276">276</a>     expect(harness.removeIfProcess).not.toHaveBeenCalled();</span>
+<span id="L277"><a href="#L277" aria-label="Line 277">277</a>   });</span>
+<span id="L278"><a href="#L278" aria-label="Line 278">278</a> });</span>
+<span id="L279"><a href="#L279" aria-label="Line 279">279</a> </span>
+<span id="L280"><a href="#L280" aria-label="Line 280">280</a> interface ClientHarnessOptions {</span>
+<span id="L281"><a href="#L281" aria-label="Line 281">281</a>   readonly daemonEnabled?: boolean;</span>
+<span id="L282"><a href="#L282" aria-label="Line 282">282</a>   readonly record?: DaemonRecord | undefined;</span>
+<span id="L283"><a href="#L283" aria-label="Line 283">283</a>   readonly readFailure?: Error;</span>
+<span id="L284"><a href="#L284" aria-label="Line 284">284</a>   readonly neverResolveTrigger?: boolean;</span>
+<span id="L285"><a href="#L285" aria-label="Line 285">285</a>   readonly observationKind?: DaemonObservation[&quot;kind&quot;];</span>
+<span id="L286"><a href="#L286" aria-label="Line 286">286</a>   readonly pongState?: DaemonPong[&quot;state&quot;];</span>
+<span id="L287"><a href="#L287" aria-label="Line 287">287</a>   readonly pongVersion?: string;</span>
+<span id="L288"><a href="#L288" aria-label="Line 288">288</a>   readonly warmFailure?: Error;</span>
+<span id="L289"><a href="#L289" aria-label="Line 289">289</a>   readonly warmResult?: DaemonExecutorExecutionResult;</span>
+<span id="L290"><a href="#L290" aria-label="Line 290">290</a>   readonly terminalFailure?: DaemonExecutionFailureCode;</span>
+<span id="L291"><a href="#L291" aria-label="Line 291">291</a> }</span>
+<span id="L292"><a href="#L292" aria-label="Line 292">292</a> </span>
+<span id="L293"><a href="#L293" aria-label="Line 293">293</a> class ClientHarness {</span>
+<span id="L294"><a href="#L294" aria-label="Line 294">294</a>   readonly executorFactory = vi.fn();</span>
+<span id="L295"><a href="#L295" aria-label="Line 295">295</a>   readonly executors: DaemonExecutor[] = [];</span>
+<span id="L296"><a href="#L296" aria-label="Line 296">296</a>   readonly localRequests: DaemonExecutorRequest[] = [];</span>
+<span id="L297"><a href="#L297" aria-label="Line 297">297</a>   readonly warmRequests: unknown[] = [];</span>
+<span id="L298"><a href="#L298" aria-label="Line 298">298</a>   readonly registryRead = vi.fn();</span>
+<span id="L299"><a href="#L299" aria-label="Line 299">299</a>   readonly observe = vi.fn();</span>
+<span id="L300"><a href="#L300" aria-label="Line 300">300</a>   readonly removeIfProcess = vi.fn(() =&gt; true);</span>
+<span id="L301"><a href="#L301" aria-label="Line 301">301</a>   readonly trigger = vi.fn();</span>
+<span id="L302"><a href="#L302" aria-label="Line 302">302</a>   readonly client: DaemonClient;</span>
+<span id="L303"><a href="#L303" aria-label="Line 303">303</a> </span>
+<span id="L304"><a href="#L304" aria-label="Line 304">304</a>   constructor(options: ClientHarnessOptions) {</span>
+<span id="L305"><a href="#L305" aria-label="Line 305">305</a>     this.registryRead.mockImplementation(() =&gt; {</span>
+<span id="L306"><a href="#L306" aria-label="Line 306">306</a>       if (options.readFailure !== undefined) throw options.readFailure;</span>
+<span id="L307"><a href="#L307" aria-label="Line 307">307</a>       return Object.hasOwn(options, &quot;record&quot;) ? options.record : daemonRecord();</span>
+<span id="L308"><a href="#L308" aria-label="Line 308">308</a>     });</span>
+<span id="L309"><a href="#L309" aria-label="Line 309">309</a>     vi.spyOn(DaemonRegistry.prototype, &quot;read&quot;).mockImplementation(this.registryRead);</span>
+<span id="L310"><a href="#L310" aria-label="Line 310">310</a>     this.observe.mockImplementation(async (observed: DaemonRecord): Promise&lt;DaemonObservation&gt; =&gt; {</span>
+<span id="L311"><a href="#L311" aria-label="Line 311">311</a>       const kind = options.observationKind ?? &quot;responsive&quot;;</span>
+<span id="L312"><a href="#L312" aria-label="Line 312">312</a>       if (kind === &quot;responsive&quot;) {</span>
+<span id="L313"><a href="#L313" aria-label="Line 313">313</a>         return {</span>
+<span id="L314"><a href="#L314" aria-label="Line 314">314</a>           kind,</span>
+<span id="L315"><a href="#L315" aria-label="Line 315">315</a>           record: observed,</span>
+<span id="L316"><a href="#L316" aria-label="Line 316">316</a>           pong: {</span>
+<span id="L317"><a href="#L317" aria-label="Line 317">317</a>             kind: &quot;pong&quot;,</span>
+<span id="L318"><a href="#L318" aria-label="Line 318">318</a>             protocolVersion: observed.protocolVersion,</span>
+<span id="L319"><a href="#L319" aria-label="Line 319">319</a>             instanceId: observed.instanceId,</span>
+<span id="L320"><a href="#L320" aria-label="Line 320">320</a>             symnavVersion: options.pongVersion ?? observed.symnavVersion,</span>
+<span id="L321"><a href="#L321" aria-label="Line 321">321</a>             state: options.pongState ?? &quot;ready&quot;,</span>
+<span id="L322"><a href="#L322" aria-label="Line 322">322</a>           },</span>
+<span id="L323"><a href="#L323" aria-label="Line 323">323</a>         };</span>
+<span id="L324"><a href="#L324" aria-label="Line 324">324</a>       }</span>
+<span id="L325"><a href="#L325" aria-label="Line 325">325</a>       if (kind === &quot;starting&quot; || kind === &quot;exited&quot;) return { kind, record: observed };</span>
+<span id="L326"><a href="#L326" aria-label="Line 326">326</a>       if (kind === &quot;unresponsive&quot;) return { kind, record: observed, failureCode: &quot;timeout&quot; };</span>
+<span id="L327"><a href="#L327" aria-label="Line 327">327</a>       return {</span>
+<span id="L328"><a href="#L328" aria-label="Line 328">328</a>         kind,</span>
+<span id="L329"><a href="#L329" aria-label="Line 329">329</a>         record: observed,</span>
+<span id="L330"><a href="#L330" aria-label="Line 330">330</a>         evidence: {</span>
+<span id="L331"><a href="#L331" aria-label="Line 331">331</a>           instanceId: observed.instanceId,</span>
+<span id="L332"><a href="#L332" aria-label="Line 332">332</a>           processToken: observed.processToken,</span>
+<span id="L333"><a href="#L333" aria-label="Line 333">333</a>           pid: observed.pid,</span>
+<span id="L334"><a href="#L334" aria-label="Line 334">334</a>           startedAt: observed.startedAt,</span>
+<span id="L335"><a href="#L335" aria-label="Line 335">335</a>         },</span>
+<span id="L336"><a href="#L336" aria-label="Line 336">336</a>       };</span>
+<span id="L337"><a href="#L337" aria-label="Line 337">337</a>     });</span>
+<span id="L338"><a href="#L338" aria-label="Line 338">338</a>     vi.spyOn(DaemonRecordObserver.prototype, &quot;observe&quot;).mockImplementation(this.observe);</span>
+<span id="L339"><a href="#L339" aria-label="Line 339">339</a>     vi.spyOn(DaemonRegistry.prototype, &quot;removeIfProcess&quot;).mockImplementation(this.removeIfProcess);</span>
+<span id="L340"><a href="#L340" aria-label="Line 340">340</a>     this.trigger.mockImplementation(() =&gt;</span>
+<span id="L341"><a href="#L341" aria-label="Line 341">341</a>       options.neverResolveTrigger</span>
+<span id="L342"><a href="#L342" aria-label="Line 342">342</a>         ? new Promise(() =&gt; {})</span>
+<span id="L343"><a href="#L343" aria-label="Line 343">343</a>         : Promise.resolve({ status: &quot;launched&quot;, instanceId: &quot;replacement&quot;, pid: 321 }),</span>
+<span id="L344"><a href="#L344" aria-label="Line 344">344</a>     );</span>
+<span id="L345"><a href="#L345" aria-label="Line 345">345</a>     vi.spyOn(DaemonStartupCoordinator.prototype, &quot;trigger&quot;).mockImplementation(this.trigger);</span>
+<span id="L346"><a href="#L346" aria-label="Line 346">346</a>     vi.spyOn(LocalDaemonTransport.prototype, &quot;execute&quot;).mockImplementation(</span>
+<span id="L347"><a href="#L347" aria-label="Line 347">347</a>       async (_endpoint, request) =&gt; {</span>
+<span id="L348"><a href="#L348" aria-label="Line 348">348</a>         this.warmRequests.push(request);</span>
+<span id="L349"><a href="#L349" aria-label="Line 349">349</a>         if (options.warmFailure !== undefined) throw options.warmFailure;</span>
+<span id="L350"><a href="#L350" aria-label="Line 350">350</a>         return {</span>
+<span id="L351"><a href="#L351" aria-label="Line 351">351</a>           acceptance: {</span>
+<span id="L352"><a href="#L352" aria-label="Line 352">352</a>             requestId: request.requestId,</span>
+<span id="L353"><a href="#L353" aria-label="Line 353">353</a>             instanceId: request.instanceId,</span>
+<span id="L354"><a href="#L354" aria-label="Line 354">354</a>             acceptedAt: 1,</span>
+<span id="L355"><a href="#L355" aria-label="Line 355">355</a>             queuePosition: 0,</span>
+<span id="L356"><a href="#L356" aria-label="Line 356">356</a>           },</span>
+<span id="L357"><a href="#L357" aria-label="Line 357">357</a>           completion:</span>
+<span id="L358"><a href="#L358" aria-label="Line 358">358</a>             options.terminalFailure === undefined</span>
+<span id="L359"><a href="#L359" aria-label="Line 359">359</a>               ? Promise.resolve({ status: &quot;completed&quot;, result: options.warmResult ?? success })</span>
+<span id="L360"><a href="#L360" aria-label="Line 360">360</a>               : Promise.resolve({ status: &quot;failed&quot;, code: options.terminalFailure }),</span>
+<span id="L361"><a href="#L361" aria-label="Line 361">361</a>         };</span>
+<span id="L362"><a href="#L362" aria-label="Line 362">362</a>       },</span>
+<span id="L363"><a href="#L363" aria-label="Line 363">363</a>     );</span>
+<span id="L364"><a href="#L364" aria-label="Line 364">364</a>     this.executorFactory.mockImplementation(() =&gt; {</span>
+<span id="L365"><a href="#L365" aria-label="Line 365">365</a>       const executor: DaemonExecutor = {</span>
+<span id="L366"><a href="#L366" aria-label="Line 366">366</a>         initialize: async () =&gt; ({ fileCount: 0 }),</span>
+<span id="L367"><a href="#L367" aria-label="Line 367">367</a>         execute: async (request) =&gt; {</span>
+<span id="L368"><a href="#L368" aria-label="Line 368">368</a>           this.localRequests.push(request);</span>
+<span id="L369"><a href="#L369" aria-label="Line 369">369</a>           return success;</span>
+<span id="L370"><a href="#L370" aria-label="Line 370">370</a>         },</span>
+<span id="L371"><a href="#L371" aria-label="Line 371">371</a>         releaseTransientResources: async () =&gt; undefined,</span>
+<span id="L372"><a href="#L372" aria-label="Line 372">372</a>       };</span>
+<span id="L373"><a href="#L373" aria-label="Line 373">373</a>       this.executors.push(executor);</span>
+<span id="L374"><a href="#L374" aria-label="Line 374">374</a>       return executor;</span>
+<span id="L375"><a href="#L375" aria-label="Line 375">375</a>     });</span>
+<span id="L376"><a href="#L376" aria-label="Line 376">376</a>     this.client = new DaemonClient({</span>
+<span id="L377"><a href="#L377" aria-label="Line 377">377</a>       stateDirectory: &quot;/state&quot;,</span>
+<span id="L378"><a href="#L378" aria-label="Line 378">378</a>       productVersion: &quot;0.1.0&quot;,</span>
+<span id="L379"><a href="#L379" aria-label="Line 379">379</a>       daemonEnabled: options.daemonEnabled ?? true,</span>
+<span id="L380"><a href="#L380" aria-label="Line 380">380</a>       executorFactory: this.executorFactory,</span>
+<span id="L381"><a href="#L381" aria-label="Line 381">381</a>       executorModuleUrl: &quot;file:///executor.js&quot;,</span>
+<span id="L382"><a href="#L382" aria-label="Line 382">382</a>       readinessProbe: { commandName: &quot;version&quot;, argv: [&quot;--version&quot;] },</span>
+<span id="L383"><a href="#L383" aria-label="Line 383">383</a>       policy: DaemonPolicy.currentSystem(),</span>
+<span id="L384"><a href="#L384" aria-label="Line 384">384</a>     });</span>
+<span id="L385"><a href="#L385" aria-label="Line 385">385</a>   }</span>
+<span id="L386"><a href="#L386" aria-label="Line 386">386</a> </span>
+<span id="L387"><a href="#L387" aria-label="Line 387">387</a>   request() {</span>
+<span id="L388"><a href="#L388" aria-label="Line 388">388</a>     return {</span>
+<span id="L389"><a href="#L389" aria-label="Line 389">389</a>       workspaceRoot: &quot;/workspace&quot;,</span>
+<span id="L390"><a href="#L390" aria-label="Line 390">390</a>       commandName: &quot;overview&quot; as const,</span>
+<span id="L391"><a href="#L391" aria-label="Line 391">391</a>       argv: [&quot;overview&quot;, &quot;src/a.ts&quot;],</span>
+<span id="L392"><a href="#L392" aria-label="Line 392">392</a>       cwd: &quot;/workspace&quot;,</span>
+<span id="L393"><a href="#L393" aria-label="Line 393">393</a>       telemetryEnabled: true,</span>
+<span id="L394"><a href="#L394" aria-label="Line 394">394</a>     };</span>
+<span id="L395"><a href="#L395" aria-label="Line 395">395</a>   }</span>
+<span id="L396"><a href="#L396" aria-label="Line 396">396</a> }</span>
+<span id="L397"><a href="#L397" aria-label="Line 397">397</a> </span>
+<span id="L398"><a href="#L398" aria-label="Line 398">398</a> class ClientCaptureInspection {</span>
+<span id="L399"><a href="#L399" aria-label="Line 399">399</a>   static createOutput(client: DaemonClient): () =&gt; DaemonOutputCapture {</span>
+<span id="L400"><a href="#L400" aria-label="Line 400">400</a>     const composition = client as unknown as {</span>
+<span id="L401"><a href="#L401" aria-label="Line 401">401</a>       readonly routingTransport: {</span>
+<span id="L402"><a href="#L402" aria-label="Line 402">402</a>         readonly execution: {</span>
+<span id="L403"><a href="#L403" aria-label="Line 403">403</a>           readonly options: { readonly createOutput: () =&gt; DaemonOutputCapture };</span>
+<span id="L404"><a href="#L404" aria-label="Line 404">404</a>         };</span>
+<span id="L405"><a href="#L405" aria-label="Line 405">405</a>       };</span>
+<span id="L406"><a href="#L406" aria-label="Line 406">406</a>     };</span>
+<span id="L407"><a href="#L407" aria-label="Line 407">407</a>     return composition.routingTransport.execution.options.createOutput;</span>
+<span id="L408"><a href="#L408" aria-label="Line 408">408</a>   }</span>
+<span id="L409"><a href="#L409" aria-label="Line 409">409</a> </span>
+<span id="L410"><a href="#L410" aria-label="Line 410">410</a>   static capture(capture: DaemonOutputCapture): {</span>
+<span id="L411"><a href="#L411" aria-label="Line 411">411</a>     readonly directory: string;</span>
+<span id="L412"><a href="#L412" aria-label="Line 412">412</a>     readonly maximumChunkRawBytes: number;</span>
+<span id="L413"><a href="#L413" aria-label="Line 413">413</a>     readonly inlineRawBytes: number;</span>
+<span id="L414"><a href="#L414" aria-label="Line 414">414</a>     readonly maximumResultRawBytes: number;</span>
+<span id="L415"><a href="#L415" aria-label="Line 415">415</a>   } {</span>
+<span id="L416"><a href="#L416" aria-label="Line 416">416</a>     return capture as unknown as ReturnType&lt;typeof ClientCaptureInspection.capture&gt;;</span>
+<span id="L417"><a href="#L417" aria-label="Line 417">417</a>   }</span>
+<span id="L418"><a href="#L418" aria-label="Line 418">418</a> }</span>
+<span id="L419"><a href="#L419" aria-label="Line 419">419</a> </span>
+<span id="L420"><a href="#L420" aria-label="Line 420">420</a> function daemonRecord(overrides: Partial&lt;DaemonRecord&gt; = {}): DaemonRecord {</span>
+<span id="L421"><a href="#L421" aria-label="Line 421">421</a>   return {</span>
+<span id="L422"><a href="#L422" aria-label="Line 422">422</a>     schemaVersion: DAEMON_RECORD_SCHEMA_VERSION,</span>
+<span id="L423"><a href="#L423" aria-label="Line 423">423</a>     protocolVersion: DAEMON_PROTOCOL_VERSION,</span>
+<span id="L424"><a href="#L424" aria-label="Line 424">424</a>     symnavVersion: &quot;0.1.0&quot;,</span>
+<span id="L425"><a href="#L425" aria-label="Line 425">425</a>     workspaceRoot: &quot;/workspace&quot;,</span>
+<span id="L426"><a href="#L426" aria-label="Line 426">426</a>     workspaceKey: &quot;workspace-key&quot;,</span>
+<span id="L427"><a href="#L427" aria-label="Line 427">427</a>     stateKey: &quot;state-key&quot;,</span>
+<span id="L428"><a href="#L428" aria-label="Line 428">428</a>     identityKey: &quot;identity-key&quot;,</span>
+<span id="L429"><a href="#L429" aria-label="Line 429">429</a>     instanceId: &quot;instance-1&quot;,</span>
+<span id="L430"><a href="#L430" aria-label="Line 430">430</a>     processToken: &quot;process-1&quot;,</span>
+<span id="L431"><a href="#L431" aria-label="Line 431">431</a>     endpoint: &quot;/endpoint&quot;,</span>
+<span id="L432"><a href="#L432" aria-label="Line 432">432</a>     pid: 123,</span>
+<span id="L433"><a href="#L433" aria-label="Line 433">433</a>     state: &quot;ready&quot;,</span>
+<span id="L434"><a href="#L434" aria-label="Line 434">434</a>     startedAt: 1,</span>
+<span id="L435"><a href="#L435" aria-label="Line 435">435</a>     readyAt: 2,</span>
+<span id="L436"><a href="#L436" aria-label="Line 436">436</a>     fileCount: 1,</span>
+<span id="L437"><a href="#L437" aria-label="Line 437">437</a>     memoryCapBytes: 1024,</span>
+<span id="L438"><a href="#L438" aria-label="Line 438">438</a>     ...overrides,</span>
+<span id="L439"><a href="#L439" aria-label="Line 439">439</a>   };</span>
+<span id="L440"><a href="#L440" aria-label="Line 440">440</a> }</span>
+<span id="L441"><a href="#L441" aria-label="Line 441">441</a> </span>
+<span id="L442"><a href="#L442" aria-label="Line 442">442</a> async function outputText(result: DaemonExecutorExecutionResult): Promise&lt;string&gt; {</span>
+<span id="L443"><a href="#L443" aria-label="Line 443">443</a>   const chunks: Uint8Array[] = [];</span>
+<span id="L444"><a href="#L444" aria-label="Line 444">444</a>   for await (const outputRecord of result.output.records()) chunks.push(outputRecord.bytes);</span>
+<span id="L445"><a href="#L445" aria-label="Line 445">445</a>   await result.output.dispose();</span>
+<span id="L446"><a href="#L446" aria-label="Line 446">446</a>   return Buffer.concat(chunks).toString();</span>
+<span id="L447"><a href="#L447" aria-label="Line 447">447</a> }</span>
+</pre><a href="../../receipts.html">← Return to receipt index</a></main></body></html>

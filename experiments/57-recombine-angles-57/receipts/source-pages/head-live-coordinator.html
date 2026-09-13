@@ -1,0 +1,672 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>apps/cli/src/daemon/daemon-process-coordinator.ts</title><link rel="stylesheet" href="../../style.css"></head><body><main class="source-file"><a href="../../receipts.html">← Return to receipt index</a><p>head · 20838f8dbf413e04767543eb2380d0d114da6c60</p><h1>apps/cli/src/daemon/daemon-process-coordinator.ts</h1><p>Git blob <code>2746a1796b238cd56a7538ca0277fcfc37387559</code><br>SHA-256 <code>daeea5936af2334d791864b1e7cfa3d147d71f83b8f5c4c2f012f8c873cb4d2b</code></p><a href="../sources/head-live-coordinator.txt">Raw pinned text</a><pre><span id="L1"><a href="#L1" aria-label="Line 1">1</a> import { access } from &quot;node:fs/promises&quot;;</span>
+<span id="L2"><a href="#L2" aria-label="Line 2">2</a> import {</span>
+<span id="L3"><a href="#L3" aria-label="Line 3">3</a>   DaemonAdmissionPolicy,</span>
+<span id="L4"><a href="#L4" aria-label="Line 4">4</a>   DaemonAdmissionRejections,</span>
+<span id="L5"><a href="#L5" aria-label="Line 5">5</a>   type DaemonAdmissionDecision,</span>
+<span id="L6"><a href="#L6" aria-label="Line 6">6</a>   type DaemonExecuteRejectionCode,</span>
+<span id="L7"><a href="#L7" aria-label="Line 7">7</a>   type DaemonExecutorModuleUrl,</span>
+<span id="L8"><a href="#L8" aria-label="Line 8">8</a>   type DaemonPolicy,</span>
+<span id="L9"><a href="#L9" aria-label="Line 9">9</a>   type DaemonPolicyValues,</span>
+<span id="L10"><a href="#L10" aria-label="Line 10">10</a> } from &quot;@symnav/daemon&quot;;</span>
+<span id="L11"><a href="#L11" aria-label="Line 11">11</a> import { AcceptedRequestLedger } from &quot;./accepted-request-ledger.js&quot;;</span>
+<span id="L12"><a href="#L12" aria-label="Line 12">12</a> import { AcceptedExecutionSession } from &quot;./accepted-execution-session.js&quot;;</span>
+<span id="L13"><a href="#L13" aria-label="Line 13">13</a> import { DaemonActivityProjector } from &quot;./daemon-activity-projector.js&quot;;</span>
+<span id="L14"><a href="#L14" aria-label="Line 14">14</a> import type {</span>
+<span id="L15"><a href="#L15" aria-label="Line 15">15</a>   DaemonExecutionServerFrame,</span>
+<span id="L16"><a href="#L16" aria-label="Line 16">16</a>   DaemonIdentityCoordinates,</span>
+<span id="L17"><a href="#L17" aria-label="Line 17">17</a>   DaemonRecord,</span>
+<span id="L18"><a href="#L18" aria-label="Line 18">18</a>   DaemonRequest,</span>
+<span id="L19"><a href="#L19" aria-label="Line 19">19</a>   DaemonResponse,</span>
+<span id="L20"><a href="#L20" aria-label="Line 20">20</a>   DaemonServer,</span>
+<span id="L21"><a href="#L21" aria-label="Line 21">21</a> } from &quot;./daemon-protocol.js&quot;;</span>
+<span id="L22"><a href="#L22" aria-label="Line 22">22</a> import { DaemonCompletionSpoolStore, type CompletionSpoolStorage } from &quot;./completion-spool.js&quot;;</span>
+<span id="L23"><a href="#L23" aria-label="Line 23">23</a> import { DAEMON_PROTOCOL_VERSION, DAEMON_RECORD_SCHEMA_VERSION } from &quot;./daemon-protocol.js&quot;;</span>
+<span id="L24"><a href="#L24" aria-label="Line 24">24</a> import { DaemonLifetime } from &quot;./daemon-lifetime.js&quot;;</span>
+<span id="L25"><a href="#L25" aria-label="Line 25">25</a> import { DaemonLogger } from &quot;./daemon-logger.js&quot;;</span>
+<span id="L26"><a href="#L26" aria-label="Line 26">26</a> import type { DaemonClock } from &quot;./daemon-clock.js&quot;;</span>
+<span id="L27"><a href="#L27" aria-label="Line 27">27</a> import { DaemonOperationObserver } from &quot;./daemon-operation-observer.js&quot;;</span>
+<span id="L28"><a href="#L28" aria-label="Line 28">28</a> import { DaemonDeliverySession } from &quot;./daemon-delivery-session.js&quot;;</span>
+<span id="L29"><a href="#L29" aria-label="Line 29">29</a> import {</span>
+<span id="L30"><a href="#L30" aria-label="Line 30">30</a>   type DaemonNavigationWorker,</span>
+<span id="L31"><a href="#L31" aria-label="Line 31">31</a>   NodeDaemonNavigationWorker,</span>
+<span id="L32"><a href="#L32" aria-label="Line 32">32</a> } from &quot;./daemon-navigation-worker.js&quot;;</span>
+<span id="L33"><a href="#L33" aria-label="Line 33">33</a> import { DaemonWorkerGenerationManager } from &quot;./daemon-worker-generation-manager.js&quot;;</span>
+<span id="L34"><a href="#L34" aria-label="Line 34">34</a> import { DaemonResourceSupervisor } from &quot;./daemon-resource-monitor.js&quot;;</span>
+<span id="L35"><a href="#L35" aria-label="Line 35">35</a> import type { DaemonRegistry, DaemonStartupLease } from &quot;./daemon-registry.js&quot;;</span>
+<span id="L36"><a href="#L36" aria-label="Line 36">36</a> import type { DaemonWorkspaceIdentity } from &quot;./daemon-workspace-identity.js&quot;;</span>
+<span id="L37"><a href="#L37" aria-label="Line 37">37</a> import type { DaemonRequestServer, DaemonServerSend } from &quot;./daemon-transport.js&quot;;</span>
+<span id="L38"><a href="#L38" aria-label="Line 38">38</a> import { WorkspaceRequestQueue } from &quot;./workspace-request-queue.js&quot;;</span>
+<span id="L39"><a href="#L39" aria-label="Line 39">39</a> </span>
+<span id="L40"><a href="#L40" aria-label="Line 40">40</a> export interface DaemonProcessCoordinatorOptions {</span>
+<span id="L41"><a href="#L41" aria-label="Line 41">41</a>   readonly identity: DaemonWorkspaceIdentity;</span>
+<span id="L42"><a href="#L42" aria-label="Line 42">42</a>   readonly coordinates: DaemonIdentityCoordinates;</span>
+<span id="L43"><a href="#L43" aria-label="Line 43">43</a>   readonly productVersion: string;</span>
+<span id="L44"><a href="#L44" aria-label="Line 44">44</a>   readonly executorModuleUrl?: DaemonExecutorModuleUrl;</span>
+<span id="L45"><a href="#L45" aria-label="Line 45">45</a>   readonly policy: DaemonPolicy;</span>
+<span id="L46"><a href="#L46" aria-label="Line 46">46</a>   readonly workspaceExists?: (workspaceRoot: string) =&gt; Promise&lt;boolean&gt;;</span>
+<span id="L47"><a href="#L47" aria-label="Line 47">47</a>   readonly registry: DaemonRegistry;</span>
+<span id="L48"><a href="#L48" aria-label="Line 48">48</a>   readonly server: DaemonRequestServer;</span>
+<span id="L49"><a href="#L49" aria-label="Line 49">49</a>   readonly navigationWorker?: DaemonNavigationWorker;</span>
+<span id="L50"><a href="#L50" aria-label="Line 50">50</a>   readonly navigationWorkerFactory?: (generation: number) =&gt; DaemonNavigationWorker;</span>
+<span id="L51"><a href="#L51" aria-label="Line 51">51</a>   readonly clock: DaemonClock;</span>
+<span id="L52"><a href="#L52" aria-label="Line 52">52</a>   readonly exit?: (code: number) =&gt; void;</span>
+<span id="L53"><a href="#L53" aria-label="Line 53">53</a>   readonly residentMemoryBytes?: () =&gt; number;</span>
+<span id="L54"><a href="#L54" aria-label="Line 54">54</a>   readonly completionSpoolStorage?: CompletionSpoolStorage;</span>
+<span id="L55"><a href="#L55" aria-label="Line 55">55</a>   readonly logger?: DaemonLogger;</span>
+<span id="L56"><a href="#L56" aria-label="Line 56">56</a> }</span>
+<span id="L57"><a href="#L57" aria-label="Line 57">57</a> </span>
+<span id="L58"><a href="#L58" aria-label="Line 58">58</a> export class DaemonProcessCoordinator {</span>
+<span id="L59"><a href="#L59" aria-label="Line 59">59</a>   private readonly clock: DaemonClock;</span>
+<span id="L60"><a href="#L60" aria-label="Line 60">60</a>   private readonly exit: (code: number) =&gt; void;</span>
+<span id="L61"><a href="#L61" aria-label="Line 61">61</a>   private readonly workerManager: DaemonWorkerGenerationManager;</span>
+<span id="L62"><a href="#L62" aria-label="Line 62">62</a>   private readonly acceptedExecutionSession: AcceptedExecutionSession;</span>
+<span id="L63"><a href="#L63" aria-label="Line 63">63</a>   private readonly logger: DaemonLogger;</span>
+<span id="L64"><a href="#L64" aria-label="Line 64">64</a>   private readonly lifetime: DaemonLifetime;</span>
+<span id="L65"><a href="#L65" aria-label="Line 65">65</a>   private readonly resourceSupervisor: DaemonResourceSupervisor;</span>
+<span id="L66"><a href="#L66" aria-label="Line 66">66</a>   private readonly resourcePolicy: DaemonPolicyValues[&quot;resources&quot;];</span>
+<span id="L67"><a href="#L67" aria-label="Line 67">67</a>   private readonly policy: DaemonPolicy;</span>
+<span id="L68"><a href="#L68" aria-label="Line 68">68</a>   private readonly operationObserver: DaemonOperationObserver;</span>
+<span id="L69"><a href="#L69" aria-label="Line 69">69</a>   private readonly deliverySession: DaemonDeliverySession;</span>
+<span id="L70"><a href="#L70" aria-label="Line 70">70</a>   private readonly admissionPolicy = new DaemonAdmissionPolicy();</span>
+<span id="L71"><a href="#L71" aria-label="Line 71">71</a>   private server: DaemonServer | undefined;</span>
+<span id="L72"><a href="#L72" aria-label="Line 72">72</a>   private startedAt = 0;</span>
+<span id="L73"><a href="#L73" aria-label="Line 73">73</a>   private readonly startedMonotonicAt: number;</span>
+<span id="L74"><a href="#L74" aria-label="Line 74">74</a>   private shutdownStarted = false;</span>
+<span id="L75"><a href="#L75" aria-label="Line 75">75</a>   private shutdownFailureCode: &quot;stopping&quot; | &quot;controlled-resource&quot; | undefined;</span>
+<span id="L76"><a href="#L76" aria-label="Line 76">76</a>   private shutdownOperation: Promise&lt;void&gt; | undefined;</span>
+<span id="L77"><a href="#L77" aria-label="Line 77">77</a>   private forcedWorkerShutdown: Promise&lt;void&gt; | undefined;</span>
+<span id="L78"><a href="#L78" aria-label="Line 78">78</a>   private readonly forceEscalated: Promise&lt;void&gt;;</span>
+<span id="L79"><a href="#L79" aria-label="Line 79">79</a>   private resolveForceEscalated!: () =&gt; void;</span>
+<span id="L80"><a href="#L80" aria-label="Line 80">80</a> </span>
+<span id="L81"><a href="#L81" aria-label="Line 81">81</a>   constructor(private readonly options: DaemonProcessCoordinatorOptions) {</span>
+<span id="L82"><a href="#L82" aria-label="Line 82">82</a>     DaemonProcessCoordinator.validateCoordinates(options.identity, options.coordinates);</span>
+<span id="L83"><a href="#L83" aria-label="Line 83">83</a>     const policy = options.policy;</span>
+<span id="L84"><a href="#L84" aria-label="Line 84">84</a>     this.policy = policy;</span>
+<span id="L85"><a href="#L85" aria-label="Line 85">85</a>     this.forceEscalated = new Promise((resolve) =&gt; {</span>
+<span id="L86"><a href="#L86" aria-label="Line 86">86</a>       this.resolveForceEscalated = resolve;</span>
+<span id="L87"><a href="#L87" aria-label="Line 87">87</a>     });</span>
+<span id="L88"><a href="#L88" aria-label="Line 88">88</a>     this.clock = options.clock;</span>
+<span id="L89"><a href="#L89" aria-label="Line 89">89</a>     this.startedMonotonicAt = this.clock.monotonicNowMs();</span>
+<span id="L90"><a href="#L90" aria-label="Line 90">90</a>     const requestQueue = new WorkspaceRequestQueue(this.clock);</span>
+<span id="L91"><a href="#L91" aria-label="Line 91">91</a>     const acceptedRequests = new AcceptedRequestLedger(this.clock);</span>
+<span id="L92"><a href="#L92" aria-label="Line 92">92</a>     const completionSpools = new DaemonCompletionSpoolStore({</span>
+<span id="L93"><a href="#L93" aria-label="Line 93">93</a>       directory: options.identity.spoolDirectory,</span>
+<span id="L94"><a href="#L94" aria-label="Line 94">94</a>       workspaceKey: options.identity.workspaceKey,</span>
+<span id="L95"><a href="#L95" aria-label="Line 95">95</a>       instanceId: options.coordinates.instanceId,</span>
+<span id="L96"><a href="#L96" aria-label="Line 96">96</a>       policy: policy.values.output,</span>
+<span id="L97"><a href="#L97" aria-label="Line 97">97</a>       ...(options.completionSpoolStorage === undefined</span>
+<span id="L98"><a href="#L98" aria-label="Line 98">98</a>         ? {}</span>
+<span id="L99"><a href="#L99" aria-label="Line 99">99</a>         : { storage: options.completionSpoolStorage }),</span>
+<span id="L100"><a href="#L100" aria-label="Line 100">100</a>     });</span>
+<span id="L101"><a href="#L101" aria-label="Line 101">101</a>     this.logger =</span>
+<span id="L102"><a href="#L102" aria-label="Line 102">102</a>       options.logger ??</span>
+<span id="L103"><a href="#L103" aria-label="Line 103">103</a>       new DaemonLogger(options.identity, options.coordinates.instanceId, this.clock, {</span>
+<span id="L104"><a href="#L104" aria-label="Line 104">104</a>         policy: policy.values.diagnostics,</span>
+<span id="L105"><a href="#L105" aria-label="Line 105">105</a>       });</span>
+<span id="L106"><a href="#L106" aria-label="Line 106">106</a>     const resourcePolicy = policy.values.resources;</span>
+<span id="L107"><a href="#L107" aria-label="Line 107">107</a>     this.resourcePolicy = resourcePolicy;</span>
+<span id="L108"><a href="#L108" aria-label="Line 108">108</a>     const navigationWorkerFactory =</span>
+<span id="L109"><a href="#L109" aria-label="Line 109">109</a>       options.navigationWorkerFactory ??</span>
+<span id="L110"><a href="#L110" aria-label="Line 110">110</a>       (options.navigationWorker === undefined</span>
+<span id="L111"><a href="#L111" aria-label="Line 111">111</a>         ? (generation) =&gt;</span>
+<span id="L112"><a href="#L112" aria-label="Line 112">112</a>             new NodeDaemonNavigationWorker({</span>
+<span id="L113"><a href="#L113" aria-label="Line 113">113</a>               generation,</span>
+<span id="L114"><a href="#L114" aria-label="Line 114">114</a>               configuration: {</span>
+<span id="L115"><a href="#L115" aria-label="Line 115">115</a>                 stateDirectory: options.identity.stateDirectory,</span>
+<span id="L116"><a href="#L116" aria-label="Line 116">116</a>                 productVersion: options.productVersion,</span>
+<span id="L117"><a href="#L117" aria-label="Line 117">117</a>                 executorModuleUrl:</span>
+<span id="L118"><a href="#L118" aria-label="Line 118">118</a>                   options.executorModuleUrl ?? &quot;file:///missing/symnav-daemon-executor.js&quot;,</span>
+<span id="L119"><a href="#L119" aria-label="Line 119">119</a>                 policy: policy.toSerialized(),</span>
+<span id="L120"><a href="#L120" aria-label="Line 120">120</a>               },</span>
+<span id="L121"><a href="#L121" aria-label="Line 121">121</a>               resourceLimits: {</span>
+<span id="L122"><a href="#L122" aria-label="Line 122">122</a>                 maxOldGenerationSizeMb: resourcePolicy.workerMaxOldGenerationSizeMiB,</span>
+<span id="L123"><a href="#L123" aria-label="Line 123">123</a>               },</span>
+<span id="L124"><a href="#L124" aria-label="Line 124">124</a>             })</span>
+<span id="L125"><a href="#L125" aria-label="Line 125">125</a>         : undefined);</span>
+<span id="L126"><a href="#L126" aria-label="Line 126">126</a>     const createNavigationWorker = (generation: number): DaemonNavigationWorker =&gt; {</span>
+<span id="L127"><a href="#L127" aria-label="Line 127">127</a>       const worker = navigationWorkerFactory?.(generation);</span>
+<span id="L128"><a href="#L128" aria-label="Line 128">128</a>       if (worker === undefined) throw new Error(&quot;Navigation worker replacement is unavailable&quot;);</span>
+<span id="L129"><a href="#L129" aria-label="Line 129">129</a>       if (worker.generation !== generation) {</span>
+<span id="L130"><a href="#L130" aria-label="Line 130">130</a>         throw new Error(&quot;Navigation worker factory returned the wrong generation&quot;);</span>
+<span id="L131"><a href="#L131" aria-label="Line 131">131</a>       }</span>
+<span id="L132"><a href="#L132" aria-label="Line 132">132</a>       return worker;</span>
+<span id="L133"><a href="#L133" aria-label="Line 133">133</a>     };</span>
+<span id="L134"><a href="#L134" aria-label="Line 134">134</a>     const initialNavigationWorker = options.navigationWorker ?? createNavigationWorker(1);</span>
+<span id="L135"><a href="#L135" aria-label="Line 135">135</a>     this.exit = options.exit ?? ((code) =&gt; process.exit(code));</span>
+<span id="L136"><a href="#L136" aria-label="Line 136">136</a>     this.lifetime = new DaemonLifetime(this.clock, policy.values.shutdown, () =&gt;</span>
+<span id="L137"><a href="#L137" aria-label="Line 137">137</a>       this.drainAndShutdown(&quot;idle&quot;),</span>
+<span id="L138"><a href="#L138" aria-label="Line 138">138</a>     );</span>
+<span id="L139"><a href="#L139" aria-label="Line 139">139</a>     this.workerManager = new DaemonWorkerGenerationManager({</span>
+<span id="L140"><a href="#L140" aria-label="Line 140">140</a>       workspaceRoot: options.identity.workspaceRoot,</span>
+<span id="L141"><a href="#L141" aria-label="Line 141">141</a>       initialWorker: initialNavigationWorker,</span>
+<span id="L142"><a href="#L142" aria-label="Line 142">142</a>       createWorker: createNavigationWorker,</span>
+<span id="L143"><a href="#L143" aria-label="Line 143">143</a>       exitRecovery: { recover: (workerExit) =&gt; this.recoverWorkerExit(workerExit) },</span>
+<span id="L144"><a href="#L144" aria-label="Line 144">144</a>       onActiveResourceInterruption: (cause) =&gt;</span>
+<span id="L145"><a href="#L145" aria-label="Line 145">145</a>         this.acceptedExecutionSession.markActiveResourceInterrupted(cause),</span>
+<span id="L146"><a href="#L146" aria-label="Line 146">146</a>       onDiagnostic: (diagnostic) =&gt; this.operationObserver.worker(diagnostic),</span>
+<span id="L147"><a href="#L147" aria-label="Line 147">147</a>     });</span>
+<span id="L148"><a href="#L148" aria-label="Line 148">148</a>     this.resourceSupervisor = new DaemonResourceSupervisor({</span>
+<span id="L149"><a href="#L149" aria-label="Line 149">149</a>       policy: resourcePolicy,</span>
+<span id="L150"><a href="#L150" aria-label="Line 150">150</a>       generation: this.workerManager.snapshot.generation,</span>
+<span id="L151"><a href="#L151" aria-label="Line 151">151</a>       clock: this.clock,</span>
+<span id="L152"><a href="#L152" aria-label="Line 152">152</a>       ...(options.residentMemoryBytes === undefined</span>
+<span id="L153"><a href="#L153" aria-label="Line 153">153</a>         ? {}</span>
+<span id="L154"><a href="#L154" aria-label="Line 154">154</a>         : { residentMemoryBytes: options.residentMemoryBytes }),</span>
+<span id="L155"><a href="#L155" aria-label="Line 155">155</a>       spoolBytes: () =&gt; this.deliverySession.snapshot.spoolBytes,</span>
+<span id="L156"><a href="#L156" aria-label="Line 156">156</a>       scheduleAtTurnBoundary: (operation) =&gt;</span>
+<span id="L157"><a href="#L157" aria-label="Line 157">157</a>         this.acceptedExecutionSession.scheduleAtTurnBoundary(operation),</span>
+<span id="L158"><a href="#L158" aria-label="Line 158">158</a>       releaseTransientResources: async () =&gt; {</span>
+<span id="L159"><a href="#L159" aria-label="Line 159">159</a>         const response = await this.workerManager.releaseTransientResources();</span>
+<span id="L160"><a href="#L160" aria-label="Line 160">160</a>         this.resourceSupervisor.workerHeapReported(</span>
+<span id="L161"><a href="#L161" aria-label="Line 161">161</a>           response.generation,</span>
+<span id="L162"><a href="#L162" aria-label="Line 162">162</a>           response.usedHeapBytes,</span>
+<span id="L163"><a href="#L163" aria-label="Line 163">163</a>           response.heapLimitBytes,</span>
+<span id="L164"><a href="#L164" aria-label="Line 164">164</a>         );</span>
+<span id="L165"><a href="#L165" aria-label="Line 165">165</a>       },</span>
+<span id="L166"><a href="#L166" aria-label="Line 166">166</a>       replaceWorker: async (cause) =&gt; {</span>
+<span id="L167"><a href="#L167" aria-label="Line 167">167</a>         const response = await this.workerManager.replace(cause);</span>
+<span id="L168"><a href="#L168" aria-label="Line 168">168</a>         this.logger.record({ kind: &quot;freshness&quot;, ...response.refresh });</span>
+<span id="L169"><a href="#L169" aria-label="Line 169">169</a>         return response.generation;</span>
+<span id="L170"><a href="#L170" aria-label="Line 170">170</a>       },</span>
+<span id="L171"><a href="#L171" aria-label="Line 171">171</a>       drain: () =&gt; this.initiateResourceDrain(),</span>
+<span id="L172"><a href="#L172" aria-label="Line 172">172</a>     });</span>
+<span id="L173"><a href="#L173" aria-label="Line 173">173</a>     this.operationObserver = new DaemonOperationObserver(</span>
+<span id="L174"><a href="#L174" aria-label="Line 174">174</a>       this.logger,</span>
+<span id="L175"><a href="#L175" aria-label="Line 175">175</a>       this.clock,</span>
+<span id="L176"><a href="#L176" aria-label="Line 176">176</a>       this.resourceSupervisor,</span>
+<span id="L177"><a href="#L177" aria-label="Line 177">177</a>     );</span>
+<span id="L178"><a href="#L178" aria-label="Line 178">178</a>     this.deliverySession = new DaemonDeliverySession({</span>
+<span id="L179"><a href="#L179" aria-label="Line 179">179</a>       coordinates: {</span>
+<span id="L180"><a href="#L180" aria-label="Line 180">180</a>         instanceId: options.coordinates.instanceId,</span>
+<span id="L181"><a href="#L181" aria-label="Line 181">181</a>         processToken: options.coordinates.processToken,</span>
+<span id="L182"><a href="#L182" aria-label="Line 182">182</a>       },</span>
+<span id="L183"><a href="#L183" aria-label="Line 183">183</a>       journal: acceptedRequests,</span>
+<span id="L184"><a href="#L184" aria-label="Line 184">184</a>       spoolStore: completionSpools,</span>
+<span id="L185"><a href="#L185" aria-label="Line 185">185</a>       observer: this.operationObserver,</span>
+<span id="L186"><a href="#L186" aria-label="Line 186">186</a>       diagnostics: this.logger,</span>
+<span id="L187"><a href="#L187" aria-label="Line 187">187</a>       clock: this.clock,</span>
+<span id="L188"><a href="#L188" aria-label="Line 188">188</a>       policy: policy.values,</span>
+<span id="L189"><a href="#L189" aria-label="Line 189">189</a>     });</span>
+<span id="L190"><a href="#L190" aria-label="Line 190">190</a>     this.acceptedExecutionSession = new AcceptedExecutionSession({</span>
+<span id="L191"><a href="#L191" aria-label="Line 191">191</a>       ledger: acceptedRequests,</span>
+<span id="L192"><a href="#L192" aria-label="Line 192">192</a>       queue: requestQueue,</span>
+<span id="L193"><a href="#L193" aria-label="Line 193">193</a>       worker: this.workerManager,</span>
+<span id="L194"><a href="#L194" aria-label="Line 194">194</a>       delivery: this.deliverySession,</span>
+<span id="L195"><a href="#L195" aria-label="Line 195">195</a>       resourceSupervisor: this.resourceSupervisor,</span>
+<span id="L196"><a href="#L196" aria-label="Line 196">196</a>       processLifecycle: {</span>
+<span id="L197"><a href="#L197" aria-label="Line 197">197</a>         shutdownSnapshot: () =&gt; ({</span>
+<span id="L198"><a href="#L198" aria-label="Line 198">198</a>           started: this.shutdownStarted,</span>
+<span id="L199"><a href="#L199" aria-label="Line 199">199</a>           ...(this.shutdownFailureCode === undefined</span>
+<span id="L200"><a href="#L200" aria-label="Line 200">200</a>             ? {}</span>
+<span id="L201"><a href="#L201" aria-label="Line 201">201</a>             : { failureCode: this.shutdownFailureCode }),</span>
+<span id="L202"><a href="#L202" aria-label="Line 202">202</a>         }),</span>
+<span id="L203"><a href="#L203" aria-label="Line 203">203</a>         workspaceExists: () =&gt; this.workspaceExists(),</span>
+<span id="L204"><a href="#L204" aria-label="Line 204">204</a>         workspaceDeletedAfterDelivery: () =&gt; this.workspaceDeletedAfterDelivery(),</span>
+<span id="L205"><a href="#L205" aria-label="Line 205">205</a>       },</span>
+<span id="L206"><a href="#L206" aria-label="Line 206">206</a>       lifetime: this.lifetime,</span>
+<span id="L207"><a href="#L207" aria-label="Line 207">207</a>       diagnostics: this.logger,</span>
+<span id="L208"><a href="#L208" aria-label="Line 208">208</a>       clock: {</span>
+<span id="L209"><a href="#L209" aria-label="Line 209">209</a>         wallNowMs: () =&gt; this.clock.wallNowMs(),</span>
+<span id="L210"><a href="#L210" aria-label="Line 210">210</a>         monotonicNowMs: () =&gt; this.clock.monotonicNowMs(),</span>
+<span id="L211"><a href="#L211" aria-label="Line 211">211</a>       },</span>
+<span id="L212"><a href="#L212" aria-label="Line 212">212</a>     });</span>
+<span id="L213"><a href="#L213" aria-label="Line 213">213</a>   }</span>
+<span id="L214"><a href="#L214" aria-label="Line 214">214</a> </span>
+<span id="L215"><a href="#L215" aria-label="Line 215">215</a>   async start(): Promise&lt;void&gt; {</span>
+<span id="L216"><a href="#L216" aria-label="Line 216">216</a>     this.logger.record({ kind: &quot;start&quot; });</span>
+<span id="L217"><a href="#L217" aria-label="Line 217">217</a>     let startupLease: DaemonStartupLease | undefined;</span>
+<span id="L218"><a href="#L218" aria-label="Line 218">218</a>     let startupHeartbeat: NodeJS.Timeout | undefined;</span>
+<span id="L219"><a href="#L219" aria-label="Line 219">219</a>     try {</span>
+<span id="L220"><a href="#L220" aria-label="Line 220">220</a>       const authorization = await this.waitForStartupAuthorization();</span>
+<span id="L221"><a href="#L221" aria-label="Line 221">221</a>       startupLease = authorization.lease;</span>
+<span id="L222"><a href="#L222" aria-label="Line 222">222</a>       const startingRecord = authorization.record;</span>
+<span id="L223"><a href="#L223" aria-label="Line 223">223</a>       startupHeartbeat = setInterval(</span>
+<span id="L224"><a href="#L224" aria-label="Line 224">224</a>         () =&gt; startupLease?.heartbeat(),</span>
+<span id="L225"><a href="#L225" aria-label="Line 225">225</a>         this.policy.values.startup.heartbeatIntervalMs,</span>
+<span id="L226"><a href="#L226" aria-label="Line 226">226</a>       );</span>
+<span id="L227"><a href="#L227" aria-label="Line 227">227</a>       startupHeartbeat.unref();</span>
+<span id="L228"><a href="#L228" aria-label="Line 228">228</a>       this.startedAt = startingRecord.startedAt;</span>
+<span id="L229"><a href="#L229" aria-label="Line 229">229</a>       this.server = await this.options.server.listen(</span>
+<span id="L230"><a href="#L230" aria-label="Line 230">230</a>         this.options.coordinates.endpoint,</span>
+<span id="L231"><a href="#L231" aria-label="Line 231">231</a>         (request, send) =&gt; this.handle(request, send),</span>
+<span id="L232"><a href="#L232" aria-label="Line 232">232</a>       );</span>
+<span id="L233"><a href="#L233" aria-label="Line 233">233</a>       const response = await this.workerManager.start();</span>
+<span id="L234"><a href="#L234" aria-label="Line 234">234</a>       this.operationObserver.startup({</span>
+<span id="L235"><a href="#L235" aria-label="Line 235">235</a>         kind: &quot;startup-completed&quot;,</span>
+<span id="L236"><a href="#L236" aria-label="Line 236">236</a>         workerGeneration: response.generation,</span>
+<span id="L237"><a href="#L237" aria-label="Line 237">237</a>         fileCount: response.fileCount,</span>
+<span id="L238"><a href="#L238" aria-label="Line 238">238</a>         ...response.startupDurations,</span>
+<span id="L239"><a href="#L239" aria-label="Line 239">239</a>       });</span>
+<span id="L240"><a href="#L240" aria-label="Line 240">240</a>       this.logger.record({ kind: &quot;freshness&quot;, ...response.refresh });</span>
+<span id="L241"><a href="#L241" aria-label="Line 241">241</a>       await this.resourceSupervisor.sample(&quot;warmup&quot;);</span>
+<span id="L242"><a href="#L242" aria-label="Line 242">242</a>       this.workerManager.activateReadiness();</span>
+<span id="L243"><a href="#L243" aria-label="Line 243">243</a>       const readyRecord: DaemonRecord = {</span>
+<span id="L244"><a href="#L244" aria-label="Line 244">244</a>         schemaVersion: DAEMON_RECORD_SCHEMA_VERSION,</span>
+<span id="L245"><a href="#L245" aria-label="Line 245">245</a>         protocolVersion: DAEMON_PROTOCOL_VERSION,</span>
+<span id="L246"><a href="#L246" aria-label="Line 246">246</a>         symnavVersion: this.options.productVersion,</span>
+<span id="L247"><a href="#L247" aria-label="Line 247">247</a>         workspaceRoot: this.options.identity.workspaceRoot,</span>
+<span id="L248"><a href="#L248" aria-label="Line 248">248</a>         workspaceKey: this.options.identity.workspaceKey,</span>
+<span id="L249"><a href="#L249" aria-label="Line 249">249</a>         stateKey: this.options.identity.stateKey,</span>
+<span id="L250"><a href="#L250" aria-label="Line 250">250</a>         identityKey: this.options.identity.identityKey,</span>
+<span id="L251"><a href="#L251" aria-label="Line 251">251</a>         instanceId: this.options.coordinates.instanceId,</span>
+<span id="L252"><a href="#L252" aria-label="Line 252">252</a>         processToken: this.options.coordinates.processToken,</span>
+<span id="L253"><a href="#L253" aria-label="Line 253">253</a>         endpoint: this.options.coordinates.endpoint,</span>
+<span id="L254"><a href="#L254" aria-label="Line 254">254</a>         pid: process.pid,</span>
+<span id="L255"><a href="#L255" aria-label="Line 255">255</a>         state: &quot;ready&quot;,</span>
+<span id="L256"><a href="#L256" aria-label="Line 256">256</a>         startedAt: startingRecord.startedAt,</span>
+<span id="L257"><a href="#L257" aria-label="Line 257">257</a>         readyAt: this.clock.wallNowMs(),</span>
+<span id="L258"><a href="#L258" aria-label="Line 258">258</a>         fileCount: response.fileCount,</span>
+<span id="L259"><a href="#L259" aria-label="Line 259">259</a>         memoryCapBytes: this.resourcePolicy.hardProcessRssBytes,</span>
+<span id="L260"><a href="#L260" aria-label="Line 260">260</a>       };</span>
+<span id="L261"><a href="#L261" aria-label="Line 261">261</a>       if (!this.options.registry.writeIfStartupOwner(this.options.identity, readyRecord)) {</span>
+<span id="L262"><a href="#L262" aria-label="Line 262">262</a>         throw new Error(&quot;Daemon startup ownership changed before readiness publication&quot;);</span>
+<span id="L263"><a href="#L263" aria-label="Line 263">263</a>       }</span>
+<span id="L264"><a href="#L264" aria-label="Line 264">264</a>       if (startupHeartbeat !== undefined) clearInterval(startupHeartbeat);</span>
+<span id="L265"><a href="#L265" aria-label="Line 265">265</a>       startupHeartbeat = undefined;</span>
+<span id="L266"><a href="#L266" aria-label="Line 266">266</a>       startupLease.release();</span>
+<span id="L267"><a href="#L267" aria-label="Line 267">267</a>       this.logger.record({ kind: &quot;ready&quot;, fileCount: response.fileCount });</span>
+<span id="L268"><a href="#L268" aria-label="Line 268">268</a>       this.resourceSupervisor.start();</span>
+<span id="L269"><a href="#L269" aria-label="Line 269">269</a>       await this.logger.flush();</span>
+<span id="L270"><a href="#L270" aria-label="Line 270">270</a>     } catch (error) {</span>
+<span id="L271"><a href="#L271" aria-label="Line 271">271</a>       if (startupHeartbeat !== undefined) clearInterval(startupHeartbeat);</span>
+<span id="L272"><a href="#L272" aria-label="Line 272">272</a>       await this.cleanupFailedStartup(startupLease);</span>
+<span id="L273"><a href="#L273" aria-label="Line 273">273</a>       this.logger.record({</span>
+<span id="L274"><a href="#L274" aria-label="Line 274">274</a>         kind: &quot;failure&quot;,</span>
+<span id="L275"><a href="#L275" aria-label="Line 275">275</a>         operation: &quot;start&quot;,</span>
+<span id="L276"><a href="#L276" aria-label="Line 276">276</a>         failureCode: &quot;operation-failed&quot;,</span>
+<span id="L277"><a href="#L277" aria-label="Line 277">277</a>         errorName: DaemonLogger.errorName(error),</span>
+<span id="L278"><a href="#L278" aria-label="Line 278">278</a>       });</span>
+<span id="L279"><a href="#L279" aria-label="Line 279">279</a>       await this.logger.flush();</span>
+<span id="L280"><a href="#L280" aria-label="Line 280">280</a>       throw error;</span>
+<span id="L281"><a href="#L281" aria-label="Line 281">281</a>     }</span>
+<span id="L282"><a href="#L282" aria-label="Line 282">282</a>   }</span>
+<span id="L283"><a href="#L283" aria-label="Line 283">283</a> </span>
+<span id="L284"><a href="#L284" aria-label="Line 284">284</a>   private async waitForStartupAuthorization(): Promise&lt;{</span>
+<span id="L285"><a href="#L285" aria-label="Line 285">285</a>     readonly lease: DaemonStartupLease;</span>
+<span id="L286"><a href="#L286" aria-label="Line 286">286</a>     readonly record: DaemonRecord;</span>
+<span id="L287"><a href="#L287" aria-label="Line 287">287</a>   }&gt; {</span>
+<span id="L288"><a href="#L288" aria-label="Line 288">288</a>     const deadline = this.clock.wallNowMs() + this.policy.values.startup.coordinationGraceMs;</span>
+<span id="L289"><a href="#L289" aria-label="Line 289">289</a>     while (this.clock.wallNowMs() &lt;= deadline) {</span>
+<span id="L290"><a href="#L290" aria-label="Line 290">290</a>       const record = this.options.registry.readInstance(</span>
+<span id="L291"><a href="#L291" aria-label="Line 291">291</a>         this.options.identity,</span>
+<span id="L292"><a href="#L292" aria-label="Line 292">292</a>         this.options.coordinates.instanceId,</span>
+<span id="L293"><a href="#L293" aria-label="Line 293">293</a>       );</span>
+<span id="L294"><a href="#L294" aria-label="Line 294">294</a>       if (</span>
+<span id="L295"><a href="#L295" aria-label="Line 295">295</a>         record?.state === &quot;starting&quot; &amp;&amp;</span>
+<span id="L296"><a href="#L296" aria-label="Line 296">296</a>         (record.pid === 0 || record.pid === process.pid) &amp;&amp;</span>
+<span id="L297"><a href="#L297" aria-label="Line 297">297</a>         record.processToken === this.options.coordinates.processToken</span>
+<span id="L298"><a href="#L298" aria-label="Line 298">298</a>       ) {</span>
+<span id="L299"><a href="#L299" aria-label="Line 299">299</a>         const lease = this.options.registry.claimStartupForDaemon(</span>
+<span id="L300"><a href="#L300" aria-label="Line 300">300</a>           this.options.identity,</span>
+<span id="L301"><a href="#L301" aria-label="Line 301">301</a>           this.options.coordinates.instanceId,</span>
+<span id="L302"><a href="#L302" aria-label="Line 302">302</a>           this.options.coordinates.processToken,</span>
+<span id="L303"><a href="#L303" aria-label="Line 303">303</a>           process.pid,</span>
+<span id="L304"><a href="#L304" aria-label="Line 304">304</a>         );</span>
+<span id="L305"><a href="#L305" aria-label="Line 305">305</a>         if (lease === undefined) {</span>
+<span id="L306"><a href="#L306" aria-label="Line 306">306</a>           await this.pause();</span>
+<span id="L307"><a href="#L307" aria-label="Line 307">307</a>           continue;</span>
+<span id="L308"><a href="#L308" aria-label="Line 308">308</a>         }</span>
+<span id="L309"><a href="#L309" aria-label="Line 309">309</a>         this.options.registry.writeStartingIfStartupOwner(this.options.identity, {</span>
+<span id="L310"><a href="#L310" aria-label="Line 310">310</a>           ...record,</span>
+<span id="L311"><a href="#L311" aria-label="Line 311">311</a>           pid: process.pid,</span>
+<span id="L312"><a href="#L312" aria-label="Line 312">312</a>         });</span>
+<span id="L313"><a href="#L313" aria-label="Line 313">313</a>         const adoptedRecord = this.options.registry.readInstance(</span>
+<span id="L314"><a href="#L314" aria-label="Line 314">314</a>           this.options.identity,</span>
+<span id="L315"><a href="#L315" aria-label="Line 315">315</a>           this.options.coordinates.instanceId,</span>
+<span id="L316"><a href="#L316" aria-label="Line 316">316</a>         );</span>
+<span id="L317"><a href="#L317" aria-label="Line 317">317</a>         if (adoptedRecord?.pid !== process.pid) {</span>
+<span id="L318"><a href="#L318" aria-label="Line 318">318</a>           lease.release();</span>
+<span id="L319"><a href="#L319" aria-label="Line 319">319</a>           await this.pause();</span>
+<span id="L320"><a href="#L320" aria-label="Line 320">320</a>           continue;</span>
+<span id="L321"><a href="#L321" aria-label="Line 321">321</a>         }</span>
+<span id="L322"><a href="#L322" aria-label="Line 322">322</a>         if (</span>
+<span id="L323"><a href="#L323" aria-label="Line 323">323</a>           this.options.registry.startupOwnerMatchesProcess(this.options.identity, adoptedRecord)</span>
+<span id="L324"><a href="#L324" aria-label="Line 324">324</a>         ) {</span>
+<span id="L325"><a href="#L325" aria-label="Line 325">325</a>           return { lease, record: adoptedRecord };</span>
+<span id="L326"><a href="#L326" aria-label="Line 326">326</a>         }</span>
+<span id="L327"><a href="#L327" aria-label="Line 327">327</a>         lease.release();</span>
+<span id="L328"><a href="#L328" aria-label="Line 328">328</a>       }</span>
+<span id="L329"><a href="#L329" aria-label="Line 329">329</a>       await this.pause();</span>
+<span id="L330"><a href="#L330" aria-label="Line 330">330</a>     }</span>
+<span id="L331"><a href="#L331" aria-label="Line 331">331</a>     throw new Error(&quot;Daemon process did not receive startup authorization&quot;);</span>
+<span id="L332"><a href="#L332" aria-label="Line 332">332</a>   }</span>
+<span id="L333"><a href="#L333" aria-label="Line 333">333</a> </span>
+<span id="L334"><a href="#L334" aria-label="Line 334">334</a>   private async cleanupFailedStartup(startupLease: DaemonStartupLease | undefined): Promise&lt;void&gt; {</span>
+<span id="L335"><a href="#L335" aria-label="Line 335">335</a>     this.shutdownStarted = true;</span>
+<span id="L336"><a href="#L336" aria-label="Line 336">336</a>     try {</span>
+<span id="L337"><a href="#L337" aria-label="Line 337">337</a>       await this.workerManager.terminate();</span>
+<span id="L338"><a href="#L338" aria-label="Line 338">338</a>     } catch {}</span>
+<span id="L339"><a href="#L339" aria-label="Line 339">339</a>     try {</span>
+<span id="L340"><a href="#L340" aria-label="Line 340">340</a>       await this.server?.close();</span>
+<span id="L341"><a href="#L341" aria-label="Line 341">341</a>     } catch {}</span>
+<span id="L342"><a href="#L342" aria-label="Line 342">342</a>     startupLease?.release();</span>
+<span id="L343"><a href="#L343" aria-label="Line 343">343</a>     this.options.registry.removeIfProcess(</span>
+<span id="L344"><a href="#L344" aria-label="Line 344">344</a>       this.options.identity,</span>
+<span id="L345"><a href="#L345" aria-label="Line 345">345</a>       this.options.coordinates.instanceId,</span>
+<span id="L346"><a href="#L346" aria-label="Line 346">346</a>       this.options.coordinates.processToken,</span>
+<span id="L347"><a href="#L347" aria-label="Line 347">347</a>     );</span>
+<span id="L348"><a href="#L348" aria-label="Line 348">348</a>   }</span>
+<span id="L349"><a href="#L349" aria-label="Line 349">349</a> </span>
+<span id="L350"><a href="#L350" aria-label="Line 350">350</a>   private async handle(</span>
+<span id="L351"><a href="#L351" aria-label="Line 351">351</a>     request: DaemonRequest,</span>
+<span id="L352"><a href="#L352" aria-label="Line 352">352</a>     send: DaemonServerSend,</span>
+<span id="L353"><a href="#L353" aria-label="Line 353">353</a>   ): Promise&lt;DaemonResponse | void&gt; {</span>
+<span id="L354"><a href="#L354" aria-label="Line 354">354</a>     if (request.kind === &quot;identify&quot;) return this.identify(request);</span>
+<span id="L355"><a href="#L355" aria-label="Line 355">355</a>     if (request.kind === &quot;terminate&quot; || request.kind === &quot;kill&quot;) {</span>
+<span id="L356"><a href="#L356" aria-label="Line 356">356</a>       return this.terminate(request);</span>
+<span id="L357"><a href="#L357" aria-label="Line 357">357</a>     }</span>
+<span id="L358"><a href="#L358" aria-label="Line 358">358</a>     if (</span>
+<span id="L359"><a href="#L359" aria-label="Line 359">359</a>       request.protocolVersion !== DAEMON_PROTOCOL_VERSION ||</span>
+<span id="L360"><a href="#L360" aria-label="Line 360">360</a>       request.instanceId !== this.options.coordinates.instanceId</span>
+<span id="L361"><a href="#L361" aria-label="Line 361">361</a>     ) {</span>
+<span id="L362"><a href="#L362" aria-label="Line 362">362</a>       throw new Error(&quot;Daemon request does not match protocol or instance&quot;);</span>
+<span id="L363"><a href="#L363" aria-label="Line 363">363</a>     }</span>
+<span id="L364"><a href="#L364" aria-label="Line 364">364</a>     if (request.kind === &quot;ping&quot;) return this.pong();</span>
+<span id="L365"><a href="#L365" aria-label="Line 365">365</a>     if (request.kind === &quot;execute&quot;) return this.acceptExecution(request, send);</span>
+<span id="L366"><a href="#L366" aria-label="Line 366">366</a>     if (</span>
+<span id="L367"><a href="#L367" aria-label="Line 367">367</a>       request.kind === &quot;execution-status&quot; ||</span>
+<span id="L368"><a href="#L368" aria-label="Line 368">368</a>       request.kind === &quot;result-fetch&quot; ||</span>
+<span id="L369"><a href="#L369" aria-label="Line 369">369</a>       request.kind === &quot;result-ack&quot;</span>
+<span id="L370"><a href="#L370" aria-label="Line 370">370</a>     ) {</span>
+<span id="L371"><a href="#L371" aria-label="Line 371">371</a>       if (request.processToken !== this.options.coordinates.processToken) {</span>
+<span id="L372"><a href="#L372" aria-label="Line 372">372</a>         throw new Error(&quot;Daemon execution request does not match process instance&quot;);</span>
+<span id="L373"><a href="#L373" aria-label="Line 373">373</a>       }</span>
+<span id="L374"><a href="#L374" aria-label="Line 374">374</a>     }</span>
+<span id="L375"><a href="#L375" aria-label="Line 375">375</a>     if (request.kind === &quot;result-fetch&quot;) {</span>
+<span id="L376"><a href="#L376" aria-label="Line 376">376</a>       await this.deliverySession.fetch(request, send);</span>
+<span id="L377"><a href="#L377" aria-label="Line 377">377</a>       return;</span>
+<span id="L378"><a href="#L378" aria-label="Line 378">378</a>     }</span>
+<span id="L379"><a href="#L379" aria-label="Line 379">379</a>     if (request.kind === &quot;result-ack&quot;) {</span>
+<span id="L380"><a href="#L380" aria-label="Line 380">380</a>       return this.deliverySession.acknowledge(request);</span>
+<span id="L381"><a href="#L381" aria-label="Line 381">381</a>     }</span>
+<span id="L382"><a href="#L382" aria-label="Line 382">382</a>     if (request.kind === &quot;execution-status&quot;) {</span>
+<span id="L383"><a href="#L383" aria-label="Line 383">383</a>       return {</span>
+<span id="L384"><a href="#L384" aria-label="Line 384">384</a>         kind: &quot;execution-status&quot;,</span>
+<span id="L385"><a href="#L385" aria-label="Line 385">385</a>         instanceId: this.options.coordinates.instanceId,</span>
+<span id="L386"><a href="#L386" aria-label="Line 386">386</a>         processToken: this.options.coordinates.processToken,</span>
+<span id="L387"><a href="#L387" aria-label="Line 387">387</a>         requestId: request.requestId,</span>
+<span id="L388"><a href="#L388" aria-label="Line 388">388</a>         status: this.acceptedExecutionSession.status(request.requestId),</span>
+<span id="L389"><a href="#L389" aria-label="Line 389">389</a>       };</span>
+<span id="L390"><a href="#L390" aria-label="Line 390">390</a>     }</span>
+<span id="L391"><a href="#L391" aria-label="Line 391">391</a>     this.beginGracefulShutdown();</span>
+<span id="L392"><a href="#L392" aria-label="Line 392">392</a>     await this.acceptedExecutionSession.drain();</span>
+<span id="L393"><a href="#L393" aria-label="Line 393">393</a>     await this.deliverySession.waitForCompletionAcknowledgements();</span>
+<span id="L394"><a href="#L394" aria-label="Line 394">394</a>     setTimeout(() =&gt; void this.shutdown(&quot;graceful&quot;), 0);</span>
+<span id="L395"><a href="#L395" aria-label="Line 395">395</a>     return { kind: &quot;stopped&quot;, instanceId: this.options.coordinates.instanceId };</span>
+<span id="L396"><a href="#L396" aria-label="Line 396">396</a>   }</span>
+<span id="L397"><a href="#L397" aria-label="Line 397">397</a> </span>
+<span id="L398"><a href="#L398" aria-label="Line 398">398</a>   private identify(request: Extract&lt;DaemonRequest, { kind: &quot;identify&quot; }&gt;): DaemonResponse {</span>
+<span id="L399"><a href="#L399" aria-label="Line 399">399</a>     if (</span>
+<span id="L400"><a href="#L400" aria-label="Line 400">400</a>       request.instanceId !== this.options.coordinates.instanceId ||</span>
+<span id="L401"><a href="#L401" aria-label="Line 401">401</a>       request.processToken !== this.options.coordinates.processToken</span>
+<span id="L402"><a href="#L402" aria-label="Line 402">402</a>     ) {</span>
+<span id="L403"><a href="#L403" aria-label="Line 403">403</a>       throw new Error(&quot;Daemon identity request does not match process instance&quot;);</span>
+<span id="L404"><a href="#L404" aria-label="Line 404">404</a>     }</span>
+<span id="L405"><a href="#L405" aria-label="Line 405">405</a>     return {</span>
+<span id="L406"><a href="#L406" aria-label="Line 406">406</a>       kind: &quot;identity&quot;,</span>
+<span id="L407"><a href="#L407" aria-label="Line 407">407</a>       instanceId: this.options.coordinates.instanceId,</span>
+<span id="L408"><a href="#L408" aria-label="Line 408">408</a>       processToken: this.options.coordinates.processToken,</span>
+<span id="L409"><a href="#L409" aria-label="Line 409">409</a>       pid: process.pid,</span>
+<span id="L410"><a href="#L410" aria-label="Line 410">410</a>       startedAt: this.startedAt,</span>
+<span id="L411"><a href="#L411" aria-label="Line 411">411</a>     };</span>
+<span id="L412"><a href="#L412" aria-label="Line 412">412</a>   }</span>
+<span id="L413"><a href="#L413" aria-label="Line 413">413</a> </span>
+<span id="L414"><a href="#L414" aria-label="Line 414">414</a>   private async terminate(</span>
+<span id="L415"><a href="#L415" aria-label="Line 415">415</a>     request: Extract&lt;DaemonRequest, { kind: &quot;terminate&quot; | &quot;kill&quot; }&gt;,</span>
+<span id="L416"><a href="#L416" aria-label="Line 416">416</a>   ): Promise&lt;DaemonResponse&gt; {</span>
+<span id="L417"><a href="#L417" aria-label="Line 417">417</a>     if (</span>
+<span id="L418"><a href="#L418" aria-label="Line 418">418</a>       request.instanceId !== this.options.coordinates.instanceId ||</span>
+<span id="L419"><a href="#L419" aria-label="Line 419">419</a>       request.processToken !== this.options.coordinates.processToken</span>
+<span id="L420"><a href="#L420" aria-label="Line 420">420</a>     ) {</span>
+<span id="L421"><a href="#L421" aria-label="Line 421">421</a>       throw new Error(&quot;Daemon termination does not match process instance&quot;);</span>
+<span id="L422"><a href="#L422" aria-label="Line 422">422</a>     }</span>
+<span id="L423"><a href="#L423" aria-label="Line 423">423</a>     this.beginGracefulShutdown();</span>
+<span id="L424"><a href="#L424" aria-label="Line 424">424</a>     if (request.kind === &quot;terminate&quot;) {</span>
+<span id="L425"><a href="#L425" aria-label="Line 425">425</a>       await this.acceptedExecutionSession.drain();</span>
+<span id="L426"><a href="#L426" aria-label="Line 426">426</a>       await this.deliverySession.waitForCompletionAcknowledgements();</span>
+<span id="L427"><a href="#L427" aria-label="Line 427">427</a>       setTimeout(() =&gt; void this.shutdown(&quot;graceful&quot;), 0);</span>
+<span id="L428"><a href="#L428" aria-label="Line 428">428</a>     } else {</span>
+<span id="L429"><a href="#L429" aria-label="Line 429">429</a>       setTimeout(() =&gt; void this.shutdown(&quot;graceful&quot;, true), 0);</span>
+<span id="L430"><a href="#L430" aria-label="Line 430">430</a>     }</span>
+<span id="L431"><a href="#L431" aria-label="Line 431">431</a>     return {</span>
+<span id="L432"><a href="#L432" aria-label="Line 432">432</a>       kind: request.kind === &quot;terminate&quot; ? &quot;terminating&quot; : &quot;killing&quot;,</span>
+<span id="L433"><a href="#L433" aria-label="Line 433">433</a>       instanceId: this.options.coordinates.instanceId,</span>
+<span id="L434"><a href="#L434" aria-label="Line 434">434</a>       processToken: this.options.coordinates.processToken,</span>
+<span id="L435"><a href="#L435" aria-label="Line 435">435</a>     };</span>
+<span id="L436"><a href="#L436" aria-label="Line 436">436</a>   }</span>
+<span id="L437"><a href="#L437" aria-label="Line 437">437</a> </span>
+<span id="L438"><a href="#L438" aria-label="Line 438">438</a>   private pong(): DaemonResponse {</span>
+<span id="L439"><a href="#L439" aria-label="Line 439">439</a>     const execution = this.acceptedExecutionSession.snapshot;</span>
+<span id="L440"><a href="#L440" aria-label="Line 440">440</a>     const resources = this.resourceSupervisor.snapshot;</span>
+<span id="L441"><a href="#L441" aria-label="Line 441">441</a>     const worker = this.workerManager.snapshot;</span>
+<span id="L442"><a href="#L442" aria-label="Line 442">442</a>     return DaemonActivityProjector.project({</span>
+<span id="L443"><a href="#L443" aria-label="Line 443">443</a>       nowMonotonicMs: this.clock.monotonicNowMs(),</span>
+<span id="L444"><a href="#L444" aria-label="Line 444">444</a>       pid: process.pid,</span>
+<span id="L445"><a href="#L445" aria-label="Line 445">445</a>       processRssBytes: process.memoryUsage().rss,</span>
+<span id="L446"><a href="#L446" aria-label="Line 446">446</a>       startedAt: this.startedAt,</span>
+<span id="L447"><a href="#L447" aria-label="Line 447">447</a>       startedMonotonicAt: this.startedMonotonicAt,</span>
+<span id="L448"><a href="#L448" aria-label="Line 448">448</a>       ...(execution.lastNavigationAt === undefined</span>
+<span id="L449"><a href="#L449" aria-label="Line 449">449</a>         ? {}</span>
+<span id="L450"><a href="#L450" aria-label="Line 450">450</a>         : { lastNavigationAt: execution.lastNavigationAt }),</span>
+<span id="L451"><a href="#L451" aria-label="Line 451">451</a>       ...(execution.lastCompletedMonotonicAt === undefined</span>
+<span id="L452"><a href="#L452" aria-label="Line 452">452</a>         ? {}</span>
+<span id="L453"><a href="#L453" aria-label="Line 453">453</a>         : { lastCompletedMonotonicAt: execution.lastCompletedMonotonicAt }),</span>
+<span id="L454"><a href="#L454" aria-label="Line 454">454</a>       productVersion: this.options.productVersion,</span>
+<span id="L455"><a href="#L455" aria-label="Line 455">455</a>       instanceId: this.options.coordinates.instanceId,</span>
+<span id="L456"><a href="#L456" aria-label="Line 456">456</a>       hardProcessRssBytes: this.resourcePolicy.hardProcessRssBytes,</span>
+<span id="L457"><a href="#L457" aria-label="Line 457">457</a>       queue: execution.queue,</span>
+<span id="L458"><a href="#L458" aria-label="Line 458">458</a>       resources,</span>
+<span id="L459"><a href="#L459" aria-label="Line 459">459</a>       worker: {</span>
+<span id="L460"><a href="#L460" aria-label="Line 460">460</a>         generation: worker.generation,</span>
+<span id="L461"><a href="#L461" aria-label="Line 461">461</a>         ready: worker.ready,</span>
+<span id="L462"><a href="#L462" aria-label="Line 462">462</a>         fileCount: worker.fileCount ?? 0,</span>
+<span id="L463"><a href="#L463" aria-label="Line 463">463</a>       },</span>
+<span id="L464"><a href="#L464" aria-label="Line 464">464</a>     }).pong;</span>
+<span id="L465"><a href="#L465" aria-label="Line 465">465</a>   }</span>
+<span id="L466"><a href="#L466" aria-label="Line 466">466</a> </span>
+<span id="L467"><a href="#L467" aria-label="Line 467">467</a>   private async acceptExecution(</span>
+<span id="L468"><a href="#L468" aria-label="Line 468">468</a>     request: Extract&lt;DaemonRequest, { kind: &quot;execute&quot; }&gt;,</span>
+<span id="L469"><a href="#L469" aria-label="Line 469">469</a>     send: DaemonServerSend,</span>
+<span id="L470"><a href="#L470" aria-label="Line 470">470</a>   ): Promise&lt;DaemonResponse | void&gt; {</span>
+<span id="L471"><a href="#L471" aria-label="Line 471">471</a>     const decision = this.decideAdmission(request);</span>
+<span id="L472"><a href="#L472" aria-label="Line 472">472</a>     if (decision.kind === &quot;disconnect&quot;) {</span>
+<span id="L473"><a href="#L473" aria-label="Line 473">473</a>       throw new Error(&quot;Daemon execution request does not match process instance&quot;);</span>
+<span id="L474"><a href="#L474" aria-label="Line 474">474</a>     }</span>
+<span id="L475"><a href="#L475" aria-label="Line 475">475</a>     if (decision.kind === &quot;reject&quot;) return this.rejection(request, decision.code);</span>
+<span id="L476"><a href="#L476" aria-label="Line 476">476</a>     const admission = this.acceptedExecutionSession.accept(request);</span>
+<span id="L477"><a href="#L477" aria-label="Line 477">477</a>     await this.deliverySession.attach(</span>
+<span id="L478"><a href="#L478" aria-label="Line 478">478</a>       {</span>
+<span id="L479"><a href="#L479" aria-label="Line 479">479</a>         ...admission.acceptance,</span>
+<span id="L480"><a href="#L480" aria-label="Line 480">480</a>       },</span>
+<span id="L481"><a href="#L481" aria-label="Line 481">481</a>       send,</span>
+<span id="L482"><a href="#L482" aria-label="Line 482">482</a>     );</span>
+<span id="L483"><a href="#L483" aria-label="Line 483">483</a>   }</span>
+<span id="L484"><a href="#L484" aria-label="Line 484">484</a> </span>
+<span id="L485"><a href="#L485" aria-label="Line 485">485</a>   private decideAdmission(</span>
+<span id="L486"><a href="#L486" aria-label="Line 486">486</a>     request: Extract&lt;DaemonRequest, { kind: &quot;execute&quot; }&gt;,</span>
+<span id="L487"><a href="#L487" aria-label="Line 487">487</a>   ): DaemonAdmissionDecision {</span>
+<span id="L488"><a href="#L488" aria-label="Line 488">488</a>     const authenticated = request.processToken === this.options.coordinates.processToken;</span>
+<span id="L489"><a href="#L489" aria-label="Line 489">489</a>     if (!authenticated) {</span>
+<span id="L490"><a href="#L490" aria-label="Line 490">490</a>       return this.admissionPolicy.decide({</span>
+<span id="L491"><a href="#L491" aria-label="Line 491">491</a>         request,</span>
+<span id="L492"><a href="#L492" aria-label="Line 492">492</a>         authenticated,</span>
+<span id="L493"><a href="#L493" aria-label="Line 493">493</a>         workerReady: true,</span>
+<span id="L494"><a href="#L494" aria-label="Line 494">494</a>         resourceAdmissionPaused: false,</span>
+<span id="L495"><a href="#L495" aria-label="Line 495">495</a>         queueState: &quot;accepting&quot;,</span>
+<span id="L496"><a href="#L496" aria-label="Line 496">496</a>         compatibility: &quot;unseen&quot;,</span>
+<span id="L497"><a href="#L497" aria-label="Line 497">497</a>       });</span>
+<span id="L498"><a href="#L498" aria-label="Line 498">498</a>     }</span>
+<span id="L499"><a href="#L499" aria-label="Line 499">499</a>     void this.resourceSupervisor.sample(&quot;admission&quot;).catch((error) =&gt; {</span>
+<span id="L500"><a href="#L500" aria-label="Line 500">500</a>       this.logger.record({</span>
+<span id="L501"><a href="#L501" aria-label="Line 501">501</a>         kind: &quot;failure&quot;,</span>
+<span id="L502"><a href="#L502" aria-label="Line 502">502</a>         operation: &quot;resource-sample&quot;,</span>
+<span id="L503"><a href="#L503" aria-label="Line 503">503</a>         failureCode: &quot;operation-failed&quot;,</span>
+<span id="L504"><a href="#L504" aria-label="Line 504">504</a>         errorName: DaemonLogger.errorName(error),</span>
+<span id="L505"><a href="#L505" aria-label="Line 505">505</a>       });</span>
+<span id="L506"><a href="#L506" aria-label="Line 506">506</a>     });</span>
+<span id="L507"><a href="#L507" aria-label="Line 507">507</a>     return this.admissionPolicy.decide({</span>
+<span id="L508"><a href="#L508" aria-label="Line 508">508</a>       request,</span>
+<span id="L509"><a href="#L509" aria-label="Line 509">509</a>       authenticated,</span>
+<span id="L510"><a href="#L510" aria-label="Line 510">510</a>       workerReady: this.workerManager.snapshot.ready,</span>
+<span id="L511"><a href="#L511" aria-label="Line 511">511</a>       resourceAdmissionPaused: this.resourceSupervisor.snapshot.admissionPaused,</span>
+<span id="L512"><a href="#L512" aria-label="Line 512">512</a>       queueState: this.acceptedExecutionSession.snapshot.queue.state,</span>
+<span id="L513"><a href="#L513" aria-label="Line 513">513</a>       compatibility: this.acceptedExecutionSession.compatibilityFor(request),</span>
+<span id="L514"><a href="#L514" aria-label="Line 514">514</a>     });</span>
+<span id="L515"><a href="#L515" aria-label="Line 515">515</a>   }</span>
+<span id="L516"><a href="#L516" aria-label="Line 516">516</a> </span>
+<span id="L517"><a href="#L517" aria-label="Line 517">517</a>   private workspaceExists(): Promise&lt;boolean&gt; {</span>
+<span id="L518"><a href="#L518" aria-label="Line 518">518</a>     return (</span>
+<span id="L519"><a href="#L519" aria-label="Line 519">519</a>       this.options.workspaceExists?.(this.options.identity.workspaceRoot) ??</span>
+<span id="L520"><a href="#L520" aria-label="Line 520">520</a>       DaemonProcessCoordinator.pathExists(this.options.identity.workspaceRoot)</span>
+<span id="L521"><a href="#L521" aria-label="Line 521">521</a>     );</span>
+<span id="L522"><a href="#L522" aria-label="Line 522">522</a>   }</span>
+<span id="L523"><a href="#L523" aria-label="Line 523">523</a> </span>
+<span id="L524"><a href="#L524" aria-label="Line 524">524</a>   private async workspaceDeletedAfterDelivery(): Promise&lt;void&gt; {</span>
+<span id="L525"><a href="#L525" aria-label="Line 525">525</a>     await this.deliverySession.waitForCompletionAcknowledgements();</span>
+<span id="L526"><a href="#L526" aria-label="Line 526">526</a>     setTimeout(() =&gt; void this.shutdown(&quot;workspace-deleted&quot;, true), 0);</span>
+<span id="L527"><a href="#L527" aria-label="Line 527">527</a>   }</span>
+<span id="L528"><a href="#L528" aria-label="Line 528">528</a> </span>
+<span id="L529"><a href="#L529" aria-label="Line 529">529</a>   private static async pathExists(path: string): Promise&lt;boolean&gt; {</span>
+<span id="L530"><a href="#L530" aria-label="Line 530">530</a>     try {</span>
+<span id="L531"><a href="#L531" aria-label="Line 531">531</a>       await access(path);</span>
+<span id="L532"><a href="#L532" aria-label="Line 532">532</a>       return true;</span>
+<span id="L533"><a href="#L533" aria-label="Line 533">533</a>     } catch {</span>
+<span id="L534"><a href="#L534" aria-label="Line 534">534</a>       return false;</span>
+<span id="L535"><a href="#L535" aria-label="Line 535">535</a>     }</span>
+<span id="L536"><a href="#L536" aria-label="Line 536">536</a>   }</span>
+<span id="L537"><a href="#L537" aria-label="Line 537">537</a> </span>
+<span id="L538"><a href="#L538" aria-label="Line 538">538</a>   private static validateCoordinates(</span>
+<span id="L539"><a href="#L539" aria-label="Line 539">539</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L540"><a href="#L540" aria-label="Line 540">540</a>     coordinates: DaemonIdentityCoordinates,</span>
+<span id="L541"><a href="#L541" aria-label="Line 541">541</a>   ): void {</span>
+<span id="L542"><a href="#L542" aria-label="Line 542">542</a>     if (</span>
+<span id="L543"><a href="#L543" aria-label="Line 543">543</a>       coordinates.workspaceRoot !== identity.workspaceRoot ||</span>
+<span id="L544"><a href="#L544" aria-label="Line 544">544</a>       coordinates.workspaceKey !== identity.workspaceKey ||</span>
+<span id="L545"><a href="#L545" aria-label="Line 545">545</a>       coordinates.stateKey !== identity.stateKey ||</span>
+<span id="L546"><a href="#L546" aria-label="Line 546">546</a>       coordinates.identityKey !== identity.identityKey ||</span>
+<span id="L547"><a href="#L547" aria-label="Line 547">547</a>       coordinates.endpoint !== identity.endpoint(coordinates.instanceId)</span>
+<span id="L548"><a href="#L548" aria-label="Line 548">548</a>     ) {</span>
+<span id="L549"><a href="#L549" aria-label="Line 549">549</a>       throw new Error(&quot;Daemon process identity does not match configuration&quot;);</span>
+<span id="L550"><a href="#L550" aria-label="Line 550">550</a>     }</span>
+<span id="L551"><a href="#L551" aria-label="Line 551">551</a>   }</span>
+<span id="L552"><a href="#L552" aria-label="Line 552">552</a> </span>
+<span id="L553"><a href="#L553" aria-label="Line 553">553</a>   private rejection(</span>
+<span id="L554"><a href="#L554" aria-label="Line 554">554</a>     request: Extract&lt;DaemonRequest, { kind: &quot;execute&quot; }&gt;,</span>
+<span id="L555"><a href="#L555" aria-label="Line 555">555</a>     code: DaemonExecuteRejectionCode,</span>
+<span id="L556"><a href="#L556" aria-label="Line 556">556</a>   ): DaemonExecutionServerFrame {</span>
+<span id="L557"><a href="#L557" aria-label="Line 557">557</a>     return DaemonAdmissionRejections.frame(code, {</span>
+<span id="L558"><a href="#L558" aria-label="Line 558">558</a>       instanceId: this.options.coordinates.instanceId,</span>
+<span id="L559"><a href="#L559" aria-label="Line 559">559</a>       processToken: this.options.coordinates.processToken,</span>
+<span id="L560"><a href="#L560" aria-label="Line 560">560</a>       requestId: request.requestId,</span>
+<span id="L561"><a href="#L561" aria-label="Line 561">561</a>     });</span>
+<span id="L562"><a href="#L562" aria-label="Line 562">562</a>   }</span>
+<span id="L563"><a href="#L563" aria-label="Line 563">563</a> </span>
+<span id="L564"><a href="#L564" aria-label="Line 564">564</a>   private async drainAndShutdown(reason: &quot;idle&quot;): Promise&lt;void&gt; {</span>
+<span id="L565"><a href="#L565" aria-label="Line 565">565</a>     await this.acceptedExecutionSession.drain();</span>
+<span id="L566"><a href="#L566" aria-label="Line 566">566</a>     await this.shutdown(reason);</span>
+<span id="L567"><a href="#L567" aria-label="Line 567">567</a>   }</span>
+<span id="L568"><a href="#L568" aria-label="Line 568">568</a> </span>
+<span id="L569"><a href="#L569" aria-label="Line 569">569</a>   private beginGracefulShutdown(): void {</span>
+<span id="L570"><a href="#L570" aria-label="Line 570">570</a>     this.shutdownFailureCode ??= &quot;stopping&quot;;</span>
+<span id="L571"><a href="#L571" aria-label="Line 571">571</a>     this.resourceSupervisor.stop();</span>
+<span id="L572"><a href="#L572" aria-label="Line 572">572</a>   }</span>
+<span id="L573"><a href="#L573" aria-label="Line 573">573</a> </span>
+<span id="L574"><a href="#L574" aria-label="Line 574">574</a>   private async initiateResourceDrain(): Promise&lt;void&gt; {</span>
+<span id="L575"><a href="#L575" aria-label="Line 575">575</a>     await this.deliverySession.waitForCompletionAcknowledgements();</span>
+<span id="L576"><a href="#L576" aria-label="Line 576">576</a>     void this.shutdown(&quot;resource&quot;, true).catch((error) =&gt; {</span>
+<span id="L577"><a href="#L577" aria-label="Line 577">577</a>       this.logger.record({</span>
+<span id="L578"><a href="#L578" aria-label="Line 578">578</a>         kind: &quot;failure&quot;,</span>
+<span id="L579"><a href="#L579" aria-label="Line 579">579</a>         operation: &quot;resource-drain&quot;,</span>
+<span id="L580"><a href="#L580" aria-label="Line 580">580</a>         failureCode: &quot;controlled-resource&quot;,</span>
+<span id="L581"><a href="#L581" aria-label="Line 581">581</a>         errorName: DaemonLogger.errorName(error),</span>
+<span id="L582"><a href="#L582" aria-label="Line 582">582</a>       });</span>
+<span id="L583"><a href="#L583" aria-label="Line 583">583</a>     });</span>
+<span id="L584"><a href="#L584" aria-label="Line 584">584</a>   }</span>
+<span id="L585"><a href="#L585" aria-label="Line 585">585</a> </span>
+<span id="L586"><a href="#L586" aria-label="Line 586">586</a>   private async shutdown(</span>
+<span id="L587"><a href="#L587" aria-label="Line 587">587</a>     reason: &quot;graceful&quot; | &quot;idle&quot; | &quot;resource&quot; | &quot;workspace-deleted&quot;,</span>
+<span id="L588"><a href="#L588" aria-label="Line 588">588</a>     force = false,</span>
+<span id="L589"><a href="#L589" aria-label="Line 589">589</a>   ): Promise&lt;void&gt; {</span>
+<span id="L590"><a href="#L590" aria-label="Line 590">590</a>     this.shutdownFailureCode ??= reason === &quot;resource&quot; ? &quot;controlled-resource&quot; : &quot;stopping&quot;;</span>
+<span id="L591"><a href="#L591" aria-label="Line 591">591</a>     if (force) this.forceWorkerShutdown();</span>
+<span id="L592"><a href="#L592" aria-label="Line 592">592</a>     if (this.shutdownOperation !== undefined) return this.shutdownOperation;</span>
+<span id="L593"><a href="#L593" aria-label="Line 593">593</a>     this.shutdownStarted = true;</span>
+<span id="L594"><a href="#L594" aria-label="Line 594">594</a>     this.shutdownOperation = this.completeShutdown(reason, force);</span>
+<span id="L595"><a href="#L595" aria-label="Line 595">595</a>     return this.shutdownOperation;</span>
+<span id="L596"><a href="#L596" aria-label="Line 596">596</a>   }</span>
+<span id="L597"><a href="#L597" aria-label="Line 597">597</a> </span>
+<span id="L598"><a href="#L598" aria-label="Line 598">598</a>   private async completeShutdown(</span>
+<span id="L599"><a href="#L599" aria-label="Line 599">599</a>     reason: &quot;graceful&quot; | &quot;idle&quot; | &quot;resource&quot; | &quot;workspace-deleted&quot;,</span>
+<span id="L600"><a href="#L600" aria-label="Line 600">600</a>     force: boolean,</span>
+<span id="L601"><a href="#L601" aria-label="Line 601">601</a>   ): Promise&lt;void&gt; {</span>
+<span id="L602"><a href="#L602" aria-label="Line 602">602</a>     this.lifetime.stop();</span>
+<span id="L603"><a href="#L603" aria-label="Line 603">603</a>     this.resourceSupervisor.stop();</span>
+<span id="L604"><a href="#L604" aria-label="Line 604">604</a>     if (force) await this.forceWorkerShutdown();</span>
+<span id="L605"><a href="#L605" aria-label="Line 605">605</a>     else await this.gracefullyShutdownWorker();</span>
+<span id="L606"><a href="#L606" aria-label="Line 606">606</a>     this.operationObserver.shutdown({ kind: &quot;shutdown&quot;, reason, force });</span>
+<span id="L607"><a href="#L607" aria-label="Line 607">607</a>     this.logger.record({ kind: &quot;stop&quot;, reason });</span>
+<span id="L608"><a href="#L608" aria-label="Line 608">608</a>     try {</span>
+<span id="L609"><a href="#L609" aria-label="Line 609">609</a>       await this.server?.close();</span>
+<span id="L610"><a href="#L610" aria-label="Line 610">610</a>     } catch (error) {</span>
+<span id="L611"><a href="#L611" aria-label="Line 611">611</a>       this.logger.record({</span>
+<span id="L612"><a href="#L612" aria-label="Line 612">612</a>         kind: &quot;failure&quot;,</span>
+<span id="L613"><a href="#L613" aria-label="Line 613">613</a>         operation: &quot;transport-close&quot;,</span>
+<span id="L614"><a href="#L614" aria-label="Line 614">614</a>         failureCode: &quot;operation-failed&quot;,</span>
+<span id="L615"><a href="#L615" aria-label="Line 615">615</a>         errorName: DaemonLogger.errorName(error),</span>
+<span id="L616"><a href="#L616" aria-label="Line 616">616</a>       });</span>
+<span id="L617"><a href="#L617" aria-label="Line 617">617</a>     }</span>
+<span id="L618"><a href="#L618" aria-label="Line 618">618</a>     await this.deliverySession.cleanupInstance();</span>
+<span id="L619"><a href="#L619" aria-label="Line 619">619</a>     this.deliverySession.completeRetainedTraces();</span>
+<span id="L620"><a href="#L620" aria-label="Line 620">620</a>     await this.logger.close();</span>
+<span id="L621"><a href="#L621" aria-label="Line 621">621</a>     this.exit(0);</span>
+<span id="L622"><a href="#L622" aria-label="Line 622">622</a>   }</span>
+<span id="L623"><a href="#L623" aria-label="Line 623">623</a> </span>
+<span id="L624"><a href="#L624" aria-label="Line 624">624</a>   private async gracefullyShutdownWorker(): Promise&lt;void&gt; {</span>
+<span id="L625"><a href="#L625" aria-label="Line 625">625</a>     await this.acceptedExecutionSession.drain();</span>
+<span id="L626"><a href="#L626" aria-label="Line 626">626</a>     const gracefulClose = this.workerManager.close();</span>
+<span id="L627"><a href="#L627" aria-label="Line 627">627</a>     await Promise.race([gracefulClose, this.forceEscalated.then(() =&gt; this.forceWorkerShutdown())]);</span>
+<span id="L628"><a href="#L628" aria-label="Line 628">628</a>   }</span>
+<span id="L629"><a href="#L629" aria-label="Line 629">629</a> </span>
+<span id="L630"><a href="#L630" aria-label="Line 630">630</a>   private forceWorkerShutdown(): Promise&lt;void&gt; {</span>
+<span id="L631"><a href="#L631" aria-label="Line 631">631</a>     if (this.forcedWorkerShutdown !== undefined) return this.forcedWorkerShutdown;</span>
+<span id="L632"><a href="#L632" aria-label="Line 632">632</a>     this.acceptedExecutionSession.close();</span>
+<span id="L633"><a href="#L633" aria-label="Line 633">633</a>     this.forcedWorkerShutdown = this.workerManager</span>
+<span id="L634"><a href="#L634" aria-label="Line 634">634</a>       .terminate()</span>
+<span id="L635"><a href="#L635" aria-label="Line 635">635</a>       .then(() =&gt; this.acceptedExecutionSession.drain());</span>
+<span id="L636"><a href="#L636" aria-label="Line 636">636</a>     this.resolveForceEscalated();</span>
+<span id="L637"><a href="#L637" aria-label="Line 637">637</a>     return this.forcedWorkerShutdown;</span>
+<span id="L638"><a href="#L638" aria-label="Line 638">638</a>   }</span>
+<span id="L639"><a href="#L639" aria-label="Line 639">639</a> </span>
+<span id="L640"><a href="#L640" aria-label="Line 640">640</a>   private pause(): Promise&lt;void&gt; {</span>
+<span id="L641"><a href="#L641" aria-label="Line 641">641</a>     return new Promise((resolve) =&gt;</span>
+<span id="L642"><a href="#L642" aria-label="Line 642">642</a>       setTimeout(resolve, this.policy.values.startup.authorizationPollIntervalMs),</span>
+<span id="L643"><a href="#L643" aria-label="Line 643">643</a>     );</span>
+<span id="L644"><a href="#L644" aria-label="Line 644">644</a>   }</span>
+<span id="L645"><a href="#L645" aria-label="Line 645">645</a> </span>
+<span id="L646"><a href="#L646" aria-label="Line 646">646</a>   private async recoverWorkerExit(</span>
+<span id="L647"><a href="#L647" aria-label="Line 647">647</a>     workerExit: import(&quot;./daemon-navigation-worker.js&quot;).DaemonNavigationWorkerExit,</span>
+<span id="L648"><a href="#L648" aria-label="Line 648">648</a>   ): Promise&lt;void&gt; {</span>
+<span id="L649"><a href="#L649" aria-label="Line 649">649</a>     if (this.shutdownStarted) return;</span>
+<span id="L650"><a href="#L650" aria-label="Line 650">650</a>     this.logger.record({</span>
+<span id="L651"><a href="#L651" aria-label="Line 651">651</a>       kind: &quot;failure&quot;,</span>
+<span id="L652"><a href="#L652" aria-label="Line 652">652</a>       operation: &quot;worker-exit&quot;,</span>
+<span id="L653"><a href="#L653" aria-label="Line 653">653</a>       failureCode: &quot;worker-exit&quot;,</span>
+<span id="L654"><a href="#L654" aria-label="Line 654">654</a>       errorName: DaemonLogger.errorName(</span>
+<span id="L655"><a href="#L655" aria-label="Line 655">655</a>         workerExit.errorName === undefined ? undefined : { name: workerExit.errorName },</span>
+<span id="L656"><a href="#L656" aria-label="Line 656">656</a>       ),</span>
+<span id="L657"><a href="#L657" aria-label="Line 657">657</a>     });</span>
+<span id="L658"><a href="#L658" aria-label="Line 658">658</a>     try {</span>
+<span id="L659"><a href="#L659" aria-label="Line 659">659</a>       await this.resourceSupervisor.recover(workerExit);</span>
+<span id="L660"><a href="#L660" aria-label="Line 660">660</a>     } catch (error) {</span>
+<span id="L661"><a href="#L661" aria-label="Line 661">661</a>       this.logger.record({</span>
+<span id="L662"><a href="#L662" aria-label="Line 662">662</a>         kind: &quot;failure&quot;,</span>
+<span id="L663"><a href="#L663" aria-label="Line 663">663</a>         operation: &quot;worker-replacement&quot;,</span>
+<span id="L664"><a href="#L664" aria-label="Line 664">664</a>         failureCode: &quot;controlled-resource&quot;,</span>
+<span id="L665"><a href="#L665" aria-label="Line 665">665</a>         errorName: DaemonLogger.errorName(error),</span>
+<span id="L666"><a href="#L666" aria-label="Line 666">666</a>       });</span>
+<span id="L667"><a href="#L667" aria-label="Line 667">667</a>       throw error;</span>
+<span id="L668"><a href="#L668" aria-label="Line 668">668</a>     }</span>
+<span id="L669"><a href="#L669" aria-label="Line 669">669</a>   }</span>
+<span id="L670"><a href="#L670" aria-label="Line 670">670</a> }</span>
+</pre><a href="../../receipts.html">← Return to receipt index</a></main></body></html>
