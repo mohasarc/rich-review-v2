@@ -96,3 +96,6 @@ BUILD OK stack-head
 - 2026-09-13 03:18:49 +03: REQUEUE 12-detective after attempt 2: worker exited 1 without README
 - 2026-09-13 03:18:49 +03: START 12-detective attempt 3 via codex, pid 67639
 - 2026-09-13 03:20:29 +03: FINISH 11-chess-coach via codex, exit 0, README present
+- 2026-09-13 03:20:30 +03: COMMIT OK 11-chess-coach: [main 84da804] Add experiment 11 chess-coach
+- 2026-09-13 03:20:30 +03: START 13-owner-persona attempt 1 via codex, pid 68580
+- 2026-09-13 03:21:00 +03: FINISH 02-unconstrained-b via codex, exit 0, README present
