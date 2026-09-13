@@ -1,0 +1,870 @@
+rich-review / 02
+01 · Whole change
+02 · Follow a limit
+03 · Evidence
+
+SYMNAV · PR 131 · DAEMON POLICY CONSUMERS
+
+A policy that now reaches
+its consumers.
+
+The snapshot already existed. This change makes operational limits come from it: the CLI's local defaults and tuning inputs give way to required policy inputs. The mechanisms stay where they are.
+
+60 changed files
+7 policy sections · 39 fields
+Defaults retained
+Base b3a6c4f → head b100221
+
+THE BOUNDARY THAT MOVED
+
+Who supplies the number?
+Before
+After
+packages/daemon
+DaemonPolicy · already present in base
+apps/cli
+Composition supplies policy inputs to the existing consumers
+Transport
+5 fields ↗
+required
+policy input
+LocalDaemonTransport
+JSON / control-frame validation · response deadlines
+Startup
+6 fields ↗
+required
+policy input
+Registry · StartupCoordinator · WorkspaceDaemon
+Ownership · launch retries · heartbeat and polling
+Shutdown
+8 fields ↗
+required
+policy input
+Controller · Lifetime · ProcessTerminator · WorkspaceDaemon
+Idle timer · stop budget · exit polling · drain acknowledgements
+Delivery
+2 fields ↗
+required
+policy input
+LocalDaemonTransport
+Accepted-execution reattachments · per-attempt fetch resume
+Output
+4 fields ↗
+required
+policy input
+Capture · Spool · Codec · TransferDecoder · WorkerProtocol
+Write, retain, frame, validate and read the same chunk limit
+Resources
+9 fields ↗
+required
+policy input
+ResourceSupervisor · WorkspaceDaemon · worker entry
+RSS thresholds · replacement circuit · worker heap and sampling
+Diagnostics
+5 fields ↗
+required
+policy input
+DaemonLogger · WorkspaceDaemon
+Rotation · queued events · disconnected traces
+Select a section to follow its values.
+Changed: the supply path. The consumers remain in this package.
+
+ required policy supply  retired local supply  snapshot bridge already present.
+Approximate map: groups consumers by the limits they share; lines show supply, not call order or individual imports.
+
+The package boundary stays put. apps/cli already depended on @symnav/daemon. This PR connects app-owned mechanisms to that package's policy; it does not move those mechanisms into the package.
+
+THE SAME SOURCE MAP IN RUNNING CODE
+
+Two processes. A worker inside one.
+↑ Package view
+
+These runtime boundaries already exist in base. The new reads follow the existing snapshot through them.
+
+CLI PROCESS
+
+Compose the snapshot
+
+DaemonPolicy.currentSystem()
+
+Lifecycle + routing
+transport · startup · shutdown
+Local capture / received result
+output · delivery
+serialized
+snapshot
+→
+launch configuration
+
+DAEMON PROCESS
+
+Reconstruct the same values
+WorkspaceDaemon · main thread
+spool · resource supervision · lifetime · logging · transport
+worker data · same serialized snapshot
+↓
+
+WORKER THREAD · SAME PROCESS
+
+Navigation + command capture
+output chunks · worker heap sampling
+
+Grouped runtime view: shows snapshot flow and the main consumers, not all messages or construction calls. Type definitions in packages/daemon are not a separate running service.
+
+THE COMPLETE DECISION SURFACE
+
+What comes with that change
+You can stop after this layer.
+
+Defaults are preserved; error selection and some test scenarios change. Every decision below has a route to its mechanism and source. stated means a reason was found; unexplained means no reason for that specific choice was found in the searched inputs.
+
+01
+Make the caller supply the limits
+Local defaults + per-consumer knobs
+→
+Required policy inputs
+Output capture, spooling, framing, resources, lifecycle and diagnostics read the existing snapshot. The operational implementations stay in apps/cli.
+Reason: Omitted composition must not recreate local defaults.
+stated
+02
+Keep the operating envelope
+Existing values, formulas and untimed waits
+→
+Same values, one policy definition
+Defaults are retained. Memory limits still depend on host memory. No user tuning is added. Healthy startup, accepted completion and worker output acknowledgement still have no deadline; startup silence and result eviction remain deferred.
+Reason: The architecture spec requires behavior preservation, one policy owner and no user tuning.
+stated
+03
+Let composition choose the response clock
+Status action supplies 100 ms directly
+→
+Status-observer purpose selects 100 ms
+The purpose belongs to a transport instance, not to a message kind. Ordinary lifecycle and execution-status exchanges keep 250 ms; execute admission keeps its separate 5 s clock.
+Reason: Status observation and ordinary execution-status requests have distinct deadlines.
+stated
+04
+Count attempts in their own scopes
+One-shot reattach / resume / startup retry
+→
+Three numeric limits, all default to 1
+Reattachment spans accepted execution; fetch-resume state belongs to each execute attempt, as it already did in base. Startup retry is separate and counts child exit or lost warm-up.
+Reason: Each reattached execute attempt needs its own fetch-resume allowance; startup retains a fresh launch after failure.
+stated
+05
+Expose the reattached completion's error
+Recovery failure rethrows first accepted-close error
+→
+Later completion can expose its own error
+After an accepted close, a corrupt completion on the reattachment reaches the caller as corrupt instead of closed. Failure to obtain the reattached receipt still preserves the preceding error.
+unexplained
+06
+Use different input shapes at different depths
+Defaults hidden in consumers and helpers
+→
+Snapshot → sections → fields → numbers
+Some consumers take several sections, others one field or a bare number. The worker parent reparses the snapshot for a chunk limit; stored output keeps an optional internal cap. Transport keeps writeChunkSize and outputDirectory options.
+unexplained
+07
+Keep old tuning calls in test adapters
+Tests tune production constructors
+→
+Seven helper files translate into policies
+Test-only wrappers preserve legacy calls and construct validated snapshots. Existing validation now governs their overrides: ordered output and memory limits, integers and positive polling intervals.
+Reason: Tests need small limits without restoring production tuning seams.
+stated
+08
+Make wrappers look like the former APIs
+Production classes at test import sites
+→
+Adapters aliased to production class names
+Tests often keep names such as LocalDaemonTransport while importing TestLocalDaemonTransport. Most helper defaults come from currentSystem(); the workspace helper starts from its supplied or dependency policy.
+unexplained
+09
+Let adapters rewrite the requested test limits
+Inline 0 means spill immediately
+→
+Client inline floor becomes 64 KiB
+The client helper also creates the output directory. The daemon helper may turn inline 0 into half the result limit, lower chunk/result limits, and ignore memoryCapBytes. Existing cleanup assertions can now run without a spill.
+unexplained
+10
+Reshape test payloads around valid policy limits
+Tiny or zero standalone limits
+→
+Coordinated chunk / inline / result values
+capture(1) becomes capture(32); one two-byte record becomes two one-byte records. Spool tests raise inline limits and sometimes append an extra record. The aggregate-capacity test now keeps its first completion inline.
+unexplained
+11
+Move the resource-policy test surface
+CLI memory recipe + three test definitions
+→
+Existing package policy tests + consumer tests
+The duplicate CLI recipe and its derivation/constraint/default test blocks are deleted. Existing daemon-package tests cover those subjects. New tests exercise custom capacities, cadence, status purpose, startup retry counts and reattachment scope.
+unexplained
+12
+Delete a startup deadline input that was unused
+startupTimeoutMs stored but never read
+→
+Field and test arguments removed
+Removing this input does not remove an active startup timer. The policy record already says healthy startup has no deadline; coordination grace remains a different, active clock.
+unexplained
+13
+Guard the retired names in production source
+Meta-test checks three policy bypass strings
+→
+Meta-test checks 36 retired strings
+The guard scans CLI production source and excludes tests. It prevents the named defaults and options from returning; it does not analyze arbitrary numeric literals or equivalently renamed options.
+unexplained
+
+Reason search: supplied PR body, six commit subjects and bodies, and plans/005. “Unexplained” reports the search result; it is not a verdict. Numeric policy reasons predate this PR and remain available with each value below.
+
+01 / The whole change
+
+One source supplies the limits. Separate purposes and recovery scopes remain separate. The test translation layer and error-selection change are part of the decision.
+
+Follow a limit ↓
+
+02 / SAME DECISIONS, MORE MECHANISM
+
+Follow one limit.
+
+Choose any policy section, then a value. The path keeps both revisions visible. Memory values use a fixed 1 GiB effective-memory example, not this machine's memory.
+
+↔
+Transport
+↗
+Startup
+◷
+Shutdown
+⤴
+Delivery
+▤
+Output
+▥
+Resources
+≋
+Diagnostics
+
+CAPTURE + SPOOL + CHUNKS
+
+One raw chunk
+64 KiB
+Inline output
+256 KiB
+One completed result
+256 MiB
+All retained spool output
+512 MiB
+
+output.maximumChunkRawBytes
+
+One raw chunk
+64 KiB
+
+Worker and result chunks · 64 KiB
+
+Before · local supply
+completion-spool.ts
+const (imported by 2 modules)
+export const COMMAND_OUTPUT_CHUNK_BYTES = 64 * 1024;
+base · line 10 ↗
+command-execution-result.ts
+second const, same value
+const MAXIMUM_RECORD_BYTES = 64 * 1024;
+base · line 56 ↗
+After · policy supply
+DaemonPolicy.values.output
+maximumChunkRawBytes
+command-execution-result.ts
+reads or receives the policy value
+this.maximumRecordBytes = policy.maximumChunkRawBytes;
+head · line 154 ↗
+completion-spool.ts
+reads or receives the policy value
+this.maximumChunkBytes = policy.maximumChunkRawBytes;
+head · line 305 ↗
+local-daemon-transport.ts
+reads or receives the policy value
+this.maximumChunkRawBytes = policy.output.maximumChunkRawBytes;
+head · line 297 ↗
+daemon-navigation-worker-entry.ts
+reads or receives the policy value
+this.policy.values.output.maximumChunkRawBytes,
+head · line 199 ↗
+daemon-navigation-worker.ts
+reads or receives the policy value
+DaemonPolicy.fromSerialized(options.configuration.policy).values.output.maximumChunkRawBytes
+head · line 80 ↗
+daemon-result-chunk-codec.ts
+reads or receives the policy value
+static encode(chunk, maximumChunkRawBytes)
+head · line 19 ↗
+daemon-navigation-worker-protocol.ts
+reads or receives the policy value
+static response(value, maximumChunkRawBytes)
+head · line 127 ↗
+stated
+
+Bound one raw output record — existing policy record, line 29.
+
+Source of this value's reason ↗
+Decision 01 · Make the caller supply the limits ↗
+Decision 06 · Use different input shapes at different depths ↗
+Decision 10 · Reshape test payloads around valid policy limits ↗
+
+THREE WORKED VIEWS
+
+Where the distinctions matter
+
+DECISION 03 · TRANSPORT PURPOSE
+
+Same exchange, different clock
+Construct the transport for
+daemon status
+ordinary lifecycle / execution status
+Response budget 100 ms
+0
+250 ms
+
+The status action chooses the status-observer purpose. Its identify and ping exchanges use the 100 ms response budget.
+
+Illustration of constructor selection; bar length is a policy budget, not measured response time. The separate admission budget remains 5 s.
+
+Read reason + source ↗
+
+DECISIONS 04–05 · RECOVERY SCOPE AND ERROR
+
+One accepted request, two attempts
+Reattachment budget · 1
+Execute attempt 1
+fetch-resume budget · 1
+→
+Execute attempt 2
+fresh fetch-resume budget · 1
+Scripted recovery result
+Corrupt completion
+Completed result
+Another accepted close
+Would succeed on a third execute
+Before
+closed
+2 execute attempts
+Daemon connection ended after acceptance before completion
+After
+corrupt
+2 execute attempts
+Daemon result transfer did not match its manifest
+
+Recorded execution: built base and head transport clients against a scripted Unix socket. The scope boxes describe the code; they do not imply that every scenario uses its fetch allowance.
+
+Read error-selection mechanism ↗
+
+DECISIONS 07–11 · TEST TRANSLATION
+
+A cleanup check can survive a change of storage path.
+Test asks for
+outputInlineBytes: 0
+Before
+0-byte inline capacity
+nonempty output → spill to disk
+After
+max(64 KiB, 0)
+small output → stays in memory
+“Directory is empty”
+can hold in either case
+
+In the focused run, 14 existing transport tests called the client spill method in base and did not call it in head. The adapter creates the directory before execution. Their unchanged cleanup assertions now exercise a different path.
+
+Inspect adapter choices ↗
+See the observed test rows ↓
+
+READ STRAIGHT THROUGH, OR ENTER FROM ANY DECISION
+
+Mechanisms and reasons
+↑ Complete decision surface
+01
+Make the caller supply the limits
+stated
+REASON FOUND
+
+The PR says omitted composition must not recreate local defaults.
+PR body · Decisions 1
+
+AUTHORITY
+
+The CLI composes a DaemonPolicy. The daemon receives serialized values and reconstructs the same snapshot; its worker receives those values too. This bridge predates this PR. The new work connects consumers to it.
+
+OUTPUT
+
+Command capture and spool storage use the same chunk, inline and result limits. The codec, transfer decoder and worker-message validator receive the chunk limit explicitly. A stored file keeps the limit needed to decode its records.
+
+LIFECYCLE
+
+Startup ownership, heartbeat, authorization and readiness polling, lifetime, stop escalation, process-exit polling and drain acknowledgement all take policy values. Logging and disconnected-trace retention do as well.
+
+head · daemon-entry.ts:21–49
+head · workspace-daemon.ts:125–175
+head · command-execution-result.ts:146–155
+Follow the related value ↗
+↑ Decision 01 in the whole change
+02
+Keep the operating envelope
+stated
+REASON FOUND
+
+The existing policy record gives a reason for every value and for the intentional absence of these deadlines. The architecture spec requires one policy owner and forbids user tuning.
+plans/005/daemon-policy.md; architecture spec · Every threshold has one owner
+
+OUTPUT ENVELOPE
+
+64 KiB per chunk, 256 KiB before spilling, 256 MiB per result and 512 MiB across retained daemon spools. Control JSON and execution-transfer control use separate 8 MiB and 256 KiB limits.
+
+RESOURCE ENVELOPE
+
+Select a positive constraint only if smaller than total memory. Floor effective memory to MiB, then derive half for hard RSS (256–8192 MiB), one quarter for worker old generation (128–4096 MiB), and 80% / 70% of hard RSS for shedding / resumption. Raw effective bytes remain in the snapshot; no CLI production read of that field remains in this PR.
+
+INDEPENDENT CLOCKS
+
+The 100 ms status budget, 250 ms ordinary response budget and 5 s admission budget remain separate. Stop keeps min(500 ms, floor(stop budget / 2)) for escalation; trace capacity keeps an effective minimum of one.
+
+INTENTIONAL ABSENCES
+
+The record says healthy warm-up progresses without a project-size deadline, accepted work has no completion timer, and worker output acknowledgement waits without a timer. Startup-silence policy and unacknowledged-result eviction are deferred.
+
+head · daemon-policy.md:3–66
+head · daemon-policy.ts:101–170
+head · daemon-controller.ts:70–80
+head · workspace-daemon.ts:888–900
+Follow the related value ↗
+↑ Decision 02 in the whole change
+03
+Let composition choose the response clock
+stated
+REASON FOUND
+
+The PR says status observation and ordinary execution-status requests have distinct deadlines.
+PR body · Decisions 2
+
+SELECTION
+
+Only the daemon status action supplies responseTimeoutPurpose: status-observer. The constructor picks the response deadline once. Other callers get the ordinary purpose by default.
+
+CONSEQUENCE
+
+An identify or ping exchange gets the clock of the instance sending it. An execution-status message does not acquire the status-observer clock because of its name. The same instance-wide choice is also used for acknowledgement and endpoint probing.
+
+head · register-daemon-command.ts:100–119
+head · local-daemon-transport.ts:289–302
+head · local-daemon-transport-validation.test.ts:49–147
+Follow the related value ↗
+↑ Decision 03 in the whole change
+04
+Count attempts in their own scopes
+stated
+REASON FOUND
+
+The PR says each reattached execute attempt needs its own fetch-resume allowance. The policy record says one fresh startup launch follows an explicit child failure.
+PR body · Decisions 3; policy record · startup.childFailureRetryLimit
+
+OUTER SCOPE
+
+completeWithReattachments counts accepted-execution reattachments. The original request is sent again to recover the accepted request; this is not a new local execution.
+
+INNER SCOPE
+
+Each executeOnce invocation creates a new resumeCount. The guard permits a fetch only after acceptance and a manifest, with no settled completion or completed output. Base already declared resumeStarted inside executeOnce; the scope separation is preserved.
+
+STARTUP
+
+ensureRunning increments failureCount for DaemonChildExitError or DaemonWarmupLostError. It stops retrying at childFailureRetryLimit. New tests supply 0 and 2 and observe one and three launches.
+
+head · local-daemon-transport.ts:395–427
+head · local-daemon-transport.ts:448–493
+base · local-daemon-transport.ts:431–470
+head · daemon-startup-coordinator.ts:75–95
+Follow the related value ↗
+↑ Decision 04 in the whole change
+05
+Expose the reattached completion's error
+unexplained
+REASON FOUND
+
+No reason for this error-selection change was found in the PR body, its six commit messages, or plans/005.
+Search scope: supplied PR + commits + plans/005
+
+WHY THE RESULT CHANGES
+
+Base awaits both the new receipt and its completion inside a catch that rethrows the original close. Head assigns the new completion, then awaits it on the next loop iteration. That iteration catches a different error.
+
+BOUNDARY
+
+This observation is at LocalDaemonTransport.completion. It does not establish a change in every user-visible CLI outcome. The page's recorded example runs built base and head clients against the same scripted Unix-socket response sequence.
+
+base · local-daemon-transport.ts:398–413
+head · local-daemon-transport.ts:402–427
+Follow the related value ↗
+↑ Decision 05 in the whole change
+06
+Use different input shapes at different depths
+unexplained
+REASON FOUND
+
+Required inputs are explained, but no reason for these particular interface widths, the repeated parse, or the retained internal optional cap was found.
+Search scope: supplied PR + commits + plans/005
+
+INPUT WIDTHS
+
+WorkspaceDaemon takes the whole snapshot. Transport takes transport, delivery and output. Controller and startup coordinator take startup and shutdown. Lifetime takes only idleTimeoutMs. The codec, frame decoder, worker validator, heap sampler and file-record decoder receive numbers.
+
+INTERNAL STORAGE
+
+StoredCommandOutput receives maximumRecordBytes as an optional parameter and uses a non-null assertion on its file-backed path. Its creator supplies the cap. This is a narrower internal contract than the required policy constructor.
+
+REMAINING OPTIONS
+
+LocalDaemonTransport still accepts writeChunkSize and outputDirectory. They affect I/O partitioning and storage location; the removed operational thresholds are now policy-backed.
+
+head · local-daemon-transport.ts:24–37
+head · daemon-lifetime.ts:10–25
+head · daemon-navigation-worker.ts:76–90
+head · command-execution-result.ts:74–90
+head · daemon-result-chunk-codec.ts:128–156
+Follow the related value ↗
+↑ Decision 06 in the whole change
+07
+Keep old tuning calls in test adapters
+stated
+REASON FOUND
+
+The PR says tests need small thresholds without restoring runtime tuning seams. It chooses test adapters over production compatibility overloads.
+PR body · Decisions 4
+
+BOUNDARY
+
+Seven helper files cover transport, workspace daemon, registry, controller, startup coordinator, process terminator and resource policy. Two tests also define local wrappers for logging and completion spooling.
+
+TRANSLATION
+
+The existing DaemonPolicyTestFactory merges section overrides, then calls fromSerialized. That existing validator enforces exact fields, nonnegative safe integers, eight positive intervals, hard > soft > resume RSS and 0 < chunk ≤ inline ≤ result ≤ aggregate.
+
+head · local-daemon-transport.ts:18–63
+head · daemon-resource-policy.ts:1–34
+head · policy-testing.ts:1–17
+head · daemon-policy.ts:266–306
+Follow the related value ↗
+↑ Decision 07 in the whole change
+08
+Make wrappers look like the former APIs
+unexplained
+REASON FOUND
+
+The PR explains test adapters, but not their aliasing or the choice of host-derived defaults for these helpers.
+Search scope: supplied PR + commits + plans/005
+
+READING A TEST
+
+A constructor call using a removed production option can still compile because the test's import names a wrapper. Logger and spool tests also shadow production names with local subclasses.
+
+MEMORY SOURCE
+
+The old workspace fallback could reconstruct limits from memoryCapBytes. The helper now uses a policy from options or dependencies, with a resourcePolicy record translated if supplied. Several other wrappers seed from currentSystem().
+
+head · local-daemon-transport-validation.test.ts:17–23
+head · daemon-logger.test.ts:11–42
+head · workspace-daemon.ts:28–65
+head · daemon-controller.ts:27–46
+Follow the related value ↗
+↑ Decision 08 in the whole change
+09
+Let adapters rewrite the requested test limits
+unexplained
+REASON FOUND
+
+The validator's ordering constraints explain why some old inputs cannot be used unchanged. No author reason for these specific rewrites or directory creation was found.
+Search scope: supplied PR + commits + plans/005
+
+CLIENT
+
+inlineRawBytes = max(base maximumChunkRawBytes, outputInlineBytes). With default chunks, 0 becomes 65536. The helper mkdirSync call creates a directory even when the output remains in memory.
+
+DAEMON
+
+With a known result cap, requested inline 0 becomes max(1, floor(result / 2)). Chunk is lowered to min(base chunk, inline, result). If only aggregate is given, result is capped by aggregate. memoryCapBytes is declared by the helper but never read.
+
+OBSERVED SCOPE
+
+In the focused base/head run, 14 transport tests that called the client spill method in base no longer called it in head. Their empty-directory cleanup assertions remain. This changes which storage path those assertions exercise, without deciding whether the PR should ship.
+
+head · local-daemon-transport.ts:42–63
+head · workspace-daemon.ts:9–64
+head · local-daemon-transport-execution.test.ts:170–226
+Follow the related value ↗
+↑ Decision 09 in the whole change
+10
+Reshape test payloads around valid policy limits
+unexplained
+REASON FOUND
+
+The source shows validation constraints, but no rationale for these exact replacement fixtures was found.
+Search scope: supplied PR + commits + plans/005
+
+CAPTURE
+
+The output comparison test now caps chunks with inline size. It raises the spill scenario to 32 bytes while keeping its record-equality assertions. A new smallest-chunk test writes two bytes with a one-byte chunk limit.
+
+SPOOL
+
+Several zero-inline spool fixtures use positive chunk/inline limits, then append enough to cross the threshold. The aggregate test changes inline from 1 to 6 while storing a six-byte first result, so that first result stays in memory.
+
+REQUESTS
+
+A custom worker emits two one-byte records rather than one two-byte record when using the one-byte limit. These input changes are part of the review surface even where assertions are retained.
+
+head · cli-program-executor.test.ts:82–147
+head · completion-spool.test.ts:89–120
+head · workspace-daemon-requests.test.ts:1880–1910
+Follow the related value ↗
+↑ Decision 10 in the whole change
+11
+Move the resource-policy test surface
+unexplained
+REASON FOUND
+
+Central policy ownership is stated; no separate explanation of the deleted test blocks or the chosen replacement cases was found.
+Search scope: supplied PR + commits + plans/005
+
+REMOVED
+
+The CLI test file removes an it.each derivation table, a constrained-memory test and the constant supervision-interval test. The surviving package suite already checks every default, constraint selection and boundary memory values. The two tables are not identical: the CLI had a 256 MiB row; the package uses a one-byte lower-bound row.
+
+ADDED
+
+New consumer tests cover one-byte chunk progress; output chunk capacity; resource cadence and thresholds; idle policy; logger backup count; JSON capacity; status and ordinary response purposes; startup retry budgets 0 and 2; and a fetch resume on a reattached execute attempt.
+
+COMPARISON
+
+A focused probe ran the old CLI memory recipe and the package recipe on 60000 total/constraint pairs. The observed outputs agreed. This describes the recipe comparison, not the whole PR's correctness.
+
+base · daemon-resource-monitor.test.ts:1–83
+head · daemon-policy.test.ts:62–107
+head · daemon-resource-monitor.test.ts:36–78
+head · local-daemon-transport-execution.test.ts:846–895
+Follow the related value ↗
+↑ Decision 11 in the whole change
+12
+Delete a startup deadline input that was unused
+unexplained
+REASON FOUND
+
+The record explains the absence of a healthy-startup deadline. No separate reason for removing this unused field in this PR was found.
+Search scope: supplied PR + commits + plans/005
+
+BASE
+
+The constructor stores startupTimeoutMs, defaulting to infinity. A source search finds no read of that property after assignment. Tests supplied small values, including the healthy-startup case, but those values did not drive a clock.
+
+HEAD
+
+The option and assignments disappear. coordinationGraceMs still bounds authorization/missing-owner handling, not healthy progressing warm-up.
+
+base · daemon-startup-coordinator.ts:45–76
+head · daemon-startup-coordinator.ts:46–75
+head · daemon-startup-coordinator.test.ts:91–121
+head · daemon-policy.md:56–65
+Follow the related value ↗
+↑ Decision 12 in the whole change
+13
+Guard the retired names in production source
+unexplained
+REASON FOUND
+
+No rationale for this particular source-string enforcement mechanism was found in the searched inputs.
+Search scope: supplied PR + commits + plans/005
+
+MECHANISM
+
+appProductionSources concatenates production TypeScript source. A loop asserts that every retired string is absent. The expanded list includes old constant names, optional tuning seams, the dead startup timeout and the duplicate resource-policy class.
+
+BOUNDARY
+
+Test adapters deliberately live outside that scan. The assertion is about those strings; changing a policy read to a numeric literal or inventing a new option name is outside what it expresses.
+
+head · daemon-package.test.ts:192–235
+Follow the related value ↗
+↑ Decision 13 in the whole change
+
+03 / CHECK THE SAME FACTS AGAINST SOURCE
+
+The evidence stays local.
+
+The 106 value citations open exact numbered source excerpts. The complete 60-file patch is included. The two focused execution probes explain the recorded examples; this artifact gives no correctness verdict.
+
+COMPLETE DIFF
+60 files · +1,298 / −544
+Local HTML, with file index →
+ARTIFACT DATA
+Claims, values, sources and observations
+Local JSON →
+EXPERIMENT RECORD
+Choices, abandoned approach, limits
+README →
+Storage path observations
+
+Instrumented calls to the actual client and daemon spill methods while running the same two test files in each tree. Counts describe storage-path execution, not coverage scores. All rows below spilled somewhere in base.
+
+Test	Client spills
+base → head	Daemon spills
+base → head
+transfers and acknowledges a generated twelve MiB mixed-stream result	1 → 1	1 → 1
+advances one client record only after its spool append completes	1 → 1	0 → 0
+rejects corrupt resumed transfer control: duplicate-manifest	1 → 0	0 → 0
+rejects corrupt resumed transfer control: missing-manifest	1 → 0	0 → 0
+rejects corrupt resumed transfer control: wrong-transfer	1 → 0	0 → 0
+rejects corrupt resumed transfer control: wrong-raw-bytes	1 → 0	0 → 0
+rejects corrupt resumed transfer control: wrong-record-count	1 → 0	0 → 0
+rejects corrupt resumed transfer control: wrong-digest	1 → 0	0 → 0
+rejects corrupt resumed transfer control: duplicate-end	1 → 0	0 → 0
+rejects corrupt resumed transfer control: chunk-after-end	1 → 0	0 → 0
+settles an accepted completion when the acknowledgement response is eof	1 → 0	0 → 0
+settles an accepted completion when the acknowledgement response is close	1 → 0	0 → 0
+settles an accepted completion when the acknowledgement response is malformed	1 → 0	0 → 0
+settles an accepted completion when the acknowledgement response is multiple	1 → 0	0 → 0
+settles an accepted completion when the acknowledgement response is multiple-separated	1 → 0	0 → 0
+cleans client output and fails without replay when the daemon dies before resume	1 → 1	0 → 0
+disposes partial client output when daemon delivery fails after its manifest	1 → 0	0 → 0
+spills threshold-plus-one output securely and acknowledges exact completion cleanup	0 → 0	1 → 1
+fails closed on aggregate capacity and never evicts an earlier completion	0 → 0	1 → 0
+accepts exactly 256 MiB and deletes the partial spool one byte over	0 → 0	1 → 1
+cleans only the confirmed dead instance and rejects unsafe existing storage	0 → 0	2 → 2
+releases ownership and retries physical cleanup after a sync failure	0 → 0	1 → 1
+releases ownership and retries physical cleanup after a close failure	0 → 0	1 → 1
+releases acknowledged quota and retries failed unlink during instance cleanup	0 → 0	1 → 1
+Memory recipe comparison
+60,000 input pairs
+Same observed values for effective, hard, soft, resume and worker old-generation memory.
+Recorded result →
+
+Old CLI DaemonResourcePolicy versus surviving DaemonPolicy: 10,000 boundary and seeded memory values × six constraint cases. This probes recipe equivalence; it does not test every daemon behavior.
+
+Changed files
+
+All 60 paths from the bundle, including helper, benchmark and end-to-end edits. Select a path for its full diff.
+
+Path	Role	Δ lines
+apps/cli/src/cli-program-executor.test.ts	Test / benchmark	+57 / −6
+apps/cli/src/cli-program-executor.ts	Implementation	+3 / −2
+apps/cli/src/command-execution-result.ts	Implementation	+20 / −15
+apps/cli/src/commands/daemon/register-daemon-command.ts	Implementation	+21 / −5
+apps/cli/src/daemon/completion-spool.test.ts	Test / benchmark	+72 / −17
+apps/cli/src/daemon/completion-spool.ts	Implementation	+15 / −18
+apps/cli/src/daemon/daemon-command-dispatcher.integration.test.ts	Test / benchmark	+2 / −2
+apps/cli/src/daemon/daemon-command-dispatcher.ts	Implementation	+4 / −3
+apps/cli/src/daemon/daemon-controller.test.ts	Test / benchmark	+2 / −3
+apps/cli/src/daemon/daemon-controller.ts	Implementation	+16 / −8
+apps/cli/src/daemon/daemon-entry.ts	Implementation	+5 / −8
+apps/cli/src/daemon/daemon-lifetime.test.ts	Test / benchmark	+18 / −8
+apps/cli/src/daemon/daemon-lifetime.ts	Implementation	+5 / −3
+apps/cli/src/daemon/daemon-logger.test.ts	Test / benchmark	+66 / −3
+apps/cli/src/daemon/daemon-logger.ts	Implementation	+10 / −10
+apps/cli/src/daemon/daemon-navigation-worker-entry.ts	Implementation	+9 / −4
+apps/cli/src/daemon/daemon-navigation-worker-protocol.test.ts	Test / benchmark	+7 / −3
+apps/cli/src/daemon/daemon-navigation-worker-protocol.ts	Implementation	+2 / −3
+apps/cli/src/daemon/daemon-navigation-worker.ts	Implementation	+6 / −2
+apps/cli/src/daemon/daemon-process-launcher.ts	Implementation	+9 / −6
+apps/cli/src/daemon/daemon-registry.test.ts	Test / benchmark	+2 / −2
+apps/cli/src/daemon/daemon-registry.ts	Implementation	+15 / −7
+apps/cli/src/daemon/daemon-resource-monitor.test.ts	Test / benchmark	+66 / −91
+apps/cli/src/daemon/daemon-resource-monitor.ts	Implementation	+6 / −62
+apps/cli/src/daemon/daemon-result-chunk-codec.test.ts	Test / benchmark	+4 / −4
+apps/cli/src/daemon/daemon-result-chunk-codec.ts	Implementation	+21 / −13
+apps/cli/src/daemon/daemon-startup-coordinator.test.ts	Test / benchmark	+57 / −30
+apps/cli/src/daemon/daemon-startup-coordinator.ts	Implementation	+26 / −22
+apps/cli/src/daemon/local-daemon-transport-execution.test.ts	Test / benchmark	+115 / −40
+apps/cli/src/daemon/local-daemon-transport-validation.test.ts	Test / benchmark	+115 / −1
+apps/cli/src/daemon/local-daemon-transport.test.ts	Test / benchmark	+1 / −1
+apps/cli/src/daemon/local-daemon-transport.ts	Implementation	+60 / −37
+apps/cli/src/daemon/workspace-daemon-requests.test.ts	Test / benchmark	+17 / −6
+apps/cli/src/daemon/workspace-daemon.test.ts	Test / benchmark	+6 / −5
+apps/cli/src/daemon/workspace-daemon.ts	Implementation	+27 / −51
+apps/cli/test/benchmark/daemon-scale-benchmark-harness.ts	Test / benchmark	+3 / −3
+apps/cli/test/e2e/daemon/diagnostic-output.test.ts	Test / benchmark	+7 / −8
+apps/cli/test/e2e/daemon/parity.test.ts	Test / benchmark	+2 / −2
+apps/cli/test/e2e/daemon/persistent-pressure.test.ts	Test / benchmark	+2 / −2
+apps/cli/test/e2e/daemon/state-isolation.test.ts	Test / benchmark	+1 / −1
+apps/cli/test/e2e/daemon/status.test.ts	Test / benchmark	+3 / −2
+apps/cli/test/e2e/daemon/stop.test.ts	Test / benchmark	+2 / −2
+apps/cli/test/helpers/daemon-accepted-caller.ts	Test helper	+1 / −1
+apps/cli/test/helpers/daemon-controller.ts	Test helper	+46 / −0
+apps/cli/test/helpers/daemon-live-silent.ts	Test helper	+1 / −1
+apps/cli/test/helpers/daemon-malformed-activity.ts	Test helper	+1 / −1
+apps/cli/test/helpers/daemon-process-terminator.ts	Test helper	+24 / −0
+apps/cli/test/helpers/daemon-registry-cleaner.ts	Test helper	+1 / −1
+apps/cli/test/helpers/daemon-registry.ts	Test helper	+22 / −0
+apps/cli/test/helpers/daemon-resource-policy.ts	Test helper	+34 / −0
+apps/cli/test/helpers/daemon-startup-caller-exit.ts	Test helper	+3 / −3
+apps/cli/test/helpers/daemon-startup-coordinator.ts	Test helper	+48 / −0
+apps/cli/test/helpers/daemon-startup-mutation-owner.ts	Test helper	+1 / −1
+apps/cli/test/helpers/daemon-startup-publisher.ts	Test helper	+1 / −1
+apps/cli/test/helpers/e2e-process-cleanup.ts	Test helper	+3 / −5
+apps/cli/test/helpers/local-daemon-transport.ts	Test helper	+64 / −0
+apps/cli/test/helpers/workspace-daemon-persistent-pressure.ts	Test helper	+4 / −4
+apps/cli/test/helpers/workspace-daemon-stuck.ts	Test helper	+4 / −4
+apps/cli/test/helpers/workspace-daemon.ts	Test helper	+99 / −0
+meta-tests/src/daemon-package.test.ts	Boundary test	+34 / −1
+Reading limits
+
+Inputs: supplied PR, full patch, file list, repo rules and stack position; assigned base/head source; plans/005; focused probes. The supplied overview files contain headings without symbol output. Other experiment folders were not read. A previous unfinished attempt in this same folder supplied the ledger and probe scripts; these were checked or rerun.
+
+The diagrams group code and omit construction detail as marked. The clock example is a browser illustration; the recovery and spill examples are recorded code execution. No PR-wide validation claim follows from these probes. Source timestamps, comments and tests are evidence, not author rationale unless a reason is actually stated.
+
+↑ Back to the whole change
+Experiment 02 · unconstrained-b · PR 131 only · read-only artifact
+
+[SVG labels, document order]
+packages/daemon
+DaemonPolicy · already present in base
+apps/cli
+Composition supplies policy inputs to the existing consumers
+Transport
+5 fields ↗
+required
+policy input
+LocalDaemonTransport
+JSON / control-frame validation · response deadlines
+Startup
+6 fields ↗
+required
+policy input
+Registry · StartupCoordinator · WorkspaceDaemon
+Ownership · launch retries · heartbeat and polling
+Shutdown
+8 fields ↗
+required
+policy input
+Controller · Lifetime · ProcessTerminator · WorkspaceDaemon
+Idle timer · stop budget · exit polling · drain acknowledgements
+Delivery
+2 fields ↗
+required
+policy input
+LocalDaemonTransport
+Accepted-execution reattachments · per-attempt fetch resume
+Output
+4 fields ↗
+required
+policy input
+Capture · Spool · Codec · TransferDecoder · WorkerProtocol
+Write, retain, frame, validate and read the same chunk limit
+Resources
+9 fields ↗
+required
+policy input
+ResourceSupervisor · WorkspaceDaemon · worker entry
+RSS thresholds · replacement circuit · worker heap and sampling
+Diagnostics
+5 fields ↗
+required
+policy input
+DaemonLogger · WorkspaceDaemon
+Rotation · queued events · disconnected traces
+Select a section to follow its values.
+Changed: the supply path. The consumers remain in this package.
