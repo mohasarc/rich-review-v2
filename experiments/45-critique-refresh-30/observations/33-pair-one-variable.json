@@ -1,0 +1,3663 @@
+{
+  "folder": "33-pair-one-variable",
+  "title": "PR 127 · Scope semantic caches to one turn",
+  "text": "Skip to the whole change\nrich-review\n127 / daemon architecture · layer 4 of 26\nWhole change\nOwners\nLifetime\nEvidence\nOpening A\nOpening B\nScope semantic caches to one turn\n\nPR 127 · 6 files · +391 / −67\n\nONE WAY IN\n\nSix trays.\nOne closing routine.\n\nPicture a TypeScript workbench with six trays of reusable answers. The specialist still does the work. A reusable organizer now owns the trays’ clearing routine. Wiping the trays and finishing the workshop’s shutdown are separate moments.\n\nThe specialist keeps the tools\nSix trays keep different kinds of answers apart.\nThe organizer empties the trays\nPreviously stored answers stop being available immediately.\nThe supervisor waits for shutdown\nOnly then does the closing call finish or report failure.\n\nCore supplies the organizer; each TypeScript query service owns one. The backend waits for project cleanup. A fresh work session starts only after refresh succeeds.\n\nMetaphor: trays are caches, not work queues. Emptying them neither cancels work nor closes access to a cleared tray afterward.\n\n01 / THE WHOLE CHANGE\n\nSix stores stay separate.\nTheir lifetime gets one owner.\n\nTypeScript still computes the answers. Core supplies the cache mechanism. The backend now waits for project release.\n\nBASE · before this layer\na1e325a5\n@symnav/backend-typescript\nTypeScriptBackend\nRefresh succeeds → begin turn\nRelease calls service; does not wait for graph\nTypeScriptSemanticQueryService\nQuery algorithms + manual clearing\ndefinitions\nreferences\ncall targets\ncallers\ncallees\npositions\n↑ six Maps inside the service\nclear entries → start project release\nTypeScriptProjectGraph\nProject cleanup\n@symnav/core\nNo generic turn-cache unit yet.\nHEAD · after this layer\n64919bcb\n@symnav/backend-typescript\nTypeScriptBackend\nRefresh succeeds → begin turn\nRelease awaits service → awaits graph\nTypeScriptSemanticQueryService\nQuery algorithms + one scope instance\ndefinitions\nreferences\ncall targets\ncallers\ncallees\npositions\nclear through scope → await project release\nTypeScriptProjectGraph\nProject cleanup\n↓ cache implementation moves across package boundary\n@symnav/core\nTurnScopedCacheScope\nCreates handles · clears every registered handle\nowns six independent handle Maps\ndefinitions\nreferences\ncall targets\ncallers\ncallees\npositions\nBoxes show package ownership of code, not separate processes. At runtime each query-service instance creates its own core scope. Blue identifies the moved responsibility; TypeScript’s algorithms and project cleanup stay in their package.\nTURN BOUNDARY · retained\nRefresh succeeds → replace file list → empty caches.\nRefresh fails → keep the current turn’s cache entries.\nRELEASE BOUNDARY · expanded\nEmpty caches synchronously → await project release.\nThe backend now carries completion and rejection.\n\nHere “turn” is the cache interval established by a successful backend refresh. Release can empty it sooner. The scope does not schedule commands or enforce admission. The delayed release illustrated on this page uses a fake graph; the concrete TypeScript project’s cleanup method is synchronous.\n\nEvery decision to carry forward\n\nSTATED reason found   /   UNEXPLAINED no separate reason found\n\nD1\nCore owns lifetime; TypeScript keeps query algorithms.\n\nA service creates its own scope. This is reusable code in core, not a shared cache across services.\n\nSTATED\n\nThe architecture spec assigns language-independent cache lifetime to core; semantic query bodies stay in TypeScript.\n\nFollow ↘\nD2\nKeep one scope with six isolated handles.\n\nFive stores use symbol-identity keys; one uses file-and-position keys. References and callers still share a location search.\n\nSTATED\n\nThe PR chooses separate handles over a shared map because their key and value spaces are independent.\n\nFollow ↘\nD3\nPreserve exact cached values, including empty results and undefined.\n\nUse Map.has. Cached promises keep identity; reference and node projections are rebuilt from cached locations on access.\n\nSTATED\n\nThe PR names undefined as a valid value and explicitly preserves existing promise/value identities and algorithms.\n\nFollow ↘\nD4\nRetry synchronous throws; retain rejected promises for the turn.\n\nThe factory runs before insertion. There are no promise-settlement writes, so old work can settle without replacing a new entry.\n\nSTATED\n\nThe PR explicitly preserves failure behavior; the new core tests characterize both failure forms and late settlement.\n\nFollow ↘\nD5\nBegin a turn only after a successful refresh.\n\nKeep the existing order: failed refresh retains current cache entries; any successful refresh clears them, even with unchanged files.\n\nSTATED\n\nThe PR says failed refresh must preserve the current successful turn, instead of clearing at refresh entry.\n\nFollow ↘\nD6\nClear synchronously before awaiting project release.\n\nBoth versions clear first. The new core scope empties every handle before the service waits for project cleanup.\n\nSTATED\n\nThe PR says released semantics must be unavailable while project release is pending or rejecting.\n\nFollow ↘\nD7\nExtend the backend’s completion and failure boundary.\n\nService release now returns Promise<void>; the backend awaits it. Project completion or rejection now reaches that caller.\n\nUNEXPLAINED\n\nThe PR describes this change, but gives no separate reason for adding the caller-visible contract change to a lifetime-only layer under an unchanged-behavior spec.\n\nFollow ↘\nD8\nExpose the scope API; narrow beginTurn to a file list.\n\nCore exports a scope and getOrCreate-only handle. The service takes readonly WorkspaceFile[] instead of WorkspaceSnapshot and retains that array.\n\nUNEXPLAINED\n\nThe public signatures are listed in the PR. No distinct rationale was found for these exact API shapes or for narrowing the service input.\n\nFollow ↘\nD9\nClear entries without revoking handles or cancelling work.\n\nHandles work before beginTurn and after release, can refill during release, and survive repeated clearing. There is no disposal or unregister API.\n\nUNEXPLAINED\n\nThe implementation and tests establish this behavior; the inspected material gives no separate reason for this unguarded lifecycle surface.\n\nFollow ↘\nD10\nAdd ten characterization tests; retain the five existing cases.\n\nFour new core cases and six service/backend cases. No existing assertion is weakened or removed. Delayed rejection is tested with a fake graph; no new delayed-success release case is added.\n\nSTATED\n\nThe characterization commit and the PR’s preservation intent explain locking identity, failure, and lifecycle behavior.\n\nFollow ↘\nThis is the complete decision map.\nContinue for mechanisms and source. Each “Follow” link takes one thread deeper.\n\n02 / OWNERSHIP · D1–D2\n\nThe service chooses the stores.\nThe scope clears them together.\n↑ Back to D1\nOne query service\nConstructs one scope.\nSupplies keys and query factories.\n→\nOne cache scope\nRegisters every created handle.\nOwns both clearing entry points.\n→\nSix cache handles\nEach holds its own Map.\nEach returns the factory’s exact value.\nSTATED · D1–D2\n\nThe spec places shareable lifecycle behavior in core and toolchain-specific query bodies in TypeScript. The PR chooses six handles over one shared map because the existing key and value spaces are independent.\n\nStatic boundary\nTypeScript imports TurnScopedCacheScope from core. Core’s new cache file has no imports and knows nothing about TypeScript nodes or symbols.\n\nInstance boundary\nThe service constructs the scope in a field initializer, then creates six handles. A second service constructs a different scope and different Maps.\n\nSource · head · daemon-architecture-functional-spec.md:53–64 · ownership rule\nSource · head · typescript-semantic-query-service.ts:29–66 · service-owned scope and six handles\nThe six compartments\n↑ Back to D2\nSTORE\tKEY\tVALUE HELD BY THE HANDLE\nDefinitions\tFormatted symbol identity\tPromise of definition overview nodes\nReference locations\tFormatted symbol identity\tPromise of source locations\nShared by reference projections and caller search.\n\nCall target\tFormatted symbol identity\tPromise of target resolution\nCallers\tFormatted symbol identity\tPromise of call edges\nCallees\tFormatted symbol identity\tPromise of call edges\nDefinitions at a position\trelativePath:start\tArray of semantic node locations\nNodes are looked up again from these locations on each access.\n\nA matching string in two handles does not imply a shared entry. The old six Maps already had this isolation; the refactor retains it.\n\nSource · base · typescript-semantic-query-service.ts:29–53 · six independent Maps before the move\n\n03 / LIFETIME · D5–D7\n\nTwo moments can empty the stores.\nOnly one boundary now waits longer.\n↑ Back to D5\nSuccessful refresh opens the next cache interval\n1 · SOURCE\nRefresh cached source inputs.\n2 · PROJECTS\nAwait graph refresh for workspace coverage.\n3 · STATE\nAwait workspace-state refresh.\n4 · CACHE TURN\nStore the file list; clear all handles.\n\nAny earlier failure skips step 4. The cache turn remains; this is a claim about the semantic cache boundary, not a claim that every earlier refresh side effect is rolled back. An unchanged successful refresh still reaches step 4.\n\nSTATED · D5\n\nThe PR keeps the existing position of beginTurn so failed refresh preserves the current successful turn. Its argument narrows from the snapshot to its files.\n\nSource · head · typescript-backend.ts:79–90 · refresh order and awaited release\nSource · base · typescript-backend.ts:79–90 · previous refresh and release boundary\nRelease clears now and waits afterward\n↑ Back to D6\nAT THE BACKEND’S RELEASE CALL\tBASE\tHEAD\nBefore project cleanup\tClear all six Maps synchronously.\tClear all six handles synchronously.\nWhile project cleanup is pending\tBackend’s release promise can finish.\tBackend’s release promise stays pending.\nIf project cleanup rejects\tThat rejection is not carried by backend release.\tBackend release rejects with that failure.\nA query arrives after clearing\tMay populate a cleared Map.\tMay populate a cleared handle.\nSTATED · D6\n\nThe PR’s reason for clearing before the await: previously cached semantics must already be unavailable while project cleanup is pending or rejecting. Clearing removes entries; it does not prohibit fresh queries.\n\nScrub the release boundary\nSame events, both versions\n\nIllustrative trace, not execution of symnav. A fake delayed graph makes waiting visible. Six filled slots at the start are a schematic inventory, not measured cache contents.\n\nEach frame is an event; spacing is not elapsed time.\nProject cleanup \nrejects\nsucceeds\n0 / Queries have filled caches\nA cache interval is in use. No release call has started.\nBASE\nCaller sees\nNo release call\nProject\nNot started\nCache entries\nOld values\ndef\nrefs\ntarget\nin\nout\npos\nHEAD\nCaller sees\nNo release call\nProject\nNot started\nCache entries\nOld values\ndef\nrefs\ntarget\nin\nout\npos\n\nThe six slots represent independent stores under one service. They do not share entries.\n\n← Previous\nNext →\n\nThe production TypeScript project cleanup is synchronous. The new test uses delayed rejection to pin down the wider interface contract; the successful-delay branch here is a source-derived illustration, not an added PR test.\n\nSource · head · typescript-semantic-query-service.ts:129–132 · clear then await\nSource · base · typescript-semantic-query-service.ts:125–129 · clear then start release\n\n04 / LOOKUP · D3–D4\n\nA promise is the cached value.\nThe scope never waits for it.\n↑ D3: values\n↑ D4: failures\nKey is already present\nMap.has(key) is true.\nReturn Map.get(key) exactly.\nDo not call the factory.\n\nApplies to an empty array, an explicit undefined, or a promise that has rejected.\n\nKey is absent\nCall the factory synchronously.\nIf it returns, insert that exact value.\nIf it throws, insertion is never reached.\n\nA returned promise is inserted immediately. A thrown error leaves no entry, so the next lookup retries.\n\nSTATED · D3–D4\n\nThe PR explicitly preserves value/promise identity and failure behavior. Its reason for Map.has is that undefined can itself be a cached value.\n\nFACTORY BEHAVIOR\tSECOND ACCESS IN THE SAME CACHE INTERVAL\tAT A CLEARING BOUNDARY\nReturns a value or empty array\tSame cached value object.\tEntry removed. Next lookup runs the factory.\nReturns undefined\tCached hit; no factory rerun.\tEntry removed.\nReturns a rejected promise\tSame promise, same rejection.\tEntry removed; old promise is not cancelled.\nThrows synchronously\tFactory runs again.\tNo failed entry was inserted.\nOld promise settles after a new turn\tIt can settle for its original holders. It cannot overwrite the new entry: the scope has no settlement callback that writes to the Map.\n\nThe identity promise belongs to the cached query layer. Public findReferences awaits location data and constructs reference results again. Position definitions cache locations, then return a newly built node array on each access. These projections remain in TypeScript.\n\nSource · head · turn-scoped-cache-scope.ts:1–46 · complete generic cache implementation\nSource · head · typescript-semantic-query-service.ts:79–102, 134–172 · reference and position projections\nSource · head · turn-scoped-cache-scope.test.ts:49–92 · failures and late settlement\n\n05 / PUBLIC AND LIFECYCLE BOUNDARIES · D7–D9\n\nThe signatures expose the choices\nthe rationale leaves open.\n↑ D7: release\n↑ D8: API\n↑ D9: handle lifetime\nPUBLIC SURFACE\tBASE\tHEAD\nCore scope / handle\tAbsent.\tcreateCache<K, V>() returns a typed handle.\ngetOrCreate(key, factory): V is the handle’s exposed operation.\nbeginTurn(): void and releaseTransientResources(): void clear all handles.\nService beginTurn\t(snapshot: WorkspaceSnapshot): void\t(files: readonly WorkspaceFile[]): void\nThe service retains the supplied array, then clears the scope.\n\nService release\t(): void\t(): Promise<void>\nClears before awaiting graph cleanup.\n\nBackend release\t(): Promise<void>\nFinishes without waiting for graph cleanup.\n\t(): Promise<void>\nWaits for the service, including graph completion/rejection.\nUNEXPLAINED · D7\n\nThe awaited boundary is explicitly described in the PR. The missing explanation is why this lifetime-only layer includes a caller-visible completion/error change under the spec’s unchanged-behavior rule. No end-user outcome is inferred from the backend signature alone.\n\nUNEXPLAINED · D8\n\nThe PR lists the exported API, but does not explain the exact handle/scope split or the narrower service input. Core ownership has a stated architectural reason; that does not supply a reason for every API detail.\n\nUNEXPLAINED · D9\n\nBoth scope lifecycle methods only call clear(). Existing handles remain registered and usable. There is no closed state, unregister operation, or cancellation. The tests use handles before the first turn and again after repeated release; no distinct reason for this surface was found.\n\nSource · head · index.ts:149–154 · public core export\nSource · head · daemon-architecture-functional-spec.md:17–28 · unchanged-behavior requirement\nSource · head · project-graph.ts:63–65, 144–152 · graph interface and cleanup sequencing\nSource · head · typescript-project-graph.ts:78–85 · concrete synchronous project cleanup\nSource · head · turn-scoped-cache-scope.test.ts:25–47 · handles survive turn and release\n\n06 / EVIDENCE BOUNDARIES · D10\n\nWhat the added tests pin down\n↑ Back to D10\n\nTen added cases characterize the decisions above. The five pre-existing service cases and their assertions remain. The table distinguishes what is exercised from the broader behavior described by the source.\n\nTEST GROUP\tBEHAVIOR EXERCISED\tBOUNDARY OF THAT EVIDENCE\n4 new core cases\tExact value identity, undefined, isolated handles, turn/release clearing, repeated release, rejected promise retention, synchronous retry, late old settlement.\tGeneric cache handles. No TypeScript query engine.\n4 new service cases\tFour identity-query promises, empty position results with node rehydration, asynchronous definition/callee rejection, synchronous reference-discovery retry.\tDirect service calls; a mixture of in-memory TypeScript and narrow state doubles.\n1 new refresh case\tA rejected state refresh keeps the prior definition result and avoids another search.\tMocked workspace state; no project graph in this case.\n1 new release case\tCache clears before graph completion; a fresh query can refill it; backend release stays pending, then rejects with the project failure.\tFake graph with a delayed rejection. No new delayed-success release case.\n5 retained service cases\tShared reference/caller search, within/across-turn reuse, position grouping, diamond traversal, and lazy rebuilding of released semantics.\tExisting assertions are unchanged, including the successful release/rebuild case.\nSTATED · D10\n\nThe commit “Characterize TypeScript semantic cache identities” and the PR’s preservation intent explain the added constraints. The diff adds tests; it does not delete or weaken existing assertions.\n\nSource · head · typescript-semantic-query-service.test.ts:29–59, 95–133 · promise identity and error behavior\nSource · head · typescript-semantic-query-service.test.ts:61–93 · empty positions and node rehydration\nSource · head · typescript-semantic-query-service.test.ts:135–162 · failed refresh retains cached result\nSource · head · typescript-semantic-query-service.test.ts:164–217 · pending release and rejection at backend\nSource · test delta and focused run record\n\nSource boundary. This explanation compares a1e325a5ff979bdfa25babc5554621c8c0f20497 with 64919bcbcf7fcc8202779b78c5f069b24662bb18. Rationale was sought in the supplied PR body, its six commits, and the architecture spec. “Unexplained” means no separate reason was found there; it does not mean a choice was accidental or unmentioned.\n\nPR body and commits\nFull diff\nSource hashes\nHow the pair is controlled\nExperiment README\n↑ Whole change",
+  "headings": [
+    {
+      "text": "Scope semantic caches to one turn",
+      "id": "",
+      "y": 87
+    },
+    {
+      "text": "Six trays.\nOne closing routine.",
+      "id": "opening-title",
+      "y": 179
+    },
+    {
+      "text": "Six stores stay separate.\nTheir lifetime gets one owner.",
+      "id": "overview-title",
+      "y": 747
+    },
+    {
+      "text": "Every decision to carry forward",
+      "id": "",
+      "y": 1775
+    },
+    {
+      "text": "The service chooses the stores.\nThe scope clears them together.",
+      "id": "ownership-title",
+      "y": 3151
+    },
+    {
+      "text": "The six compartments",
+      "id": "",
+      "y": 3724
+    },
+    {
+      "text": "Two moments can empty the stores.\nOnly one boundary now waits longer.",
+      "id": "lifetime-title",
+      "y": 4339
+    },
+    {
+      "text": "Successful refresh opens the next cache interval",
+      "id": "",
+      "y": 4439
+    },
+    {
+      "text": "Release clears now and waits afterward",
+      "id": "",
+      "y": 4881
+    },
+    {
+      "text": "Scrub the release boundary",
+      "id": "trace-title",
+      "y": 5306
+    },
+    {
+      "text": "A promise is the cached value.\nThe scope never waits for it.",
+      "id": "values-title",
+      "y": 6126
+    },
+    {
+      "text": "The signatures expose the choices\nthe rationale leaves open.",
+      "id": "contracts-title",
+      "y": 7172
+    },
+    {
+      "text": "What the added tests pin down",
+      "id": "tests-title",
+      "y": 8328
+    }
+  ],
+  "controls": [
+    {
+      "tag": "A",
+      "text": "Skip to the whole change",
+      "id": "",
+      "href": "#overview"
+    },
+    {
+      "tag": "A",
+      "text": "Whole change",
+      "id": "",
+      "href": "#overview"
+    },
+    {
+      "tag": "A",
+      "text": "Owners",
+      "id": "",
+      "href": "#ownership"
+    },
+    {
+      "tag": "A",
+      "text": "Lifetime",
+      "id": "",
+      "href": "#lifetime"
+    },
+    {
+      "tag": "A",
+      "text": "Evidence",
+      "id": "",
+      "href": "#tests"
+    },
+    {
+      "tag": "A",
+      "text": "Opening A",
+      "id": "",
+      "href": "index.html"
+    },
+    {
+      "tag": "A",
+      "text": "Opening B",
+      "id": "",
+      "href": "failure.html"
+    },
+    {
+      "tag": "A",
+      "text": "TypeScriptBackend\nRefresh succeeds → begin turn\nRelease calls service; does not wait for graph",
+      "id": "",
+      "href": "#lifetime"
+    },
+    {
+      "tag": "A",
+      "text": "TypeScriptSemanticQueryService\nQuery algorithms + manual clearing",
+      "id": "",
+      "href": "#ownership"
+    },
+    {
+      "tag": "A",
+      "text": "TypeScriptProjectGraph\nProject cleanup",
+      "id": "",
+      "href": "#contracts"
+    },
+    {
+      "tag": "A",
+      "text": "TypeScriptBackend\nRefresh succeeds → begin turn\nRelease awaits service → awaits graph",
+      "id": "",
+      "href": "#lifetime"
+    },
+    {
+      "tag": "A",
+      "text": "TypeScriptSemanticQueryService\nQuery algorithms + one scope instance",
+      "id": "",
+      "href": "#ownership"
+    },
+    {
+      "tag": "A",
+      "text": "definitions\nreferences\ncall targets\ncallers\ncallees\npositions",
+      "id": "",
+      "href": "#stores"
+    },
+    {
+      "tag": "A",
+      "text": "TypeScriptProjectGraph\nProject cleanup",
+      "id": "",
+      "href": "#contracts"
+    },
+    {
+      "tag": "A",
+      "text": "TurnScopedCacheScope\nCreates handles · clears every registered handle",
+      "id": "",
+      "href": "#ownership"
+    },
+    {
+      "tag": "A",
+      "text": "TURN BOUNDARY · retained\nRefresh succeeds → replace file list → empty caches.\nRefresh fails → keep the current turn’s ca",
+      "id": "",
+      "href": "#lifetime"
+    },
+    {
+      "tag": "A",
+      "text": "RELEASE BOUNDARY · expanded\nEmpty caches synchronously → await project release.\nThe backend now carries completion and r",
+      "id": "",
+      "href": "#lifetime"
+    },
+    {
+      "tag": "A",
+      "text": "Follow ↘",
+      "id": "",
+      "href": "#ownership"
+    },
+    {
+      "tag": "A",
+      "text": "Follow ↘",
+      "id": "",
+      "href": "#stores"
+    },
+    {
+      "tag": "A",
+      "text": "Follow ↘",
+      "id": "",
+      "href": "#values"
+    },
+    {
+      "tag": "A",
+      "text": "Follow ↘",
+      "id": "",
+      "href": "#values"
+    },
+    {
+      "tag": "A",
+      "text": "Follow ↘",
+      "id": "",
+      "href": "#lifetime"
+    },
+    {
+      "tag": "A",
+      "text": "Follow ↘",
+      "id": "",
+      "href": "#lifetime"
+    },
+    {
+      "tag": "A",
+      "text": "Follow ↘",
+      "id": "",
+      "href": "#contracts"
+    },
+    {
+      "tag": "A",
+      "text": "Follow ↘",
+      "id": "",
+      "href": "#contracts"
+    },
+    {
+      "tag": "A",
+      "text": "Follow ↘",
+      "id": "",
+      "href": "#contracts"
+    },
+    {
+      "tag": "A",
+      "text": "Follow ↘",
+      "id": "",
+      "href": "#tests"
+    },
+    {
+      "tag": "A",
+      "text": "↑ Back to D1",
+      "id": "",
+      "href": "#D1"
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Source · head · daemon-architecture-functional-spec.md:53–64 · ownership rule",
+      "id": "",
+      "href": null
+    },
+    {
+      "tag": "A",
+      "text": "Line 53",
+      "id": "",
+      "href": "#e-spec-ownership-L53"
+    },
+    {
+      "tag": "A",
+      "text": "Line 54",
+      "id": "",
+      "href": "#e-spec-ownership-L54"
+    },
+    {
+      "tag": "A",
+      "text": "Line 55",
+      "id": "",
+      "href": "#e-spec-ownership-L55"
+    },
+    {
+      "tag": "A",
+      "text": "Line 56",
+      "id": "",
+      "href": "#e-spec-ownership-L56"
+    },
+    {
+      "tag": "A",
+      "text": "Line 57",
+      "id": "",
+      "href": "#e-spec-ownership-L57"
+    },
+    {
+      "tag": "A",
+      "text": "Line 58",
+      "id": "",
+      "href": "#e-spec-ownership-L58"
+    },
+    {
+      "tag": "A",
+      "text": "Line 59",
+      "id": "",
+      "href": "#e-spec-ownership-L59"
+    },
+    {
+      "tag": "A",
+      "text": "Line 60",
+      "id": "",
+      "href": "#e-spec-ownership-L60"
+    },
+    {
+      "tag": "A",
+      "text": "Line 61",
+      "id": "",
+      "href": "#e-spec-ownership-L61"
+    },
+    {
+      "tag": "A",
+      "text": "Line 62",
+      "id": "",
+      "href": "#e-spec-ownership-L62"
+    },
+    {
+      "tag": "A",
+      "text": "Line 63",
+      "id": "",
+      "href": "#e-spec-ownership-L63"
+    },
+    {
+      "tag": "A",
+      "text": "Line 64",
+      "id": "",
+      "href": "#e-spec-ownership-L64"
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/plans/005/daemon-architecture-functional-spec.md"
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Source · head · typescript-semantic-query-service.ts:29–66 · service-owned scope and six handles",
+      "id": "",
+      "href": null
+    },
+    {
+      "tag": "A",
+      "text": "Line 29",
+      "id": "",
+      "href": "#e-handles-L29"
+    },
+    {
+      "tag": "A",
+      "text": "Line 30",
+      "id": "",
+      "href": "#e-handles-L30"
+    },
+    {
+      "tag": "A",
+      "text": "Line 31",
+      "id": "",
+      "href": "#e-handles-L31"
+    },
+    {
+      "tag": "A",
+      "text": "Line 32",
+      "id": "",
+      "href": "#e-handles-L32"
+    },
+    {
+      "tag": "A",
+      "text": "Line 33",
+      "id": "",
+      "href": "#e-handles-L33"
+    },
+    {
+      "tag": "A",
+      "text": "Line 34",
+      "id": "",
+      "href": "#e-handles-L34"
+    },
+    {
+      "tag": "A",
+      "text": "Line 35",
+      "id": "",
+      "href": "#e-handles-L35"
+    },
+    {
+      "tag": "A",
+      "text": "Line 36",
+      "id": "",
+      "href": "#e-handles-L36"
+    },
+    {
+      "tag": "A",
+      "text": "Line 37",
+      "id": "",
+      "href": "#e-handles-L37"
+    },
+    {
+      "tag": "A",
+      "text": "Line 38",
+      "id": "",
+      "href": "#e-handles-L38"
+    },
+    {
+      "tag": "A",
+      "text": "Line 39",
+      "id": "",
+      "href": "#e-handles-L39"
+    },
+    {
+      "tag": "A",
+      "text": "Line 40",
+      "id": "",
+      "href": "#e-handles-L40"
+    },
+    {
+      "tag": "A",
+      "text": "Line 41",
+      "id": "",
+      "href": "#e-handles-L41"
+    },
+    {
+      "tag": "A",
+      "text": "Line 42",
+      "id": "",
+      "href": "#e-handles-L42"
+    },
+    {
+      "tag": "A",
+      "text": "Line 43",
+      "id": "",
+      "href": "#e-handles-L43"
+    },
+    {
+      "tag": "A",
+      "text": "Line 44",
+      "id": "",
+      "href": "#e-handles-L44"
+    },
+    {
+      "tag": "A",
+      "text": "Line 45",
+      "id": "",
+      "href": "#e-handles-L45"
+    },
+    {
+      "tag": "A",
+      "text": "Line 46",
+      "id": "",
+      "href": "#e-handles-L46"
+    },
+    {
+      "tag": "A",
+      "text": "Line 47",
+      "id": "",
+      "href": "#e-handles-L47"
+    },
+    {
+      "tag": "A",
+      "text": "Line 48",
+      "id": "",
+      "href": "#e-handles-L48"
+    },
+    {
+      "tag": "A",
+      "text": "Line 49",
+      "id": "",
+      "href": "#e-handles-L49"
+    },
+    {
+      "tag": "A",
+      "text": "Line 50",
+      "id": "",
+      "href": "#e-handles-L50"
+    },
+    {
+      "tag": "A",
+      "text": "Line 51",
+      "id": "",
+      "href": "#e-handles-L51"
+    },
+    {
+      "tag": "A",
+      "text": "Line 52",
+      "id": "",
+      "href": "#e-handles-L52"
+    },
+    {
+      "tag": "A",
+      "text": "Line 53",
+      "id": "",
+      "href": "#e-handles-L53"
+    },
+    {
+      "tag": "A",
+      "text": "Line 54",
+      "id": "",
+      "href": "#e-handles-L54"
+    },
+    {
+      "tag": "A",
+      "text": "Line 55",
+      "id": "",
+      "href": "#e-handles-L55"
+    },
+    {
+      "tag": "A",
+      "text": "Line 56",
+      "id": "",
+      "href": "#e-handles-L56"
+    },
+    {
+      "tag": "A",
+      "text": "Line 57",
+      "id": "",
+      "href": "#e-handles-L57"
+    },
+    {
+      "tag": "A",
+      "text": "Line 58",
+      "id": "",
+      "href": "#e-handles-L58"
+    },
+    {
+      "tag": "A",
+      "text": "Line 59",
+      "id": "",
+      "href": "#e-handles-L59"
+    },
+    {
+      "tag": "A",
+      "text": "Line 60",
+      "id": "",
+      "href": "#e-handles-L60"
+    },
+    {
+      "tag": "A",
+      "text": "Line 61",
+      "id": "",
+      "href": "#e-handles-L61"
+    },
+    {
+      "tag": "A",
+      "text": "Line 62",
+      "id": "",
+      "href": "#e-handles-L62"
+    },
+    {
+      "tag": "A",
+      "text": "Line 63",
+      "id": "",
+      "href": "#e-handles-L63"
+    },
+    {
+      "tag": "A",
+      "text": "Line 64",
+      "id": "",
+      "href": "#e-handles-L64"
+    },
+    {
+      "tag": "A",
+      "text": "Line 65",
+      "id": "",
+      "href": "#e-handles-L65"
+    },
+    {
+      "tag": "A",
+      "text": "Line 66",
+      "id": "",
+      "href": "#e-handles-L66"
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts"
+    },
+    {
+      "tag": "A",
+      "text": "↑ Back to D2",
+      "id": "",
+      "href": "#D2"
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Source · base · typescript-semantic-query-service.ts:29–53 · six independent Maps before the move",
+      "id": "",
+      "href": null
+    },
+    {
+      "tag": "A",
+      "text": "Line 29",
+      "id": "",
+      "href": "#e-base-handles-L29"
+    },
+    {
+      "tag": "A",
+      "text": "Line 30",
+      "id": "",
+      "href": "#e-base-handles-L30"
+    },
+    {
+      "tag": "A",
+      "text": "Line 31",
+      "id": "",
+      "href": "#e-base-handles-L31"
+    },
+    {
+      "tag": "A",
+      "text": "Line 32",
+      "id": "",
+      "href": "#e-base-handles-L32"
+    },
+    {
+      "tag": "A",
+      "text": "Line 33",
+      "id": "",
+      "href": "#e-base-handles-L33"
+    },
+    {
+      "tag": "A",
+      "text": "Line 34",
+      "id": "",
+      "href": "#e-base-handles-L34"
+    },
+    {
+      "tag": "A",
+      "text": "Line 35",
+      "id": "",
+      "href": "#e-base-handles-L35"
+    },
+    {
+      "tag": "A",
+      "text": "Line 36",
+      "id": "",
+      "href": "#e-base-handles-L36"
+    },
+    {
+      "tag": "A",
+      "text": "Line 37",
+      "id": "",
+      "href": "#e-base-handles-L37"
+    },
+    {
+      "tag": "A",
+      "text": "Line 38",
+      "id": "",
+      "href": "#e-base-handles-L38"
+    },
+    {
+      "tag": "A",
+      "text": "Line 39",
+      "id": "",
+      "href": "#e-base-handles-L39"
+    },
+    {
+      "tag": "A",
+      "text": "Line 40",
+      "id": "",
+      "href": "#e-base-handles-L40"
+    },
+    {
+      "tag": "A",
+      "text": "Line 41",
+      "id": "",
+      "href": "#e-base-handles-L41"
+    },
+    {
+      "tag": "A",
+      "text": "Line 42",
+      "id": "",
+      "href": "#e-base-handles-L42"
+    },
+    {
+      "tag": "A",
+      "text": "Line 43",
+      "id": "",
+      "href": "#e-base-handles-L43"
+    },
+    {
+      "tag": "A",
+      "text": "Line 44",
+      "id": "",
+      "href": "#e-base-handles-L44"
+    },
+    {
+      "tag": "A",
+      "text": "Line 45",
+      "id": "",
+      "href": "#e-base-handles-L45"
+    },
+    {
+      "tag": "A",
+      "text": "Line 46",
+      "id": "",
+      "href": "#e-base-handles-L46"
+    },
+    {
+      "tag": "A",
+      "text": "Line 47",
+      "id": "",
+      "href": "#e-base-handles-L47"
+    },
+    {
+      "tag": "A",
+      "text": "Line 48",
+      "id": "",
+      "href": "#e-base-handles-L48"
+    },
+    {
+      "tag": "A",
+      "text": "Line 49",
+      "id": "",
+      "href": "#e-base-handles-L49"
+    },
+    {
+      "tag": "A",
+      "text": "Line 50",
+      "id": "",
+      "href": "#e-base-handles-L50"
+    },
+    {
+      "tag": "A",
+      "text": "Line 51",
+      "id": "",
+      "href": "#e-base-handles-L51"
+    },
+    {
+      "tag": "A",
+      "text": "Line 52",
+      "id": "",
+      "href": "#e-base-handles-L52"
+    },
+    {
+      "tag": "A",
+      "text": "Line 53",
+      "id": "",
+      "href": "#e-base-handles-L53"
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/base/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts"
+    },
+    {
+      "tag": "A",
+      "text": "↑ Back to D5",
+      "id": "",
+      "href": "#D5"
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Source · head · typescript-backend.ts:79–90 · refresh order and awaited release",
+      "id": "",
+      "href": null
+    },
+    {
+      "tag": "A",
+      "text": "Line 79",
+      "id": "",
+      "href": "#e-head-backend-L79"
+    },
+    {
+      "tag": "A",
+      "text": "Line 80",
+      "id": "",
+      "href": "#e-head-backend-L80"
+    },
+    {
+      "tag": "A",
+      "text": "Line 81",
+      "id": "",
+      "href": "#e-head-backend-L81"
+    },
+    {
+      "tag": "A",
+      "text": "Line 82",
+      "id": "",
+      "href": "#e-head-backend-L82"
+    },
+    {
+      "tag": "A",
+      "text": "Line 83",
+      "id": "",
+      "href": "#e-head-backend-L83"
+    },
+    {
+      "tag": "A",
+      "text": "Line 84",
+      "id": "",
+      "href": "#e-head-backend-L84"
+    },
+    {
+      "tag": "A",
+      "text": "Line 85",
+      "id": "",
+      "href": "#e-head-backend-L85"
+    },
+    {
+      "tag": "A",
+      "text": "Line 86",
+      "id": "",
+      "href": "#e-head-backend-L86"
+    },
+    {
+      "tag": "A",
+      "text": "Line 87",
+      "id": "",
+      "href": "#e-head-backend-L87"
+    },
+    {
+      "tag": "A",
+      "text": "Line 88",
+      "id": "",
+      "href": "#e-head-backend-L88"
+    },
+    {
+      "tag": "A",
+      "text": "Line 89",
+      "id": "",
+      "href": "#e-head-backend-L89"
+    },
+    {
+      "tag": "A",
+      "text": "Line 90",
+      "id": "",
+      "href": "#e-head-backend-L90"
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/backend-typescript/src/typescript-backend/typescript-backend.ts"
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Source · base · typescript-backend.ts:79–90 · previous refresh and release boundary",
+      "id": "",
+      "href": null
+    },
+    {
+      "tag": "A",
+      "text": "Line 79",
+      "id": "",
+      "href": "#e-base-backend-L79"
+    },
+    {
+      "tag": "A",
+      "text": "Line 80",
+      "id": "",
+      "href": "#e-base-backend-L80"
+    },
+    {
+      "tag": "A",
+      "text": "Line 81",
+      "id": "",
+      "href": "#e-base-backend-L81"
+    },
+    {
+      "tag": "A",
+      "text": "Line 82",
+      "id": "",
+      "href": "#e-base-backend-L82"
+    },
+    {
+      "tag": "A",
+      "text": "Line 83",
+      "id": "",
+      "href": "#e-base-backend-L83"
+    },
+    {
+      "tag": "A",
+      "text": "Line 84",
+      "id": "",
+      "href": "#e-base-backend-L84"
+    },
+    {
+      "tag": "A",
+      "text": "Line 85",
+      "id": "",
+      "href": "#e-base-backend-L85"
+    },
+    {
+      "tag": "A",
+      "text": "Line 86",
+      "id": "",
+      "href": "#e-base-backend-L86"
+    },
+    {
+      "tag": "A",
+      "text": "Line 87",
+      "id": "",
+      "href": "#e-base-backend-L87"
+    },
+    {
+      "tag": "A",
+      "text": "Line 88",
+      "id": "",
+      "href": "#e-base-backend-L88"
+    },
+    {
+      "tag": "A",
+      "text": "Line 89",
+      "id": "",
+      "href": "#e-base-backend-L89"
+    },
+    {
+      "tag": "A",
+      "text": "Line 90",
+      "id": "",
+      "href": "#e-base-backend-L90"
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/base/packages/backend-typescript/src/typescript-backend/typescript-backend.ts"
+    },
+    {
+      "tag": "A",
+      "text": "↑ Back to D6",
+      "id": "",
+      "href": "#D6"
+    },
+    {
+      "tag": "SELECT",
+      "text": "rejects\nsucceeds",
+      "id": "release-outcome",
+      "href": null
+    },
+    {
+      "tag": "BUTTON",
+      "text": "← Previous",
+      "id": "trace-prev",
+      "href": null
+    },
+    {
+      "tag": "INPUT",
+      "text": "Release event",
+      "id": "trace-step",
+      "href": null
+    },
+    {
+      "tag": "BUTTON",
+      "text": "Next →",
+      "id": "trace-next",
+      "href": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Source · head · typescript-semantic-query-service.ts:129–132 · clear then await",
+      "id": "",
+      "href": null
+    },
+    {
+      "tag": "A",
+      "text": "Line 129",
+      "id": "",
+      "href": "#e-head-release-L129"
+    },
+    {
+      "tag": "A",
+      "text": "Line 130",
+      "id": "",
+      "href": "#e-head-release-L130"
+    },
+    {
+      "tag": "A",
+      "text": "Line 131",
+      "id": "",
+      "href": "#e-head-release-L131"
+    },
+    {
+      "tag": "A",
+      "text": "Line 132",
+      "id": "",
+      "href": "#e-head-release-L132"
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts"
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Source · base · typescript-semantic-query-service.ts:125–129 · clear then start release",
+      "id": "",
+      "href": null
+    },
+    {
+      "tag": "A",
+      "text": "Line 125",
+      "id": "",
+      "href": "#e-base-release-L125"
+    },
+    {
+      "tag": "A",
+      "text": "Line 126",
+      "id": "",
+      "href": "#e-base-release-L126"
+    },
+    {
+      "tag": "A",
+      "text": "Line 127",
+      "id": "",
+      "href": "#e-base-release-L127"
+    },
+    {
+      "tag": "A",
+      "text": "Line 128",
+      "id": "",
+      "href": "#e-base-release-L128"
+    },
+    {
+      "tag": "A",
+      "text": "Line 129",
+      "id": "",
+      "href": "#e-base-release-L129"
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/base/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts"
+    },
+    {
+      "tag": "A",
+      "text": "↑ D3: values",
+      "id": "",
+      "href": "#D3"
+    },
+    {
+      "tag": "A",
+      "text": "↑ D4: failures",
+      "id": "",
+      "href": "#D4"
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Source · head · turn-scoped-cache-scope.ts:1–46 · complete generic cache implementation",
+      "id": "",
+      "href": null
+    },
+    {
+      "tag": "A",
+      "text": "Line 1",
+      "id": "",
+      "href": "#e-core-L1"
+    },
+    {
+      "tag": "A",
+      "text": "Line 2",
+      "id": "",
+      "href": "#e-core-L2"
+    },
+    {
+      "tag": "A",
+      "text": "Line 3",
+      "id": "",
+      "href": "#e-core-L3"
+    },
+    {
+      "tag": "A",
+      "text": "Line 4",
+      "id": "",
+      "href": "#e-core-L4"
+    },
+    {
+      "tag": "A",
+      "text": "Line 5",
+      "id": "",
+      "href": "#e-core-L5"
+    },
+    {
+      "tag": "A",
+      "text": "Line 6",
+      "id": "",
+      "href": "#e-core-L6"
+    },
+    {
+      "tag": "A",
+      "text": "Line 7",
+      "id": "",
+      "href": "#e-core-L7"
+    },
+    {
+      "tag": "A",
+      "text": "Line 8",
+      "id": "",
+      "href": "#e-core-L8"
+    },
+    {
+      "tag": "A",
+      "text": "Line 9",
+      "id": "",
+      "href": "#e-core-L9"
+    },
+    {
+      "tag": "A",
+      "text": "Line 10",
+      "id": "",
+      "href": "#e-core-L10"
+    },
+    {
+      "tag": "A",
+      "text": "Line 11",
+      "id": "",
+      "href": "#e-core-L11"
+    },
+    {
+      "tag": "A",
+      "text": "Line 12",
+      "id": "",
+      "href": "#e-core-L12"
+    },
+    {
+      "tag": "A",
+      "text": "Line 13",
+      "id": "",
+      "href": "#e-core-L13"
+    },
+    {
+      "tag": "A",
+      "text": "Line 14",
+      "id": "",
+      "href": "#e-core-L14"
+    },
+    {
+      "tag": "A",
+      "text": "Line 15",
+      "id": "",
+      "href": "#e-core-L15"
+    },
+    {
+      "tag": "A",
+      "text": "Line 16",
+      "id": "",
+      "href": "#e-core-L16"
+    },
+    {
+      "tag": "A",
+      "text": "Line 17",
+      "id": "",
+      "href": "#e-core-L17"
+    },
+    {
+      "tag": "A",
+      "text": "Line 18",
+      "id": "",
+      "href": "#e-core-L18"
+    },
+    {
+      "tag": "A",
+      "text": "Line 19",
+      "id": "",
+      "href": "#e-core-L19"
+    },
+    {
+      "tag": "A",
+      "text": "Line 20",
+      "id": "",
+      "href": "#e-core-L20"
+    },
+    {
+      "tag": "A",
+      "text": "Line 21",
+      "id": "",
+      "href": "#e-core-L21"
+    },
+    {
+      "tag": "A",
+      "text": "Line 22",
+      "id": "",
+      "href": "#e-core-L22"
+    },
+    {
+      "tag": "A",
+      "text": "Line 23",
+      "id": "",
+      "href": "#e-core-L23"
+    },
+    {
+      "tag": "A",
+      "text": "Line 24",
+      "id": "",
+      "href": "#e-core-L24"
+    },
+    {
+      "tag": "A",
+      "text": "Line 25",
+      "id": "",
+      "href": "#e-core-L25"
+    },
+    {
+      "tag": "A",
+      "text": "Line 26",
+      "id": "",
+      "href": "#e-core-L26"
+    },
+    {
+      "tag": "A",
+      "text": "Line 27",
+      "id": "",
+      "href": "#e-core-L27"
+    },
+    {
+      "tag": "A",
+      "text": "Line 28",
+      "id": "",
+      "href": "#e-core-L28"
+    },
+    {
+      "tag": "A",
+      "text": "Line 29",
+      "id": "",
+      "href": "#e-core-L29"
+    },
+    {
+      "tag": "A",
+      "text": "Line 30",
+      "id": "",
+      "href": "#e-core-L30"
+    },
+    {
+      "tag": "A",
+      "text": "Line 31",
+      "id": "",
+      "href": "#e-core-L31"
+    },
+    {
+      "tag": "A",
+      "text": "Line 32",
+      "id": "",
+      "href": "#e-core-L32"
+    },
+    {
+      "tag": "A",
+      "text": "Line 33",
+      "id": "",
+      "href": "#e-core-L33"
+    },
+    {
+      "tag": "A",
+      "text": "Line 34",
+      "id": "",
+      "href": "#e-core-L34"
+    },
+    {
+      "tag": "A",
+      "text": "Line 35",
+      "id": "",
+      "href": "#e-core-L35"
+    },
+    {
+      "tag": "A",
+      "text": "Line 36",
+      "id": "",
+      "href": "#e-core-L36"
+    },
+    {
+      "tag": "A",
+      "text": "Line 37",
+      "id": "",
+      "href": "#e-core-L37"
+    },
+    {
+      "tag": "A",
+      "text": "Line 38",
+      "id": "",
+      "href": "#e-core-L38"
+    },
+    {
+      "tag": "A",
+      "text": "Line 39",
+      "id": "",
+      "href": "#e-core-L39"
+    },
+    {
+      "tag": "A",
+      "text": "Line 40",
+      "id": "",
+      "href": "#e-core-L40"
+    },
+    {
+      "tag": "A",
+      "text": "Line 41",
+      "id": "",
+      "href": "#e-core-L41"
+    },
+    {
+      "tag": "A",
+      "text": "Line 42",
+      "id": "",
+      "href": "#e-core-L42"
+    },
+    {
+      "tag": "A",
+      "text": "Line 43",
+      "id": "",
+      "href": "#e-core-L43"
+    },
+    {
+      "tag": "A",
+      "text": "Line 44",
+      "id": "",
+      "href": "#e-core-L44"
+    },
+    {
+      "tag": "A",
+      "text": "Line 45",
+      "id": "",
+      "href": "#e-core-L45"
+    },
+    {
+      "tag": "A",
+      "text": "Line 46",
+      "id": "",
+      "href": "#e-core-L46"
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/core/src/backend/turn-scoped-cache-scope.ts"
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Source · head · typescript-semantic-query-service.ts:79–102, 134–172 · reference and position projections",
+      "id": "",
+      "href": null
+    },
+    {
+      "tag": "A",
+      "text": "Line 79",
+      "id": "",
+      "href": "#e-projections-L79"
+    },
+    {
+      "tag": "A",
+      "text": "Line 80",
+      "id": "",
+      "href": "#e-projections-L80"
+    },
+    {
+      "tag": "A",
+      "text": "Line 81",
+      "id": "",
+      "href": "#e-projections-L81"
+    },
+    {
+      "tag": "A",
+      "text": "Line 82",
+      "id": "",
+      "href": "#e-projections-L82"
+    },
+    {
+      "tag": "A",
+      "text": "Line 83",
+      "id": "",
+      "href": "#e-projections-L83"
+    },
+    {
+      "tag": "A",
+      "text": "Line 84",
+      "id": "",
+      "href": "#e-projections-L84"
+    },
+    {
+      "tag": "A",
+      "text": "Line 85",
+      "id": "",
+      "href": "#e-projections-L85"
+    },
+    {
+      "tag": "A",
+      "text": "Line 86",
+      "id": "",
+      "href": "#e-projections-L86"
+    },
+    {
+      "tag": "A",
+      "text": "Line 87",
+      "id": "",
+      "href": "#e-projections-L87"
+    },
+    {
+      "tag": "A",
+      "text": "Line 88",
+      "id": "",
+      "href": "#e-projections-L88"
+    },
+    {
+      "tag": "A",
+      "text": "Line 89",
+      "id": "",
+      "href": "#e-projections-L89"
+    },
+    {
+      "tag": "A",
+      "text": "Line 90",
+      "id": "",
+      "href": "#e-projections-L90"
+    },
+    {
+      "tag": "A",
+      "text": "Line 91",
+      "id": "",
+      "href": "#e-projections-L91"
+    },
+    {
+      "tag": "A",
+      "text": "Line 92",
+      "id": "",
+      "href": "#e-projections-L92"
+    },
+    {
+      "tag": "A",
+      "text": "Line 93",
+      "id": "",
+      "href": "#e-projections-L93"
+    },
+    {
+      "tag": "A",
+      "text": "Line 94",
+      "id": "",
+      "href": "#e-projections-L94"
+    },
+    {
+      "tag": "A",
+      "text": "Line 95",
+      "id": "",
+      "href": "#e-projections-L95"
+    },
+    {
+      "tag": "A",
+      "text": "Line 96",
+      "id": "",
+      "href": "#e-projections-L96"
+    },
+    {
+      "tag": "A",
+      "text": "Line 97",
+      "id": "",
+      "href": "#e-projections-L97"
+    },
+    {
+      "tag": "A",
+      "text": "Line 98",
+      "id": "",
+      "href": "#e-projections-L98"
+    },
+    {
+      "tag": "A",
+      "text": "Line 99",
+      "id": "",
+      "href": "#e-projections-L99"
+    },
+    {
+      "tag": "A",
+      "text": "Line 100",
+      "id": "",
+      "href": "#e-projections-L100"
+    },
+    {
+      "tag": "A",
+      "text": "Line 101",
+      "id": "",
+      "href": "#e-projections-L101"
+    },
+    {
+      "tag": "A",
+      "text": "Line 102",
+      "id": "",
+      "href": "#e-projections-L102"
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": null
+    },
+    {
+      "tag": "A",
+      "text": "Line 134",
+      "id": "",
+      "href": "#e-projections-L134"
+    },
+    {
+      "tag": "A",
+      "text": "Line 135",
+      "id": "",
+      "href": "#e-projections-L135"
+    },
+    {
+      "tag": "A",
+      "text": "Line 136",
+      "id": "",
+      "href": "#e-projections-L136"
+    },
+    {
+      "tag": "A",
+      "text": "Line 137",
+      "id": "",
+      "href": "#e-projections-L137"
+    },
+    {
+      "tag": "A",
+      "text": "Line 138",
+      "id": "",
+      "href": "#e-projections-L138"
+    },
+    {
+      "tag": "A",
+      "text": "Line 139",
+      "id": "",
+      "href": "#e-projections-L139"
+    },
+    {
+      "tag": "A",
+      "text": "Line 140",
+      "id": "",
+      "href": "#e-projections-L140"
+    },
+    {
+      "tag": "A",
+      "text": "Line 141",
+      "id": "",
+      "href": "#e-projections-L141"
+    },
+    {
+      "tag": "A",
+      "text": "Line 142",
+      "id": "",
+      "href": "#e-projections-L142"
+    },
+    {
+      "tag": "A",
+      "text": "Line 143",
+      "id": "",
+      "href": "#e-projections-L143"
+    },
+    {
+      "tag": "A",
+      "text": "Line 144",
+      "id": "",
+      "href": "#e-projections-L144"
+    },
+    {
+      "tag": "A",
+      "text": "Line 145",
+      "id": "",
+      "href": "#e-projections-L145"
+    },
+    {
+      "tag": "A",
+      "text": "Line 146",
+      "id": "",
+      "href": "#e-projections-L146"
+    },
+    {
+      "tag": "A",
+      "text": "Line 147",
+      "id": "",
+      "href": "#e-projections-L147"
+    },
+    {
+      "tag": "A",
+      "text": "Line 148",
+      "id": "",
+      "href": "#e-projections-L148"
+    },
+    {
+      "tag": "A",
+      "text": "Line 149",
+      "id": "",
+      "href": "#e-projections-L149"
+    },
+    {
+      "tag": "A",
+      "text": "Line 150",
+      "id": "",
+      "href": "#e-projections-L150"
+    },
+    {
+      "tag": "A",
+      "text": "Line 151",
+      "id": "",
+      "href": "#e-projections-L151"
+    },
+    {
+      "tag": "A",
+      "text": "Line 152",
+      "id": "",
+      "href": "#e-projections-L152"
+    },
+    {
+      "tag": "A",
+      "text": "Line 153",
+      "id": "",
+      "href": "#e-projections-L153"
+    },
+    {
+      "tag": "A",
+      "text": "Line 154",
+      "id": "",
+      "href": "#e-projections-L154"
+    },
+    {
+      "tag": "A",
+      "text": "Line 155",
+      "id": "",
+      "href": "#e-projections-L155"
+    },
+    {
+      "tag": "A",
+      "text": "Line 156",
+      "id": "",
+      "href": "#e-projections-L156"
+    },
+    {
+      "tag": "A",
+      "text": "Line 157",
+      "id": "",
+      "href": "#e-projections-L157"
+    },
+    {
+      "tag": "A",
+      "text": "Line 158",
+      "id": "",
+      "href": "#e-projections-L158"
+    },
+    {
+      "tag": "A",
+      "text": "Line 159",
+      "id": "",
+      "href": "#e-projections-L159"
+    },
+    {
+      "tag": "A",
+      "text": "Line 160",
+      "id": "",
+      "href": "#e-projections-L160"
+    },
+    {
+      "tag": "A",
+      "text": "Line 161",
+      "id": "",
+      "href": "#e-projections-L161"
+    },
+    {
+      "tag": "A",
+      "text": "Line 162",
+      "id": "",
+      "href": "#e-projections-L162"
+    },
+    {
+      "tag": "A",
+      "text": "Line 163",
+      "id": "",
+      "href": "#e-projections-L163"
+    },
+    {
+      "tag": "A",
+      "text": "Line 164",
+      "id": "",
+      "href": "#e-projections-L164"
+    },
+    {
+      "tag": "A",
+      "text": "Line 165",
+      "id": "",
+      "href": "#e-projections-L165"
+    },
+    {
+      "tag": "A",
+      "text": "Line 166",
+      "id": "",
+      "href": "#e-projections-L166"
+    },
+    {
+      "tag": "A",
+      "text": "Line 167",
+      "id": "",
+      "href": "#e-projections-L167"
+    },
+    {
+      "tag": "A",
+      "text": "Line 168",
+      "id": "",
+      "href": "#e-projections-L168"
+    },
+    {
+      "tag": "A",
+      "text": "Line 169",
+      "id": "",
+      "href": "#e-projections-L169"
+    },
+    {
+      "tag": "A",
+      "text": "Line 170",
+      "id": "",
+      "href": "#e-projections-L170"
+    },
+    {
+      "tag": "A",
+      "text": "Line 171",
+      "id": "",
+      "href": "#e-projections-L171"
+    },
+    {
+      "tag": "A",
+      "text": "Line 172",
+      "id": "",
+      "href": "#e-projections-L172"
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts"
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Source · head · turn-scoped-cache-scope.test.ts:49–92 · failures and late settlement",
+      "id": "",
+      "href": null
+    },
+    {
+      "tag": "A",
+      "text": "Line 49",
+      "id": "",
+      "href": "#e-failure-tests-L49"
+    },
+    {
+      "tag": "A",
+      "text": "Line 50",
+      "id": "",
+      "href": "#e-failure-tests-L50"
+    },
+    {
+      "tag": "A",
+      "text": "Line 51",
+      "id": "",
+      "href": "#e-failure-tests-L51"
+    },
+    {
+      "tag": "A",
+      "text": "Line 52",
+      "id": "",
+      "href": "#e-failure-tests-L52"
+    },
+    {
+      "tag": "A",
+      "text": "Line 53",
+      "id": "",
+      "href": "#e-failure-tests-L53"
+    },
+    {
+      "tag": "A",
+      "text": "Line 54",
+      "id": "",
+      "href": "#e-failure-tests-L54"
+    },
+    {
+      "tag": "A",
+      "text": "Line 55",
+      "id": "",
+      "href": "#e-failure-tests-L55"
+    },
+    {
+      "tag": "A",
+      "text": "Line 56",
+      "id": "",
+      "href": "#e-failure-tests-L56"
+    },
+    {
+      "tag": "A",
+      "text": "Line 57",
+      "id": "",
+      "href": "#e-failure-tests-L57"
+    },
+    {
+      "tag": "A",
+      "text": "Line 58",
+      "id": "",
+      "href": "#e-failure-tests-L58"
+    },
+    {
+      "tag": "A",
+      "text": "Line 59",
+      "id": "",
+      "href": "#e-failure-tests-L59"
+    },
+    {
+      "tag": "A",
+      "text": "Line 60",
+      "id": "",
+      "href": "#e-failure-tests-L60"
+    },
+    {
+      "tag": "A",
+      "text": "Line 61",
+      "id": "",
+      "href": "#e-failure-tests-L61"
+    },
+    {
+      "tag": "A",
+      "text": "Line 62",
+      "id": "",
+      "href": "#e-failure-tests-L62"
+    },
+    {
+      "tag": "A",
+      "text": "Line 63",
+      "id": "",
+      "href": "#e-failure-tests-L63"
+    },
+    {
+      "tag": "A",
+      "text": "Line 64",
+      "id": "",
+      "href": "#e-failure-tests-L64"
+    },
+    {
+      "tag": "A",
+      "text": "Line 65",
+      "id": "",
+      "href": "#e-failure-tests-L65"
+    },
+    {
+      "tag": "A",
+      "text": "Line 66",
+      "id": "",
+      "href": "#e-failure-tests-L66"
+    },
+    {
+      "tag": "A",
+      "text": "Line 67",
+      "id": "",
+      "href": "#e-failure-tests-L67"
+    },
+    {
+      "tag": "A",
+      "text": "Line 68",
+      "id": "",
+      "href": "#e-failure-tests-L68"
+    },
+    {
+      "tag": "A",
+      "text": "Line 69",
+      "id": "",
+      "href": "#e-failure-tests-L69"
+    },
+    {
+      "tag": "A",
+      "text": "Line 70",
+      "id": "",
+      "href": "#e-failure-tests-L70"
+    },
+    {
+      "tag": "A",
+      "text": "Line 71",
+      "id": "",
+      "href": "#e-failure-tests-L71"
+    },
+    {
+      "tag": "A",
+      "text": "Line 72",
+      "id": "",
+      "href": "#e-failure-tests-L72"
+    },
+    {
+      "tag": "A",
+      "text": "Line 73",
+      "id": "",
+      "href": "#e-failure-tests-L73"
+    },
+    {
+      "tag": "A",
+      "text": "Line 74",
+      "id": "",
+      "href": "#e-failure-tests-L74"
+    },
+    {
+      "tag": "A",
+      "text": "Line 75",
+      "id": "",
+      "href": "#e-failure-tests-L75"
+    },
+    {
+      "tag": "A",
+      "text": "Line 76",
+      "id": "",
+      "href": "#e-failure-tests-L76"
+    },
+    {
+      "tag": "A",
+      "text": "Line 77",
+      "id": "",
+      "href": "#e-failure-tests-L77"
+    },
+    {
+      "tag": "A",
+      "text": "Line 78",
+      "id": "",
+      "href": "#e-failure-tests-L78"
+    },
+    {
+      "tag": "A",
+      "text": "Line 79",
+      "id": "",
+      "href": "#e-failure-tests-L79"
+    },
+    {
+      "tag": "A",
+      "text": "Line 80",
+      "id": "",
+      "href": "#e-failure-tests-L80"
+    },
+    {
+      "tag": "A",
+      "text": "Line 81",
+      "id": "",
+      "href": "#e-failure-tests-L81"
+    },
+    {
+      "tag": "A",
+      "text": "Line 82",
+      "id": "",
+      "href": "#e-failure-tests-L82"
+    },
+    {
+      "tag": "A",
+      "text": "Line 83",
+      "id": "",
+      "href": "#e-failure-tests-L83"
+    },
+    {
+      "tag": "A",
+      "text": "Line 84",
+      "id": "",
+      "href": "#e-failure-tests-L84"
+    },
+    {
+      "tag": "A",
+      "text": "Line 85",
+      "id": "",
+      "href": "#e-failure-tests-L85"
+    },
+    {
+      "tag": "A",
+      "text": "Line 86",
+      "id": "",
+      "href": "#e-failure-tests-L86"
+    },
+    {
+      "tag": "A",
+      "text": "Line 87",
+      "id": "",
+      "href": "#e-failure-tests-L87"
+    },
+    {
+      "tag": "A",
+      "text": "Line 88",
+      "id": "",
+      "href": "#e-failure-tests-L88"
+    },
+    {
+      "tag": "A",
+      "text": "Line 89",
+      "id": "",
+      "href": "#e-failure-tests-L89"
+    },
+    {
+      "tag": "A",
+      "text": "Line 90",
+      "id": "",
+      "href": "#e-failure-tests-L90"
+    },
+    {
+      "tag": "A",
+      "text": "Line 91",
+      "id": "",
+      "href": "#e-failure-tests-L91"
+    },
+    {
+      "tag": "A",
+      "text": "Line 92",
+      "id": "",
+      "href": "#e-failure-tests-L92"
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/core/src/backend/turn-scoped-cache-scope.test.ts"
+    },
+    {
+      "tag": "A",
+      "text": "↑ D7: release",
+      "id": "",
+      "href": "#D7"
+    },
+    {
+      "tag": "A",
+      "text": "↑ D8: API",
+      "id": "",
+      "href": "#D8"
+    },
+    {
+      "tag": "A",
+      "text": "↑ D9: handle lifetime",
+      "id": "",
+      "href": "#D9"
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Source · head · index.ts:149–154 · public core export",
+      "id": "",
+      "href": null
+    },
+    {
+      "tag": "A",
+      "text": "Line 149",
+      "id": "",
+      "href": "#e-export-L149"
+    },
+    {
+      "tag": "A",
+      "text": "Line 150",
+      "id": "",
+      "href": "#e-export-L150"
+    },
+    {
+      "tag": "A",
+      "text": "Line 151",
+      "id": "",
+      "href": "#e-export-L151"
+    },
+    {
+      "tag": "A",
+      "text": "Line 152",
+      "id": "",
+      "href": "#e-export-L152"
+    },
+    {
+      "tag": "A",
+      "text": "Line 153",
+      "id": "",
+      "href": "#e-export-L153"
+    },
+    {
+      "tag": "A",
+      "text": "Line 154",
+      "id": "",
+      "href": "#e-export-L154"
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/core/src/index.ts"
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Source · head · daemon-architecture-functional-spec.md:17–28 · unchanged-behavior requirement",
+      "id": "",
+      "href": null
+    },
+    {
+      "tag": "A",
+      "text": "Line 17",
+      "id": "",
+      "href": "#e-spec-behavior-L17"
+    },
+    {
+      "tag": "A",
+      "text": "Line 18",
+      "id": "",
+      "href": "#e-spec-behavior-L18"
+    },
+    {
+      "tag": "A",
+      "text": "Line 19",
+      "id": "",
+      "href": "#e-spec-behavior-L19"
+    },
+    {
+      "tag": "A",
+      "text": "Line 20",
+      "id": "",
+      "href": "#e-spec-behavior-L20"
+    },
+    {
+      "tag": "A",
+      "text": "Line 21",
+      "id": "",
+      "href": "#e-spec-behavior-L21"
+    },
+    {
+      "tag": "A",
+      "text": "Line 22",
+      "id": "",
+      "href": "#e-spec-behavior-L22"
+    },
+    {
+      "tag": "A",
+      "text": "Line 23",
+      "id": "",
+      "href": "#e-spec-behavior-L23"
+    },
+    {
+      "tag": "A",
+      "text": "Line 24",
+      "id": "",
+      "href": "#e-spec-behavior-L24"
+    },
+    {
+      "tag": "A",
+      "text": "Line 25",
+      "id": "",
+      "href": "#e-spec-behavior-L25"
+    },
+    {
+      "tag": "A",
+      "text": "Line 26",
+      "id": "",
+      "href": "#e-spec-behavior-L26"
+    },
+    {
+      "tag": "A",
+      "text": "Line 27",
+      "id": "",
+      "href": "#e-spec-behavior-L27"
+    },
+    {
+      "tag": "A",
+      "text": "Line 28",
+      "id": "",
+      "href": "#e-spec-behavior-L28"
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/plans/005/daemon-architecture-functional-spec.md"
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Source · head · project-graph.ts:63–65, 144–152 · graph interface and cleanup sequencing",
+      "id": "",
+      "href": null
+    },
+    {
+      "tag": "A",
+      "text": "Line 63",
+      "id": "",
+      "href": "#e-graph-release-L63"
+    },
+    {
+      "tag": "A",
+      "text": "Line 64",
+      "id": "",
+      "href": "#e-graph-release-L64"
+    },
+    {
+      "tag": "A",
+      "text": "Line 65",
+      "id": "",
+      "href": "#e-graph-release-L65"
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": null
+    },
+    {
+      "tag": "A",
+      "text": "Line 144",
+      "id": "",
+      "href": "#e-graph-release-L144"
+    },
+    {
+      "tag": "A",
+      "text": "Line 145",
+      "id": "",
+      "href": "#e-graph-release-L145"
+    },
+    {
+      "tag": "A",
+      "text": "Line 146",
+      "id": "",
+      "href": "#e-graph-release-L146"
+    },
+    {
+      "tag": "A",
+      "text": "Line 147",
+      "id": "",
+      "href": "#e-graph-release-L147"
+    },
+    {
+      "tag": "A",
+      "text": "Line 148",
+      "id": "",
+      "href": "#e-graph-release-L148"
+    },
+    {
+      "tag": "A",
+      "text": "Line 149",
+      "id": "",
+      "href": "#e-graph-release-L149"
+    },
+    {
+      "tag": "A",
+      "text": "Line 150",
+      "id": "",
+      "href": "#e-graph-release-L150"
+    },
+    {
+      "tag": "A",
+      "text": "Line 151",
+      "id": "",
+      "href": "#e-graph-release-L151"
+    },
+    {
+      "tag": "A",
+      "text": "Line 152",
+      "id": "",
+      "href": "#e-graph-release-L152"
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/core/src/workspace/project-graph.ts"
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Source · head · typescript-project-graph.ts:78–85 · concrete synchronous project cleanup",
+      "id": "",
+      "href": null
+    },
+    {
+      "tag": "A",
+      "text": "Line 78",
+      "id": "",
+      "href": "#e-ts-release-L78"
+    },
+    {
+      "tag": "A",
+      "text": "Line 79",
+      "id": "",
+      "href": "#e-ts-release-L79"
+    },
+    {
+      "tag": "A",
+      "text": "Line 80",
+      "id": "",
+      "href": "#e-ts-release-L80"
+    },
+    {
+      "tag": "A",
+      "text": "Line 81",
+      "id": "",
+      "href": "#e-ts-release-L81"
+    },
+    {
+      "tag": "A",
+      "text": "Line 82",
+      "id": "",
+      "href": "#e-ts-release-L82"
+    },
+    {
+      "tag": "A",
+      "text": "Line 83",
+      "id": "",
+      "href": "#e-ts-release-L83"
+    },
+    {
+      "tag": "A",
+      "text": "Line 84",
+      "id": "",
+      "href": "#e-ts-release-L84"
+    },
+    {
+      "tag": "A",
+      "text": "Line 85",
+      "id": "",
+      "href": "#e-ts-release-L85"
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/backend-typescript/src/typescript-backend/typescript-project-graph.ts"
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Source · head · turn-scoped-cache-scope.test.ts:25–47 · handles survive turn and release",
+      "id": "",
+      "href": null
+    },
+    {
+      "tag": "A",
+      "text": "Line 25",
+      "id": "",
+      "href": "#e-reusable-test-L25"
+    },
+    {
+      "tag": "A",
+      "text": "Line 26",
+      "id": "",
+      "href": "#e-reusable-test-L26"
+    },
+    {
+      "tag": "A",
+      "text": "Line 27",
+      "id": "",
+      "href": "#e-reusable-test-L27"
+    },
+    {
+      "tag": "A",
+      "text": "Line 28",
+      "id": "",
+      "href": "#e-reusable-test-L28"
+    },
+    {
+      "tag": "A",
+      "text": "Line 29",
+      "id": "",
+      "href": "#e-reusable-test-L29"
+    },
+    {
+      "tag": "A",
+      "text": "Line 30",
+      "id": "",
+      "href": "#e-reusable-test-L30"
+    },
+    {
+      "tag": "A",
+      "text": "Line 31",
+      "id": "",
+      "href": "#e-reusable-test-L31"
+    },
+    {
+      "tag": "A",
+      "text": "Line 32",
+      "id": "",
+      "href": "#e-reusable-test-L32"
+    },
+    {
+      "tag": "A",
+      "text": "Line 33",
+      "id": "",
+      "href": "#e-reusable-test-L33"
+    },
+    {
+      "tag": "A",
+      "text": "Line 34",
+      "id": "",
+      "href": "#e-reusable-test-L34"
+    },
+    {
+      "tag": "A",
+      "text": "Line 35",
+      "id": "",
+      "href": "#e-reusable-test-L35"
+    },
+    {
+      "tag": "A",
+      "text": "Line 36",
+      "id": "",
+      "href": "#e-reusable-test-L36"
+    },
+    {
+      "tag": "A",
+      "text": "Line 37",
+      "id": "",
+      "href": "#e-reusable-test-L37"
+    },
+    {
+      "tag": "A",
+      "text": "Line 38",
+      "id": "",
+      "href": "#e-reusable-test-L38"
+    },
+    {
+      "tag": "A",
+      "text": "Line 39",
+      "id": "",
+      "href": "#e-reusable-test-L39"
+    },
+    {
+      "tag": "A",
+      "text": "Line 40",
+      "id": "",
+      "href": "#e-reusable-test-L40"
+    },
+    {
+      "tag": "A",
+      "text": "Line 41",
+      "id": "",
+      "href": "#e-reusable-test-L41"
+    },
+    {
+      "tag": "A",
+      "text": "Line 42",
+      "id": "",
+      "href": "#e-reusable-test-L42"
+    },
+    {
+      "tag": "A",
+      "text": "Line 43",
+      "id": "",
+      "href": "#e-reusable-test-L43"
+    },
+    {
+      "tag": "A",
+      "text": "Line 44",
+      "id": "",
+      "href": "#e-reusable-test-L44"
+    },
+    {
+      "tag": "A",
+      "text": "Line 45",
+      "id": "",
+      "href": "#e-reusable-test-L45"
+    },
+    {
+      "tag": "A",
+      "text": "Line 46",
+      "id": "",
+      "href": "#e-reusable-test-L46"
+    },
+    {
+      "tag": "A",
+      "text": "Line 47",
+      "id": "",
+      "href": "#e-reusable-test-L47"
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/core/src/backend/turn-scoped-cache-scope.test.ts"
+    },
+    {
+      "tag": "A",
+      "text": "↑ Back to D10",
+      "id": "",
+      "href": "#D10"
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Source · head · typescript-semantic-query-service.test.ts:29–59, 95–133 · promise identity and error behavior",
+      "id": "",
+      "href": null
+    },
+    {
+      "tag": "A",
+      "text": "Line 29",
+      "id": "",
+      "href": "#e-identity-tests-L29"
+    },
+    {
+      "tag": "A",
+      "text": "Line 30",
+      "id": "",
+      "href": "#e-identity-tests-L30"
+    },
+    {
+      "tag": "A",
+      "text": "Line 31",
+      "id": "",
+      "href": "#e-identity-tests-L31"
+    },
+    {
+      "tag": "A",
+      "text": "Line 32",
+      "id": "",
+      "href": "#e-identity-tests-L32"
+    },
+    {
+      "tag": "A",
+      "text": "Line 33",
+      "id": "",
+      "href": "#e-identity-tests-L33"
+    },
+    {
+      "tag": "A",
+      "text": "Line 34",
+      "id": "",
+      "href": "#e-identity-tests-L34"
+    },
+    {
+      "tag": "A",
+      "text": "Line 35",
+      "id": "",
+      "href": "#e-identity-tests-L35"
+    },
+    {
+      "tag": "A",
+      "text": "Line 36",
+      "id": "",
+      "href": "#e-identity-tests-L36"
+    },
+    {
+      "tag": "A",
+      "text": "Line 37",
+      "id": "",
+      "href": "#e-identity-tests-L37"
+    },
+    {
+      "tag": "A",
+      "text": "Line 38",
+      "id": "",
+      "href": "#e-identity-tests-L38"
+    },
+    {
+      "tag": "A",
+      "text": "Line 39",
+      "id": "",
+      "href": "#e-identity-tests-L39"
+    },
+    {
+      "tag": "A",
+      "text": "Line 40",
+      "id": "",
+      "href": "#e-identity-tests-L40"
+    },
+    {
+      "tag": "A",
+      "text": "Line 41",
+      "id": "",
+      "href": "#e-identity-tests-L41"
+    },
+    {
+      "tag": "A",
+      "text": "Line 42",
+      "id": "",
+      "href": "#e-identity-tests-L42"
+    },
+    {
+      "tag": "A",
+      "text": "Line 43",
+      "id": "",
+      "href": "#e-identity-tests-L43"
+    },
+    {
+      "tag": "A",
+      "text": "Line 44",
+      "id": "",
+      "href": "#e-identity-tests-L44"
+    },
+    {
+      "tag": "A",
+      "text": "Line 45",
+      "id": "",
+      "href": "#e-identity-tests-L45"
+    },
+    {
+      "tag": "A",
+      "text": "Line 46",
+      "id": "",
+      "href": "#e-identity-tests-L46"
+    },
+    {
+      "tag": "A",
+      "text": "Line 47",
+      "id": "",
+      "href": "#e-identity-tests-L47"
+    },
+    {
+      "tag": "A",
+      "text": "Line 48",
+      "id": "",
+      "href": "#e-identity-tests-L48"
+    },
+    {
+      "tag": "A",
+      "text": "Line 49",
+      "id": "",
+      "href": "#e-identity-tests-L49"
+    },
+    {
+      "tag": "A",
+      "text": "Line 50",
+      "id": "",
+      "href": "#e-identity-tests-L50"
+    },
+    {
+      "tag": "A",
+      "text": "Line 51",
+      "id": "",
+      "href": "#e-identity-tests-L51"
+    },
+    {
+      "tag": "A",
+      "text": "Line 52",
+      "id": "",
+      "href": "#e-identity-tests-L52"
+    },
+    {
+      "tag": "A",
+      "text": "Line 53",
+      "id": "",
+      "href": "#e-identity-tests-L53"
+    },
+    {
+      "tag": "A",
+      "text": "Line 54",
+      "id": "",
+      "href": "#e-identity-tests-L54"
+    },
+    {
+      "tag": "A",
+      "text": "Line 55",
+      "id": "",
+      "href": "#e-identity-tests-L55"
+    },
+    {
+      "tag": "A",
+      "text": "Line 56",
+      "id": "",
+      "href": "#e-identity-tests-L56"
+    },
+    {
+      "tag": "A",
+      "text": "Line 57",
+      "id": "",
+      "href": "#e-identity-tests-L57"
+    },
+    {
+      "tag": "A",
+      "text": "Line 58",
+      "id": "",
+      "href": "#e-identity-tests-L58"
+    },
+    {
+      "tag": "A",
+      "text": "Line 59",
+      "id": "",
+      "href": "#e-identity-tests-L59"
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": null
+    },
+    {
+      "tag": "A",
+      "text": "Line 95",
+      "id": "",
+      "href": "#e-identity-tests-L95"
+    },
+    {
+      "tag": "A",
+      "text": "Line 96",
+      "id": "",
+      "href": "#e-identity-tests-L96"
+    },
+    {
+      "tag": "A",
+      "text": "Line 97",
+      "id": "",
+      "href": "#e-identity-tests-L97"
+    },
+    {
+      "tag": "A",
+      "text": "Line 98",
+      "id": "",
+      "href": "#e-identity-tests-L98"
+    },
+    {
+      "tag": "A",
+      "text": "Line 99",
+      "id": "",
+      "href": "#e-identity-tests-L99"
+    },
+    {
+      "tag": "A",
+      "text": "Line 100",
+      "id": "",
+      "href": "#e-identity-tests-L100"
+    },
+    {
+      "tag": "A",
+      "text": "Line 101",
+      "id": "",
+      "href": "#e-identity-tests-L101"
+    },
+    {
+      "tag": "A",
+      "text": "Line 102",
+      "id": "",
+      "href": "#e-identity-tests-L102"
+    },
+    {
+      "tag": "A",
+      "text": "Line 103",
+      "id": "",
+      "href": "#e-identity-tests-L103"
+    },
+    {
+      "tag": "A",
+      "text": "Line 104",
+      "id": "",
+      "href": "#e-identity-tests-L104"
+    },
+    {
+      "tag": "A",
+      "text": "Line 105",
+      "id": "",
+      "href": "#e-identity-tests-L105"
+    },
+    {
+      "tag": "A",
+      "text": "Line 106",
+      "id": "",
+      "href": "#e-identity-tests-L106"
+    },
+    {
+      "tag": "A",
+      "text": "Line 107",
+      "id": "",
+      "href": "#e-identity-tests-L107"
+    },
+    {
+      "tag": "A",
+      "text": "Line 108",
+      "id": "",
+      "href": "#e-identity-tests-L108"
+    },
+    {
+      "tag": "A",
+      "text": "Line 109",
+      "id": "",
+      "href": "#e-identity-tests-L109"
+    },
+    {
+      "tag": "A",
+      "text": "Line 110",
+      "id": "",
+      "href": "#e-identity-tests-L110"
+    },
+    {
+      "tag": "A",
+      "text": "Line 111",
+      "id": "",
+      "href": "#e-identity-tests-L111"
+    },
+    {
+      "tag": "A",
+      "text": "Line 112",
+      "id": "",
+      "href": "#e-identity-tests-L112"
+    },
+    {
+      "tag": "A",
+      "text": "Line 113",
+      "id": "",
+      "href": "#e-identity-tests-L113"
+    },
+    {
+      "tag": "A",
+      "text": "Line 114",
+      "id": "",
+      "href": "#e-identity-tests-L114"
+    },
+    {
+      "tag": "A",
+      "text": "Line 115",
+      "id": "",
+      "href": "#e-identity-tests-L115"
+    },
+    {
+      "tag": "A",
+      "text": "Line 116",
+      "id": "",
+      "href": "#e-identity-tests-L116"
+    },
+    {
+      "tag": "A",
+      "text": "Line 117",
+      "id": "",
+      "href": "#e-identity-tests-L117"
+    },
+    {
+      "tag": "A",
+      "text": "Line 118",
+      "id": "",
+      "href": "#e-identity-tests-L118"
+    },
+    {
+      "tag": "A",
+      "text": "Line 119",
+      "id": "",
+      "href": "#e-identity-tests-L119"
+    },
+    {
+      "tag": "A",
+      "text": "Line 120",
+      "id": "",
+      "href": "#e-identity-tests-L120"
+    },
+    {
+      "tag": "A",
+      "text": "Line 121",
+      "id": "",
+      "href": "#e-identity-tests-L121"
+    },
+    {
+      "tag": "A",
+      "text": "Line 122",
+      "id": "",
+      "href": "#e-identity-tests-L122"
+    },
+    {
+      "tag": "A",
+      "text": "Line 123",
+      "id": "",
+      "href": "#e-identity-tests-L123"
+    },
+    {
+      "tag": "A",
+      "text": "Line 124",
+      "id": "",
+      "href": "#e-identity-tests-L124"
+    },
+    {
+      "tag": "A",
+      "text": "Line 125",
+      "id": "",
+      "href": "#e-identity-tests-L125"
+    },
+    {
+      "tag": "A",
+      "text": "Line 126",
+      "id": "",
+      "href": "#e-identity-tests-L126"
+    },
+    {
+      "tag": "A",
+      "text": "Line 127",
+      "id": "",
+      "href": "#e-identity-tests-L127"
+    },
+    {
+      "tag": "A",
+      "text": "Line 128",
+      "id": "",
+      "href": "#e-identity-tests-L128"
+    },
+    {
+      "tag": "A",
+      "text": "Line 129",
+      "id": "",
+      "href": "#e-identity-tests-L129"
+    },
+    {
+      "tag": "A",
+      "text": "Line 130",
+      "id": "",
+      "href": "#e-identity-tests-L130"
+    },
+    {
+      "tag": "A",
+      "text": "Line 131",
+      "id": "",
+      "href": "#e-identity-tests-L131"
+    },
+    {
+      "tag": "A",
+      "text": "Line 132",
+      "id": "",
+      "href": "#e-identity-tests-L132"
+    },
+    {
+      "tag": "A",
+      "text": "Line 133",
+      "id": "",
+      "href": "#e-identity-tests-L133"
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts"
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Source · head · typescript-semantic-query-service.test.ts:61–93 · empty positions and node rehydration",
+      "id": "",
+      "href": null
+    },
+    {
+      "tag": "A",
+      "text": "Line 61",
+      "id": "",
+      "href": "#e-position-tests-L61"
+    },
+    {
+      "tag": "A",
+      "text": "Line 62",
+      "id": "",
+      "href": "#e-position-tests-L62"
+    },
+    {
+      "tag": "A",
+      "text": "Line 63",
+      "id": "",
+      "href": "#e-position-tests-L63"
+    },
+    {
+      "tag": "A",
+      "text": "Line 64",
+      "id": "",
+      "href": "#e-position-tests-L64"
+    },
+    {
+      "tag": "A",
+      "text": "Line 65",
+      "id": "",
+      "href": "#e-position-tests-L65"
+    },
+    {
+      "tag": "A",
+      "text": "Line 66",
+      "id": "",
+      "href": "#e-position-tests-L66"
+    },
+    {
+      "tag": "A",
+      "text": "Line 67",
+      "id": "",
+      "href": "#e-position-tests-L67"
+    },
+    {
+      "tag": "A",
+      "text": "Line 68",
+      "id": "",
+      "href": "#e-position-tests-L68"
+    },
+    {
+      "tag": "A",
+      "text": "Line 69",
+      "id": "",
+      "href": "#e-position-tests-L69"
+    },
+    {
+      "tag": "A",
+      "text": "Line 70",
+      "id": "",
+      "href": "#e-position-tests-L70"
+    },
+    {
+      "tag": "A",
+      "text": "Line 71",
+      "id": "",
+      "href": "#e-position-tests-L71"
+    },
+    {
+      "tag": "A",
+      "text": "Line 72",
+      "id": "",
+      "href": "#e-position-tests-L72"
+    },
+    {
+      "tag": "A",
+      "text": "Line 73",
+      "id": "",
+      "href": "#e-position-tests-L73"
+    },
+    {
+      "tag": "A",
+      "text": "Line 74",
+      "id": "",
+      "href": "#e-position-tests-L74"
+    },
+    {
+      "tag": "A",
+      "text": "Line 75",
+      "id": "",
+      "href": "#e-position-tests-L75"
+    },
+    {
+      "tag": "A",
+      "text": "Line 76",
+      "id": "",
+      "href": "#e-position-tests-L76"
+    },
+    {
+      "tag": "A",
+      "text": "Line 77",
+      "id": "",
+      "href": "#e-position-tests-L77"
+    },
+    {
+      "tag": "A",
+      "text": "Line 78",
+      "id": "",
+      "href": "#e-position-tests-L78"
+    },
+    {
+      "tag": "A",
+      "text": "Line 79",
+      "id": "",
+      "href": "#e-position-tests-L79"
+    },
+    {
+      "tag": "A",
+      "text": "Line 80",
+      "id": "",
+      "href": "#e-position-tests-L80"
+    },
+    {
+      "tag": "A",
+      "text": "Line 81",
+      "id": "",
+      "href": "#e-position-tests-L81"
+    },
+    {
+      "tag": "A",
+      "text": "Line 82",
+      "id": "",
+      "href": "#e-position-tests-L82"
+    },
+    {
+      "tag": "A",
+      "text": "Line 83",
+      "id": "",
+      "href": "#e-position-tests-L83"
+    },
+    {
+      "tag": "A",
+      "text": "Line 84",
+      "id": "",
+      "href": "#e-position-tests-L84"
+    },
+    {
+      "tag": "A",
+      "text": "Line 85",
+      "id": "",
+      "href": "#e-position-tests-L85"
+    },
+    {
+      "tag": "A",
+      "text": "Line 86",
+      "id": "",
+      "href": "#e-position-tests-L86"
+    },
+    {
+      "tag": "A",
+      "text": "Line 87",
+      "id": "",
+      "href": "#e-position-tests-L87"
+    },
+    {
+      "tag": "A",
+      "text": "Line 88",
+      "id": "",
+      "href": "#e-position-tests-L88"
+    },
+    {
+      "tag": "A",
+      "text": "Line 89",
+      "id": "",
+      "href": "#e-position-tests-L89"
+    },
+    {
+      "tag": "A",
+      "text": "Line 90",
+      "id": "",
+      "href": "#e-position-tests-L90"
+    },
+    {
+      "tag": "A",
+      "text": "Line 91",
+      "id": "",
+      "href": "#e-position-tests-L91"
+    },
+    {
+      "tag": "A",
+      "text": "Line 92",
+      "id": "",
+      "href": "#e-position-tests-L92"
+    },
+    {
+      "tag": "A",
+      "text": "Line 93",
+      "id": "",
+      "href": "#e-position-tests-L93"
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts"
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Source · head · typescript-semantic-query-service.test.ts:135–162 · failed refresh retains cached result",
+      "id": "",
+      "href": null
+    },
+    {
+      "tag": "A",
+      "text": "Line 135",
+      "id": "",
+      "href": "#e-refresh-test-L135"
+    },
+    {
+      "tag": "A",
+      "text": "Line 136",
+      "id": "",
+      "href": "#e-refresh-test-L136"
+    },
+    {
+      "tag": "A",
+      "text": "Line 137",
+      "id": "",
+      "href": "#e-refresh-test-L137"
+    },
+    {
+      "tag": "A",
+      "text": "Line 138",
+      "id": "",
+      "href": "#e-refresh-test-L138"
+    },
+    {
+      "tag": "A",
+      "text": "Line 139",
+      "id": "",
+      "href": "#e-refresh-test-L139"
+    },
+    {
+      "tag": "A",
+      "text": "Line 140",
+      "id": "",
+      "href": "#e-refresh-test-L140"
+    },
+    {
+      "tag": "A",
+      "text": "Line 141",
+      "id": "",
+      "href": "#e-refresh-test-L141"
+    },
+    {
+      "tag": "A",
+      "text": "Line 142",
+      "id": "",
+      "href": "#e-refresh-test-L142"
+    },
+    {
+      "tag": "A",
+      "text": "Line 143",
+      "id": "",
+      "href": "#e-refresh-test-L143"
+    },
+    {
+      "tag": "A",
+      "text": "Line 144",
+      "id": "",
+      "href": "#e-refresh-test-L144"
+    },
+    {
+      "tag": "A",
+      "text": "Line 145",
+      "id": "",
+      "href": "#e-refresh-test-L145"
+    },
+    {
+      "tag": "A",
+      "text": "Line 146",
+      "id": "",
+      "href": "#e-refresh-test-L146"
+    },
+    {
+      "tag": "A",
+      "text": "Line 147",
+      "id": "",
+      "href": "#e-refresh-test-L147"
+    },
+    {
+      "tag": "A",
+      "text": "Line 148",
+      "id": "",
+      "href": "#e-refresh-test-L148"
+    },
+    {
+      "tag": "A",
+      "text": "Line 149",
+      "id": "",
+      "href": "#e-refresh-test-L149"
+    },
+    {
+      "tag": "A",
+      "text": "Line 150",
+      "id": "",
+      "href": "#e-refresh-test-L150"
+    },
+    {
+      "tag": "A",
+      "text": "Line 151",
+      "id": "",
+      "href": "#e-refresh-test-L151"
+    },
+    {
+      "tag": "A",
+      "text": "Line 152",
+      "id": "",
+      "href": "#e-refresh-test-L152"
+    },
+    {
+      "tag": "A",
+      "text": "Line 153",
+      "id": "",
+      "href": "#e-refresh-test-L153"
+    },
+    {
+      "tag": "A",
+      "text": "Line 154",
+      "id": "",
+      "href": "#e-refresh-test-L154"
+    },
+    {
+      "tag": "A",
+      "text": "Line 155",
+      "id": "",
+      "href": "#e-refresh-test-L155"
+    },
+    {
+      "tag": "A",
+      "text": "Line 156",
+      "id": "",
+      "href": "#e-refresh-test-L156"
+    },
+    {
+      "tag": "A",
+      "text": "Line 157",
+      "id": "",
+      "href": "#e-refresh-test-L157"
+    },
+    {
+      "tag": "A",
+      "text": "Line 158",
+      "id": "",
+      "href": "#e-refresh-test-L158"
+    },
+    {
+      "tag": "A",
+      "text": "Line 159",
+      "id": "",
+      "href": "#e-refresh-test-L159"
+    },
+    {
+      "tag": "A",
+      "text": "Line 160",
+      "id": "",
+      "href": "#e-refresh-test-L160"
+    },
+    {
+      "tag": "A",
+      "text": "Line 161",
+      "id": "",
+      "href": "#e-refresh-test-L161"
+    },
+    {
+      "tag": "A",
+      "text": "Line 162",
+      "id": "",
+      "href": "#e-refresh-test-L162"
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts"
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Source · head · typescript-semantic-query-service.test.ts:164–217 · pending release and rejection at backend",
+      "id": "",
+      "href": null
+    },
+    {
+      "tag": "A",
+      "text": "Line 164",
+      "id": "",
+      "href": "#e-release-test-L164"
+    },
+    {
+      "tag": "A",
+      "text": "Line 165",
+      "id": "",
+      "href": "#e-release-test-L165"
+    },
+    {
+      "tag": "A",
+      "text": "Line 166",
+      "id": "",
+      "href": "#e-release-test-L166"
+    },
+    {
+      "tag": "A",
+      "text": "Line 167",
+      "id": "",
+      "href": "#e-release-test-L167"
+    },
+    {
+      "tag": "A",
+      "text": "Line 168",
+      "id": "",
+      "href": "#e-release-test-L168"
+    },
+    {
+      "tag": "A",
+      "text": "Line 169",
+      "id": "",
+      "href": "#e-release-test-L169"
+    },
+    {
+      "tag": "A",
+      "text": "Line 170",
+      "id": "",
+      "href": "#e-release-test-L170"
+    },
+    {
+      "tag": "A",
+      "text": "Line 171",
+      "id": "",
+      "href": "#e-release-test-L171"
+    },
+    {
+      "tag": "A",
+      "text": "Line 172",
+      "id": "",
+      "href": "#e-release-test-L172"
+    },
+    {
+      "tag": "A",
+      "text": "Line 173",
+      "id": "",
+      "href": "#e-release-test-L173"
+    },
+    {
+      "tag": "A",
+      "text": "Line 174",
+      "id": "",
+      "href": "#e-release-test-L174"
+    },
+    {
+      "tag": "A",
+      "text": "Line 175",
+      "id": "",
+      "href": "#e-release-test-L175"
+    },
+    {
+      "tag": "A",
+      "text": "Line 176",
+      "id": "",
+      "href": "#e-release-test-L176"
+    },
+    {
+      "tag": "A",
+      "text": "Line 177",
+      "id": "",
+      "href": "#e-release-test-L177"
+    },
+    {
+      "tag": "A",
+      "text": "Line 178",
+      "id": "",
+      "href": "#e-release-test-L178"
+    },
+    {
+      "tag": "A",
+      "text": "Line 179",
+      "id": "",
+      "href": "#e-release-test-L179"
+    },
+    {
+      "tag": "A",
+      "text": "Line 180",
+      "id": "",
+      "href": "#e-release-test-L180"
+    },
+    {
+      "tag": "A",
+      "text": "Line 181",
+      "id": "",
+      "href": "#e-release-test-L181"
+    },
+    {
+      "tag": "A",
+      "text": "Line 182",
+      "id": "",
+      "href": "#e-release-test-L182"
+    },
+    {
+      "tag": "A",
+      "text": "Line 183",
+      "id": "",
+      "href": "#e-release-test-L183"
+    },
+    {
+      "tag": "A",
+      "text": "Line 184",
+      "id": "",
+      "href": "#e-release-test-L184"
+    },
+    {
+      "tag": "A",
+      "text": "Line 185",
+      "id": "",
+      "href": "#e-release-test-L185"
+    },
+    {
+      "tag": "A",
+      "text": "Line 186",
+      "id": "",
+      "href": "#e-release-test-L186"
+    },
+    {
+      "tag": "A",
+      "text": "Line 187",
+      "id": "",
+      "href": "#e-release-test-L187"
+    },
+    {
+      "tag": "A",
+      "text": "Line 188",
+      "id": "",
+      "href": "#e-release-test-L188"
+    },
+    {
+      "tag": "A",
+      "text": "Line 189",
+      "id": "",
+      "href": "#e-release-test-L189"
+    },
+    {
+      "tag": "A",
+      "text": "Line 190",
+      "id": "",
+      "href": "#e-release-test-L190"
+    },
+    {
+      "tag": "A",
+      "text": "Line 191",
+      "id": "",
+      "href": "#e-release-test-L191"
+    },
+    {
+      "tag": "A",
+      "text": "Line 192",
+      "id": "",
+      "href": "#e-release-test-L192"
+    },
+    {
+      "tag": "A",
+      "text": "Line 193",
+      "id": "",
+      "href": "#e-release-test-L193"
+    },
+    {
+      "tag": "A",
+      "text": "Line 194",
+      "id": "",
+      "href": "#e-release-test-L194"
+    },
+    {
+      "tag": "A",
+      "text": "Line 195",
+      "id": "",
+      "href": "#e-release-test-L195"
+    },
+    {
+      "tag": "A",
+      "text": "Line 196",
+      "id": "",
+      "href": "#e-release-test-L196"
+    },
+    {
+      "tag": "A",
+      "text": "Line 197",
+      "id": "",
+      "href": "#e-release-test-L197"
+    },
+    {
+      "tag": "A",
+      "text": "Line 198",
+      "id": "",
+      "href": "#e-release-test-L198"
+    },
+    {
+      "tag": "A",
+      "text": "Line 199",
+      "id": "",
+      "href": "#e-release-test-L199"
+    },
+    {
+      "tag": "A",
+      "text": "Line 200",
+      "id": "",
+      "href": "#e-release-test-L200"
+    },
+    {
+      "tag": "A",
+      "text": "Line 201",
+      "id": "",
+      "href": "#e-release-test-L201"
+    },
+    {
+      "tag": "A",
+      "text": "Line 202",
+      "id": "",
+      "href": "#e-release-test-L202"
+    },
+    {
+      "tag": "A",
+      "text": "Line 203",
+      "id": "",
+      "href": "#e-release-test-L203"
+    },
+    {
+      "tag": "A",
+      "text": "Line 204",
+      "id": "",
+      "href": "#e-release-test-L204"
+    },
+    {
+      "tag": "A",
+      "text": "Line 205",
+      "id": "",
+      "href": "#e-release-test-L205"
+    },
+    {
+      "tag": "A",
+      "text": "Line 206",
+      "id": "",
+      "href": "#e-release-test-L206"
+    },
+    {
+      "tag": "A",
+      "text": "Line 207",
+      "id": "",
+      "href": "#e-release-test-L207"
+    },
+    {
+      "tag": "A",
+      "text": "Line 208",
+      "id": "",
+      "href": "#e-release-test-L208"
+    },
+    {
+      "tag": "A",
+      "text": "Line 209",
+      "id": "",
+      "href": "#e-release-test-L209"
+    },
+    {
+      "tag": "A",
+      "text": "Line 210",
+      "id": "",
+      "href": "#e-release-test-L210"
+    },
+    {
+      "tag": "A",
+      "text": "Line 211",
+      "id": "",
+      "href": "#e-release-test-L211"
+    },
+    {
+      "tag": "A",
+      "text": "Line 212",
+      "id": "",
+      "href": "#e-release-test-L212"
+    },
+    {
+      "tag": "A",
+      "text": "Line 213",
+      "id": "",
+      "href": "#e-release-test-L213"
+    },
+    {
+      "tag": "A",
+      "text": "Line 214",
+      "id": "",
+      "href": "#e-release-test-L214"
+    },
+    {
+      "tag": "A",
+      "text": "Line 215",
+      "id": "",
+      "href": "#e-release-test-L215"
+    },
+    {
+      "tag": "A",
+      "text": "Line 216",
+      "id": "",
+      "href": "#e-release-test-L216"
+    },
+    {
+      "tag": "A",
+      "text": "Line 217",
+      "id": "",
+      "href": "#e-release-test-L217"
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts"
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Source · test delta and focused run record",
+      "id": "",
+      "href": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/diff.patch"
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "test-run.txt"
+    },
+    {
+      "tag": "A",
+      "text": "PR body and commits",
+      "id": "",
+      "href": "evidence/pr.json"
+    },
+    {
+      "tag": "A",
+      "text": "Full diff",
+      "id": "",
+      "href": "evidence/diff.patch"
+    },
+    {
+      "tag": "A",
+      "text": "Source hashes",
+      "id": "",
+      "href": "evidence-manifest.json"
+    },
+    {
+      "tag": "A",
+      "text": "How the pair is controlled",
+      "id": "",
+      "href": "pair-contract.md"
+    },
+    {
+      "tag": "A",
+      "text": "Experiment README",
+      "id": "",
+      "href": "README.md"
+    },
+    {
+      "tag": "A",
+      "text": "↑ Whole change",
+      "id": "",
+      "href": "#overview"
+    }
+  ],
+  "errors": []
+}
