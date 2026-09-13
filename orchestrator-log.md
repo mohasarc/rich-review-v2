@@ -191,3 +191,6 @@ BUILD OK stack-head
 - 2026-09-13 04:47:18 +03: START 24-question-driven-nav attempt 3 via codex, pid 27028
 - 2026-09-13 04:59:58 +03: MONITOR OK supervisor=1153, finished=21, running=5, queued=18, dirty-worktrees=0, missing-readmes=0, free-disk=32.7GiB
 - 2026-09-13 05:00:08 +03: FINISH 25-reader-sketch via codex, exit 0, README present
+- 2026-09-13 05:00:08 +03: COMMIT OK 25-reader-sketch: [main 12ac19a] Add experiment 25 reader-sketch
+- 2026-09-13 05:00:09 +03: START 27-test-honesty attempt 1 via codex, pid 29503
+- 2026-09-13 05:01:59 +03: FINISH 23-zoom-canvas via codex, exit 0, README present
