@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Negative space — PR 148</title>
+  <link rel="stylesheet" href="style.css">
+  <script defer src="evidence.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+<a class="skip" href="#overview">Skip to the change</a>
+<header class="masthead"><a href="#overview" class="brand">rich-review <span>/ 18</span></a><span>SYMNAV · PR 148 · NEGATIVE SPACE</span><a href="README.md">Experiment notes ↗</a></header>
+<nav class="rail" aria-label="Page sections">
+  <a href="#overview" aria-label="Overview">◉</a>
+  <a href="#shipping" aria-label="1. Shipped path">01</a>
+  <a href="#product" aria-label="2. Product and host">02</a>
+  <a href="#protocol" aria-label="3. Protocol and policy">03</a>
+  <a href="#idle" aria-label="4. Idle time">04</a>
+  <a href="#ownership" aria-label="5. Ownership checks">05</a>
+  <a href="#routing" aria-label="6. Routing">06</a>
+  <a href="#output" aria-label="7. Results and replay">07</a>
+  <a href="#tests" aria-label="8. Test boundaries">08</a>
+</nav>
+<main>
+<section id="overview" class="opening">
+  <div class="eyebrow">WHAT THE CHANGE DOES NOT TOUCH</div>
+  <h1>The caller still takes<br>the old road.</h1>
+  <p class="metaphor-note">Call-path metaphor · the “road” is the CLI's active composition.</p>
+  <p class="lede">symnav's daemon keeps an executor warm between requests to navigate code. PR 148 gives its mechanisms a package and a <code>DaemonClient</code>. The shipped CLI keeps its existing route. Product logic, protocol, policy, and the old idle deadline remain the frame around the move.</p>
+  <div class="meta"><span>Base <code>ba53c8e</code> → head <code>20838f8</code></span><span>153 changed paths</span><span>Staging, with preparation inside the CLI</span></div>
+
+  <figure class="architecture" id="boundary-map" data-snapshot="head">
+    <div class="figure-head"><h2>One new home. The active connection stays.</h2><div class="segmented" aria-label="Source snapshot"><button type="button" data-snapshot="base" aria-pressed="false">Base</button><button type="button" data-snapshot="head" aria-pressed="true">PR 148 head</button></div></div>
+    <div class="architecture-grid">
+      <div class="owner-box active-owner">
+        <div class="box-label"><span>apps/cli</span><span class="route-label">SHIPPED PATH · BOTH SNAPSHOTS</span></div>
+        <div class="chain">
+          <a href="#shipping" class="node">CLI dispatcher<small>Chooses execution</small></a><span class="arrow" aria-hidden="true">→</span>
+          <a href="#ownership" class="node">Local mechanisms<small>Registry · transport · startup</small></a><span class="arrow" aria-hidden="true">→</span>
+          <a href="#shipping" class="node">Local entries<small>Daemon process · worker</small></a>
+        </div>
+        <p id="active-caption">38 mechanism copies are frozen here after preparation. The dispatcher remains byte-identical.</p>
+      </div>
+      <a href="#product" class="owner-box product-box"><span class="executor-connector" aria-hidden="true">→</span><span class="executor-connector staged-connector" aria-hidden="true">⇢</span><span class="box-label">PRODUCT LOGIC</span><strong>CLI executor</strong><span class="product-list">core<br>TypeScript backend<br>renderer<br>telemetry</span><small>Both mechanism graphs run a supplied executor. These product sources match the base.</small></a>
+      <div class="gap"><span class="gap-mark" aria-hidden="true">╵</span><span>CLI → DaemonClient cutover is deferred</span><a href="#shipping">Follow this missing connection ↘</a></div>
+      <div class="owner-box staged-owner">
+        <div class="box-label"><span>packages/daemon</span><span id="package-label">ADDED COMPOSITION</span></div>
+        <div id="package-after" class="chain">
+          <a href="#product" class="node new-node">DaemonClient<small>execute · control</small></a><span class="arrow" aria-hidden="true">→</span>
+          <a href="#routing" class="node new-node">Private runtime<small>Routing · capture · lifecycle</small></a><span class="arrow" aria-hidden="true">→</span>
+          <a href="#protocol" class="node new-node">Package mechanisms<small>Process / worker entry subpaths</small></a>
+        </div>
+        <div id="package-before" hidden><div class="node old-package">Contracts and policy<small>The public client and these executable entries do not exist yet.</small></div></div>
+        <p id="staged-caption">The package can compose its own process and worker. Production consumers have not switched.</p>
+      </div>
+    </div>
+    <figcaption>Shape only: boxes show source ownership; arrows compress calls, process launch, and worker IPC. Both graphs use a host-supplied executor. The upper graph is the shipped CLI path.</figcaption>
+  </figure>
+
+  <div class="top-proof"><a href="#product"><strong>254</strong><span>tracked files unchanged in four product packages + command implementations</span></a><a href="#shipping"><strong>26 + 12</strong><span>unchanged files + prepared files in the 38-file freeze</span></a><a href="#idle"><strong>2</strong><span>idle timing changes explicitly left for later</span></a></div>
+  <div class="section-kicker"><span>THE COMPLETE OUTLINE</span><p>Eight boundaries, including the exceptions. Choose one to descend; the chapters below add detail to these choices.</p></div>
+  <div id="outline" class="outline"></div>
+  <noscript><p>This page needs JavaScript for its outline, comparisons, and source drawers. The <a href="evidence.json">source evidence</a> and all eight chapters remain available.</p></noscript>
+</section>
+
+<section id="shipping" class="chapter">
+  <div class="chapter-heading"><span class="number">01</span><div><div class="eyebrow">THE CONNECTION NOT MOVED</div><h2>The new client is available.<br>The CLI still composes locally.</h2></div><a href="#outline">↑ Outline</a></div>
+  <div class="scope-pair"><div><span>Boundary added</span><strong>A package composes the mechanisms.</strong><p><code>DaemonClient</code>, process entry, worker entry, and internal owners now live together.</p></div><div><span>Boundary held</span><strong>The production caller is not rewired.</strong><p><code>cli.ts</code> still constructs <code>DaemonCommandDispatcher</code>, which constructs app-local registry, transport, launcher, and startup objects.</p></div></div>
+  <div class="why"><b>Stated reason</b><p>Mechanism ownership and host invocation coordination need separate review boundaries. The freeze prevents the staged CLI copies drifting during that separation.</p><button data-source="pr">PR rationale ↗</button></div>
+  <figure class="freeze-figure"><div class="figure-head"><h3>“Frozen” describes the end of this PR.</h3><span id="freeze-count"></span></div><div id="freeze-grid" class="freeze-grid" aria-label="38 frozen files, individually inspectable"></div><div class="legend"><span><i class="held-swatch"></i>26 match the base</span><span><i class="changed-swatch"></i>12 edited or renamed before freezing</span></div><figcaption>One tile per frozen production file. The hash uses path + source, with CRLF converted to LF. It locks this staged snapshot; it is not a before/after behavior test.</figcaption></figure>
+  <div class="evidence-row"><button data-source="cli">CLI entry ↗</button><button data-source="dispatcher">Local composition ↗</button><button data-source="freeze">38-file hash test ↗</button><button data-source="inventory">All frozen paths ↗</button></div>
+</section>
+
+<section id="product" class="chapter">
+  <div class="chapter-heading"><span class="number">02</span><div><div class="eyebrow">THE PRODUCT NOT REWRITTEN</div><h2>The daemon still does not<br>understand your symbols.</h2></div><a href="#outline">↑ Outline</a></div>
+  <div class="unchanged-areas" id="areas"></div>
+  <p class="small">Counts cover all tracked files under each listed directory, including tests and configuration. Contents and path inventories match at the two commits.</p>
+  <figure class="host-boundary">
+    <div class="host-column"><h3>Host keeps</h3><ul><li>Command syntax & workspace selection</li><li>State path, version & enabled setting</li><li>Executor factory and module URL</li><li>Readiness command & arguments</li><li>Rendering and printing</li></ul></div>
+    <div class="exchange"><span>workspace root + command name<br>argv + cwd + telemetry flag</span><b aria-hidden="true">→</b><b aria-hidden="true">←</b><span>mode + exit code + ordered bytes<br>or a lifecycle report</span></div>
+    <div class="host-column daemon-column"><h3>DaemonClient owns</h3><ul><li>Warm / cold / fallback choice</li><li>Registry, sockets & startup</li><li>Warm result capture & cleanup</li><li>Lifecycle composition</li><li>Process and worker mechanisms</li></ul></div>
+    <figcaption>The host specifies the readiness probe; the package still runs it through the execution path. This PR does not turn readiness into a control-plane ping.</figcaption>
+  </figure>
+  <div class="declaration-boundary"><div><b>Public declarations</b><span><code>DaemonClient</code> → portable contracts</span><small>No Node ambient types required by the declaration graph</small></div><span aria-hidden="true">│<br>dynamic import<br>↓</span><div><b>Internal runtime</b><span>Filesystem · processes · workers · Buffer</span><small>Node-backed mechanisms still run here</small></div></div>
+  <div class="why"><b>Stated reasons</b><p>The daemon moves executor bytes without internal package dependencies. Host declarations must not acquire Node ambient dependencies. Navigation output and behavior are specified to stay the same.</p><button data-source="spec-behavior">Architecture contract ↗</button></div>
+  <p class="reading">An unchanged renderer narrows what this PR asks you to understand. It does not establish that every new route returns identical bytes.</p>
+  <div class="evidence-row"><button data-source="contracts">Host input contract ↗</button><button data-source="probe">Readiness request ↗</button><button data-source="facade">Dynamic runtime boundary ↗</button><button data-source="node-types">Declaration compiler setup ↗</button><button data-source="areas">Unchanged-file inventory ↗</button></div>
+</section>
+
+<section id="protocol" class="chapter">
+  <div class="chapter-heading"><span class="number">03</span><div><div class="eyebrow">THE LANGUAGE AND LIMITS NOT CHANGED</div><h2>A new address for<br>the same machinery.</h2></div><a href="#outline">↑ Outline</a></div>
+  <div class="contract-strip"><div><span>Wire protocol</span><strong>5 → 5</strong></div><div><span>Record schema</span><strong>2 → 2</strong></div><div><span>Diagnostic schema</span><strong>1 → 1</strong></div><div><span>Policy defaults</span><strong>Same blob</strong></div></div>
+  <div class="scope-pair"><div><span>Carried across</span><strong>Framing, recovery, queueing, delivery.</strong><p>The PR copies the mechanism families into directories for transport, execution, delivery, worker, process, registry, resources, diagnostics, and lifecycle.</p></div><div><span>Still owned in one place</span><strong>Command, admission, failure, and policy contracts.</strong><p>These existing package files are byte-identical. There is no new user knob or new internal package dependency.</p></div></div>
+  <div class="why"><b>Stated reason</b><p>The extraction gives policy and mechanism a home while preserving the existing command and daemon behavior contract.</p><button data-source="spec-behavior">Behavior contract ↗</button></div>
+  <details class="local-detail"><summary>Inspect seven relocation comparisons</summary><p>Textual comparisons only: static imports and whitespace are excluded; re-export paths are normalized. A matching body does not check whether the imported collaborators behave the same.</p><div id="copy-table"></div></details>
+  <div class="exports"><span>Package doorways</span><code>.</code><code>./process-entry</code><code>./worker-entry</code><p>The root gains the client; executable entries are side-effect-only. The temporary <code>./policy-testing</code> export disappears. Test factories move to helpers; the associated lint restriction and its two tests disappear too. <a href="#tests">That is part of the test boundary change →</a></p></div>
+  <div class="evidence-row"><button data-source="protocol">Protocol constants ↗</button><button data-source="policy">Unchanged defaults ↗</button><button data-source="manifest">Package exports + tsx ↗</button><button data-source="boundaries">Internal dependency check ↗</button></div>
+</section>
+
+<section id="idle" class="chapter">
+  <div class="chapter-heading"><span class="number">04</span><div><div class="eyebrow">THE DEADLINE NOT RESET</div><h2>A fresh clock owner.<br>The same old idle interval.</h2></div><a href="#outline">↑ Outline</a></div>
+  <div class="clock-split"><div><span>Wall clock</span><strong>Lifetime, registry, timestamps,<br>resource replacement windows</strong></div><div><span>Monotonic clock</span><strong>Elapsed work and<br>queue durations</strong></div><p>Both come through <code>DaemonClock</code>. The production sources remain <code>Date.now()</code> and <code>performance.now()</code>.</p></div>
+  <figure class="timeline-figure">
+    <div class="figure-head"><h3>How much idle time is left after a turn?</h3><label>Turn duration <select id="idle-scenario"><option value="short">5 minutes</option><option value="long" selected>40 minutes</option></select></label></div>
+    <p class="lossy">Illustration, not an execution trace. A ready daemon accepts at t = 0, one turn runs, and no more navigation arrives. Timer scheduling and wall-clock jumps are omitted. The real default is 30 minutes.</p>
+    <div id="idle-chart" class="idle-chart"></div>
+    <div id="idle-consequence" class="timeline-consequence" aria-live="polite"></div>
+    <figcaption>Readiness is a separate missing reset: the initial deadline is armed in the lifetime constructor, before readiness publication. Slow warm-up can consume that interval. Neither readiness nor completion re-arms it in this PR.</figcaption>
+  </figure>
+  <div class="scope-pair"><div><span>In PR 148</span><strong>deadline = acceptance + 30 min</strong><p>An active turn can finish after the deadline. When the queue becomes idle, it can trigger idle shutdown immediately.</p></div><div class="deferred"><span>Specified for later</span><strong>Start at readiness. Reset at completion.</strong><p>The follow-up document adds both changes. It keeps the interval length and excludes resets for control-plane activity.</p></div></div>
+  <div class="why"><b>Stated reason</b><p>Readiness- and completion-based lifetime changes alter behavior. They are explicitly deferred instead of being bundled into ownership extraction.</p><button data-source="pr">PR decision ↗</button></div>
+  <div class="evidence-row"><button data-source="lifetime">Lifetime implementation ↗</button><button data-source="clock">Clock sources ↗</button><button data-source="lifetime-test">Preserved timing test ↗</button><button data-source="follow-ups">Two deferred changes ↗</button></div>
+</section>
+
+<section id="ownership" class="chapter">
+  <div class="chapter-heading"><span class="number">05</span><div><div class="eyebrow">THE AUTHORITY NOT DISTRIBUTED</div><h2>One place decides<br>whose process this is.</h2></div><a href="#outline">↑ Outline</a></div>
+  <figure class="authority-map"><div class="callers"><span>Controller</span><span>Startup coordinator</span><span>Lease operations</span></div><div class="authority-arrows" aria-hidden="true">↘<br>→<br>↗</div><div class="authority-core"><span>DaemonRegistry</span><strong>startupOwnershipMatches</strong><p>Identity + instance are required.<br>Only supplied ownership coordinates are compared.</p></div><div class="authority-result"><b>Current owner</b><span>or</span><b>undefined</b></div><figcaption>Shape only: the diagram combines read and mutation callers. The registry owns the equality predicate; file leases and mutation coordination remain.</figcaption></figure>
+  <div class="scope-pair"><div><span>Prepared before freezing the CLI</span><strong>Move validation into the process coordinator.</strong><p><code>WorkspaceDaemon</code> is renamed <code>DaemonProcessCoordinator</code>. It validates coordinates before touching components, adopts the supplied endpoint, takes one explicit clock, and uses a direct workspace-existence callback.</p></div><div><span>Preserved ordering, newly characterized</span><strong>Authenticate before observing execution state.</strong><p>Execute admission checks the token before worker readiness, resources, or accepted-request compatibility. Construction binds lifecycle callbacks without running them.</p></div></div>
+  <div class="why"><b>Stated purpose</b><p>The architecture calls for one owner of lock-ownership checks. Commits and tests specify coordinate validation and authentication order; they do not give a separate reason for every constructor-shape choice.</p><button data-source="registry">Predicate ↗</button></div>
+  <div class="unexplained-note"><b>Unexplained</b><p>The specific rename and constructor reshaping are visible choices. No separate comparative rationale was found in the supplied PR body, commit messages, or architecture spec. The page does not treat these as untouched source.</p></div>
+  <div class="evidence-row"><button data-source="coordinates">Validation before composition ↗</button><button data-source="validate">Coordinate checks ↗</button><button data-source="narrow-owner">Narrow ownership inputs ↗</button><button data-source="auth">Authentication order ↗</button></div>
+</section>
+
+<section id="routing" class="chapter">
+  <div class="chapter-heading"><span class="number">06</span><div><div class="eyebrow">THE LATER OBSERVATION NOT MADE</div><h2>A decision stops<br>the rest of the route.</h2></div><a href="#outline">↑ Outline</a></div>
+  <figure class="routing-figure"><div class="figure-head"><h3>Inspect the staged client's routing sequence</h3><label>Situation <select id="route-scenario"><option value="disabled">Daemon disabled</option><option value="absent">No record</option><option value="starting" selected>Starting record, wrong version</option><option value="version">Ready record, wrong version</option><option value="responsive">Ready, compatible, responsive</option><option value="dead">Process has exited</option><option value="recovering">Record observation throws</option></select></label></div><p class="lossy">Source-derived walkthrough, not a running daemon. These scenarios show where the ordered decision stops; the complete source below includes other observation outcomes.</p><div id="guard-track" class="guard-track"></div><div id="route-outcome" class="route-outcome" aria-live="polite"></div><figcaption>A starting record stops before version or liveness checks. Record reads and observations are memoized within a routing context. “Skipped” means not evaluated for this scenario, not removed code.</figcaption></figure>
+  <div class="why"><b>Stated reason</b><p>The first routing decision must prevent later routing side effects. The public client owns this lazy composition so its host does not inspect the registry or transport.</p><button data-source="pr">PR decision ↗</button></div>
+  <div class="control-map"><h3>Lifecycle calls stay recognizable</h3><div><code>start / stop</code><span>control controller → normal response timeout</span></div><div><code>status</code><span>status controller → existing 100 ms response timeout</span></div><p>Disabled execution is local and disabled start returns a report. Status and stop still delegate. Lifecycle failures reject to the host wrapper; overloads preserve action-specific return types.</p></div>
+  <div class="evidence-row"><button data-source="routing">All routing guards ↗</button><button data-source="execute">Local execution + startup triggering ↗</button><button data-source="control">Separate lifecycle composition ↗</button><button data-source="control-actions">Lifecycle actions ↗</button></div>
+</section>
+
+<section id="output" class="chapter">
+  <div class="chapter-heading"><span class="number">07</span><div><div class="eyebrow">THE SECOND EXECUTION NOT STARTED</div><h2>An uncertain warm result<br>stays a warm result.</h2></div><a href="#outline">↑ Outline</a></div>
+  <figure class="replay-map"><div class="replay-start">Warm request</div><div class="replay-branches"><div><span>Transport explicitly says retry-safe</span><b>→ Local fallback execution</b></div><div><span>Accepted, uncertain, failed, or incomplete</span><b>→ Controlled warm failure</b><small>No second local execution</small></div><div><span>Complete result</span><b>→ Same ordered output contract</b><small>Package owns captured bytes; output can be disposed</small></div></div><figcaption>Shape only: transport recovery and resumable delivery happen inside the execution client. The branch shown here is the facade runtime's choice after transport reports a result or error.</figcaption></figure>
+  <div class="scope-pair"><div><span>Ownership moves</span><strong>Warm capture, cleanup, and failure output.</strong><p>The client creates the capture; the host does not provide a storage or controlled-output factory. Malformed output is disposed where available; missing output becomes a controlled result. The completion spool gets a local record codec, removing its import of the CLI output helper.</p></div><div><span>Retry authority stays</span><strong>Only an explicit safe failure permits fallback.</strong><p>Accepted or ambiguous work does not become a fresh local command. Workspace-capacity and response-capacity failures retain their specific messages; other failures use the accepted-request message.</p></div></div>
+  <div class="why"><b>Stated reason</b><p>Warm-transfer cleanup and replay safety belong to the daemon client. Moving the owner carries the existing execution contract with it.</p><button data-source="pr">PR decision ↗</button></div>
+  <div class="evidence-row"><button data-source="capture">Warm result & disposal branches ↗</button><button data-source="failures">Controlled output bytes ↗</button><button data-source="spool-codec">Local spool codec ↗</button><button data-source="contracts">Public result shape ↗</button></div>
+</section>
+
+<section id="tests" class="chapter">
+  <div class="chapter-heading"><span class="number">08</span><div><div class="eyebrow">THE EVIDENCE NOT ALL LEFT IN PLACE</div><h2>Source can stay still<br>while its evidence moves.</h2></div><a href="#outline">↑ Outline</a></div>
+  <div class="test-ledger">
+    <div class="test-line"><span>01</span><div><h3>37 mechanism test files move into the package.</h3><p>Package tests use generic executors and built entry fixtures. New checks cover the public declarations, package imports, executable entries, routing, capture, and compatibility freeze.</p><b class="reason-tag">Stated · ownership and host independence</b></div><button data-source="test-moves">All 37 moves ↗</button></div>
+    <div class="test-line"><span>02</span><div><h3>CLI entry tests are deleted; built package entry tests are added.</h3><p>The new integration harness checks parsed executor configuration and real execution. Its shutdown assertions split Windows caller cleanup from other-platform signal cleanup. It is not a byte-for-byte relocation of the old mocked CLI-entry test.</p><b class="reason-tag unknown">Unexplained · no one-to-one rationale for every removed assertion</b></div><div class="test-actions"><button data-source="entry-before">Deleted test ↗</button><button data-source="entry-after">New built-entry test ↗</button></div></div>
+    <div class="test-line"><span>03</span><div><h3>The real CLI worker oracle becomes a generic executor oracle.</h3><p>The worker-level CLI version-mismatch test disappears. A CLI executor-factory version test is added. Readiness assertions lose their startup and execution duration fields. The restored unit check does not traverse the former worker path.</p><b class="reason-tag unknown">Unexplained · exact narrowing of the tested path and timing assertions</b></div><div class="test-actions"><button data-source="worker-before">Before ↗</button><button data-source="worker-after">After ↗</button><button data-source="version">Restored unit check ↗</button></div></div>
+    <div class="test-line"><span>04</span><div><h3>The temporary policy-testing doorway and its lint checks disappear.</h3><p>Factories become local test helpers. The package adds <code>tsx</code> for test tooling and serializes test files with <code>fileParallelism: false</code>. The removed lint restriction addressed the subpath that is no longer exported.</p><b class="reason-tag">Stated · a private package mechanism boundary</b><br><b class="reason-tag unknown">Unexplained · specific lint-test deletion and serial-runner tradeoff</b></div><div class="test-actions"><button data-source="manifest">Manifest ↗</button><button data-source="lint-tests-before">Two deleted lint tests ↗</button><button data-source="serial">Runner setting ↗</button></div></div>
+    <div class="test-line"><span>05</span><div><h3>The end-to-end expectations stay.</h3><p>All 93 tracked e2e snapshots are identical. Of 133 e2e files, 129 are unchanged; four update renamed helper paths and formatting. Shared testing fixtures and utilities are also unchanged.</p><b class="reason-tag">Stated · preserve the behavioral baseline</b></div><button data-source="e2e">Comparison evidence ↗</button></div>
+  </div>
+  <div class="unexplained-note"><b>Read this evidence at its actual scope.</b><p>The page checked Git objects and source text. It did not run symnav's tests or a before/after daemon workload. A matching hash, a relocated test, and a passing behavior suite would answer different questions. No correctness verdict is implied here.</p></div>
+  <div class="evidence-row"><button data-source="method">Audit method ↗</button><a href="evidence.json">Download complete evidence JSON ↗</a><a href="audit.py">Reproducible audit script ↗</a></div>
+</section>
+<footer><p>Negative space · Experiment 18<br><span>Earlier experiments were not read or reused.</span></p><a href="#overview">Back to the whole change ↑</a><a href="README.md">README ↗</a></footer>
+</main>
+<dialog id="source-dialog" aria-labelledby="source-title"><div class="dialog-top"><div><div class="eyebrow">SOURCE EVIDENCE</div><h2 id="source-title"></h2></div><button type="button" id="close-source" aria-label="Close source evidence">Close ×</button></div><div id="source-context"></div><pre id="source-code" tabindex="0"></pre><a id="source-link" target="_blank" rel="noopener noreferrer">Open pinned source on GitHub ↗</a><p class="dialog-foot">Escape or Close returns to the control that opened this source.</p></dialog>
+</body>
+</html>

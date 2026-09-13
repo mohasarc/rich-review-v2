@@ -152,3 +152,7 @@ BUILD OK stack-head
 - 2026-09-13 04:01:24 +03: COMMIT OK 16-drag-the-box: [main ecd32ee] Add experiment 16 drag-the-box
 - 2026-09-13 04:01:24 +03: START 21-narrated-top attempt 1 via codex, pid 82071
 - 2026-09-13 04:12:34 +03: FINISH 17-executable-before-after via codex, exit 0, README present
+- 2026-09-13 04:12:35 +03: COMMIT OK 17-executable-before-after: [main 0c5cb57] Add experiment 17 executable-before-after
+- 2026-09-13 04:12:35 +03: START 22-game-any attempt 1 via claude-opus, pid 86531
+- 2026-09-13 04:14:36 +03: MONITOR OK supervisor=1153, finished=17, running=5, queued=20, dirty-worktrees=0, missing-readmes=0, free-disk=32.9GiB
+- 2026-09-13 04:24:45 +03: FINISH 18-negative-space via codex, exit 0, README present
