@@ -1223,3 +1223,30 @@ no changes added to commit (use "git add" and/or "git commit -a")
 - 2026-09-13 15:07:20 +03: REQUEUE 80-typographic-morphology after attempt 2: worker exited 1 without README
 - 2026-09-13 15:07:20 +03: START 80-typographic-morphology attempt 3 via codex, pid 35398
 - 2026-09-13 15:10:41 +03: FINISH 81-critique-refresh-70 via codex, exit 0, README present
+- 2026-09-13 15:10:41 +03: COMMIT OK 81-critique-refresh-70: [main 463c701] Add experiment 81 critique-refresh-70
+- 2026-09-13 15:10:41 +03: Generated brief 83-critique-refresh-80: recurring brief 38 after 80 completions
+- 2026-09-13 15:10:41 +03: Generated brief 84-fresh-reader-refresh-80: recurring brief 39 after 80 completions
+- 2026-09-13 15:10:42 +03: START 83-critique-refresh-80 attempt 1 via codex, pid 48595
+- 2026-09-13 15:10:42 +03: START 84-fresh-reader-refresh-80 attempt 1 via claude-opus, pid 48599
+- 2026-09-13 15:10:52 +03: README MISSING 84-fresh-reader-refresh-80 after worker exit 1
+- 2026-09-13 15:10:52 +03: REQUEUE 84-fresh-reader-refresh-80 after attempt 1: worker exited 1 without README
+- 2026-09-13 15:10:52 +03: START 84-fresh-reader-refresh-80 attempt 2 via claude-opus, pid 49759
+- 2026-09-13 15:11:02 +03: README MISSING 84-fresh-reader-refresh-80 after worker exit 1
+- 2026-09-13 15:11:02 +03: REQUEUE 84-fresh-reader-refresh-80 after attempt 2: worker exited 1 without README
+- 2026-09-13 15:11:02 +03: START 84-fresh-reader-refresh-80 attempt 3 via codex, pid 50385
+- 2026-09-13 15:11:58 +03: PUBLISH OK: To https://github.com/mohasarc/rich-review-v2.git
+   4611680..463c701  main -> main
+- 2026-09-13 15:11:59 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/79-failure-domain-pinball/node_modules/phaser/types/phaser.json
+- 2026-09-13 15:17:04 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/79-failure-domain-pinball/node_modules/phaser/types/phaser.json
+- 2026-09-13 15:17:04 +03: MONITOR OK supervisor=39161, finished=80, running=4, queued=0, dirty-worktrees=0, missing-readmes=0, free-disk=19.7GiB
+- 2026-09-13 15:17:32 +03: README MISSING 82-fresh-reader-refresh-70 after worker exit 1
+- 2026-09-13 15:17:32 +03: REQUEUE 82-fresh-reader-refresh-70 after attempt 1: worker exited 1 without README
+- 2026-09-13 15:17:32 +03: START 82-fresh-reader-refresh-70 attempt 2 via claude-opus, pid 76873
+- 2026-09-13 15:17:42 +03: README MISSING 82-fresh-reader-refresh-70 after worker exit 1
+- 2026-09-13 15:17:42 +03: REQUEUE 82-fresh-reader-refresh-70 after attempt 2: worker exited 1 without README
+- 2026-09-13 15:17:42 +03: START 82-fresh-reader-refresh-70 attempt 3 via codex, pid 77489
+- 2026-09-13 15:22:09 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/79-failure-domain-pinball/node_modules/phaser/types/phaser.json
+- 2026-09-13 15:27:13 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/79-failure-domain-pinball/node_modules/phaser/types/phaser.json
+- 2026-09-13 15:32:17 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/79-failure-domain-pinball/node_modules/phaser/types/phaser.json
+- 2026-09-13 15:32:17 +03: MONITOR OK supervisor=39161, finished=80, running=4, queued=0, dirty-worktrees=0, missing-readmes=0, free-disk=19.4GiB
+- 2026-09-13 15:35:53 +03: FINISH 80-typographic-morphology via codex, exit 0, README present

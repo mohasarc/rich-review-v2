@@ -1,0 +1,778 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Typographic morphology — evidence book</title><style>body{font:16px/1.65 system-ui;max-width:900px;margin:40px auto;padding:0 20px;background:#f3f0e7;color:#242b29}h1,h2{line-height:1.2}a{color:inherit}section{border-top:1px solid #bbb;padding:25px 0}pre{overflow:auto;background:#e5e8de;padding:15px;font:12px/1.6 monospace;max-height:500px}summary{cursor:pointer;overflow-wrap:anywhere}blockquote{border-left:2px solid #1b6652;padding-left:18px}nav{display:flex;flex-wrap:wrap;gap:16px}</style><p><a href="../index.html">← Animated specimen</a></p><h1>A word learns its boundaries</h1><p>Complete static reading of one class’s ownership, composition and visibility across the symnav stack. This is source analysis; no runtime simulation or Symnav test result is claimed.</p><nav><a href="#activity">Activity</a><a href="#worker">Worker</a><a href="#delivery">Delivery</a><a href="#execution">Execution</a><a href="#composition">Composition</a><a href="#rename">Process</a><a href="#copies">Copy</a><a href="#consolidation">One</a><a href="#surface">Public</a><a href="#tests">Tests</a></nav><section id="activity"><h2>1. Projection becomes a separate word.</h2><p>Activity moves from a private method to a static projector. Stated: explicit snapshots make it a pure projection.</p><p><b>stated</b></p><p>The process still captures values. DaemonActivityProjector.project turns the snapshots into activity and legacy pong output. The word Activity denotes the extracted projection job, not ownership of all underlying state.</p><blockquote>Chose a static projector over an injected service, because projection depends only on explicit snapshot values.</blockquote><p><a href="pr-bodies/144.md">Supplied PR #144</a></p><details><summary>apps/cli/src/daemon/workspace-daemon.ts · e3fa3d8e28 · L1151–1165</summary><pre>1151  
+1152    private activitySnapshot(): DaemonActivitySnapshot {
+1153      const queue = this.requestQueue.snapshot;
+1154      const resources = this.resourceSupervisor.snapshot;
+1155      const now = this.clock.monotonicNowMs();
+1156      const lifecycle: DaemonActivitySnapshot[&quot;lifecycle&quot;] =
+1157        queue.state !== &quot;accepting&quot; || resources.state === &quot;draining&quot; || resources.state === &quot;stopped&quot;
+1158          ? &quot;draining&quot;
+1159          : resources.state === &quot;replacing&quot; || resources.state === &quot;shedding&quot;
+1160            ? &quot;recovering&quot;
+1161            : !this.workerReady
+1162              ? &quot;starting&quot;
+1163              : queue.active === undefined
+1164                ? &quot;ready&quot;
+1165                : &quot;busy&quot;;</pre><a href="../evidence/sources/e3fa3d8e28--apps__cli__src__daemon__workspace-daemon.ts.txt">Full frozen file</a></details><details><summary>apps/cli/src/daemon/daemon-activity-projector.ts · 9ea7979c2b · L36–54</summary><pre>36  export class DaemonActivityProjector {
+37    static project(input: DaemonActivityProjectionInput): DaemonActivityProjection {
+38      const lifecycle = DaemonActivityProjector.lifecycle(input);
+39      const recoveryDetail = DaemonActivityProjector.recoveryDetail(input);
+40      const current = DaemonActivityProjector.current(input, lifecycle);
+41      const activity: DaemonActivitySnapshot = Object.freeze({
+42        lifecycle,
+43        ...(recoveryDetail === undefined ? {} : { recoveryDetail }),
+44        pid: input.pid,
+45        startedAt: input.startedAt,
+46        startupElapsedMs: Math.max(0, input.nowMonotonicMs - input.startedMonotonicAt),
+47        ...(input.worker.ready &amp;&amp; input.worker.fileCount !== undefined
+48          ? { fileCount: input.worker.fileCount }
+49          : {}),
+50        processRssBytes: input.processRssBytes,
+51        hardProcessRssBytes: input.hardProcessRssBytes,
+52        ...(input.resources.workerHeapUsedBytes === undefined
+53          ? {}
+54          : { workerHeapUsedBytes: input.resources.workerHeapUsedBytes }),</pre><a href="../evidence/sources/9ea7979c2b--apps__cli__src__daemon__daemon-activity-projector.ts.txt">Full frozen file</a></details><details><summary>apps/cli/src/daemon/workspace-daemon.ts · 9ea7979c2b · L13–19</summary><pre>13  import { AcceptedRequestLedger } from &quot;./accepted-request-ledger.js&quot;;
+14  import { DaemonActivityProjector } from &quot;./daemon-activity-projector.js&quot;;
+15  import type {
+16    DaemonDeliveryOutcome,
+17    DaemonExecutionServerFrame,
+18    DaemonRecord,
+19    DaemonRequest,</pre><a href="../evidence/sources/9ea7979c2b--apps__cli__src__daemon__workspace-daemon.ts.txt">Full frozen file</a></details></section><section id="worker"><h2>2. Worker mechanics acquire one owner.</h2><p>Worker startup, replacement, release and shutdown collect in one manager. Stated: they share a lifecycle; recovery policy stays outside.</p><p><b>stated</b></p><p>The process keeps a workerManager field and calls its public methods. The recovery port leads back to resource policy. Replacing worker fields with a manager therefore changes the owner of mechanics without removing collaboration.</p><blockquote>Chose one generation manager over process-shell worker fields, because startup, execution, replacement, fencing, release, and shutdown share one lifecycle state.</blockquote><p><a href="pr-bodies/145.md">Supplied PR #145</a></p><details><summary>apps/cli/src/daemon/workspace-daemon.ts · 9ea7979c2b · L1099–1113</summary><pre>1099  
+1100    private async replaceNavigationWorker(cause: DaemonWorkerReplacementCause): Promise&lt;number&gt; {
+1101      const current = this.workerGeneration;
+1102      if (current === undefined) throw new Error(&quot;Navigation worker generation is unavailable&quot;);
+1103      const activeRequest = this.requestQueue.snapshot.active;
+1104      if (activeRequest !== undefined &amp;&amp; cause !== &quot;worker-exit&quot;) {
+1105        this.resourceInterruptedRequests.add(activeRequest.requestId);
+1106      }
+1107      const nextWorker = this.createNavigationWorker(current.id + 1);
+1108      this.workerReady = false;
+1109      const next = this.startWorkerGeneration(nextWorker);
+1110      await current.worker.terminate().catch(() =&gt; undefined);
+1111      const response = await next.ready;
+1112      if (response.kind !== &quot;ready&quot;) throw new Error(&quot;Replacement navigation worker did not start&quot;);
+1113      this.fileCount = response.fileCount;</pre><a href="../evidence/sources/9ea7979c2b--apps__cli__src__daemon__workspace-daemon.ts.txt">Full frozen file</a></details><details><summary>apps/cli/src/daemon/daemon-worker-generation-manager.ts · b8e8b7b85f · L121–139</summary><pre>121  
+122    replace(cause: DaemonWorkerReplacementCause): Promise&lt;DaemonWorkerReadyReport&gt; {
+123      if (this.replacementOperation !== undefined) return this.replacementOperation;
+124      const operation = this.replaceGeneration(cause);
+125      this.replacementOperation = operation;
+126      void operation.then(
+127        () =&gt; this.clearReplacement(operation),
+128        () =&gt; this.clearReplacement(operation),
+129      );
+130      return operation;
+131    }
+132  
+133    async releaseTransientResources(): Promise&lt;DaemonWorkerResourceReport&gt; {
+134      const response = await this.currentGeneration.worker.releaseTransientResources();
+135      if (response.kind !== &quot;heap&quot;) {
+136        throw new Error(&quot;Navigation worker did not report heap usage&quot;);
+137      }
+138      this.options.onDiagnostic({
+139        kind: &quot;resources-released&quot;,</pre><a href="../evidence/sources/b8e8b7b85f--apps__cli__src__daemon__daemon-worker-generation-manager.ts.txt">Full frozen file</a></details><details><summary>apps/cli/src/daemon/workspace-daemon.ts · b8e8b7b85f · L40–46</summary><pre>40  } from &quot;./daemon-navigation-worker.js&quot;;
+41  import { DaemonWorkerGenerationManager } from &quot;./daemon-worker-generation-manager.js&quot;;
+42  import {
+43    DaemonResourceSupervisor,
+44    type DaemonWorkerReplacementCause,
+45  } from &quot;./daemon-resource-monitor.js&quot;;
+46  import type { DaemonRegistry, DaemonStartupLease } from &quot;./daemon-registry.js&quot;;</pre><a href="../evidence/sources/b8e8b7b85f--apps__cli__src__daemon__workspace-daemon.ts.txt">Full frozen file</a></details></section><section id="delivery"><h2>3. Delivery includes the trace lifecycle.</h2><p>Delivery and operation traces collect in one session. Stated: they share a coordination boundary; ledger and spool data keep their owners.</p><p><b>stated</b></p><p>Twenty member declarations leave the shell in this PR. The selected deliverCompletion method stays private inside the new session. Extraction does not automatically make a method public. Operation-trace coordination is part of this word too.</p><blockquote>Chose one injected delivery session over process-shell delivery fields, because attachment, transfer, acknowledgement, and trace lifecycles form one coordination boundary.</blockquote><p><a href="pr-bodies/146.md">Supplied PR #146</a></p><details><summary>apps/cli/src/daemon/workspace-daemon.ts · b8e8b7b85f · L801–815</summary><pre>801  
+802    private async deliverCompletion(
+803      requestId: string,
+804      spool: CompletionSpool,
+805      offset: number,
+806      send: DaemonServerSend,
+807    ): Promise&lt;void&gt; {
+808      const completedManifest = spool.completedManifest;
+809      if (completedManifest === undefined) throw new Error(&quot;Completion manifest is missing&quot;);
+810      await this.deliver(send, {
+811        kind: &quot;result-manifest&quot;,
+812        instanceId: this.options.instanceId,
+813        processToken: this.options.processToken,
+814        requestId,
+815        manifest: completedManifest,</pre><a href="../evidence/sources/b8e8b7b85f--apps__cli__src__daemon__workspace-daemon.ts.txt">Full frozen file</a></details><details><summary>apps/cli/src/daemon/daemon-delivery-session.ts · f79ba36278 · L296–314</summary><pre>296  
+297    private async deliverCompletion(
+298      requestId: string,
+299      spool: CompletionSpool,
+300      offset: number,
+301      send: DaemonServerSend,
+302    ): Promise&lt;void&gt; {
+303      const completedManifest = spool.completedManifest;
+304      if (completedManifest === undefined) throw new Error(&quot;Completion manifest is missing&quot;);
+305      await this.deliver(send, {
+306        kind: &quot;result-manifest&quot;,
+307        ...this.options.coordinates,
+308        requestId,
+309        manifest: completedManifest,
+310      });
+311      for await (const record of spool.read(offset)) {
+312        await this.deliver(send, {
+313          transferId: completedManifest.transferId,
+314          requestId,</pre><a href="../evidence/sources/f79ba36278--apps__cli__src__daemon__daemon-delivery-session.ts.txt">Full frozen file</a></details><details><summary>apps/cli/src/daemon/workspace-daemon.ts · f79ba36278 · L30–36</summary><pre>30  import { DaemonOperationObserver, type DaemonOperationTrace } from &quot;./daemon-operation-observer.js&quot;;
+31  import { DaemonDeliverySession, type DaemonCompletionWriter } from &quot;./daemon-delivery-session.js&quot;;
+32  import {
+33    DaemonNavigationWorkerExitedError,
+34    type DaemonNavigationWorker,
+35    NodeDaemonNavigationWorker,
+36  } from &quot;./daemon-navigation-worker.js&quot;;</pre><a href="../evidence/sources/f79ba36278--apps__cli__src__daemon__workspace-daemon.ts.txt">Full frozen file</a></details></section><section id="execution"><h2>4. Accepted execution leaves the shell.</h2><p>Accepted turns collect in one session. Stated: coordinate existing queue, ledger, worker and delivery owners through injected ports.</p><p><b>stated</b></p><p>The process keeps an acceptedExecutionSession field. Execution uses its collaborators and a narrow process-lifecycle port; the existing ledger, queue, delivery, worker and resource owners remain authoritative.</p><blockquote>Chose an injected session over moving ledger, queue, delivery, worker, resource, lifetime, or shutdown state, because each dependency remains authoritative for its own mechanism.</blockquote><p><a href="pr-bodies/147.md">Supplied PR #147</a></p><details><summary>apps/cli/src/daemon/workspace-daemon.ts · f79ba36278 · L537–551</summary><pre>537  
+538    private async executeAccepted(
+539      request: Extract&lt;DaemonRequest, { kind: &quot;execute&quot; }&gt;,
+540      trace: DaemonOperationTrace,
+541    ): Promise&lt;void&gt; {
+542      let completion: DaemonCompletionWriter | undefined;
+543      try {
+544        await this.requestQueue.enqueue(
+545          {
+546            requestId: request.requestId,
+547            command: request.commandName,
+548            acceptedAt: this.clock.monotonicNowMs(),
+549          },
+550          async () =&gt; {
+551            trace.turnStarted(this.resourceSupervisor.snapshot.generation);</pre><a href="../evidence/sources/f79ba36278--apps__cli__src__daemon__workspace-daemon.ts.txt">Full frozen file</a></details><details><summary>apps/cli/src/daemon/accepted-execution-session.ts · ba53c8e166 · L92–110</summary><pre>92  
+93    private async executeAccepted(
+94      request: AuthenticatedDaemonExecuteRequest,
+95      trace: DaemonOperationTrace,
+96    ): Promise&lt;void&gt; {
+97      let completion: DaemonCompletionWriter | undefined;
+98      try {
+99        await this.options.queue.enqueue(
+100          {
+101            requestId: request.requestId,
+102            command: request.commandName,
+103            acceptedAt: this.options.clock.monotonicNowMs(),
+104          },
+105          async () =&gt; {
+106            trace.turnStarted(this.options.resourceSupervisor.snapshot.generation);
+107            try {
+108              completion = await this.options.delivery.createCompletion(request.requestId);
+109              this.options.ledger.markRunning(request.requestId, this.options.clock.wallNowMs());
+110              const response = await this.options.worker.execute(</pre><a href="../evidence/sources/ba53c8e166--apps__cli__src__daemon__accepted-execution-session.ts.txt">Full frozen file</a></details><details><summary>apps/cli/src/daemon/workspace-daemon.ts · ba53c8e166 · L11–17</summary><pre>11  import { AcceptedRequestLedger } from &quot;./accepted-request-ledger.js&quot;;
+12  import { AcceptedExecutionSession } from &quot;./accepted-execution-session.js&quot;;
+13  import { DaemonActivityProjector } from &quot;./daemon-activity-projector.js&quot;;
+14  import type {
+15    DaemonExecutionServerFrame,
+16    DaemonRecord,
+17    DaemonRequest,</pre><a href="../evidence/sources/ba53c8e166--apps__cli__src__daemon__workspace-daemon.ts.txt">Full frozen file</a></details></section><section id="composition"><h2>5. Less body. More wiring.</h2><p>Across #144–#147, 44 members leave and 7 arrive: 81 → 44. Constructor: 68 → 132 lines. The four extracted names stay imported. These are source counts, not a complexity measure.</p><p><b>observed</b></p><p>Members means explicitly declared class fields, methods and accessors, excluding the constructor and its parameter property. Line counts are inclusive source lines, including formatting. The 44 removed declarations are not 44 byte-identical moves. Some become options, locals or narrower methods. Main has 78 members and a 66-line constructor; earlier vocabulary work takes it to 81 and 68 before this extraction.</p><details><summary>apps/cli/src/daemon/workspace-daemon.ts · e3fa3d8e28 · L122–195</summary><pre>122    constructor(private readonly options: WorkspaceDaemonOptions) {
+123      const policy = options.policy;
+124      this.policy = policy;
+125      this.forceEscalated = new Promise((resolve) =&gt; {
+126        this.resolveForceEscalated = resolve;
+127      });
+128      this.now = options.now ?? Date.now;
+129      this.clock = options.clock ?? new NodeDaemonClock();
+130      this.startedMonotonicAt = this.clock.monotonicNowMs();
+131      this.requestQueue = new WorkspaceRequestQueue(() =&gt; this.clock.monotonicNowMs());
+132      this.acceptedRequests = new AcceptedRequestLedger(this.now);
+133      this.completionSpools = new DaemonCompletionSpoolStore({
+134        directory: options.identity.spoolDirectory,
+135        workspaceKey: options.identity.workspaceKey,
+136        instanceId: options.instanceId,
+137        policy: policy.values.output,
+138        ...(options.completionSpoolStorage === undefined
+139          ? {}
+140          : { storage: options.completionSpoolStorage }),
+141      });
+142      this.logger =
+143        options.logger ??
+144        new DaemonLogger(options.identity, options.instanceId, this.clock, {
+145          policy: policy.values.diagnostics,
+146        });
+147      const resourcePolicy = policy.values.resources;
+148      this.resourcePolicy = resourcePolicy;
+149      this.navigationWorkerFactory =
+150        options.navigationWorkerFactory ??
+151        (options.navigationWorker === undefined
+152          ? (generation) =&gt;
+153              new NodeDaemonNavigationWorker({
+154                generation,
+155                configuration: {
+156                  stateDirectory: options.identity.stateDirectory,
+157                  productVersion: options.symnavVersion,
+158                  executorModuleUrl:
+159                    options.executorModuleUrl ?? &quot;file:///missing/symnav-daemon-executor.js&quot;,
+160                  policy: policy.toSerialized(),
+161                },
+162                resourceLimits: {
+163                  maxOldGenerationSizeMb: resourcePolicy.workerMaxOldGenerationSizeMiB,
+164                },
+165              })
+166          : undefined);
+167      this.initialNavigationWorker = options.navigationWorker ?? this.createNavigationWorker(1);
+168      this.exit = options.exit ?? ((code) =&gt; process.exit(code));
+169      this.lifetime = new DaemonLifetime({ now: this.now }, policy.values.shutdown, () =&gt;
+170        this.drainAndShutdown(&quot;idle&quot;),
+171      );
+172      this.resourceSupervisor = new DaemonResourceSupervisor({
+173        policy: resourcePolicy,
+174        generation: this.initialNavigationWorker.generation,
+175        ...(options.residentMemoryBytes === undefined
+176          ? {}
+177          : { residentMemoryBytes: options.residentMemoryBytes }),
+178        spoolBytes: () =&gt; this.completionSpools.usage().rawBytes,
+179        scheduleAtTurnBoundary: (operation) =&gt; this.requestQueue.scheduleAtTurnBoundary(operation),
+180        releaseTransientResources: () =&gt; this.releaseTransientResources(),
+181        replaceWorker: (cause) =&gt; this.replaceNavigationWorker(cause),
+182        drain: () =&gt; this.initiateResourceDrain(),
+183      });
+184      this.operationObserver = new DaemonOperationObserver(
+185        this.logger,
+186        this.clock,
+187        this.resourceSupervisor,
+188      );
+189    }
+190  
+191    async start(): Promise&lt;void&gt; {
+192      this.logger.record({ kind: &quot;start&quot; });
+193      let startupLease: DaemonStartupLease | undefined;
+194      let startupHeartbeat: NodeJS.Timeout | undefined;
+195      try {</pre><a href="../evidence/sources/e3fa3d8e28--apps__cli__src__daemon__workspace-daemon.ts.txt">Full frozen file</a></details><details><summary>apps/cli/src/daemon/workspace-daemon.ts · ba53c8e166 · L85–219</summary><pre>85    constructor(private readonly options: WorkspaceDaemonOptions) {
+86      const policy = options.policy;
+87      this.policy = policy;
+88      this.forceEscalated = new Promise((resolve) =&gt; {
+89        this.resolveForceEscalated = resolve;
+90      });
+91      this.now = options.now ?? Date.now;
+92      this.clock = options.clock ?? new NodeDaemonClock();
+93      this.startedMonotonicAt = this.clock.monotonicNowMs();
+94      const requestQueue = new WorkspaceRequestQueue(() =&gt; this.clock.monotonicNowMs());
+95      const acceptedRequests = new AcceptedRequestLedger(this.now);
+96      const completionSpools = new DaemonCompletionSpoolStore({
+97        directory: options.identity.spoolDirectory,
+98        workspaceKey: options.identity.workspaceKey,
+99        instanceId: options.instanceId,
+100        policy: policy.values.output,
+101        ...(options.completionSpoolStorage === undefined
+102          ? {}
+103          : { storage: options.completionSpoolStorage }),
+104      });
+105      this.logger =
+106        options.logger ??
+107        new DaemonLogger(options.identity, options.instanceId, this.clock, {
+108          policy: policy.values.diagnostics,
+109        });
+110      const resourcePolicy = policy.values.resources;
+111      this.resourcePolicy = resourcePolicy;
+112      const navigationWorkerFactory =
+113        options.navigationWorkerFactory ??
+114        (options.navigationWorker === undefined
+115          ? (generation) =&gt;
+116              new NodeDaemonNavigationWorker({
+117                generation,
+118                configuration: {
+119                  stateDirectory: options.identity.stateDirectory,
+120                  productVersion: options.symnavVersion,
+121                  executorModuleUrl:
+122                    options.executorModuleUrl ?? &quot;file:///missing/symnav-daemon-executor.js&quot;,
+123                  policy: policy.toSerialized(),
+124                },
+125                resourceLimits: {
+126                  maxOldGenerationSizeMb: resourcePolicy.workerMaxOldGenerationSizeMiB,
+127                },
+128              })
+129          : undefined);
+130      const createNavigationWorker = (generation: number): DaemonNavigationWorker =&gt; {
+131        const worker = navigationWorkerFactory?.(generation);
+132        if (worker === undefined) throw new Error(&quot;Navigation worker replacement is unavailable&quot;);
+133        if (worker.generation !== generation) {
+134          throw new Error(&quot;Navigation worker factory returned the wrong generation&quot;);
+135        }
+136        return worker;
+137      };
+138      const initialNavigationWorker = options.navigationWorker ?? createNavigationWorker(1);
+139      this.exit = options.exit ?? ((code) =&gt; process.exit(code));
+140      this.lifetime = new DaemonLifetime({ now: this.now }, policy.values.shutdown, () =&gt;
+141        this.drainAndShutdown(&quot;idle&quot;),
+142      );
+143      this.workerManager = new DaemonWorkerGenerationManager({
+144        workspaceRoot: options.identity.workspaceRoot,
+145        initialWorker: initialNavigationWorker,
+146        createWorker: createNavigationWorker,
+147        exitRecovery: { recover: (workerExit) =&gt; this.recoverWorkerExit(workerExit) },
+148        onActiveResourceInterruption: (cause) =&gt;
+149          this.acceptedExecutionSession.markActiveResourceInterrupted(cause),
+150        onDiagnostic: (diagnostic) =&gt; this.operationObserver.worker(diagnostic),
+151      });
+152      this.resourceSupervisor = new DaemonResourceSupervisor({
+153        policy: resourcePolicy,
+154        generation: this.workerManager.snapshot.generation,
+155        ...(options.residentMemoryBytes === undefined
+156          ? {}
+157          : { residentMemoryBytes: options.residentMemoryBytes }),
+158        spoolBytes: () =&gt; this.deliverySession.snapshot.spoolBytes,
+159        scheduleAtTurnBoundary: (operation) =&gt;
+160          this.acceptedExecutionSession.scheduleAtTurnBoundary(operation),
+161        releaseTransientResources: async () =&gt; {
+162          const response = await this.workerManager.releaseTransientResources();
+163          this.resourceSupervisor.workerHeapReported(
+164            response.generation,
+165            response.usedHeapBytes,
+166            response.heapLimitBytes,
+167          );
+168        },
+169        replaceWorker: async (cause) =&gt; {
+170          const response = await this.workerManager.replace(cause);
+171          this.logger.record({ kind: &quot;freshness&quot;, ...response.refresh });
+172          return response.generation;
+173        },
+174        drain: () =&gt; this.initiateResourceDrain(),
+175      });
+176      this.operationObserver = new DaemonOperationObserver(
+177        this.logger,
+178        this.clock,
+179        this.resourceSupervisor,
+180      );
+181      this.deliverySession = new DaemonDeliverySession({
+182        coordinates: {
+183          instanceId: options.instanceId,
+184          processToken: options.processToken,
+185        },
+186        journal: acceptedRequests,
+187        spoolStore: completionSpools,
+188        observer: this.operationObserver,
+189        diagnostics: this.logger,
+190        clock: this.clock,
+191        policy: policy.values,
+192      });
+193      this.acceptedExecutionSession = new AcceptedExecutionSession({
+194        ledger: acceptedRequests,
+195        queue: requestQueue,
+196        worker: this.workerManager,
+197        delivery: this.deliverySession,
+198        resourceSupervisor: this.resourceSupervisor,
+199        processLifecycle: {
+200          shutdownSnapshot: () =&gt; ({
+201            started: this.shutdownStarted,
+202            ...(this.shutdownFailureCode === undefined
+203              ? {}
+204              : { failureCode: this.shutdownFailureCode }),
+205          }),
+206          workspaceExists: () =&gt; this.workspaceExists(),
+207          workspaceDeletedAfterDelivery: () =&gt; this.workspaceDeletedAfterDelivery(),
+208        },
+209        lifetime: this.lifetime,
+210        diagnostics: this.logger,
+211        clock: {
+212          wallNowMs: this.now,
+213          monotonicNowMs: () =&gt; this.clock.monotonicNowMs(),
+214        },
+215      });
+216    }
+217  
+218    async start(): Promise&lt;void&gt; {
+219      this.logger.record({ kind: &quot;start&quot; });</pre><a href="../evidence/sources/ba53c8e166--apps__cli__src__daemon__workspace-daemon.ts.txt">Full frozen file</a></details><details><summary>packages/daemon/src/process/process-coordinator.ts · d07002357d · L145–215</summary><pre>145      this.workerManager = new DaemonWorkerGenerationManager({
+146        workspaceRoot: options.identity.workspaceRoot,
+147        initialWorker: initialNavigationWorker,
+148        createWorker: createNavigationWorker,
+149        exitRecovery: { recover: (workerExit) =&gt; this.recoverWorkerExit(workerExit) },
+150        onActiveResourceInterruption: (cause) =&gt;
+151          this.acceptedExecutionSession.markActiveResourceInterrupted(cause),
+152        onDiagnostic: (diagnostic) =&gt; this.operationObserver.worker(diagnostic),
+153      });
+154      this.resourceSupervisor = new DaemonResourceSupervisor({
+155        policy: resourcePolicy,
+156        generation: this.workerManager.snapshot.generation,
+157        clock: this.clock,
+158        ...(options.residentMemoryBytes === undefined
+159          ? {}
+160          : { residentMemoryBytes: options.residentMemoryBytes }),
+161        spoolBytes: () =&gt; this.deliverySession.snapshot.spoolBytes,
+162        scheduleAtTurnBoundary: (operation) =&gt;
+163          this.acceptedExecutionSession.scheduleAtTurnBoundary(operation),
+164        releaseTransientResources: async () =&gt; {
+165          const response = await this.workerManager.releaseTransientResources();
+166          this.resourceSupervisor.workerHeapReported(
+167            response.generation,
+168            response.usedHeapBytes,
+169            response.heapLimitBytes,
+170          );
+171        },
+172        replaceWorker: async (cause) =&gt; {
+173          const response = await this.workerManager.replace(cause);
+174          this.logger.record({ kind: &quot;freshness&quot;, ...response.refresh });
+175          return response.generation;
+176        },
+177        drain: () =&gt; this.initiateResourceDrain(),
+178      });
+179      this.operationObserver = new DaemonOperationObserver(
+180        this.logger,
+181        this.clock,
+182        this.resourceSupervisor,
+183      );
+184      this.deliverySession = new DaemonDeliverySession({
+185        coordinates: {
+186          instanceId: options.coordinates.instanceId,
+187          processToken: options.coordinates.processToken,
+188        },
+189        journal: acceptedRequests,
+190        spoolStore: completionSpools,
+191        observer: this.operationObserver,
+192        diagnostics: this.logger,
+193        clock: this.clock,
+194        policy: policy.values,
+195      });
+196      this.acceptedExecutionSession = new AcceptedExecutionSession({
+197        ledger: acceptedRequests,
+198        queue: requestQueue,
+199        worker: this.workerManager,
+200        delivery: this.deliverySession,
+201        resourceSupervisor: this.resourceSupervisor,
+202        processLifecycle: {
+203          shutdownSnapshot: () =&gt; ({
+204            started: this.shutdownStarted,
+205            ...(this.shutdownFailureCode === undefined
+206              ? {}
+207              : { failureCode: this.shutdownFailureCode }),
+208          }),
+209          workspaceExists: () =&gt; this.workspaceExists(),
+210          workspaceDeletedAfterDelivery: () =&gt; this.workspaceDeletedAfterDelivery(),
+211        },
+212        lifetime: this.lifetime,
+213        diagnostics: this.logger,
+214        clock: {
+215          wallNowMs: () =&gt; this.clock.wallNowMs(),</pre><a href="../evidence/sources/d07002357d--packages__daemon__src__process__process-coordinator.ts.txt">Full frozen file</a></details></section><section id="rename"><h2>6. The remaining job changes its name.</h2><p>At #148, WorkspaceDaemon becomes DaemonProcessCoordinator. The plan requests a process coordinator; no specific reason for this class spelling was found.</p><p><b>unexplained</b></p><p>The architecture spec names the five resulting owners. The rename follows the four extractions. This specimen reads that as a name catching up with responsibility; that reading is an interpretation, not a recorded author rationale. Constructor options and behavioral changes are outside this study.</p><details><summary>plans/005/daemon-architecture-functional-spec.md · b6801ebdd2 · L95–102</summary><pre>95  - State-directory resolution moves from telemetry to the CLI; telemetry and daemon receive a path.
+96  - Daemon lifecycle rendering moves to `@symnav/renderer`.
+97  - Admission and client routing restructured as ordered guard lists with one closed rejection vocabulary.
+98  - `WorkspaceDaemon` split into process coordinator, accepted-execution session, delivery session, worker-generation manager, activity projector.
+99  - `LocalDaemonTransport` split into codec/validator, lifecycle client, execution client, result receiver, socket client, socket server.
+100  - One owner each for command-name vocabulary, lock-ownership check, retry-safety decision, and `DaemonExecutionFailureCode` (worker variant renamed).
+101  - Dependency table, ESLint boundaries, project references, meta-tests, `CLAUDE.md`, and `symnav-stages.md` updated together with the package introduction. Telemetry added to the table.
+102  </pre><a href="../evidence/sources/b6801ebdd2--plans__005__daemon-architecture-functional-spec.md.txt">Full frozen file</a></details><details><summary>apps/cli/src/daemon/workspace-daemon.ts · ba53c8e166 · L61–68</summary><pre>61  export class WorkspaceDaemon {
+62    private readonly now: () =&gt; number;
+63    private readonly clock: DaemonClock;
+64    private readonly exit: (code: number) =&gt; void;
+65    private readonly workerManager: DaemonWorkerGenerationManager;
+66    private readonly acceptedExecutionSession: AcceptedExecutionSession;
+67    private readonly logger: DaemonLogger;
+68    private readonly lifetime: DaemonLifetime;</pre><a href="../evidence/sources/ba53c8e166--apps__cli__src__daemon__workspace-daemon.ts.txt">Full frozen file</a></details><details><summary>apps/cli/src/daemon/daemon-process-coordinator.ts · 20838f8dbf · L58–65</summary><pre>58  export class DaemonProcessCoordinator {
+59    private readonly clock: DaemonClock;
+60    private readonly exit: (code: number) =&gt; void;
+61    private readonly workerManager: DaemonWorkerGenerationManager;
+62    private readonly acceptedExecutionSession: AcceptedExecutionSession;
+63    private readonly logger: DaemonLogger;
+64    private readonly lifetime: DaemonLifetime;
+65    private readonly resourceSupervisor: DaemonResourceSupervisor;</pre><a href="../evidence/sources/20838f8dbf--apps__cli__src__daemon__daemon-process-coordinator.ts.txt">Full frozen file</a></details></section><section id="copies"><h2>7. A new address is not yet a cutover.</h2><p>At #148, the shell and four extracted classes have CLI and package copies; import paths change. The shipped CLI still uses its frozen copy; the class’s unit suites move to the package. Stated: review relocation separately from the consumer switch.</p><p><b>stated</b></p><p>Imports are re-addressed, so the full files differ. The class source matches after normalizing the one inline import-type path; ordinary import declarations also move. The CLI daemon entry still constructs its local coordinator. A metadata test freezes 38 CLI production files with a combined SHA-256, while the unit suites target the package copy. This is source ownership, not two concurrently running daemon processes.</p><blockquote>Chose package staging with a frozen CLI compatibility graph over switching production consumers during relocation, because mechanism ownership and host invocation coordination need separate review boundaries.</blockquote><p><a href="pr-bodies/148.md">Supplied PR #148</a></p><details><summary>apps/cli/src/daemon/daemon-entry.ts · 20838f8dbf · L21–39</summary><pre>21      const logger = new DaemonLogger(identity, configuration.instanceId, clock, {
+22        policy: policy.values.diagnostics,
+23      });
+24      const coordinator = new DaemonProcessCoordinator({
+25        identity,
+26        coordinates: configuration,
+27        productVersion: configuration.symnavVersion,
+28        executorModuleUrl: configuration.executorModuleUrl,
+29        policy,
+30        registry,
+31        server: new LocalDaemonTransport({ policy }),
+32        clock,
+33        logger,
+34      });
+35      new DaemonProcessTerminationObserver(logger, () =&gt; {
+36        registry.removeIfProcess(identity, configuration.instanceId, configuration.processToken);
+37      }).install();
+38      await coordinator.start();
+39    }</pre><a href="../evidence/sources/20838f8dbf--apps__cli__src__daemon__daemon-entry.ts.txt">Full frozen file</a></details><details><summary>meta-tests/src/daemon-compatibility-copy.test.ts · 20838f8dbf · L13–78</summary><pre>13      const daemonDirectory = join(repositoryRoot, &quot;apps/cli/src/daemon&quot;);
+14      const cliOwnedSources = new Set([
+15        &quot;daemon-command-dispatcher.ts&quot;,
+16        &quot;invocation-route.ts&quot;,
+17        &quot;invocation-workspace-selector.ts&quot;,
+18      ]);
+19      return readdirSync(daemonDirectory)
+20        .filter(
+21          (name) =&gt; name.endsWith(&quot;.ts&quot;) &amp;&amp; !name.endsWith(&quot;.test.ts&quot;) &amp;&amp; !cliOwnedSources.has(name),
+22        )
+23        .map((name) =&gt; `apps/cli/src/daemon/${name}`)
+24        .sort();
+25    }
+26  
+27    static digest(repositoryRoot: string, files: readonly string[]): string {
+28      const hash = createHash(&quot;sha256&quot;);
+29      for (const file of files) {
+30        hash.update(file);
+31        hash.update(&quot;\0&quot;);
+32        hash.update(readFileSync(join(repositoryRoot, file), &quot;utf8&quot;).replace(/\r\n/g, &quot;\n&quot;));
+33        hash.update(&quot;\0&quot;);
+34      }
+35      return hash.digest(&quot;hex&quot;);
+36    }
+37  }
+38  
+39  describe(&quot;CLI daemon compatibility copies&quot;, () =&gt; {
+40    it(&quot;remain frozen while package-local mechanisms are staged&quot;, () =&gt; {
+41      const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), &quot;../..&quot;);
+42      const files = DaemonCompatibilityCopyInventory.files(repositoryRoot);
+43  
+44      expect(files).toHaveLength(38);
+45      expect(DaemonCompatibilityCopyInventory.digest(repositoryRoot, files)).toBe(
+46        DaemonCompatibilityCopyInventory.expectedDigest,
+47      );
+48    });
+49  
+50    it(&quot;hashes semantic source content independently of checkout line endings&quot;, () =&gt; {
+51      const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), &quot;../..&quot;);
+52      const files = DaemonCompatibilityCopyInventory.files(repositoryRoot);
+53      const crlfCheckoutRoot = mkdtempSync(join(tmpdir(), &quot;symnav-daemon-compatibility-&quot;));
+54  
+55      try {
+56        for (const file of files) {
+57          const source = readFileSync(join(repositoryRoot, file), &quot;utf8&quot;).replace(/\r?\n/g, &quot;\r\n&quot;);
+58          const crlfFile = join(crlfCheckoutRoot, file);
+59          mkdirSync(dirname(crlfFile), { recursive: true });
+60          writeFileSync(crlfFile, source);
+61        }
+62  
+63        expect(DaemonCompatibilityCopyInventory.digest(crlfCheckoutRoot, files)).toBe(
+64          DaemonCompatibilityCopyInventory.expectedDigest,
+65        );
+66  
+67        const changedFile = join(crlfCheckoutRoot, files[0]!);
+68        writeFileSync(changedFile, `${readFileSync(changedFile, &quot;utf8&quot;)}export {};\r\n`);
+69  
+70        expect(DaemonCompatibilityCopyInventory.digest(crlfCheckoutRoot, files)).not.toBe(
+71          DaemonCompatibilityCopyInventory.expectedDigest,
+72        );
+73      } finally {
+74        rmSync(crlfCheckoutRoot, { recursive: true, force: true });
+75      }
+76    });
+77  });
+78  </pre><a href="../evidence/sources/20838f8dbf--meta-tests__src__daemon-compatibility-copy.test.ts.txt">Full frozen file</a></details><details><summary>packages/daemon/src/process/process-coordinator-requests.test.ts · 20838f8dbf · L46–53</summary><pre>46  import { TestDaemonResourcePolicy as DaemonResourcePolicy } from &quot;../../test/helpers/daemon-resource-policy.js&quot;;
+47  import {
+48    TestDaemonProcessCoordinator as DaemonProcessCoordinator,
+49    type TestDaemonProcessCoordinatorOptions as DaemonProcessCoordinatorOptions,
+50  } from &quot;../../test/helpers/daemon-process-coordinator.js&quot;;
+51  
+52  describe(&quot;DaemonProcessCoordinator requests&quot;, () =&gt; {
+53    const harnesses: RequestHarness[] = [];</pre><a href="../evidence/sources/20838f8dbf--packages__daemon__src__process__process-coordinator-requests.test.ts.txt">Full frozen file</a></details><details><summary>packages/daemon/test/helpers/daemon-process-coordinator.ts · 20838f8dbf · L7–14</summary><pre>7  import type { TestDaemonResourcePolicy as DaemonResourcePolicy } from &quot;./daemon-resource-policy.js&quot;;
+8  import {
+9    DaemonProcessCoordinator as RuntimeDaemonProcessCoordinator,
+10    type DaemonProcessCoordinatorOptions,
+11  } from &quot;../../src/process/process-coordinator.js&quot;;
+12  
+13  interface TestDaemonProcessCoordinatorPolicyOptions {
+14    readonly policy?: DaemonPolicy;</pre><a href="../evidence/sources/20838f8dbf--packages__daemon__test__helpers__daemon-process-coordinator.ts.txt">Full frozen file</a></details></section><section id="consolidation"><h2>8. Two spellings of ownership become one.</h2><p>At #149 the 670-line CLI copy is deleted. The package process entry constructs the surviving coordinator. Stated: CLI owns invocation; daemon execution belongs behind DaemonClient.</p><p><b>stated</b></p><p>The class remains in packages/daemon/src/process/process-coordinator.ts. The same four extracted collaborators are now package-local imports. There is one physical implementation of each of the five classes at the tip. The deletion counts a source file, not memory or running instances.</p><blockquote>Chose a CLI invocation coordinator over the app-local daemon dispatcher, because argv classification and workspace discovery remain host responsibilities while execution belongs behind `DaemonClient`.</blockquote><p><a href="pr-bodies/149.md">Supplied PR #149</a></p><details><summary>packages/daemon/src/process-entry.ts · d07002357d · L22–42</summary><pre>22        policy: policy.values.diagnostics,
+23      });
+24      const server = DaemonTransportFactory.create({ policy }).server;
+25      const coordinator = new DaemonProcessCoordinator({
+26        identity,
+27        coordinates: configuration,
+28        productVersion: configuration.symnavVersion,
+29        executorModuleUrl: configuration.executorModuleUrl,
+30        policy,
+31        registry,
+32        server,
+33        clock,
+34        logger,
+35      });
+36      new DaemonProcessTerminationObserver(logger, () =&gt; {
+37        registry.removeIfProcess(identity, configuration.instanceId, configuration.processToken);
+38      }).install();
+39      await coordinator.start();
+40    }
+41  }
+42  </pre><a href="../evidence/sources/d07002357d--packages__daemon__src__process-entry.ts.txt">Full frozen file</a></details><details><summary>packages/daemon/src/process/process-coordinator.ts · d07002357d · L15–41</summary><pre>15  import { AcceptedExecutionSession } from &quot;../execution/accepted-execution-session.js&quot;;
+16  import { DaemonActivityProjector } from &quot;./activity-projector.js&quot;;
+17  import type {
+18    DaemonExecutionServerFrame,
+19    DaemonIdentityCoordinates,
+20    DaemonRecord,
+21    DaemonRequest,
+22    DaemonResponse,
+23    DaemonServer,
+24  } from &quot;../transport/protocol.js&quot;;
+25  import {
+26    DaemonCompletionSpoolStore,
+27    type CompletionSpoolStorage,
+28  } from &quot;../delivery/completion-spool.js&quot;;
+29  import { DAEMON_PROTOCOL_VERSION, DAEMON_RECORD_SCHEMA_VERSION } from &quot;../transport/protocol.js&quot;;
+30  import { DaemonLifetime } from &quot;../lifecycle/daemon-lifetime.js&quot;;
+31  import { DaemonLogger } from &quot;../diagnostics/logger.js&quot;;
+32  import type { DaemonClock } from &quot;../lifecycle/daemon-clock.js&quot;;
+33  import { DaemonOperationObserver } from &quot;../diagnostics/operation-observer.js&quot;;
+34  import { DaemonDeliverySession } from &quot;../delivery/delivery-session.js&quot;;
+35  import {
+36    type DaemonNavigationWorker,
+37    NodeDaemonNavigationWorker,
+38  } from &quot;../worker/navigation-worker.js&quot;;
+39  import { DaemonWorkerGenerationManager } from &quot;../worker/worker-generation-manager.js&quot;;
+40  import { DaemonResourceSupervisor } from &quot;../resources/resource-supervisor.js&quot;;
+41  import type { DaemonRegistry, DaemonStartupLease } from &quot;../registry/registry.js&quot;;</pre><a href="../evidence/sources/d07002357d--packages__daemon__src__process__process-coordinator.ts.txt">Full frozen file</a></details></section><section id="surface"><h2>9. Public to a class is not public to a package.</h2><p>The shell exposes constructor and start() in all 27 PR-boundary snapshots. At #149 none of these five classes is exported by any package entry. The package offers four entry paths.</p><p><b>observed</b></p><p>Heavy member samples mean class-public. Light samples mean class-private. The five names occupy the package side of the labeled boundary. Package exports are a different boundary: root, process-entry, worker-entry and testing. The exported process entry constructs the coordinator internally; it does not export the class.</p><details><summary>packages/daemon/src/process/process-coordinator.ts · d07002357d · L64–95</summary><pre>64  export class DaemonProcessCoordinator {
+65    private readonly clock: DaemonClock;
+66    private readonly exit: (code: number) =&gt; void;
+67    private readonly workerManager: DaemonWorkerGenerationManager;
+68    private readonly acceptedExecutionSession: AcceptedExecutionSession;
+69    private readonly logger: DaemonLogger;
+70    private readonly lifetime: DaemonLifetime;
+71    private readonly resourceSupervisor: DaemonResourceSupervisor;
+72    private readonly resourcePolicy: DaemonPolicyValues[&quot;resources&quot;];
+73    private readonly policy: DaemonPolicy;
+74    private readonly operationObserver: DaemonOperationObserver;
+75    private readonly deliverySession: DaemonDeliverySession;
+76    private readonly admissionPolicy = new DaemonAdmissionPolicy();
+77    private server: DaemonServer | undefined;
+78    private startedAt = 0;
+79    private readonly startedMonotonicAt: number;
+80    private shutdownStarted = false;
+81    private shutdownFailureCode: &quot;stopping&quot; | &quot;controlled-resource&quot; | undefined;
+82    private shutdownOperation: Promise&lt;void&gt; | undefined;
+83    private forcedWorkerShutdown: Promise&lt;void&gt; | undefined;
+84    private readonly forceEscalated: Promise&lt;void&gt;;
+85    private resolveForceEscalated!: () =&gt; void;
+86  
+87    constructor(private readonly options: DaemonProcessCoordinatorOptions) {
+88      DaemonProcessCoordinator.validateCoordinates(options.identity, options.coordinates);
+89      const policy = options.policy;
+90      this.policy = policy;
+91      this.forceEscalated = new Promise((resolve) =&gt; {
+92        this.resolveForceEscalated = resolve;
+93      });
+94      this.clock = options.clock;
+95      this.startedMonotonicAt = this.clock.monotonicNowMs();</pre><a href="../evidence/sources/d07002357d--packages__daemon__src__process__process-coordinator.ts.txt">Full frozen file</a></details><details><summary>packages/daemon/src/process/process-coordinator.ts · d07002357d · L221–228</summary><pre>221    async start(): Promise&lt;void&gt; {
+222      this.logger.record({ kind: &quot;start&quot; });
+223      let startupLease: DaemonStartupLease | undefined;
+224      let startupHeartbeat: NodeJS.Timeout | undefined;
+225      try {
+226        const authorization = await this.waitForStartupAuthorization();
+227        startupLease = authorization.lease;
+228        const startingRecord = authorization.record;</pre><a href="../evidence/sources/d07002357d--packages__daemon__src__process__process-coordinator.ts.txt">Full frozen file</a></details><details><summary>packages/daemon/package.json · d07002357d · L8–27</summary><pre>8    &quot;exports&quot;: {
+9      &quot;.&quot;: {
+10        &quot;types&quot;: &quot;./dist/index.d.ts&quot;,
+11        &quot;default&quot;: &quot;./dist/index.js&quot;
+12      },
+13      &quot;./process-entry&quot;: {
+14        &quot;types&quot;: &quot;./dist/process-entry.d.ts&quot;,
+15        &quot;default&quot;: &quot;./dist/process-entry.js&quot;
+16      },
+17      &quot;./worker-entry&quot;: {
+18        &quot;types&quot;: &quot;./dist/worker-entry.d.ts&quot;,
+19        &quot;default&quot;: &quot;./dist/worker-entry.js&quot;
+20      },
+21      &quot;./testing&quot;: {
+22        &quot;types&quot;: &quot;./dist/testing/index.d.ts&quot;,
+23        &quot;default&quot;: &quot;./dist/testing/index.js&quot;
+24      }
+25    },
+26    &quot;files&quot;: [&quot;dist&quot;],
+27    &quot;scripts&quot;: {</pre><a href="../evidence/sources/d07002357d--packages__daemon__package.json.txt">Full frozen file</a></details><details><summary>packages/daemon/src/index.ts · d07002357d · L1–34</summary><pre>1  export { DAEMON_COMMAND_NAMES } from &quot;./daemon-command-name.js&quot;;
+2  export type { DaemonCommandName, DaemonReadinessProbe } from &quot;./daemon-command-name.js&quot;;
+3  export type { DaemonDiagnosticValue, DaemonDiagnostics } from &quot;./daemon-diagnostics.js&quot;;
+4  export type {
+5    DaemonExecutionMode,
+6    DaemonExecutor,
+7    DaemonExecutorExecutionResult,
+8    DaemonExecutorFactory,
+9    DaemonExecutorFactoryOptions,
+10    DaemonExecutorInitializationResult,
+11    DaemonExecutorModule,
+12    DaemonExecutorModuleUrl,
+13    DaemonExecutorOutput,
+14    DaemonExecutorRequest,
+15    DaemonOutputRecord,
+16    DaemonOutputStream,
+17  } from &quot;./daemon-executor.js&quot;;
+18  export type {
+19    DaemonActivitySnapshot,
+20    DaemonStartResult,
+21    DaemonStatusEnvelope,
+22    DaemonStopResult,
+23    RunningDaemonStatus,
+24  } from &quot;./daemon-lifecycle-report.js&quot;;
+25  export { DaemonPolicy } from &quot;./daemon-policy.js&quot;;
+26  export type { DaemonPolicyValues, DaemonSystemMemory } from &quot;./daemon-policy.js&quot;;
+27  export type {
+28    DaemonClientExecuteRequest,
+29    DaemonClientExecuteResult,
+30    DaemonClientOptions,
+31    DaemonControlRequest,
+32  } from &quot;./client/daemon-client-contracts.js&quot;;
+33  export { DaemonClient } from &quot;./client/daemon-client.js&quot;;
+34  </pre><a href="../evidence/sources/d07002357d--packages__daemon__src__index.ts.txt">Full frozen file</a></details></section><section id="tests"><h2>10. Tests move ahead of the production caller.</h2><p>Class-suite census: 65 → 82 named test declarations; none removed after normalizing the class rename. One #145 assertion is rewritten and adds two fileCount checks. Rationale for that exact test selection is unexplained.</p><p><b>unexplained</b></p><p>This is a source census of the coordinator’s own suites, not all daemon tests or executed test-case counts. Parameterized declarations count once. The altered #145 assertion retains recovery expectations and adds a legacy pong fileCount value plus absence of activity.fileCount. Helpers and suite execution can still affect meaning; this inventory is not a parity or correctness result. The #148 relocation and freeze are shown in Copy.</p><details><summary>apps/cli/src/daemon/workspace-daemon-requests.test.ts · 9ea7979c2b · L1275–1320</summary><pre>1275    it(&quot;reports worker replacement recovery from the main thread&quot;, async () =&gt; {
+1276      const initial = new ExecutorNavigationWorker(new ImmediateExecutor(), 1);
+1277      const replacement = new DeferredInitializationWorker(2);
+1278      const harness = await RequestHarness.start(undefined, {
+1279        navigationWorkerFactory: (generation) =&gt; (generation === 1 ? initial : replacement),
+1280      });
+1281      harnesses.push(harness);
+1282  
+1283      initial.fail({ generation: 1, cause: &quot;out-of-memory&quot;, errorName: &quot;WorkerOom&quot; });
+1284      await replacement.initializationStarted;
+1285  
+1286      await expect(harness.ping()).resolves.toMatchObject({
+1287        kind: &quot;pong&quot;,
+1288        activity: {
+1289          lifecycle: &quot;recovering&quot;,
+1290          recoveryDetail: &quot;worker-replacement&quot;,
+1291          workerGeneration: 2,
+1292        },
+1293      });
+1294  
+1295      replacement.completeInitialization();
+1296      await waitUntil(async () =&gt; {
+1297        const pong = await harness.ping();
+1298        return pong.kind === &quot;pong&quot; &amp;&amp; pong.state === &quot;ready&quot;;
+1299      });
+1300    });
+1301  
+1302    it(&quot;completes scheduled shedding before the next queued worker turn&quot;, async () =&gt; {
+1303      const policy = DaemonResourcePolicy.fromSystemMemory(1024 * 1024 * 1024);
+1304      let residentMemoryBytes = 0;
+1305      const executor = new SerializedExecutor();
+1306      const worker = new ReleaseGatedNavigationWorker(executor);
+1307      const harness = await RequestHarness.start(undefined, {
+1308        navigationWorker: worker,
+1309        resourcePolicy: policy,
+1310        resourceCheckIntervalMs: 5,
+1311        residentMemoryBytes: () =&gt; residentMemoryBytes,
+1312      });
+1313      harnesses.push(harness);
+1314      const first = harness.execute(&quot;first&quot;, [&quot;refs&quot;, &quot;input&quot;]);
+1315      await executor.started(1);
+1316      const second = harness.execute(&quot;second&quot;, [&quot;overview&quot;, &quot;input.ts&quot;]);
+1317      await waitUntil(async () =&gt; {
+1318        const response = await harness.ping();
+1319        return response.kind === &quot;pong&quot; &amp;&amp; response.queued === 1;
+1320      });</pre><a href="../evidence/sources/9ea7979c2b--apps__cli__src__daemon__workspace-daemon-requests.test.ts.txt">Full frozen file</a></details><details><summary>apps/cli/src/daemon/workspace-daemon-requests.test.ts · b8e8b7b85f · L1312–1361</summary><pre>1312    it(&quot;reports worker replacement recovery from the main thread&quot;, async () =&gt; {
+1313      const initial = new ExecutorNavigationWorker(new ImmediateExecutor(), 1);
+1314      const replacement = new DeferredInitializationWorker(2);
+1315      const harness = await RequestHarness.start(undefined, {
+1316        navigationWorkerFactory: (generation) =&gt; (generation === 1 ? initial : replacement),
+1317      });
+1318      harnesses.push(harness);
+1319  
+1320      initial.fail({ generation: 1, cause: &quot;out-of-memory&quot;, errorName: &quot;WorkerOom&quot; });
+1321      await replacement.initializationStarted;
+1322  
+1323      const recovering = await harness.ping();
+1324      expect(recovering).toMatchObject({
+1325        kind: &quot;pong&quot;,
+1326        fileCount: 1,
+1327        activity: {
+1328          lifecycle: &quot;recovering&quot;,
+1329          recoveryDetail: &quot;worker-replacement&quot;,
+1330          workerGeneration: 2,
+1331        },
+1332      });
+1333      expect(recovering.kind === &quot;pong&quot; ? recovering.activity : undefined).not.toHaveProperty(
+1334        &quot;fileCount&quot;,
+1335      );
+1336  
+1337      replacement.completeInitialization();
+1338      await waitUntil(async () =&gt; {
+1339        const pong = await harness.ping();
+1340        return pong.kind === &quot;pong&quot; &amp;&amp; pong.state === &quot;ready&quot;;
+1341      });
+1342    });
+1343  
+1344    it(&quot;starts the next generation before terminating the previous worker&quot;, async () =&gt; {
+1345      const transitions: string[] = [];
+1346      const initial = new OrderedInitializationWorker(1, transitions, true);
+1347      const replacement = new OrderedInitializationWorker(2, transitions, false);
+1348      const harness = await RequestHarness.start(undefined, {
+1349        navigationWorkerFactory: (generation) =&gt; (generation === 1 ? initial : replacement),
+1350      });
+1351      harnesses.push(harness);
+1352      transitions.length = 0;
+1353  
+1354      initial.fail({ generation: 1, cause: &quot;out-of-memory&quot;, errorName: &quot;WorkerOom&quot; });
+1355      await replacement.initializationStarted;
+1356  
+1357      expect(transitions).toEqual([&quot;start:2&quot;, &quot;terminate:1&quot;]);
+1358      await expect(harness.ping()).resolves.toMatchObject({
+1359        kind: &quot;pong&quot;,
+1360        activity: {
+1361          lifecycle: &quot;recovering&quot;,</pre><a href="../evidence/sources/b8e8b7b85f--apps__cli__src__daemon__workspace-daemon-requests.test.ts.txt">Full frozen file</a></details></section></html>

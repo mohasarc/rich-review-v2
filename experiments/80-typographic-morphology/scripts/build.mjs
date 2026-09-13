@@ -1,0 +1,17 @@
+import {readFileSync,writeFileSync,mkdirSync,copyFileSync} from 'node:fs';
+import {build} from 'esbuild';
+import path from 'node:path';
+const root=path.resolve(import.meta.dirname,'..');
+const output=await build({entryPoints:[path.join(root,'src/app.js')],bundle:true,write:false,minify:true,format:'iife',target:['es2022'],legalComments:'inline'});
+const css=readFileSync(path.join(root,'src/style.css'),'utf8');
+const html=readFileSync(path.join(root,'src/template.html'),'utf8').replace('/* STYLE */',()=>css).replace('/* SCRIPT */',()=>output.outputFiles[0].text.replaceAll('</script','<\\/script'));
+mkdirSync(path.join(root,'assets'),{recursive:true});
+copyFileSync(path.join(root,'node_modules/@fontsource-variable/recursive/files/recursive-latin-full-normal.woff2'),path.join(root,'assets/recursive-latin-full.woff2'));
+copyFileSync(path.join(root,'node_modules/@fontsource-variable/recursive/LICENSE'),path.join(root,'assets/recursive-OFL.txt'));
+writeFileSync(path.join(root,'assets/gsap-LICENSE.txt'),'GSAP 3.15.0 — Copyright GreenSock.\nLicense: https://gsap.com/standard-license\nThe bundled code retains the upstream license notice.\n');
+writeFileSync(path.join(root,'index.html'),html);
+const data=JSON.parse(readFileSync(path.join(root,'data/morphology.json')));
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const records=data.readings.map((r,i)=>`<section id="${r.id}"><h2>${i+1}. ${esc(r.title)}</h2><p>${esc(r.summary)}</p><p><b>${r.status}</b></p><p>${esc(r.detail)}</p>${r.reason?`<blockquote>${esc(r.reason.text)}</blockquote><p><a href="pr-bodies/${r.reason.pr}.md">Supplied PR #${r.reason.pr}</a></p>`:''}${r.receipts.map(rc=>{const src=data.sources[rc.source];return `<details><summary>${esc(src.path)} · ${src.sha.slice(0,10)} · L${rc.start}–${rc.end}</summary><pre>${src.text.split('\n').slice(rc.start-1,rc.end).map((l,i)=>`${i+rc.start}  ${esc(l)}`).join('\n')}</pre><a href="../${src.local}">Full frozen file</a></details>`;}).join('')}</section>`).join('');
+writeFileSync(path.join(root,'evidence/reading.html'),`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Typographic morphology — evidence book</title><style>body{font:16px/1.65 system-ui;max-width:900px;margin:40px auto;padding:0 20px;background:#f3f0e7;color:#242b29}h1,h2{line-height:1.2}a{color:inherit}section{border-top:1px solid #bbb;padding:25px 0}pre{overflow:auto;background:#e5e8de;padding:15px;font:12px/1.6 monospace;max-height:500px}summary{cursor:pointer;overflow-wrap:anywhere}blockquote{border-left:2px solid #1b6652;padding-left:18px}nav{display:flex;flex-wrap:wrap;gap:16px}</style><p><a href="../index.html">← Animated specimen</a></p><h1>A word learns its boundaries</h1><p>Complete static reading of one class’s ownership, composition and visibility across the symnav stack. This is source analysis; no runtime simulation or Symnav test result is claimed.</p><nav>${data.readings.map(r=>`<a href="#${r.id}">${r.word}</a>`).join('')}</nav>${records}</html>`);
+console.log(`Built index.html (${Math.round(html.length/1024)} KB), static evidence book, local font and licenses.`);
