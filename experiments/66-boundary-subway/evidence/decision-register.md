@@ -1,0 +1,65 @@
+# Complete service notices
+
+## 01 A new entrance. The CLI stays on its own tracks.
+
+DaemonClient adds execute/control with Node-free declarations and one runtime per client, dynamically loaded from construction. The host supplies paths, version, enablement, executor factory/module, readiness probe and optional policy. The shipped CLI still uses 38 frozen app-local mechanisms; package ownership is staged. The package has no internal production dependency. Its compatibility digest ignores CRLF differences.
+
+Stated: keep Node ambient types out of host declarations; separate mechanism relocation from the consumer switch. The precise digest choice is unexplained.
+
+Sources: facade, contracts, runtime-compose, cli, freeze, package-boundary, pr
+
+## 02 The first routing decision ends the search.
+
+Disabled goes local before registry access. Otherwise: record present → not starting → version compatible → observe. Missing/recovering/starting routes are cold; dead/incompatible routes fall back. Only absent or fallback decisions trigger independent warmup. Each local attempt gets a fresh executor. Routing memoizes reads/probes; dead-record cleanup checks process identity.
+
+Stated: an earlier decision must prevent later observation and mutation.
+
+Sources: routing, runtime-execute, runtime-local, routing-tests
+
+## 03 Acceptance changes the recovery destination.
+
+One local fallback is allowed for not-submitted work or an authenticated retry-safe rejection. Submitted-but-uncertain and accepted failures do not replay locally. A warm attempt gets a fresh request ID. Accepted close recovery reuses that ID; result-fetch resumes at the next offset. Both recovery loops are bounded; exhaustion returns a controlled warm failure.
+
+Stated: transfer cleanup and replay safety belong to the daemon client. Recovery limits and acceptance semantics are retained mechanisms.
+
+Sources: retry, runtime-warm, reattach, resume, fetch, accepted
+
+## 04 Output returns through a package-owned capture.
+
+Warm execution creates fresh result capture from output policy; the host does not supply warm storage/output factories. Transfer finalization and acknowledgement precede return; a failed ACK disposes the finished output. A missing output or noninteger exit code becomes a controlled warm result; malformed output is disposed. Capacity failures retain their distinct messages.
+
+Stated: warm transfer cleanup and replay safety belong to the client.
+
+Sources: runtime-compose, finish, runtime-warm, controlled, capture-test, malformed-test
+
+## 05 Control shares the entrance, then uses its own service.
+
+Start/stop share a controller and transport; status has a separate response timeout and controller. Disabled suppresses start, while status and stop still operate. Mechanism errors reject to the host. Startup forwards the host’s probe argv through execute with workspace cwd, telemetry off and cold mode; side-effect-only package process/worker entries own launch boundaries. Graceful stop drains accepted work and waits for result acknowledgements.
+
+Stated: client lifecycle composition and injected executor integration belong inside the package. The exact two-controller arrangement, disabled-control asymmetry and probe settings have no separate rationale in the inspected prose.
+
+Sources: facade, runtime-compose, runtime-control, probe, entries, process-entry, control-tests, process-handle, entry-boundary
+
+## 06 An interchange is not blanket permission.
+
+Registry owns canonical startup-owner equality: narrow coordinates and full mutation snapshots are checked against the live owner. The process coordinator validates supplied identity coordinates before composition and wires callbacks without invoking them; execution, delivery, workers, resources and activity keep separate owners. Execute needs the process token before stateful admission observation; fetch/ACK/status-of-execution also need it. Ping and graceful shutdown use protocol + instance; identify/terminate/kill use instance + token.
+
+Stated: centralize startup authority and preserve the split owners. Coordinate/API reshaping, authentication exceptions and their exact ordering are unexplained beyond characterization and the ownership plan.
+
+Sources: registry-owner, registry-equality, coordinates, process-handle, admission, identity, composition-test, architecture-owners, pr
+
+## 07 Old clock inputs close. The idle rule stays.
+
+DaemonClock replaces telemetry’s Clock.now and separate coordinator now input: wall time owns deadlines/timestamps; monotonic time owns durations. Idle starts at construction and resets on new navigation acceptance. Active navigation defers expiry; queue idle can trigger an expired deadline immediately. Ready-time and completion-time resets are explicitly deferred; controls do not reset idle.
+
+Stated: daemon owns its clock; preserve idle behavior during extraction and defer the two lifetime changes.
+
+Sources: old-lifetime, old-coordinator, lifetime, clock, session-idle, lifetime-test, followups, architecture-clock
+
+## 08 The test entrance moves, and some observations disappear.
+
+The policy-testing export, its lint gate and two lint tests close as 37 mechanism test files move package-local. Generic executor/entry fixtures replace CLI coupling; the worker’s CLI version-mismatch test is replaced by a direct executor-factory check. New tests lock public declarations and executable boundaries. Readiness startup/turn duration assertions disappear. The Windows forced-exit test assigns leftover-record cleanup to the observer and expects no process-termination diagnostic. Serial test files and tsx are added. The exact oracle changes and configuration choices are unexplained.
+
+Stated: retire the migration-only test export and keep package fixtures independent. No specific reason found for the lint-gate timing, duration deletions, direct-factory oracle, Windows expectations, fileParallelism:false or tsx choice.
+
+Sources: entries, old-entries, policy-plan, worker-test-before, worker-test-after, cli-version, test-config, test-changes, windows-test, host-contract, pr
