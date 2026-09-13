@@ -217,3 +217,6 @@ BUILD OK stack-head
 - 2026-09-13 05:15:05 +03: MONITOR OK supervisor=1153, finished=25, running=5, queued=14, dirty-worktrees=0, missing-readmes=0, free-disk=32.7GiB
 - 2026-09-13 05:30:13 +03: MONITOR OK supervisor=1153, finished=25, running=5, queued=14, dirty-worktrees=0, missing-readmes=0, free-disk=32.5GiB
 - 2026-09-13 05:32:21 +03: FINISH 28-blast-radius-tool via codex, exit 0, README present
+- 2026-09-13 05:32:21 +03: COMMIT OK 28-blast-radius-tool: [main 4ce8533] Add experiment 28 blast-radius-tool
+- 2026-09-13 05:32:21 +03: START 31-method-runbook attempt 1 via codex, pid 39005
+- 2026-09-13 05:35:31 +03: FINISH 27-test-honesty via codex, exit 0, README present
