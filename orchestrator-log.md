@@ -273,3 +273,15 @@ BUILD OK stack-head
 - 2026-09-13 06:11:16 +03: COMMIT OK 35-future-self: [main 13f974d] Add experiment 35 future-self
 - 2026-09-13 06:11:16 +03: START 39-fresh-reader-check attempt 1 via codex, pid 51180
 - 2026-09-13 06:13:56 +03: FINISH 34-inverted-for-experts via codex, exit 0, README present
+- 2026-09-13 06:13:56 +03: COMMIT OK 34-inverted-for-experts: [main 36d7ed4] Add experiment 34 inverted-for-experts
+- 2026-09-13 06:13:56 +03: START 40-best-of-synthesis attempt 1 via claude-opus, pid 52440
+- 2026-09-13 06:14:06 +03: README MISSING 40-best-of-synthesis after worker exit 1
+- 2026-09-13 06:14:06 +03: REQUEUE 40-best-of-synthesis after attempt 1: worker exited 1 without README
+- 2026-09-13 06:14:06 +03: START 40-best-of-synthesis attempt 2 via claude-opus, pid 52491
+- 2026-09-13 06:14:16 +03: README MISSING 40-best-of-synthesis after worker exit 1
+- 2026-09-13 06:14:16 +03: REQUEUE 40-best-of-synthesis after attempt 2: worker exited 1 without README
+- 2026-09-13 06:14:16 +03: START 40-best-of-synthesis attempt 3 via codex, pid 52550
+- 2026-09-13 06:15:35 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log
+- 2026-09-13 06:15:35 +03: MONITOR OK supervisor=1153, finished=35, running=5, queued=6, dirty-worktrees=0, missing-readmes=0, free-disk=32.3GiB
+- 2026-09-13 06:20:37 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log
+- 2026-09-13 06:25:27 +03: FINISH 37-be-weird-b via codex, exit 0, README present
