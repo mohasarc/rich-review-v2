@@ -270,3 +270,6 @@ BUILD OK stack-head
 - 2026-09-13 06:03:45 +03: START 38-critique attempt 3 via codex, pid 48369
 - 2026-09-13 06:10:32 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log
 - 2026-09-13 06:11:15 +03: FINISH 35-future-self via codex, exit 0, README present
+- 2026-09-13 06:11:16 +03: COMMIT OK 35-future-self: [main 13f974d] Add experiment 35 future-self
+- 2026-09-13 06:11:16 +03: START 39-fresh-reader-check attempt 1 via codex, pid 51180
+- 2026-09-13 06:13:56 +03: FINISH 34-inverted-for-experts via codex, exit 0, README present
