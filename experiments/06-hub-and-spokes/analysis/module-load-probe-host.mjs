@@ -1,0 +1,3 @@
+const { DaemonClient, DaemonPolicy } = await import("/Users/moyaseen/projects/rich-review-v2/worktrees/pr-148-head/packages/daemon/dist/index.js");
+const client = new DaemonClient({ stateDirectory: "/tmp/rr-hook/state", productVersion: "x", daemonEnabled: false, executorFactory: () => ({ initialize: async () => ({ fileCount: 0 }), execute: async () => ({ exitCode: 0, output: { async *records() {}, dispose: async () => {} } }), releaseTransientResources: async () => {} }), executorModuleUrl: "file:///x.js", readinessProbe: { commandName: "version", argv: ["--version"] } });
+await client.execute({ workspaceRoot: "/tmp", commandName: "overview", argv: [], cwd: "/tmp", telemetryEnabled: false });

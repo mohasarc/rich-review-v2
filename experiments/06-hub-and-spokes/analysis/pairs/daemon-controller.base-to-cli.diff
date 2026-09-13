@@ -1,0 +1,188 @@
+--- 
++++ 
+@@ -17,9 +17,10 @@
+ import { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
+ import { DaemonRuntimeValues } from "./daemon-runtime-values.js";
++import { NodeDaemonClock, type DaemonClock } from "./daemon-clock.js";
+ import type { DaemonExecutionRequester, DaemonLifecycleRequestSender } from "./daemon-transport.js";
+ 
+ interface DaemonControllerOptions {
+   readonly policy: Pick<DaemonPolicyValues, "startup" | "shutdown">;
+-  readonly now?: () => number;
++  readonly clock?: Pick<DaemonClock, "wallNowMs">;
+   readonly processTerminator?: DaemonProcessTerminator;
+   readonly launcher?: DaemonProcessLauncher;
+@@ -27,5 +28,5 @@
+ 
+ export class DaemonController {
+-  private readonly now: () => number;
++  private readonly clock: Pick<DaemonClock, "wallNowMs">;
+   private readonly stopTimeoutMs: number;
+   private readonly pollIntervalMs: number;
+@@ -42,11 +43,12 @@
+   ) {
+     this.policy = options.policy;
+-    this.now = options.now ?? Date.now;
++    this.clock = options.clock ?? new NodeDaemonClock();
+     this.stopTimeoutMs = this.policy.shutdown.stopTimeoutMs;
+     this.pollIntervalMs = this.policy.shutdown.controllerPollIntervalMs;
+     this.processTerminator =
+-      options.processTerminator ?? new NodeDaemonProcessTerminator(this.policy.shutdown);
++      options.processTerminator ??
++      new NodeDaemonProcessTerminator(this.policy.shutdown, this.clock);
+     this.launcher = options.launcher;
+-    this.observer = new DaemonRecordObserver(this.transport, this.processTerminator, this.now);
++    this.observer = new DaemonRecordObserver(this.transport, this.processTerminator);
+   }
+ 
+@@ -70,5 +72,5 @@
+ 
+   async stop(workspaceRoot: string): Promise<DaemonStopResult> {
+-    const stopStartedAt = this.now();
++    const stopStartedAt = this.clock.wallNowMs();
+     const deadline = stopStartedAt + this.stopTimeoutMs;
+     const forceWaitMs = Math.min(
+@@ -102,5 +104,5 @@
+     const acknowledged = await Promise.race([
+       stopRequest,
+-      this.pause(Math.max(0, gracefulDeadline - this.now())).then(() => false),
++      this.pause(Math.max(0, gracefulDeadline - this.clock.wallNowMs())).then(() => false),
+     ]);
+     if (acknowledged && (await this.waitForExit(record.pid, gracefulDeadline))) {
+@@ -132,22 +134,21 @@
+         return this.statusForObservation(observation);
+       }
+-      const owner = this.registry.startupOwner(identity);
++      const ownerForRecord = this.registry.startupOwnerForRecordCredentials(identity, record);
++      const ownerForInstance = this.registry.startupOwnerForInstance(identity, record.instanceId);
+       const armedLaunchIsWithinGrace =
+-        owner?.instanceId === record.instanceId &&
+-        owner.processToken === record.processToken &&
+-        this.registry.startupOwnerIsWithinGrace(owner);
++        ownerForRecord !== undefined && this.registry.startupOwnerIsWithinGrace(ownerForRecord);
+       if (
+         armedLaunchIsWithinGrace ||
+-        (owner?.instanceId === record.instanceId &&
+-          this.processTerminator.isAlive(owner.ownerPid) &&
+-          this.registry.startupOwnerIsWithinGrace(owner))
++        (ownerForInstance !== undefined &&
++          this.processTerminator.isAlive(ownerForInstance.ownerPid) &&
++          this.registry.startupOwnerIsWithinGrace(ownerForInstance))
+       ) {
+         return this.startingStatus(record);
+       }
+-      if (owner?.instanceId === record.instanceId) {
+-        if (!this.registry.removeStartupLockIfOwner(identity, owner)) {
+-          const renewedOwner = this.registry.startupOwner(identity);
++      if (ownerForInstance !== undefined) {
++        if (!this.registry.removeStartupLockIfOwner(identity, ownerForInstance)) {
++          const renewedOwner = this.registry.startupOwnerForInstance(identity, record.instanceId);
+           if (
+-            renewedOwner?.instanceId === record.instanceId &&
++            renewedOwner !== undefined &&
+             this.processTerminator.isAlive(renewedOwner.ownerPid) &&
+             this.registry.startupOwnerIsWithinGrace(renewedOwner)
+@@ -170,11 +171,9 @@
+     deadline: number,
+   ): Promise<DaemonStopResult> {
+-    const owner = this.registry.startupOwner(identity);
+     if (record.pid <= 0) {
+-      if (owner?.processToken === record.processToken) {
++      if (this.registry.startupOwnerForRecordCredentials(identity, record) !== undefined) {
+         return this.waitForClaimedProcessAndStop(identity, record, deadline);
+       }
+-      if (owner?.instanceId === record.instanceId)
+-        this.registry.removeStartupLockIfOwner(identity, owner);
++      this.registry.removeStartupLockIfInstance(identity, record.instanceId);
+       this.registry.removeIfProcess(identity, record.instanceId, record.processToken);
+       return { status: "not-running", workspaceRoot: record.workspaceRoot };
+@@ -202,5 +201,5 @@
+     deadline: number,
+   ): Promise<DaemonStopResult> {
+-    while (this.now() <= deadline) {
++    while (this.clock.wallNowMs() <= deadline) {
+       const record = this.registry.readStoredInstance(identity, claimedRecord.instanceId);
+       if (record === undefined || record.processToken !== claimedRecord.processToken) {
+@@ -208,9 +207,5 @@
+       }
+       if (record.pid > 0) return this.stopStarting(identity, record, deadline);
+-      const owner = this.registry.startupOwner(identity);
+-      if (
+-        owner?.instanceId !== claimedRecord.instanceId ||
+-        owner.processToken !== claimedRecord.processToken
+-      ) {
++      if (this.registry.startupOwnerForRecordCredentials(identity, claimedRecord) === undefined) {
+         return { status: "not-running", workspaceRoot: claimedRecord.workspaceRoot };
+       }
+@@ -223,5 +218,5 @@
+     let timeout: NodeJS.Timeout | undefined;
+     const deadlineReached = new Promise<false>((resolve) => {
+-      timeout = setTimeout(() => resolve(false), Math.max(0, deadline - this.now()));
++      timeout = setTimeout(() => resolve(false), Math.max(0, deadline - this.clock.wallNowMs()));
+     });
+     try {
+@@ -244,9 +239,6 @@
+       return;
+     }
+-    const owner = this.registry.startupOwner(identity);
+     if (this.registry.startupOwnerMatchesProcess(identity, record)) {
+       this.registry.removeStartupLockIfProcess(identity, record);
+-    } else if (owner?.instanceId === record.instanceId && owner.processToken === undefined) {
+-      this.registry.removeStartupLockIfOwner(identity, owner);
+     }
+     this.registry.removeIfProcess(identity, record.instanceId, record.processToken);
+@@ -258,5 +250,5 @@
+       state: "starting",
+       pid: record.pid,
+-      startupElapsedMs: Math.max(0, this.now() - record.startedAt),
++      startupElapsedMs: Math.max(0, this.clock.wallNowMs() - record.startedAt),
+       ...(record.memoryBytes === undefined ? {} : { memoryBytes: record.memoryBytes }),
+     };
+@@ -290,5 +282,5 @@
+         state: "busy",
+         pid: record.pid,
+-        uptimeMs: Math.max(0, this.now() - record.startedAt),
++        uptimeMs: Math.max(0, this.clock.wallNowMs() - record.startedAt),
+         command: DaemonRuntimeValues.isCommandName(observation.pong.currentCommand)
+           ? observation.pong.currentCommand
+@@ -306,10 +298,10 @@
+       state: "ready",
+       pid: record.pid,
+-      uptimeMs: Math.max(0, this.now() - record.startedAt),
++      uptimeMs: Math.max(0, this.clock.wallNowMs() - record.startedAt),
+       fileCount,
+       memoryBytes,
+       ...(lastNavigationAt === undefined
+         ? {}
+-        : { lastRequestAgoMs: Math.max(0, this.now() - lastNavigationAt) }),
++        : { lastRequestAgoMs: Math.max(0, this.clock.wallNowMs() - lastNavigationAt) }),
+     };
+   }
+@@ -320,5 +312,5 @@
+       state: "unresponsive",
+       pid: record.pid,
+-      uptimeMs: Math.max(0, this.now() - record.startedAt),
++      uptimeMs: Math.max(0, this.clock.wallNowMs() - record.startedAt),
+     };
+   }
+@@ -385,5 +377,5 @@
+           processToken: record.processToken,
+         }),
+-        this.pause(Math.max(0, deadline - this.now())).then(() => undefined),
++        this.pause(Math.max(0, deadline - this.clock.wallNowMs())).then(() => undefined),
+       ]);
+       return response?.kind === "killing";
+@@ -394,5 +386,5 @@
+ 
+   private async waitForIdentifiedExit(record: DaemonRecord, deadline: number): Promise<boolean> {
+-    while (this.now() <= deadline) {
++    while (this.clock.wallNowMs() <= deadline) {
+       if (!(await this.identifies(record)) && !this.processTerminator.isAlive(record.pid)) {
+         return true;
+@@ -421,5 +413,5 @@
+ 
+   private async waitForExit(pid: number, deadline: number): Promise<boolean> {
+-    while (this.now() <= deadline) {
++    while (this.clock.wallNowMs() <= deadline) {
+       if (!this.processTerminator.isAlive(pid)) return true;
+       await this.pause(this.pollIntervalMs);
