@@ -346,3 +346,684 @@ no changes added to commit (use "git add" and/or "git commit -a")
 - 2026-09-13 06:56:41 +03: Generated brief 48-fresh-reader-refresh-40: recurring brief 39 after 40 completions
 - 2026-09-13 06:56:41 +03: START 45-critique-refresh-30 attempt 1 via codex, pid 69410
 - 2026-09-13 06:59:12 +03: FINISH 39-fresh-reader-check via codex, exit 0, README present
+- 2026-09-13 06:59:15 +03: COMMIT OK 39-fresh-reader-check: [main c1a6f4f] Add experiment 39 fresh-reader-check
+- 2026-09-13 06:59:15 +03: START 46-fresh-reader-refresh-30 attempt 1 via claude-opus, pid 70726
+- 2026-09-13 06:59:25 +03: README MISSING 46-fresh-reader-refresh-30 after worker exit 1
+- 2026-09-13 06:59:25 +03: REQUEUE 46-fresh-reader-refresh-30 after attempt 1: worker exited 1 without README
+- 2026-09-13 06:59:25 +03: START 46-fresh-reader-refresh-30 attempt 2 via claude-opus, pid 70874
+- 2026-09-13 06:59:35 +03: README MISSING 46-fresh-reader-refresh-30 after worker exit 1
+- 2026-09-13 06:59:35 +03: REQUEUE 46-fresh-reader-refresh-30 after attempt 2: worker exited 1 without README
+- 2026-09-13 06:59:35 +03: START 46-fresh-reader-refresh-30 attempt 3 via codex, pid 70931
+- 2026-09-13 07:00:57 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log
+- 2026-09-13 07:00:57 +03: MONITOR OK supervisor=1153, finished=41, running=5, queued=2, dirty-worktrees=0, missing-readmes=0, free-disk=30.0GiB
+- 2026-09-13 07:05:36 +03: FINISH 42-fresh-reader-refresh-10 via codex, exit 0, README present
+- 2026-09-13 07:05:36 +03: COMMIT FAILED 42-fresh-reader-refresh-10: On branch main
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   index.html
+	modified:   orchestrator-log.md
+	modified:   supervisor-state.json
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	experiments/41-critique-refresh-10/
+	experiments/42-fresh-reader-refresh-10/
+	experiments/43-critique-refresh-20/
+	experiments/44-fresh-reader-refresh-20/
+	experiments/45-critique-refresh-30/
+	experiments/46-fresh-reader-refresh-30/
+	queue/47-critique-refresh-40.md
+	queue/48-fresh-reader-refresh-40.md
+	queue/done/41-critique-refresh-10.md
+	queue/done/42-fresh-reader-refresh-10.md
+	queue/running/
+
+no changes added to commit (use "git add" and/or "git commit -a")
+- 2026-09-13 07:05:36 +03: START 47-critique-refresh-40 attempt 1 via codex, pid 75252
+- 2026-09-13 07:05:59 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log
+- 2026-09-13 07:11:02 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log
+- 2026-09-13 07:16:04 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log
+- 2026-09-13 07:16:04 +03: MONITOR OK supervisor=1153, finished=42, running=5, queued=1, dirty-worktrees=0, missing-readmes=0, free-disk=29.6GiB
+- 2026-09-13 07:20:47 +03: FINISH 43-critique-refresh-20 via codex, exit 0, README present
+- 2026-09-13 07:20:47 +03: COMMIT FAILED 43-critique-refresh-20: On branch main
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   index.html
+	modified:   orchestrator-log.md
+	modified:   supervisor-state.json
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	experiments/41-critique-refresh-10/
+	experiments/42-fresh-reader-refresh-10/
+	experiments/43-critique-refresh-20/
+	experiments/44-fresh-reader-refresh-20/
+	experiments/45-critique-refresh-30/
+	experiments/46-fresh-reader-refresh-30/
+	experiments/47-critique-refresh-40/
+	queue/48-fresh-reader-refresh-40.md
+	queue/done/41-critique-refresh-10.md
+	queue/done/42-fresh-reader-refresh-10.md
+	queue/done/43-critique-refresh-20.md
+	queue/running/
+
+no changes added to commit (use "git add" and/or "git commit -a")
+- 2026-09-13 07:20:47 +03: START 48-fresh-reader-refresh-40 attempt 1 via claude-opus, pid 91051
+- 2026-09-13 07:20:57 +03: README MISSING 48-fresh-reader-refresh-40 after worker exit 1
+- 2026-09-13 07:20:57 +03: REQUEUE 48-fresh-reader-refresh-40 after attempt 1: worker exited 1 without README
+- 2026-09-13 07:20:57 +03: START 48-fresh-reader-refresh-40 attempt 2 via claude-opus, pid 91110
+- 2026-09-13 07:21:07 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log
+- 2026-09-13 07:21:07 +03: README MISSING 48-fresh-reader-refresh-40 after worker exit 1
+- 2026-09-13 07:21:07 +03: REQUEUE 48-fresh-reader-refresh-40 after attempt 2: worker exited 1 without README
+- 2026-09-13 07:21:07 +03: START 48-fresh-reader-refresh-40 attempt 3 via codex, pid 91264
+- 2026-09-13 07:26:09 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log
+- 2026-09-13 07:27:57 +03: FINISH 45-critique-refresh-30 via codex, exit 0, README present
+- 2026-09-13 07:27:57 +03: COMMIT FAILED 45-critique-refresh-30: On branch main
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   index.html
+	modified:   orchestrator-log.md
+	modified:   supervisor-state.json
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	experiments/41-critique-refresh-10/
+	experiments/42-fresh-reader-refresh-10/
+	experiments/43-critique-refresh-20/
+	experiments/44-fresh-reader-refresh-20/
+	experiments/45-critique-refresh-30/
+	experiments/46-fresh-reader-refresh-30/
+	experiments/47-critique-refresh-40/
+	experiments/48-fresh-reader-refresh-40/
+	queue/done/41-critique-refresh-10.md
+	queue/done/42-fresh-reader-refresh-10.md
+	queue/done/43-critique-refresh-20.md
+	queue/done/45-critique-refresh-30.md
+	queue/running/
+
+no changes added to commit (use "git add" and/or "git commit -a")
+- 2026-09-13 07:30:17 +03: FINISH 44-fresh-reader-refresh-20 via codex, exit 0, README present
+- 2026-09-13 07:30:17 +03: COMMIT FAILED 44-fresh-reader-refresh-20: On branch main
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   index.html
+	modified:   orchestrator-log.md
+	modified:   supervisor-state.json
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	experiments/41-critique-refresh-10/
+	experiments/42-fresh-reader-refresh-10/
+	experiments/43-critique-refresh-20/
+	experiments/44-fresh-reader-refresh-20/
+	experiments/45-critique-refresh-30/
+	experiments/46-fresh-reader-refresh-30/
+	experiments/47-critique-refresh-40/
+	experiments/48-fresh-reader-refresh-40/
+	queue/done/41-critique-refresh-10.md
+	queue/done/42-fresh-reader-refresh-10.md
+	queue/done/43-critique-refresh-20.md
+	queue/done/44-fresh-reader-refresh-20.md
+	queue/done/45-critique-refresh-30.md
+	queue/running/
+
+no changes added to commit (use "git add" and/or "git commit -a")
+- 2026-09-13 07:31:12 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log, experiments/48-fresh-reader-refresh-40/worker-attempt-3.log
+- 2026-09-13 07:31:12 +03: MONITOR OK supervisor=1153, finished=45, running=3, queued=0, dirty-worktrees=0, missing-readmes=0, free-disk=29.5GiB
+- 2026-09-13 07:36:14 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log, experiments/48-fresh-reader-refresh-40/worker-attempt-3.log
+- 2026-09-13 07:39:48 +03: FINISH 46-fresh-reader-refresh-30 via codex, exit 0, README present
+- 2026-09-13 07:39:48 +03: COMMIT FAILED 46-fresh-reader-refresh-30: On branch main
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   index.html
+	modified:   orchestrator-log.md
+	modified:   supervisor-state.json
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	experiments/41-critique-refresh-10/
+	experiments/42-fresh-reader-refresh-10/
+	experiments/43-critique-refresh-20/
+	experiments/44-fresh-reader-refresh-20/
+	experiments/45-critique-refresh-30/
+	experiments/46-fresh-reader-refresh-30/
+	experiments/47-critique-refresh-40/
+	experiments/48-fresh-reader-refresh-40/
+	queue/done/41-critique-refresh-10.md
+	queue/done/42-fresh-reader-refresh-10.md
+	queue/done/43-critique-refresh-20.md
+	queue/done/44-fresh-reader-refresh-20.md
+	queue/done/45-critique-refresh-30.md
+	queue/done/46-fresh-reader-refresh-30.md
+	queue/running/
+
+no changes added to commit (use "git add" and/or "git commit -a")
+- 2026-09-13 07:41:17 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log, experiments/48-fresh-reader-refresh-40/worker-attempt-3.log
+- 2026-09-13 07:44:28 +03: FINISH 47-critique-refresh-40 via codex, exit 0, README present
+- 2026-09-13 07:44:28 +03: COMMIT FAILED 47-critique-refresh-40: On branch main
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   index.html
+	modified:   orchestrator-log.md
+	modified:   supervisor-state.json
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	experiments/41-critique-refresh-10/
+	experiments/42-fresh-reader-refresh-10/
+	experiments/43-critique-refresh-20/
+	experiments/44-fresh-reader-refresh-20/
+	experiments/45-critique-refresh-30/
+	experiments/46-fresh-reader-refresh-30/
+	experiments/47-critique-refresh-40/
+	experiments/48-fresh-reader-refresh-40/
+	queue/done/41-critique-refresh-10.md
+	queue/done/42-fresh-reader-refresh-10.md
+	queue/done/43-critique-refresh-20.md
+	queue/done/44-fresh-reader-refresh-20.md
+	queue/done/45-critique-refresh-30.md
+	queue/done/46-fresh-reader-refresh-30.md
+	queue/done/47-critique-refresh-40.md
+	queue/running/
+
+no changes added to commit (use "git add" and/or "git commit -a")
+- 2026-09-13 07:46:19 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log, experiments/48-fresh-reader-refresh-40/worker-attempt-3.log
+- 2026-09-13 07:46:19 +03: MONITOR OK supervisor=1153, finished=47, running=1, queued=0, dirty-worktrees=0, missing-readmes=0, free-disk=29.3GiB
+- 2026-09-13 07:51:21 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log, experiments/48-fresh-reader-refresh-40/worker-attempt-3.log
+- 2026-09-13 07:56:24 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log, experiments/48-fresh-reader-refresh-40/worker-attempt-3.log
+- 2026-09-13 08:01:26 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log, experiments/48-fresh-reader-refresh-40/worker-attempt-3.log
+- 2026-09-13 08:01:26 +03: MONITOR OK supervisor=1153, finished=47, running=1, queued=0, dirty-worktrees=0, missing-readmes=0, free-disk=29.3GiB
+- 2026-09-13 08:01:49 +03: FINISH 48-fresh-reader-refresh-40 via codex, exit 0, README present
+- 2026-09-13 08:01:49 +03: COMMIT FAILED 48-fresh-reader-refresh-40: On branch main
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   index.html
+	modified:   orchestrator-log.md
+	modified:   supervisor-state.json
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	experiments/41-critique-refresh-10/
+	experiments/42-fresh-reader-refresh-10/
+	experiments/43-critique-refresh-20/
+	experiments/44-fresh-reader-refresh-20/
+	experiments/45-critique-refresh-30/
+	experiments/46-fresh-reader-refresh-30/
+	experiments/47-critique-refresh-40/
+	experiments/48-fresh-reader-refresh-40/
+	queue/done/41-critique-refresh-10.md
+	queue/done/42-fresh-reader-refresh-10.md
+	queue/done/43-critique-refresh-20.md
+	queue/done/44-fresh-reader-refresh-20.md
+	queue/done/45-critique-refresh-30.md
+	queue/done/46-fresh-reader-refresh-30.md
+	queue/done/47-critique-refresh-40.md
+	queue/done/48-fresh-reader-refresh-40.md
+
+no changes added to commit (use "git add" and/or "git commit -a")
+- 2026-09-13 08:01:50 +03: Generated brief 49-follow-next-49: follows 48-fresh-reader-refresh-40's next step
+- 2026-09-13 08:01:50 +03: Generated brief 50-recombine-angles-50: recombines choices from 48-fresh-reader-refresh-40 and 47-critique-refresh-40
+- 2026-09-13 08:01:50 +03: Generated brief 51-angle-new-subject-51: moves a strong small-PR angle to the stack
+- 2026-09-13 08:01:50 +03: Generated brief 52-critique-response-52: responds to 47-critique-refresh-40
+- 2026-09-13 08:01:50 +03: Generated brief 53-be-weird-53: one-in-five be-weird slot
+- 2026-09-13 08:01:50 +03: START 49-follow-next-49 attempt 1 via codex, pid 2742
+- 2026-09-13 08:01:50 +03: START 50-recombine-angles-50 attempt 1 via claude-opus, pid 2743
+- 2026-09-13 08:01:50 +03: START 51-angle-new-subject-51 attempt 1 via codex, pid 2744
+- 2026-09-13 08:01:50 +03: START 52-critique-response-52 attempt 1 via claude-opus, pid 2746
+- 2026-09-13 08:01:50 +03: START 53-be-weird-53 attempt 1 via codex, pid 2747
+- 2026-09-13 08:02:00 +03: README MISSING 50-recombine-angles-50 after worker exit 1
+- 2026-09-13 08:02:00 +03: REQUEUE 50-recombine-angles-50 after attempt 1: worker exited 1 without README
+- 2026-09-13 08:02:00 +03: README MISSING 52-critique-response-52 after worker exit 1
+- 2026-09-13 08:02:00 +03: REQUEUE 52-critique-response-52 after attempt 1: worker exited 1 without README
+- 2026-09-13 08:02:00 +03: START 50-recombine-angles-50 attempt 2 via claude-opus, pid 4392
+- 2026-09-13 08:02:00 +03: START 52-critique-response-52 attempt 2 via claude-opus, pid 4393
+- 2026-09-13 08:02:10 +03: README MISSING 50-recombine-angles-50 after worker exit 1
+- 2026-09-13 08:02:10 +03: REQUEUE 50-recombine-angles-50 after attempt 2: worker exited 1 without README
+- 2026-09-13 08:02:10 +03: README MISSING 52-critique-response-52 after worker exit 1
+- 2026-09-13 08:02:10 +03: REQUEUE 52-critique-response-52 after attempt 2: worker exited 1 without README
+- 2026-09-13 08:02:10 +03: START 50-recombine-angles-50 attempt 3 via codex, pid 4502
+- 2026-09-13 08:02:10 +03: START 52-critique-response-52 attempt 3 via codex, pid 4503
+- 2026-09-13 08:06:29 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log, experiments/48-fresh-reader-refresh-40/worker-attempt-3.log, experiments/50-recombine-angles-50/worker-attempt-3.log
+- 2026-09-13 08:11:31 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log, experiments/48-fresh-reader-refresh-40/worker-attempt-3.log, experiments/50-recombine-angles-50/worker-attempt-3.log
+- 2026-09-13 08:16:34 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log, experiments/48-fresh-reader-refresh-40/worker-attempt-3.log, experiments/50-recombine-angles-50/worker-attempt-3.log
+- 2026-09-13 08:16:34 +03: MONITOR OK supervisor=1153, finished=48, running=5, queued=0, dirty-worktrees=0, missing-readmes=0, free-disk=31.1GiB
+- 2026-09-13 08:21:36 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log, experiments/48-fresh-reader-refresh-40/worker-attempt-3.log, experiments/50-recombine-angles-50/worker-attempt-3.log
+- 2026-09-13 08:26:38 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log, experiments/48-fresh-reader-refresh-40/worker-attempt-3.log, experiments/50-recombine-angles-50/worker-attempt-3.log
+- 2026-09-13 08:29:01 +03: FINISH 49-follow-next-49 via codex, exit 0, README present
+- 2026-09-13 08:29:01 +03: COMMIT FAILED 49-follow-next-49: On branch main
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   index.html
+	modified:   orchestrator-log.md
+	modified:   supervisor-state.json
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	experiments/41-critique-refresh-10/
+	experiments/42-fresh-reader-refresh-10/
+	experiments/43-critique-refresh-20/
+	experiments/44-fresh-reader-refresh-20/
+	experiments/45-critique-refresh-30/
+	experiments/46-fresh-reader-refresh-30/
+	experiments/47-critique-refresh-40/
+	experiments/48-fresh-reader-refresh-40/
+	experiments/49-follow-next-49/
+	experiments/50-recombine-angles-50/
+	experiments/51-angle-new-subject-51/
+	experiments/52-critique-response-52/
+	experiments/53-be-weird-53/
+	queue/done/41-critique-refresh-10.md
+	queue/done/42-fresh-reader-refresh-10.md
+	queue/done/43-critique-refresh-20.md
+	queue/done/44-fresh-reader-refresh-20.md
+	queue/done/45-critique-refresh-30.md
+	queue/done/46-fresh-reader-refresh-30.md
+	queue/done/47-critique-refresh-40.md
+	queue/done/48-fresh-reader-refresh-40.md
+	queue/done/49-follow-next-49.md
+	queue/running/
+
+no changes added to commit (use "git add" and/or "git commit -a")
+- 2026-09-13 08:29:11 +03: FINISH 52-critique-response-52 via codex, exit 0, README present
+- 2026-09-13 08:29:11 +03: COMMIT FAILED 52-critique-response-52: On branch main
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   index.html
+	modified:   orchestrator-log.md
+	modified:   supervisor-state.json
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	experiments/41-critique-refresh-10/
+	experiments/42-fresh-reader-refresh-10/
+	experiments/43-critique-refresh-20/
+	experiments/44-fresh-reader-refresh-20/
+	experiments/45-critique-refresh-30/
+	experiments/46-fresh-reader-refresh-30/
+	experiments/47-critique-refresh-40/
+	experiments/48-fresh-reader-refresh-40/
+	experiments/49-follow-next-49/
+	experiments/50-recombine-angles-50/
+	experiments/51-angle-new-subject-51/
+	experiments/52-critique-response-52/
+	experiments/53-be-weird-53/
+	queue/done/41-critique-refresh-10.md
+	queue/done/42-fresh-reader-refresh-10.md
+	queue/done/43-critique-refresh-20.md
+	queue/done/44-fresh-reader-refresh-20.md
+	queue/done/45-critique-refresh-30.md
+	queue/done/46-fresh-reader-refresh-30.md
+	queue/done/47-critique-refresh-40.md
+	queue/done/48-fresh-reader-refresh-40.md
+	queue/done/49-follow-next-49.md
+	queue/done/52-critique-response-52.md
+	queue/running/
+
+no changes added to commit (use "git add" and/or "git commit -a")
+- 2026-09-13 08:29:11 +03: Generated brief 54-critique-refresh-50: recurring brief 38 after 50 completions
+- 2026-09-13 08:29:11 +03: Generated brief 55-fresh-reader-refresh-50: recurring brief 39 after 50 completions
+- 2026-09-13 08:29:11 +03: START 54-critique-refresh-50 attempt 1 via claude-opus, pid 16424
+- 2026-09-13 08:29:11 +03: START 55-fresh-reader-refresh-50 attempt 1 via codex, pid 16425
+- 2026-09-13 08:29:21 +03: README MISSING 54-critique-refresh-50 after worker exit 1
+- 2026-09-13 08:29:21 +03: REQUEUE 54-critique-refresh-50 after attempt 1: worker exited 1 without README
+- 2026-09-13 08:29:21 +03: START 54-critique-refresh-50 attempt 2 via claude-opus, pid 16997
+- 2026-09-13 08:29:31 +03: README MISSING 54-critique-refresh-50 after worker exit 1
+- 2026-09-13 08:29:31 +03: REQUEUE 54-critique-refresh-50 after attempt 2: worker exited 1 without README
+- 2026-09-13 08:29:31 +03: START 54-critique-refresh-50 attempt 3 via codex, pid 17052
+- 2026-09-13 08:31:45 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log, experiments/48-fresh-reader-refresh-40/worker-attempt-3.log, experiments/50-recombine-angles-50/worker-attempt-3.log
+- 2026-09-13 08:31:45 +03: MONITOR OK supervisor=1153, finished=50, running=5, queued=0, dirty-worktrees=0, missing-readmes=0, free-disk=31.0GiB
+- 2026-09-13 08:32:51 +03: FINISH 50-recombine-angles-50 via codex, exit 0, README present
+- 2026-09-13 08:32:52 +03: COMMIT FAILED 50-recombine-angles-50: On branch main
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   index.html
+	modified:   orchestrator-log.md
+	modified:   supervisor-state.json
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	experiments/41-critique-refresh-10/
+	experiments/42-fresh-reader-refresh-10/
+	experiments/43-critique-refresh-20/
+	experiments/44-fresh-reader-refresh-20/
+	experiments/45-critique-refresh-30/
+	experiments/46-fresh-reader-refresh-30/
+	experiments/47-critique-refresh-40/
+	experiments/48-fresh-reader-refresh-40/
+	experiments/49-follow-next-49/
+	experiments/50-recombine-angles-50/
+	experiments/51-angle-new-subject-51/
+	experiments/52-critique-response-52/
+	experiments/53-be-weird-53/
+	experiments/54-critique-refresh-50/
+	experiments/55-fresh-reader-refresh-50/
+	queue/done/41-critique-refresh-10.md
+	queue/done/42-fresh-reader-refresh-10.md
+	queue/done/43-critique-refresh-20.md
+	queue/done/44-fresh-reader-refresh-20.md
+	queue/done/45-critique-refresh-30.md
+	queue/done/46-fresh-reader-refresh-30.md
+	queue/done/47-critique-refresh-40.md
+	queue/done/48-fresh-reader-refresh-40.md
+	queue/done/49-follow-next-49.md
+	queue/done/50-recombine-angles-50.md
+	queue/done/52-critique-response-52.md
+	queue/running/
+
+no changes added to commit (use "git add" and/or "git commit -a")
+- 2026-09-13 08:35:02 +03: FINISH 51-angle-new-subject-51 via codex, exit 0, README present
+- 2026-09-13 08:35:02 +03: COMMIT FAILED 51-angle-new-subject-51: On branch main
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   index.html
+	modified:   orchestrator-log.md
+	modified:   supervisor-state.json
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	experiments/41-critique-refresh-10/
+	experiments/42-fresh-reader-refresh-10/
+	experiments/43-critique-refresh-20/
+	experiments/44-fresh-reader-refresh-20/
+	experiments/45-critique-refresh-30/
+	experiments/46-fresh-reader-refresh-30/
+	experiments/47-critique-refresh-40/
+	experiments/48-fresh-reader-refresh-40/
+	experiments/49-follow-next-49/
+	experiments/50-recombine-angles-50/
+	experiments/51-angle-new-subject-51/
+	experiments/52-critique-response-52/
+	experiments/53-be-weird-53/
+	experiments/54-critique-refresh-50/
+	experiments/55-fresh-reader-refresh-50/
+	queue/done/41-critique-refresh-10.md
+	queue/done/42-fresh-reader-refresh-10.md
+	queue/done/43-critique-refresh-20.md
+	queue/done/44-fresh-reader-refresh-20.md
+	queue/done/45-critique-refresh-30.md
+	queue/done/46-fresh-reader-refresh-30.md
+	queue/done/47-critique-refresh-40.md
+	queue/done/48-fresh-reader-refresh-40.md
+	queue/done/49-follow-next-49.md
+	queue/done/50-recombine-angles-50.md
+	queue/done/51-angle-new-subject-51.md
+	queue/done/52-critique-response-52.md
+	queue/running/
+
+no changes added to commit (use "git add" and/or "git commit -a")
+- 2026-09-13 08:35:22 +03: FINISH 53-be-weird-53 via codex, exit 0, README present
+- 2026-09-13 08:35:22 +03: COMMIT FAILED 53-be-weird-53: On branch main
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   index.html
+	modified:   orchestrator-log.md
+	modified:   supervisor-state.json
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	experiments/41-critique-refresh-10/
+	experiments/42-fresh-reader-refresh-10/
+	experiments/43-critique-refresh-20/
+	experiments/44-fresh-reader-refresh-20/
+	experiments/45-critique-refresh-30/
+	experiments/46-fresh-reader-refresh-30/
+	experiments/47-critique-refresh-40/
+	experiments/48-fresh-reader-refresh-40/
+	experiments/49-follow-next-49/
+	experiments/50-recombine-angles-50/
+	experiments/51-angle-new-subject-51/
+	experiments/52-critique-response-52/
+	experiments/53-be-weird-53/
+	experiments/54-critique-refresh-50/
+	experiments/55-fresh-reader-refresh-50/
+	queue/done/41-critique-refresh-10.md
+	queue/done/42-fresh-reader-refresh-10.md
+	queue/done/43-critique-refresh-20.md
+	queue/done/44-fresh-reader-refresh-20.md
+	queue/done/45-critique-refresh-30.md
+	queue/done/46-fresh-reader-refresh-30.md
+	queue/done/47-critique-refresh-40.md
+	queue/done/48-fresh-reader-refresh-40.md
+	queue/done/49-follow-next-49.md
+	queue/done/50-recombine-angles-50.md
+	queue/done/51-angle-new-subject-51.md
+	queue/done/52-critique-response-52.md
+	queue/done/53-be-weird-53.md
+	queue/running/
+
+no changes added to commit (use "git add" and/or "git commit -a")
+- 2026-09-13 08:36:47 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log, experiments/48-fresh-reader-refresh-40/worker-attempt-3.log, experiments/50-recombine-angles-50/worker-attempt-3.log
+- 2026-09-13 08:41:50 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log, experiments/48-fresh-reader-refresh-40/worker-attempt-3.log, experiments/50-recombine-angles-50/worker-attempt-3.log
+- 2026-09-13 08:46:52 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log, experiments/48-fresh-reader-refresh-40/worker-attempt-3.log, experiments/50-recombine-angles-50/worker-attempt-3.log
+- 2026-09-13 08:46:52 +03: MONITOR OK supervisor=1153, finished=53, running=2, queued=0, dirty-worktrees=0, missing-readmes=0, free-disk=31.0GiB
+- 2026-09-13 08:51:54 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log, experiments/48-fresh-reader-refresh-40/worker-attempt-3.log, experiments/50-recombine-angles-50/worker-attempt-3.log
+- 2026-09-13 08:56:57 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log, experiments/48-fresh-reader-refresh-40/worker-attempt-3.log, experiments/50-recombine-angles-50/worker-attempt-3.log
+- 2026-09-13 09:01:43 +03: FINISH 54-critique-refresh-50 via codex, exit 0, README present
+- 2026-09-13 09:01:43 +03: COMMIT FAILED 54-critique-refresh-50: On branch main
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   index.html
+	modified:   orchestrator-log.md
+	modified:   supervisor-state.json
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	experiments/41-critique-refresh-10/
+	experiments/42-fresh-reader-refresh-10/
+	experiments/43-critique-refresh-20/
+	experiments/44-fresh-reader-refresh-20/
+	experiments/45-critique-refresh-30/
+	experiments/46-fresh-reader-refresh-30/
+	experiments/47-critique-refresh-40/
+	experiments/48-fresh-reader-refresh-40/
+	experiments/49-follow-next-49/
+	experiments/50-recombine-angles-50/
+	experiments/51-angle-new-subject-51/
+	experiments/52-critique-response-52/
+	experiments/53-be-weird-53/
+	experiments/54-critique-refresh-50/
+	experiments/55-fresh-reader-refresh-50/
+	queue/done/41-critique-refresh-10.md
+	queue/done/42-fresh-reader-refresh-10.md
+	queue/done/43-critique-refresh-20.md
+	queue/done/44-fresh-reader-refresh-20.md
+	queue/done/45-critique-refresh-30.md
+	queue/done/46-fresh-reader-refresh-30.md
+	queue/done/47-critique-refresh-40.md
+	queue/done/48-fresh-reader-refresh-40.md
+	queue/done/49-follow-next-49.md
+	queue/done/50-recombine-angles-50.md
+	queue/done/51-angle-new-subject-51.md
+	queue/done/52-critique-response-52.md
+	queue/done/53-be-weird-53.md
+	queue/done/54-critique-refresh-50.md
+	queue/running/
+
+no changes added to commit (use "git add" and/or "git commit -a")
+- 2026-09-13 09:01:59 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log, experiments/48-fresh-reader-refresh-40/worker-attempt-3.log, experiments/50-recombine-angles-50/worker-attempt-3.log
+- 2026-09-13 09:01:59 +03: MONITOR OK supervisor=1153, finished=54, running=1, queued=0, dirty-worktrees=0, missing-readmes=0, free-disk=31.0GiB
+- 2026-09-13 09:07:02 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log, experiments/48-fresh-reader-refresh-40/worker-attempt-3.log, experiments/50-recombine-angles-50/worker-attempt-3.log
+- 2026-09-13 09:10:34 +03: FINISH 55-fresh-reader-refresh-50 via codex, exit 0, README present
+- 2026-09-13 09:10:34 +03: COMMIT FAILED 55-fresh-reader-refresh-50: On branch main
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   index.html
+	modified:   orchestrator-log.md
+	modified:   supervisor-state.json
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	experiments/41-critique-refresh-10/
+	experiments/42-fresh-reader-refresh-10/
+	experiments/43-critique-refresh-20/
+	experiments/44-fresh-reader-refresh-20/
+	experiments/45-critique-refresh-30/
+	experiments/46-fresh-reader-refresh-30/
+	experiments/47-critique-refresh-40/
+	experiments/48-fresh-reader-refresh-40/
+	experiments/49-follow-next-49/
+	experiments/50-recombine-angles-50/
+	experiments/51-angle-new-subject-51/
+	experiments/52-critique-response-52/
+	experiments/53-be-weird-53/
+	experiments/54-critique-refresh-50/
+	experiments/55-fresh-reader-refresh-50/
+	queue/done/41-critique-refresh-10.md
+	queue/done/42-fresh-reader-refresh-10.md
+	queue/done/43-critique-refresh-20.md
+	queue/done/44-fresh-reader-refresh-20.md
+	queue/done/45-critique-refresh-30.md
+	queue/done/46-fresh-reader-refresh-30.md
+	queue/done/47-critique-refresh-40.md
+	queue/done/48-fresh-reader-refresh-40.md
+	queue/done/49-follow-next-49.md
+	queue/done/50-recombine-angles-50.md
+	queue/done/51-angle-new-subject-51.md
+	queue/done/52-critique-response-52.md
+	queue/done/53-be-weird-53.md
+	queue/done/54-critique-refresh-50.md
+	queue/done/55-fresh-reader-refresh-50.md
+
+no changes added to commit (use "git add" and/or "git commit -a")
+- 2026-09-13 09:10:34 +03: Generated brief 56-follow-next-56: follows 55-fresh-reader-refresh-50's next step
+- 2026-09-13 09:10:34 +03: Generated brief 57-recombine-angles-57: recombines choices from 55-fresh-reader-refresh-50 and 54-critique-refresh-50
+- 2026-09-13 09:10:34 +03: Generated brief 58-angle-new-subject-58: moves a strong small-PR angle to the stack
+- 2026-09-13 09:10:34 +03: Generated brief 59-critique-response-59: responds to 54-critique-refresh-50
+- 2026-09-13 09:10:34 +03: Generated brief 60-be-weird-60: one-in-five be-weird slot
+- 2026-09-13 09:10:34 +03: START 56-follow-next-56 attempt 1 via claude-opus, pid 28335
+- 2026-09-13 09:10:34 +03: START 57-recombine-angles-57 attempt 1 via codex, pid 28336
+- 2026-09-13 09:10:34 +03: START 58-angle-new-subject-58 attempt 1 via claude-opus, pid 28337
+- 2026-09-13 09:10:34 +03: START 59-critique-response-59 attempt 1 via codex, pid 28338
+- 2026-09-13 09:10:34 +03: START 60-be-weird-60 attempt 1 via claude-opus, pid 28339
+- 2026-09-13 09:12:04 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log, experiments/48-fresh-reader-refresh-40/worker-attempt-3.log, experiments/50-recombine-angles-50/worker-attempt-3.log
+- 2026-09-13 09:17:07 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log, experiments/48-fresh-reader-refresh-40/worker-attempt-3.log, experiments/50-recombine-angles-50/worker-attempt-3.log
+- 2026-09-13 09:17:07 +03: MONITOR OK supervisor=1153, finished=55, running=5, queued=0, dirty-worktrees=0, missing-readmes=0, free-disk=31.0GiB
+- 2026-09-13 09:22:09 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log, experiments/48-fresh-reader-refresh-40/worker-attempt-3.log, experiments/50-recombine-angles-50/worker-attempt-3.log
+- 2026-09-13 09:27:11 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log, experiments/48-fresh-reader-refresh-40/worker-attempt-3.log, experiments/50-recombine-angles-50/worker-attempt-3.log
+- 2026-09-13 09:32:14 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log, experiments/48-fresh-reader-refresh-40/worker-attempt-3.log, experiments/50-recombine-angles-50/worker-attempt-3.log
+- 2026-09-13 09:32:14 +03: MONITOR OK supervisor=1153, finished=55, running=5, queued=0, dirty-worktrees=0, missing-readmes=0, free-disk=30.9GiB
+- 2026-09-13 09:37:17 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log, experiments/48-fresh-reader-refresh-40/worker-attempt-3.log, experiments/50-recombine-angles-50/worker-attempt-3.log
+- 2026-09-13 09:41:05 +03: FINISH 59-critique-response-59 via codex, exit 0, README present
+- 2026-09-13 09:41:06 +03: COMMIT FAILED 59-critique-response-59: On branch main
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   index.html
+	modified:   orchestrator-log.md
+	modified:   supervisor-state.json
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	experiments/41-critique-refresh-10/
+	experiments/42-fresh-reader-refresh-10/
+	experiments/43-critique-refresh-20/
+	experiments/44-fresh-reader-refresh-20/
+	experiments/45-critique-refresh-30/
+	experiments/46-fresh-reader-refresh-30/
+	experiments/47-critique-refresh-40/
+	experiments/48-fresh-reader-refresh-40/
+	experiments/49-follow-next-49/
+	experiments/50-recombine-angles-50/
+	experiments/51-angle-new-subject-51/
+	experiments/52-critique-response-52/
+	experiments/53-be-weird-53/
+	experiments/54-critique-refresh-50/
+	experiments/55-fresh-reader-refresh-50/
+	experiments/56-follow-next-56/
+	experiments/57-recombine-angles-57/
+	experiments/58-angle-new-subject-58/
+	experiments/59-critique-response-59/
+	experiments/60-be-weird-60/
+	queue/done/41-critique-refresh-10.md
+	queue/done/42-fresh-reader-refresh-10.md
+	queue/done/43-critique-refresh-20.md
+	queue/done/44-fresh-reader-refresh-20.md
+	queue/done/45-critique-refresh-30.md
+	queue/done/46-fresh-reader-refresh-30.md
+	queue/done/47-critique-refresh-40.md
+	queue/done/48-fresh-reader-refresh-40.md
+	queue/done/49-follow-next-49.md
+	queue/done/50-recombine-angles-50.md
+	queue/done/51-angle-new-subject-51.md
+	queue/done/52-critique-response-52.md
+	queue/done/53-be-weird-53.md
+	queue/done/54-critique-refresh-50.md
+	queue/done/55-fresh-reader-refresh-50.md
+	queue/done/59-critique-response-59.md
+	queue/running/
+
+no changes added to commit (use "git add" and/or "git commit -a")
+- 2026-09-13 09:42:19 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log, experiments/48-fresh-reader-refresh-40/worker-attempt-3.log, experiments/50-recombine-angles-50/worker-attempt-3.log
+- 2026-09-13 09:45:44 +03: FINISH 57-recombine-angles-57 via codex, exit 0, README present
+- 2026-09-13 09:45:45 +03: COMMIT FAILED 57-recombine-angles-57: On branch main
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   index.html
+	modified:   orchestrator-log.md
+	modified:   supervisor-state.json
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	experiments/41-critique-refresh-10/
+	experiments/42-fresh-reader-refresh-10/
+	experiments/43-critique-refresh-20/
+	experiments/44-fresh-reader-refresh-20/
+	experiments/45-critique-refresh-30/
+	experiments/46-fresh-reader-refresh-30/
+	experiments/47-critique-refresh-40/
+	experiments/48-fresh-reader-refresh-40/
+	experiments/49-follow-next-49/
+	experiments/50-recombine-angles-50/
+	experiments/51-angle-new-subject-51/
+	experiments/52-critique-response-52/
+	experiments/53-be-weird-53/
+	experiments/54-critique-refresh-50/
+	experiments/55-fresh-reader-refresh-50/
+	experiments/56-follow-next-56/
+	experiments/57-recombine-angles-57/
+	experiments/58-angle-new-subject-58/
+	experiments/59-critique-response-59/
+	experiments/60-be-weird-60/
+	queue/done/41-critique-refresh-10.md
+	queue/done/42-fresh-reader-refresh-10.md
+	queue/done/43-critique-refresh-20.md
+	queue/done/44-fresh-reader-refresh-20.md
+	queue/done/45-critique-refresh-30.md
+	queue/done/46-fresh-reader-refresh-30.md
+	queue/done/47-critique-refresh-40.md
+	queue/done/48-fresh-reader-refresh-40.md
+	queue/done/49-follow-next-49.md
+	queue/done/50-recombine-angles-50.md
+	queue/done/51-angle-new-subject-51.md
+	queue/done/52-critique-response-52.md
+	queue/done/53-be-weird-53.md
+	queue/done/54-critique-refresh-50.md
+	queue/done/55-fresh-reader-refresh-50.md
+	queue/done/57-recombine-angles-57.md
+	queue/done/59-critique-response-59.md
+	queue/running/
+
+no changes added to commit (use "git add" and/or "git commit -a")
+- 2026-09-13 09:47:26 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log, experiments/48-fresh-reader-refresh-40/worker-attempt-3.log, experiments/50-recombine-angles-50/worker-attempt-3.log
+- 2026-09-13 09:47:26 +03: MONITOR OK supervisor=1153, finished=57, running=3, queued=0, dirty-worktrees=0, missing-readmes=0, free-disk=22.6GiB
+- 2026-09-13 09:51:03 +03: STOP signal 15; terminating 3 active workers
+- 2026-09-13 09:51:04 +03: MONITOR STOPPED
+- 2026-09-13 09:51:10 +03: SUPERVISOR STOPPED
+- 2026-09-13 09:52:00 +03: README MISSING 56-follow-next-56, 58-angle-new-subject-58, 60-be-weird-60 when the requested stop interrupted their first Claude Opus attempts.
+- 2026-09-13 09:52:00 +03: Decision: preserve each partial folder as an interrupted negative result, add the required README without inventing undeclared choices, and mark the brief done. This keeps the morning index honest and leaves no folder outside the section 7 contract.
+- 2026-09-13 09:52:00 +03: Commit recovery: generated brief commits 41-55, 57, and 59 failed because the supervisor passed an untracked, nonexistent pending path to `git add`. Fixed the staging path and landed each finished folder in its own commit.
