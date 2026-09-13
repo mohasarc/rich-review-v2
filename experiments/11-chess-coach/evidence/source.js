@@ -1,0 +1,1 @@
+(()=>{const reveal=()=>{const el=document.getElementById(location.hash.slice(1));if(!el)return;let p=el;while(p){if(p.tagName==='DETAILS')p.open=true;p=p.parentElement}requestAnimationFrame(()=>el.scrollIntoView({block:'center'}))};addEventListener('hashchange',reveal);reveal()})();

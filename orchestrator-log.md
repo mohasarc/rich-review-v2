@@ -87,3 +87,12 @@ BUILD OK stack-head
 - 2026-09-13 02:59:18 +03: START 11-chess-coach attempt 1 via codex, pid 63248
 - 2026-09-13 03:14:08 +03: MONITOR OK supervisor=1153, finished=6, running=5, queued=29, dirty-worktrees=0, missing-readmes=0, free-disk=32.8GiB
 - 2026-09-13 03:18:29 +03: FINISH 06-hub-and-spokes via codex, exit 0, README present
+- 2026-09-13 03:18:29 +03: COMMIT OK 06-hub-and-spokes: [main 6386231] Add experiment 06 hub-and-spokes
+- 2026-09-13 03:18:29 +03: START 12-detective attempt 1 via claude-opus, pid 67519
+- 2026-09-13 03:18:39 +03: README MISSING 12-detective after worker exit 1
+- 2026-09-13 03:18:39 +03: REQUEUE 12-detective after attempt 1: worker exited 1 without README
+- 2026-09-13 03:18:39 +03: START 12-detective attempt 2 via claude-opus, pid 67590
+- 2026-09-13 03:18:49 +03: README MISSING 12-detective after worker exit 1
+- 2026-09-13 03:18:49 +03: REQUEUE 12-detective after attempt 2: worker exited 1 without README
+- 2026-09-13 03:18:49 +03: START 12-detective attempt 3 via codex, pid 67639
+- 2026-09-13 03:20:29 +03: FINISH 11-chess-coach via codex, exit 0, README present
