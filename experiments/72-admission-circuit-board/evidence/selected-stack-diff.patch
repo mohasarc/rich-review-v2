@@ -1,0 +1,1139 @@
+diff --git a/apps/cli/src/cli-invocation-coordinator.ts b/apps/cli/src/cli-invocation-coordinator.ts
+new file mode 100644
+index 000000000..31e614a6b
+--- /dev/null
++++ b/apps/cli/src/cli-invocation-coordinator.ts
+@@ -0,0 +1,44 @@
++import type { DaemonClient, DaemonClientExecuteResult } from "@symnav/daemon";
++import type { CliProgramExecutor } from "./cli-program-executor.js";
++import type { CliExecutionRequest } from "./command-execution-result.js";
++import { InvocationWorkspaceSelector } from "./invocation-workspace-selector.js";
++
++export interface CliInvocationCoordinatorOptions {
++  readonly daemonClient: DaemonClient;
++  readonly createLocalExecutor: () => CliProgramExecutor;
++  readonly resolveWorkspaceRoot: (startDirectory: string) => Promise<string>;
++}
++
++export class CliInvocationCoordinator {
++  private readonly selector = new InvocationWorkspaceSelector();
++
++  constructor(private readonly options: CliInvocationCoordinatorOptions) {}
++
++  async execute(request: CliExecutionRequest): Promise<DaemonClientExecuteResult> {
++    const selected = this.selector.select(request.argv, request.cwd);
++    if (selected.route.kind !== "workspace") {
++      return this.executeLocally(request);
++    }
++    const workspaceRequest: CliExecutionRequest = { ...request, argv: selected.argv };
++    let workspaceRoot: string;
++    try {
++      workspaceRoot = await this.options.resolveWorkspaceRoot(selected.route.startDirectory);
++    } catch {
++      return this.executeLocally(workspaceRequest);
++    }
++    return this.options.daemonClient.execute({
++      workspaceRoot,
++      commandName: selected.route.commandName,
++      argv: selected.argv,
++      cwd: request.cwd,
++      telemetryEnabled: request.telemetryEnabled,
++    });
++  }
++
++  private async executeLocally(request: CliExecutionRequest): Promise<DaemonClientExecuteResult> {
++    const result = await this.options
++      .createLocalExecutor()
++      .execute({ ...request, executionMode: "cold" });
++    return { mode: "cold", result };
++  }
++}
+diff --git a/packages/daemon/src/daemon-admission.test.ts b/packages/daemon/src/daemon-admission.test.ts
+new file mode 100644
+index 000000000..459f13a15
+--- /dev/null
++++ b/packages/daemon/src/daemon-admission.test.ts
+@@ -0,0 +1,150 @@
++import { describe, expect, expectTypeOf, it } from "vitest";
++
++import {
++  DaemonAdmissionPolicy,
++  DaemonAdmissionRejections,
++  type AcceptedRequestCompatibility,
++  type DaemonAdmissionContext,
++  type DaemonAdmissionDecision,
++  type DaemonAdmissionGuard,
++  type DaemonAdmissionRejectionCode,
++  type DaemonExecuteRejectionCode,
++  type DaemonExecutionCoordinates,
++  type DaemonRejectedExecutionFrame,
++  type WorkspaceRequestQueueState,
++} from "./daemon-admission.js";
++
++describe("DaemonAdmissionPolicy", () => {
++  it("defines the closed admission contracts", () => {
++    expectTypeOf<AcceptedRequestCompatibility>().toEqualTypeOf<
++      "unseen" | "matching" | "conflicting"
++    >();
++    expectTypeOf<WorkspaceRequestQueueState>().toEqualTypeOf<"accepting" | "draining" | "closed">();
++    expectTypeOf<DaemonAdmissionRejectionCode>().toEqualTypeOf<
++      "authentication" | "not-ready" | "draining" | "resource-pressure" | "incompatible"
++    >();
++    expectTypeOf<DaemonAdmissionDecision>().toEqualTypeOf<
++      | { readonly kind: "accept" }
++      | { readonly kind: "disconnect"; readonly code: "authentication" }
++      | { readonly kind: "reject"; readonly code: DaemonExecuteRejectionCode }
++    >();
++    expectTypeOf<DaemonAdmissionGuard>().toEqualTypeOf<{
++      rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined;
++    }>();
++  });
++
++  it.each([
++    ["authentication before readiness", ["authentication", "worker"]],
++    ["authentication before resources", ["authentication", "resource"]],
++    ["authentication before draining", ["authentication", "queue"]],
++    ["authentication before conflicts", ["authentication", "compatibility"]],
++    ["readiness before resources", ["worker", "resource"]],
++    ["readiness before draining", ["worker", "queue"]],
++    ["readiness before conflicts", ["worker", "compatibility"]],
++    ["resources before draining", ["resource", "queue"]],
++    ["resources before conflicts", ["resource", "compatibility"]],
++    ["draining before conflicts", ["queue", "compatibility"]],
++  ] as const)("selects %s", (_name, failures) => {
++    const context = AdmissionContexts.create();
++    for (const failure of failures) AdmissionContexts.applyFailure(context, failure);
++
++    expect(new DaemonAdmissionPolicy().decide(context)).toEqual(
++      AdmissionContexts.decisionFor(failures[0]),
++    );
++  });
++
++  it.each(["draining", "closed"] as const)("rejects a %s queue as draining", (queueState) => {
++    expect(new DaemonAdmissionPolicy().decide(AdmissionContexts.create({ queueState }))).toEqual({
++      kind: "reject",
++      code: "draining",
++    });
++  });
++
++  it.each(["unseen", "matching"] as const)("accepts %s compatible work", (compatibility) => {
++    expect(new DaemonAdmissionPolicy().decide(AdmissionContexts.create({ compatibility }))).toEqual(
++      { kind: "accept" },
++    );
++  });
++});
++
++describe("DaemonAdmissionRejections", () => {
++  const retrySafety = [
++    ["not-ready", true],
++    ["resource-pressure", true],
++    ["draining", true],
++    ["incompatible", false],
++  ] as const satisfies readonly (readonly [DaemonExecuteRejectionCode, boolean])[];
++
++  it.each(retrySafety)("derives %s retry safety", (code, retrySafe) => {
++    expect(DaemonAdmissionRejections.retrySafe(code)).toBe(retrySafe);
++  });
++
++  it.each(retrySafety)("constructs and validates %s frames", (code, retrySafe) => {
++    const coordinates: DaemonExecutionCoordinates = {
++      instanceId: "instance",
++      processToken: "token",
++      requestId: "request",
++    };
++
++    const frame = DaemonAdmissionRejections.frame(code, coordinates);
++
++    expect(frame).toEqual({ kind: "rejected", ...coordinates, code, retrySafe });
++    expect(() => DaemonAdmissionRejections.assertConsistent(frame)).not.toThrow();
++  });
++
++  it.each(retrySafety)("rejects contradictory %s wire retry safety", (code, retrySafe) => {
++    const frame: DaemonRejectedExecutionFrame = {
++      kind: "rejected",
++      instanceId: "instance",
++      processToken: "token",
++      requestId: "request",
++      code,
++      retrySafe: !retrySafe,
++    };
++
++    expect(() => DaemonAdmissionRejections.assertConsistent(frame)).toThrow(
++      "Inconsistent daemon execution rejection",
++    );
++  });
++});
++
++type AdmissionFailure = "authentication" | "worker" | "resource" | "queue" | "compatibility";
++
++interface MutableAdmissionContext {
++  request: unknown;
++  authenticated: boolean;
++  workerReady: boolean;
++  resourceAdmissionPaused: boolean;
++  queueState: WorkspaceRequestQueueState;
++  compatibility: AcceptedRequestCompatibility;
++}
++
++class AdmissionContexts {
++  static create(overrides: Partial<DaemonAdmissionContext> = {}): MutableAdmissionContext {
++    return {
++      request: {},
++      authenticated: true,
++      workerReady: true,
++      resourceAdmissionPaused: false,
++      queueState: "accepting",
++      compatibility: "unseen",
++      ...overrides,
++    };
++  }
++
++  static applyFailure(context: MutableAdmissionContext, failure: AdmissionFailure): void {
++    if (failure === "authentication") context.authenticated = false;
++    if (failure === "worker") context.workerReady = false;
++    if (failure === "resource") context.resourceAdmissionPaused = true;
++    if (failure === "queue") context.queueState = "draining";
++    if (failure === "compatibility") context.compatibility = "conflicting";
++  }
++
++  static decisionFor(failure: AdmissionFailure): DaemonAdmissionDecision {
++    if (failure === "authentication") return { kind: "disconnect", code: "authentication" };
++    if (failure === "worker") return { kind: "reject", code: "not-ready" };
++    if (failure === "resource") return { kind: "reject", code: "resource-pressure" };
++    if (failure === "queue") return { kind: "reject", code: "draining" };
++    return { kind: "reject", code: "incompatible" };
++  }
++}
+diff --git a/packages/daemon/src/daemon-admission.ts b/packages/daemon/src/daemon-admission.ts
+new file mode 100644
+index 000000000..bd5e636e5
+--- /dev/null
++++ b/packages/daemon/src/daemon-admission.ts
+@@ -0,0 +1,129 @@
++export type DaemonExecuteRejectionCode =
++  | "not-ready"
++  | "draining"
++  | "resource-pressure"
++  | "incompatible";
++
++export type AcceptedRequestCompatibility = "unseen" | "matching" | "conflicting";
++
++export type WorkspaceRequestQueueState = "accepting" | "draining" | "closed";
++
++export type DaemonExecutionCoordinates = {
++  readonly instanceId: string;
++  readonly processToken: string;
++  readonly requestId: string;
++};
++
++export type DaemonRejectedExecutionFrame = {
++  readonly kind: "rejected";
++  readonly instanceId: string;
++  readonly processToken: string;
++  readonly requestId: string;
++  readonly code: DaemonExecuteRejectionCode;
++  readonly retrySafe: boolean;
++};
++
++export interface DaemonAdmissionContext {
++  readonly request: unknown;
++  readonly authenticated: boolean;
++  readonly workerReady: boolean;
++  readonly resourceAdmissionPaused: boolean;
++  readonly queueState: WorkspaceRequestQueueState;
++  readonly compatibility: AcceptedRequestCompatibility;
++}
++
++export interface DaemonAdmissionGuard {
++  rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined;
++}
++
++export type DaemonAdmissionRejectionCode = "authentication" | DaemonExecuteRejectionCode;
++
++export type DaemonAdmissionDecision =
++  | { readonly kind: "accept" }
++  | { readonly kind: "disconnect"; readonly code: "authentication" }
++  | { readonly kind: "reject"; readonly code: DaemonExecuteRejectionCode };
++
++class AuthenticationAdmissionGuard implements DaemonAdmissionGuard {
++  rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {
++    return context.authenticated ? undefined : "authentication";
++  }
++}
++
++class WorkerReadinessAdmissionGuard implements DaemonAdmissionGuard {
++  rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {
++    return context.workerReady ? undefined : "not-ready";
++  }
++}
++
++class ResourceAdmissionGuard implements DaemonAdmissionGuard {
++  rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {
++    return context.resourceAdmissionPaused ? "resource-pressure" : undefined;
++  }
++}
++
++class QueueAdmissionGuard implements DaemonAdmissionGuard {
++  rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {
++    return context.queueState === "accepting" ? undefined : "draining";
++  }
++}
++
++class CompatibilityAdmissionGuard implements DaemonAdmissionGuard {
++  rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {
++    return context.compatibility === "conflicting" ? "incompatible" : undefined;
++  }
++}
++
++export class DaemonAdmissionPolicy {
++  private readonly guards: readonly DaemonAdmissionGuard[] = [
++    new AuthenticationAdmissionGuard(),
++    new WorkerReadinessAdmissionGuard(),
++    new ResourceAdmissionGuard(),
++    new QueueAdmissionGuard(),
++    new CompatibilityAdmissionGuard(),
++  ];
++
++  decide(context: DaemonAdmissionContext): DaemonAdmissionDecision {
++    for (const guard of this.guards) {
++      const rejection = guard.rejectionFor(context);
++      if (rejection === undefined) continue;
++      if (rejection === "authentication") return { kind: "disconnect", code: rejection };
++      return { kind: "reject", code: rejection };
++    }
++    return { kind: "accept" };
++  }
++}
++
++export class DaemonAdmissionRejections {
++  private static readonly retrySafety: Readonly<Record<DaemonExecuteRejectionCode, boolean>> =
++    Object.freeze({
++      "not-ready": true,
++      draining: true,
++      "resource-pressure": true,
++      incompatible: false,
++    });
++
++  static retrySafe(code: DaemonExecuteRejectionCode): boolean {
++    return DaemonAdmissionRejections.retrySafety[code];
++  }
++
++  static frame(
++    code: DaemonExecuteRejectionCode,
++    coordinates: DaemonExecutionCoordinates,
++  ): DaemonRejectedExecutionFrame {
++    return {
++      kind: "rejected",
++      ...coordinates,
++      code,
++      retrySafe: DaemonAdmissionRejections.retrySafe(code),
++    };
++  }
++
++  static assertConsistent(frame: DaemonRejectedExecutionFrame): void {
++    if (
++      !Object.hasOwn(DaemonAdmissionRejections.retrySafety, frame.code) ||
++      frame.retrySafe !== DaemonAdmissionRejections.retrySafety[frame.code]
++    ) {
++      throw new Error("Inconsistent daemon execution rejection");
++    }
++  }
++}
+diff --git a/packages/daemon/src/daemon-execution-failure.ts b/packages/daemon/src/daemon-execution-failure.ts
+new file mode 100644
+index 000000000..8516a3ce7
+--- /dev/null
++++ b/packages/daemon/src/daemon-execution-failure.ts
+@@ -0,0 +1,35 @@
++const executionFailureCodes = [
++  "worker-exit",
++  "controlled-resource",
++  "response-capacity",
++  "stopping",
++  "internal",
++] as const;
++
++export type DaemonExecutionFailureCode = (typeof executionFailureCodes)[number];
++
++export type DaemonWorkerFailureCode = "initialization" | "execution" | "protocol" | "resource";
++
++export interface DaemonExecutionFailureContext {
++  readonly resourceInterrupted: boolean;
++  readonly responseCapacityExceeded: boolean;
++  readonly workerExited: boolean;
++  readonly shutdownFailureCode?: "stopping" | "controlled-resource";
++  readonly shutdownStarted: boolean;
++}
++
++export class DaemonExecutionFailures {
++  static isCode(value: unknown): value is DaemonExecutionFailureCode {
++    return executionFailureCodes.includes(value as DaemonExecutionFailureCode);
++  }
++
++  static classify(context: DaemonExecutionFailureContext): DaemonExecutionFailureCode {
++    if (context.resourceInterrupted) return "controlled-resource";
++    if (context.responseCapacityExceeded) return "response-capacity";
++    if (context.workerExited) {
++      return context.shutdownFailureCode === "stopping" ? "stopping" : "worker-exit";
++    }
++    if (context.shutdownFailureCode !== undefined) return context.shutdownFailureCode;
++    return context.shutdownStarted ? "stopping" : "internal";
++  }
++}
+diff --git a/packages/daemon/src/transport/execution-client.test.ts b/packages/daemon/src/transport/execution-client.test.ts
+new file mode 100644
+index 000000000..e01f6734f
+--- /dev/null
++++ b/packages/daemon/src/transport/execution-client.test.ts
+@@ -0,0 +1,298 @@
++import { describe, expect, it } from "vitest";
++import { DaemonPolicy } from "@symnav/daemon";
++import { DaemonExecutionClient } from "./execution-client.js";
++import type { DaemonOutputCapture } from "./client-result-capture.js";
++import {
++  DAEMON_PROTOCOL_VERSION,
++  type DaemonExecuteRequest,
++  type DaemonExecutionServerFrame,
++} from "./protocol.js";
++import { DaemonProtocolValidator } from "./protocol-validator.js";
++import type { DaemonSocketClient, DaemonSocketConnection } from "./contracts.js";
++import { DaemonTransportError } from "./transport-error.js";
++import { DaemonWireCodec } from "./wire-codec.js";
++
++describe("DaemonExecutionClient", () => {
++  it("owns one accepted execution attempt through terminal failure", async () => {
++    const policy = DaemonPolicy.currentSystem();
++    const codec = executionCodec();
++    const request = executionRequest();
++    const connection = new ScriptedDaemonSocketConnection([
++      Buffer.concat([
++        codec.encodeControl({
++          kind: "accepted",
++          instanceId: request.instanceId,
++          processToken: request.processToken,
++          requestId: request.requestId,
++          acceptedAt: 10,
++          queuePosition: 0,
++        } satisfies DaemonExecutionServerFrame),
++        codec.encodeControl({
++          kind: "execution-failed",
++          instanceId: request.instanceId,
++          processToken: request.processToken,
++          requestId: request.requestId,
++          code: "internal",
++        } satisfies DaemonExecutionServerFrame),
++      ]),
++    ]);
++    const sockets = new RecordingDaemonSocketClient([connection]);
++    const output = new RecordingDaemonOutputCapture();
++    const acknowledgements = new RecordingResultAcknowledger();
++    const client = new DaemonExecutionClient({
++      sockets,
++      lifecycle: acknowledgements,
++      codec,
++      validator: new DaemonProtocolValidator(),
++      createOutput: () => output,
++      transportPolicy: policy.values.transport,
++      deliveryPolicy: policy.values.delivery,
++    });
++
++    const receipt = await client.execute("daemon-endpoint", request);
++
++    expect(receipt.acceptance).toEqual({
++      requestId: request.requestId,
++      instanceId: request.instanceId,
++      acceptedAt: 10,
++      queuePosition: 0,
++    });
++    await expect(receipt.completion).resolves.toEqual({ status: "failed", code: "internal" });
++    expect(sockets.calls).toEqual([
++      {
++        endpoint: "daemon-endpoint",
++        timeoutMs: policy.values.transport.executionAdmissionTimeoutMs,
++      },
++    ]);
++    expect(connection.writes).toEqual([codec.encodeControl(request)]);
++    expect(connection.disableTimeoutCount).toBe(1);
++    expect(connection.endCount).toBe(1);
++    expect(output.disposeCount).toBe(1);
++    expect(acknowledgements.count).toBe(0);
++  });
++
++  it("reattaches an accepted close with the identical execute request", async () => {
++    const policy = DaemonPolicy.currentSystem();
++    const codec = executionCodec();
++    const request = executionRequest();
++    const first = new ScriptedDaemonSocketConnection([
++      codec.encodeControl({
++        kind: "accepted",
++        instanceId: request.instanceId,
++        processToken: request.processToken,
++        requestId: request.requestId,
++        acceptedAt: 10,
++        queuePosition: 0,
++      } satisfies DaemonExecutionServerFrame),
++    ]);
++    const second = new ScriptedDaemonSocketConnection([
++      Buffer.concat([
++        codec.encodeControl({
++          kind: "accepted",
++          instanceId: request.instanceId,
++          processToken: request.processToken,
++          requestId: request.requestId,
++          acceptedAt: 10,
++          queuePosition: 0,
++        } satisfies DaemonExecutionServerFrame),
++        codec.encodeControl({
++          kind: "execution-failed",
++          instanceId: request.instanceId,
++          processToken: request.processToken,
++          requestId: request.requestId,
++          code: "internal",
++        } satisfies DaemonExecutionServerFrame),
++      ]),
++    ]);
++    const sockets = new RecordingDaemonSocketClient([first, second]);
++    const outputs: RecordingDaemonOutputCapture[] = [];
++    const client = new DaemonExecutionClient({
++      sockets,
++      lifecycle: new RecordingResultAcknowledger(),
++      codec,
++      validator: new DaemonProtocolValidator(),
++      createOutput: () => {
++        const output = new RecordingDaemonOutputCapture();
++        outputs.push(output);
++        return output;
++      },
++      transportPolicy: policy.values.transport,
++      deliveryPolicy: policy.values.delivery,
++    });
++
++    const receipt = await client.execute("daemon-endpoint", request);
++
++    await expect(receipt.completion).resolves.toEqual({ status: "failed", code: "internal" });
++    expect(sockets.calls).toHaveLength(2);
++    expect(first.writes).toEqual([codec.encodeControl(request)]);
++    expect(second.writes).toEqual([codec.encodeControl(request)]);
++    expect(outputs.map((output) => output.disposeCount)).toEqual([1, 1]);
++  });
++
++  it("retains the first accepted close after exhausting accepted reattachments", async () => {
++    const policy = DaemonPolicy.currentSystem();
++    const codec = executionCodec();
++    const request = executionRequest();
++    const firstClose = new DaemonTransportError(
++      "closed",
++      "accepted",
++      "Initial accepted connection closed",
++      request.instanceId,
++    );
++    const finalClose = new DaemonTransportError(
++      "closed",
++      "accepted",
++      "Final accepted reattachment closed",
++      request.instanceId,
++    );
++    const acceptance = codec.encodeControl({
++      kind: "accepted",
++      instanceId: request.instanceId,
++      processToken: request.processToken,
++      requestId: request.requestId,
++      acceptedAt: 10,
++      queuePosition: 0,
++    } satisfies DaemonExecutionServerFrame);
++    const first = new ScriptedDaemonSocketConnection([acceptance], firstClose);
++    const final = new ScriptedDaemonSocketConnection([acceptance], finalClose);
++    const sockets = new RecordingDaemonSocketClient([first, final]);
++    const outputs: RecordingDaemonOutputCapture[] = [];
++    const client = new DaemonExecutionClient({
++      sockets,
++      lifecycle: new RecordingResultAcknowledger(),
++      codec,
++      validator: new DaemonProtocolValidator(),
++      createOutput: () => {
++        const output = new RecordingDaemonOutputCapture();
++        outputs.push(output);
++        return output;
++      },
++      transportPolicy: policy.values.transport,
++      deliveryPolicy: {
++        ...policy.values.delivery,
++        postAcceptanceExecutionReattachmentLimit: 1,
++      },
++    });
++
++    const receipt = await client.execute("daemon-endpoint", request);
++    const completionError = await receipt.completion.catch((error: unknown) => error);
++
++    expect(completionError).toBe(firstClose);
++    expect(completionError).toMatchObject({
++      code: "closed",
++      delivery: "accepted",
++      message: "Initial accepted connection closed",
++      authenticatedInstanceId: request.instanceId,
++      retrySafe: false,
++    } satisfies Partial<DaemonTransportError>);
++    expect(completionError).not.toBe(finalClose);
++    expect(sockets.calls).toHaveLength(2);
++    expect(first.writes).toEqual([codec.encodeControl(request)]);
++    expect(final.writes).toEqual([codec.encodeControl(request)]);
++    expect(outputs.map((output) => output.disposeCount)).toEqual([1, 1]);
++  });
++});
++
++class RecordingDaemonSocketClient implements DaemonSocketClient {
++  readonly calls: { readonly endpoint: string; readonly timeoutMs?: number }[] = [];
++  private nextConnection = 0;
++
++  constructor(private readonly connections: readonly DaemonSocketConnection[]) {}
++
++  connect(endpoint: string, timeoutMs?: number): Promise<DaemonSocketConnection> {
++    this.calls.push({ endpoint, ...(timeoutMs === undefined ? {} : { timeoutMs }) });
++    const connection = this.connections[this.nextConnection];
++    this.nextConnection += 1;
++    if (connection === undefined) return Promise.reject(new Error("Unexpected daemon connection"));
++    return Promise.resolve(connection);
++  }
++}
++
++class ScriptedDaemonSocketConnection implements DaemonSocketConnection {
++  readonly writes: Uint8Array[] = [];
++  disableTimeoutCount = 0;
++  endCount = 0;
++  destroyCount = 0;
++  readonly incoming: AsyncIterable<Uint8Array>;
++
++  constructor(bytes: readonly Uint8Array[], terminalError?: Error) {
++    this.incoming = ScriptedDaemonSocketConnection.stream(bytes, terminalError);
++  }
++
++  write(frame: Uint8Array): void {
++    this.writes.push(frame);
++  }
++
++  disableTimeout(): void {
++    this.disableTimeoutCount += 1;
++  }
++
++  end(): void {
++    this.endCount += 1;
++  }
++
++  destroy(): void {
++    this.destroyCount += 1;
++  }
++
++  private static async *stream(
++    bytes: readonly Uint8Array[],
++    terminalError?: Error,
++  ): AsyncIterable<Uint8Array> {
++    yield* bytes;
++    if (terminalError !== undefined) throw terminalError;
++  }
++}
++
++class RecordingDaemonOutputCapture implements DaemonOutputCapture {
++  disposeCount = 0;
++
++  append(): Promise<void> {
++    return Promise.resolve();
++  }
++
++  finish(): Promise<never> {
++    return Promise.reject(new Error("Unexpected output completion"));
++  }
++
++  dispose(): Promise<void> {
++    this.disposeCount += 1;
++    return Promise.resolve();
++  }
++}
++
++class RecordingResultAcknowledger {
++  count = 0;
++
++  acknowledgeResult(): Promise<void> {
++    this.count += 1;
++    return Promise.resolve();
++  }
++}
++
++function executionCodec(): DaemonWireCodec {
++  const policy = DaemonPolicy.currentSystem();
++  return new DaemonWireCodec({
++    maximumJsonPayloadBytes: policy.values.transport.maximumJsonPayloadBytes,
++    maximumExecutionControlPayloadBytes:
++      policy.values.transport.maximumExecutionControlPayloadBytes,
++    maximumChunkRawBytes: policy.values.output.maximumChunkRawBytes,
++  });
++}
++
++function executionRequest(): DaemonExecuteRequest {
++  return {
++    kind: "execute",
++    protocolVersion: DAEMON_PROTOCOL_VERSION,
++    instanceId: "instance",
++    processToken: "token",
++    requestId: "request",
++    commandName: "overview",
++    request: {
++      argv: ["overview", "src/a.ts"],
++      cwd: "/repo",
++      telemetryEnabled: false,
++      executionMode: "warm",
++    },
++  };
++}
+diff --git a/packages/daemon/src/transport/execution-client.ts b/packages/daemon/src/transport/execution-client.ts
+new file mode 100644
+index 000000000..e2040c83b
+--- /dev/null
++++ b/packages/daemon/src/transport/execution-client.ts
+@@ -0,0 +1,447 @@
++import type { DaemonPolicyValues } from "@symnav/daemon";
++import type { DaemonExecutionFailureCode } from "../daemon-execution-failure.js";
++import type { DaemonOutputCapture } from "./client-result-capture.js";
++import type { DaemonLifecycleClient } from "./lifecycle-client.js";
++import type {
++  DaemonExecuteRequest,
++  DaemonExecutionServerFrame,
++  DaemonResultChunk,
++} from "./protocol.js";
++import { DaemonProtocolError, type DaemonProtocolValidator } from "./protocol-validator.js";
++import { DaemonResultTransferReceiver } from "./result-transfer-receiver.js";
++import type {
++  DaemonExecutionAcceptance,
++  DaemonExecutionReceipt,
++  DaemonExecutionRequester,
++  DaemonSocketClient,
++} from "./contracts.js";
++import { DaemonTransportError, type DaemonDeliveryState } from "./transport-error.js";
++import type { DaemonWireCodec } from "./wire-codec.js";
++
++class DaemonResultFetchEndedError extends DaemonTransportError {
++  constructor(instanceId: string) {
++    super("closed", "accepted", "Daemon result resume ended before completion", instanceId);
++  }
++}
++
++interface DaemonExecutionClientOptions {
++  readonly sockets: DaemonSocketClient;
++  readonly lifecycle: Pick<DaemonLifecycleClient, "acknowledgeResult">;
++  readonly codec: DaemonWireCodec;
++  readonly validator: DaemonProtocolValidator;
++  readonly createOutput: () => DaemonOutputCapture;
++  readonly transportPolicy: DaemonPolicyValues["transport"];
++  readonly deliveryPolicy: DaemonPolicyValues["delivery"];
++}
++
++export class DaemonExecutionClient implements DaemonExecutionRequester {
++  constructor(private readonly options: DaemonExecutionClientOptions) {}
++
++  execute(endpoint: string, request: DaemonExecuteRequest): Promise<DaemonExecutionReceipt> {
++    return this.executeOnce(endpoint, request).then((receipt) => ({
++      acceptance: receipt.acceptance,
++      completion: this.completeWithReattachments(endpoint, request, receipt.completion),
++    }));
++  }
++
++  private async completeWithReattachments(
++    endpoint: string,
++    request: DaemonExecuteRequest,
++    completion: DaemonExecutionReceipt["completion"],
++  ): DaemonExecutionReceipt["completion"] {
++    let currentCompletion = completion;
++    let originalAcceptedClose: DaemonTransportError | undefined;
++    let reattachmentCount = 0;
++    while (true) {
++      try {
++        return await currentCompletion;
++      } catch (error) {
++        if (!DaemonExecutionClient.isAcceptedConnectionClose(error, request)) throw error;
++        originalAcceptedClose ??= error;
++        if (
++          reattachmentCount >= this.options.deliveryPolicy.postAcceptanceExecutionReattachmentLimit
++        )
++          throw originalAcceptedClose;
++        try {
++          const reattached = await this.executeOnce(endpoint, request);
++          currentCompletion = reattached.completion;
++          reattachmentCount += 1;
++        } catch {
++          throw originalAcceptedClose;
++        }
++      }
++    }
++  }
++
++  private executeOnce(
++    endpoint: string,
++    request: DaemonExecuteRequest,
++  ): Promise<DaemonExecutionReceipt> {
++    this.options.validator.request(request);
++    return new Promise((resolve, reject) => {
++      const decoder = this.options.codec.transferDecoder();
++      const transfer = new DaemonResultTransferReceiver(
++        request.requestId,
++        this.options.createOutput(),
++      );
++      let connection: Awaited<ReturnType<DaemonSocketClient["connect"]>> | undefined;
++      let delivery: DaemonDeliveryState = "not-submitted";
++      let acceptance: DaemonExecutionAcceptance | undefined;
++      let terminal = false;
++      let outerSettled = false;
++      let completionSettled = false;
++      let resumeCount = 0;
++      let resolveCompletion!: (value: Awaited<DaemonExecutionReceipt["completion"]>) => void;
++      let rejectCompletion!: (error: DaemonTransportError) => void;
++      const completion = new Promise<Awaited<DaemonExecutionReceipt["completion"]>>(
++        (completionResolve, completionReject) => {
++          resolveCompletion = completionResolve;
++          rejectCompletion = completionReject;
++        },
++      );
++      const fail = (error: unknown): void => {
++        const transportError = DaemonExecutionClient.transportError(error, delivery);
++        connection?.destroy();
++        if (!outerSettled) {
++          outerSettled = true;
++          void transfer.dispose().finally(() => reject(transportError));
++          return;
++        }
++        if (!completionSettled) {
++          completionSettled = true;
++          void transfer.dispose().finally(() => rejectCompletion(transportError));
++        }
++      };
++      const resume = (): boolean => {
++        if (
++          resumeCount >= this.options.deliveryPolicy.resultTransferResumeLimitPerExecutionAttempt ||
++          completionSettled ||
++          acceptance === undefined ||
++          transfer.manifest === undefined ||
++          terminal
++        ) {
++          return false;
++        }
++        resumeCount += 1;
++        connection?.destroy();
++        transfer.beginConnection();
++        void this.fetchCompletion(endpoint, request, transfer)
++          .then((completionValue) => {
++            if (completionSettled) return;
++            completionSettled = true;
++            resolveCompletion(completionValue);
++          })
++          .catch((error: unknown) => {
++            if (DaemonExecutionClient.isAcceptedConnectionClose(error, request) && resume()) {
++              return;
++            }
++            fail(
++              error instanceof DaemonResultFetchEndedError
++                ? new DaemonTransportError("corrupt", "accepted", error.message)
++                : error,
++            );
++          });
++        return true;
++      };
++      const publishAcceptance = (): void => {
++        if (acceptance === undefined || outerSettled) return;
++        outerSettled = true;
++        connection?.disableTimeout();
++        resolve({ acceptance, completion });
++      };
++      const consume = async (bytes: Uint8Array): Promise<void> => {
++        const values = decoder.append(bytes);
++        let completedResult = false;
++        let failedCode: DaemonExecutionFailureCode | undefined;
++        for (const value of values) {
++          if (DaemonExecutionClient.isResultChunk(value)) {
++            if (acceptance === undefined)
++              throw new Error("Daemon returned output before acceptance");
++            await transfer.acceptChunk(value);
++            continue;
++          }
++          const frame = this.options.validator.executionFrame(request, value);
++          if (frame.kind === "rejected") {
++            if (acceptance !== undefined || terminal) {
++              throw new Error("Daemon rejected an already accepted request");
++            }
++            throw new DaemonTransportError(
++              "rejected",
++              "submitted-unconfirmed",
++              `Daemon rejected execution: ${frame.code}`,
++              frame.instanceId,
++              frame.code,
++            );
++          }
++          if (frame.kind === "accepted") {
++            if (acceptance !== undefined || terminal) {
++              throw new Error("Daemon returned duplicate acceptance");
++            }
++            delivery = "accepted";
++            acceptance = {
++              requestId: frame.requestId,
++              instanceId: frame.instanceId,
++              acceptedAt: frame.acceptedAt,
++              queuePosition: frame.queuePosition,
++            };
++            publishAcceptance();
++            continue;
++          }
++          if (acceptance === undefined) {
++            throw new Error("Daemon returned completion before acceptance");
++          }
++          if (frame.kind === "result-manifest") {
++            if (terminal) throw new Error("Daemon returned a manifest after completion");
++            transfer.acceptManifest(frame);
++            continue;
++          }
++          if (frame.kind === "result-end") {
++            transfer.acceptEnd(frame);
++            terminal = true;
++            completedResult = true;
++            continue;
++          }
++          if (terminal) throw new Error("Daemon returned duplicate terminal frame");
++          terminal = true;
++          failedCode = frame.code;
++        }
++        if (completedResult) {
++          const result = await transfer.finish();
++          const completedManifest = transfer.manifest;
++          if (completedManifest === undefined) throw new Error("Completion manifest is missing");
++          try {
++            await this.options.lifecycle.acknowledgeResult(
++              endpoint,
++              request,
++              completedManifest.transferId,
++            );
++          } catch (error) {
++            await result.output.dispose();
++            throw error;
++          }
++          if (!completionSettled) {
++            completionSettled = true;
++            connection?.end();
++            resolveCompletion({ status: "completed", result });
++          }
++        }
++        if (failedCode !== undefined && !completionSettled) {
++          completionSettled = true;
++          connection?.end();
++          await transfer.dispose();
++          resolveCompletion({ status: "failed", code: failedCode });
++        }
++      };
++      const receive = async (): Promise<void> => {
++        try {
++          connection = await this.options.sockets.connect(
++            endpoint,
++            this.options.transportPolicy.executionAdmissionTimeoutMs,
++          );
++        } catch (error) {
++          if (DaemonExecutionClient.isSocketTimeout(error)) {
++            fail(new DaemonTransportError("timeout", delivery, "Daemon request timed out"));
++            return;
++          }
++          const message = error instanceof Error ? error.message : String(error);
++          fail(new DaemonTransportError("unreachable", delivery, message));
++          return;
++        }
++        try {
++          connection.write(this.options.codec.encodeControl(request));
++          delivery = "submitted-unconfirmed";
++        } catch (error) {
++          fail(error);
++          return;
++        }
++        try {
++          for await (const bytes of connection.incoming) {
++            try {
++              await consume(bytes);
++            } catch (error) {
++              throw DaemonExecutionClient.transportError(error, delivery);
++            }
++          }
++          if (terminal && completionSettled) return;
++          if (resume()) return;
++          try {
++            decoder.assertComplete();
++          } catch (error) {
++            fail(error);
++            return;
++          }
++          fail(
++            new DaemonTransportError(
++              "closed",
++              delivery,
++              acceptance === undefined
++                ? "Daemon connection ended before acceptance"
++                : "Daemon connection ended after acceptance before completion",
++              acceptance?.instanceId,
++            ),
++          );
++        } catch (error) {
++          if (error instanceof DaemonTransportError || error instanceof DaemonProtocolError) {
++            fail(error);
++            return;
++          }
++          if (DaemonExecutionClient.isSocketTimeout(error)) {
++            fail(new DaemonTransportError("timeout", delivery, "Daemon request timed out"));
++            return;
++          }
++          if (resume()) return;
++          const message = error instanceof Error ? error.message : String(error);
++          fail(new DaemonTransportError("closed", delivery, message, acceptance?.instanceId));
++        }
++      };
++      void receive();
++    });
++  }
++
++  private async fetchCompletion(
++    endpoint: string,
++    request: DaemonExecuteRequest,
++    transfer: DaemonResultTransferReceiver,
++  ): DaemonExecutionReceipt["completion"] {
++    const decoder = this.options.codec.transferDecoder();
++    let connection: Awaited<ReturnType<DaemonSocketClient["connect"]>>;
++    try {
++      connection = await this.options.sockets.connect(endpoint);
++    } catch (error) {
++      const message = error instanceof Error ? error.message : String(error);
++      throw new DaemonTransportError("closed", "accepted", message, request.instanceId);
++    }
++    try {
++      connection.write(
++        this.options.codec.encodeControl({
++          kind: "result-fetch",
++          protocolVersion: request.protocolVersion,
++          instanceId: request.instanceId,
++          processToken: request.processToken,
++          requestId: request.requestId,
++          offset: transfer.nextOffset,
++        }),
++      );
++    } catch (error) {
++      connection.destroy();
++      throw DaemonExecutionClient.transportError(error, "accepted");
++    }
++    let ended = false;
++    try {
++      for await (const bytes of connection.incoming) {
++        try {
++          let completedResult = false;
++          let failedCode: DaemonExecutionFailureCode | undefined;
++          for (const value of decoder.append(bytes)) {
++            if (ended) throw new Error("Daemon resumed with a duplicate terminal frame");
++            if (DaemonExecutionClient.isResultChunk(value)) {
++              await transfer.acceptChunk(value);
++              continue;
++            }
++            const frame = this.options.validator.executionFrame(request, value);
++            if (frame.kind === "result-manifest") {
++              transfer.acceptManifest(frame);
++              continue;
++            }
++            if (frame.kind === "execution-failed") {
++              ended = true;
++              failedCode = frame.code;
++              continue;
++            }
++            if (frame.kind !== "result-end") {
++              throw new Error("Daemon resumed with an invalid terminal frame");
++            }
++            transfer.acceptEnd(frame);
++            ended = true;
++            completedResult = true;
++          }
++          if (completedResult) {
++            const result = await transfer.finish();
++            const manifest = transfer.manifest;
++            if (manifest === undefined) throw new Error("Completion manifest is missing");
++            try {
++              await this.options.lifecycle.acknowledgeResult(
++                endpoint,
++                request,
++                manifest.transferId,
++              );
++            } catch (error) {
++              await result.output.dispose();
++              throw error;
++            }
++            connection.end();
++            return { status: "completed", result };
++          }
++          if (failedCode !== undefined) {
++            connection.end();
++            await transfer.dispose();
++            return { status: "failed", code: failedCode };
++          }
++        } catch (error) {
++          throw DaemonExecutionClient.transportError(error, "accepted");
++        }
++      }
++      try {
++        decoder.assertComplete();
++      } catch (error) {
++        throw DaemonExecutionClient.transportError(error, "accepted");
++      }
++      throw new DaemonResultFetchEndedError(request.instanceId);
++    } catch (error) {
++      connection.destroy();
++      if (error instanceof DaemonTransportError || error instanceof DaemonProtocolError) {
++        throw DaemonExecutionClient.transportError(error, "accepted");
++      }
++      const message = error instanceof Error ? error.message : String(error);
++      throw new DaemonTransportError("closed", "accepted", message, request.instanceId);
++    }
++  }
++
++  private static isAcceptedConnectionClose(
++    error: unknown,
++    request: DaemonExecuteRequest,
++  ): error is DaemonTransportError {
++    return (
++      error instanceof DaemonTransportError &&
++      error.code === "closed" &&
++      error.delivery === "accepted" &&
++      error.authenticatedInstanceId === request.instanceId
++    );
++  }
++
++  private static transportError(
++    error: unknown,
++    delivery: DaemonDeliveryState,
++  ): DaemonTransportError {
++    if (error instanceof DaemonTransportError) return error;
++    if (error instanceof DaemonProtocolError) {
++      return new DaemonTransportError(
++        error.code,
++        "accepted",
++        error.message,
++        error.authenticatedInstanceId,
++      );
++    }
++    const message = error instanceof Error ? error.message : String(error);
++    return new DaemonTransportError("corrupt", delivery, message);
++  }
++
++  private static isSocketTimeout(error: unknown): boolean {
++    return (
++      error instanceof Error &&
++      "code" in error &&
++      (error as Error & { readonly code?: unknown }).code === "ETIMEDOUT"
++    );
++  }
++
++  private static isResultChunk(value: unknown): value is DaemonResultChunk {
++    return (
++      typeof value === "object" &&
++      value !== null &&
++      !Array.isArray(value) &&
++      !("kind" in value) &&
++      "bytes" in value &&
++      value.bytes instanceof Uint8Array
++    );
++  }
++}
