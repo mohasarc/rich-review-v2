@@ -274,8 +274,6 @@ def git_commit(worker: Worker) -> None:
     subprocess.run(["python3", "scripts/build_index.py"], cwd=ROOT, check=False)
     relative_experiment = worker.experiment.relative_to(ROOT)
     paths = [str(relative_experiment), str(worker.brief_path.relative_to(ROOT)), "orchestrator-log.md", "index.html", "supervisor-state.json"]
-    original = QUEUE / worker.brief_path.name
-    paths.append(str(original.relative_to(ROOT)))
     subprocess.run(["git", "add", "--", *paths], cwd=ROOT, check=False)
     number, slug = parse_name(worker.brief_path)
     completed = subprocess.run(
