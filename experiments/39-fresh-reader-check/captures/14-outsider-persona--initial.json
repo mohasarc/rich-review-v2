@@ -1,0 +1,5287 @@
+{
+  "url": "file:///Users/moyaseen/projects/rich-review-v2/experiments/14-outsider-persona/index.html",
+  "title": "First visit to symnav — an outsider's system map",
+  "text": "Skip to the system map\ns↗ symnav\nFIRST VISIT / 14\n\nGET YOUR BEARINGS\n\n01\nThe system\n02\nThe moved boundaries\n03\nThe complete choice sheet\n04\nFollow a command\n05\nWhat stays warm\n06\nBring the answer back\n07\nCheck the sources\nNames in plain language ↗\n\nRead straight down.\nOr choose a box.\nEvery source opens here.\n\nmain → #149\n26 pull requests\nb6801eb → d070023\n\nAN OUTSIDER'S FIELD GUIDE · DAEMON REFACTOR STACK\n\nFirst, know\nthe place.\n\nsymnav answers questions about TypeScript code. You ask where a symbol is defined, who uses it, or what a file contains. It reads a workspace and prints a tree or JSON.\n\nYOUR CODE\norders.ts\npayments.ts\ntsconfig.json\n→\nYOUR QUESTION\nsymnav refs PaymentProvider.ts::charge\n“Which places refer to this symbol?”\n→\nTHE ANSWER\nFiles · symbols · relationships\nHuman-readable output, or --json\n\nIllustrative filenames and question. This is a product sketch, not captured command output.\n\n↻\n\nKeep the workshop open between visits. Parsing a codebase again for every command wastes preparation. A background daemon keeps analysis state warm; each command still refreshes the data it needs.\n\nLossy analogy: the “workshop” contains a daemon process and a worker thread. Warm state is reusable preparation, not permission to return an old answer.\nOne terminal visit. A longer-lived workshop.\n\nThese are runtime boundaries. A package is a source-code owner; it is not a separate process.\n\nCALLER PROCESS · one invocation\nCLI host\nReads arguments and environment\nFinds the workspace · writes output\napps/cli\n↓ supplies a command\nDaemonClient\nSelects warm, cold, or fallback\nOwns startup and recovery\n@symnav/daemon\nCold / fallback route\nRun the host executor here.\nThe background process is optional.\nSee routing →\nlocal socket\n⇄\nrequest identity\nordered output bytes\nTransport owners →\nDAEMON PROCESS · workspace + state directory\nProcess coordinator\nAdmission · accepted-request ledger · FIFO queue\nDelivery · resources · worker generations · status\n@symnav/daemon\nWORKER THREAD · same process, own JS heap\nWorker machinery\nLoads the host's executor module URL\nThe injection decision →\nChanged composition boundary · #135\nWorker-created CLI objects → host-supplied executor module\nCLI-provided executor\nKnows what a symnav command means\napps/cli/src/daemon-executor.ts\nCore\nWorkspace/session\nReusable state & cache lifetimes\nTypeScript backend\nTypeScript parsing\nSymbols & semantic queries\nRenderer\nFormats results\n\nOutside the process boxes: workspace files supply the code. A daemon identity combines the workspace root and state directory. The daemon stores registry records, diagnostics, and retained result bytes; the CLI resolves that state directory. Telemetry separately records usage shape and execution mode.\n\nWho owns those paths? →\n\nMap omits individual control exchanges, startup election steps, and backpressure. The paths and ownership shown above are expanded in the choice sheet and walkthroughs.\n\nOpen the architecture contract ↗\n\n02 / WHAT THIS STACK CHANGES\n\nThe workshop existed.\nThe ownership lines move.\n\nThe stated goal is the same navigation output, timing, and lifecycle behavior with reusable ownership boundaries. The wire protocol does change from generation 4 to 5 to carry an explicit command name. The active CLI switch happens in #149; #148 stages the package first.\n\nBefore\nmain\nCLI application\nSyntax + environment + composition\nDaemon client, server, workers, transport,\nexecution, delivery, policy, lifecycle rendering\nWorkspace request / retained scopes\nTypeScript backend\nTypeScript-specific interpretation\nSource cache + revision indexes + project graph\nSemantic cache lifetime\nTelemetry\nUsage capture + shared state-path resolution\n→\nREASSIGN\nRESPONSIBILITY\nAfter\ntip of #149\nCLI application\nSyntax + environment + host executor + composition\nDaemon package\nEvery daemon mechanism behind DaemonClient\nCore\nSessions, source bytes, indexes, project publication,\nturn-scoped cache lifetime\nTypeScript\nLanguage-specific hooks\nRenderer\nAlso lifecycle reports\nTelemetry\nUsage capture; receives its state path\n\nTeal border = responsibility received across a package boundary. The daemon package is new; core and renderer already existed.\n\nAffected responsibilities only: the left-hand map omits existing core primitives and renderer work. “After” shows the responsibility transfers, not new runtime processes.\n\nProduction imports have a direction\nCLI → core, daemon, renderer, TypeScript, telemetry\nTypeScript → core\nRenderer → core, daemon\nCore, daemon, telemetry → no internal packages\n\nThe daemon can load a supplied executor module at runtime. It does not import core or TypeScript as package dependencies. The public façade avoids Node ambient types; its dynamically loaded runtime still uses Node.\n\nLocked dependency table ↗ Façade and lazy runtime ↗\nCarry these six facts into every detail.\n01 / STATE\nRetain preparation; renew meaning.\n\nSource bytes, file indexes, project membership, and a session live longer than one query. Six independent semantic caches clear on a successful new turn or before release. Publication is per backend index or project graph; there is no whole-pipeline transaction. Selection refresh still evicts omitted source bytes.\n\n02 / HOST\nThe host knows the product.\n\nThe CLI classifies syntax, resolves the workspace and state path, supplies an absolute executor module URL, and writes output. The daemon owns routing and captures warm output. The renderer also formats lifecycle reports. Build rules enforce the final package surface.\n\n03 / POLICY & IDENTITY\nOne owner for each rule.\n\nImmutable policy sections cross process and worker boundaries. Values stay fixed for users. One command vocabulary, distinct failure vocabularies, ordered routing and admission guards, and code-derived retry safety replace scattered authorities. Generation 5 makes command identity mandatory.\n\n04 / TRANSPORT\nFinishing bytes is different from doing work.\n\nSeparate owners handle framing, validation, raw sockets, bounded lifecycle exchanges, accepted execution, and resumable result receipt. Appended records advance the resume position. Fetches keep transfer state; reattachments keep request identity but create fresh capture. Each has its own retry budget.\n\n05 / DAEMON LIFE\nAccepted work has a continuing identity.\n\nThe ledger deduplicates; one FIFO queue executes; delivery tracks the current stream; a generation manager fences old workers. Resources gate readiness and later turns. Activity uses explicit snapshots. Cleanup failure can be diagnostic while acknowledgement succeeds. Accepted failure never triggers local replay.\n\n06 / CARRIED CHOICES\nPreservation has a cost.\n\nIdle time still starts at construction and resets on acceptance. Ledger eviction, startup silence, control-plane start readiness, endpoint relocation, new election, selection-aware byte retention, and readiness/completion idle changes are deferred. Tests lose or change some composed observations; the PR template also changes without a stated reason.\n\nA SMALL MAP KEY\n\nSymbol\nA named code element, such as a function, class, or method.\nWorkspace\nThe code root chosen for the command. Nested repositories form separate boundaries.\nBackend\nThe language-specific engine that answers code questions.\nSnapshot / revision\nA discovered set of files / the identity used to tell whether a file changed.\nTurn\nOne refreshed opportunity to run a query. Prepared state may outlive it.\nLedger\nThe daemon's record of accepted requests and their completion states.\nSpool\nStored output records waiting for delivery or acknowledgement; small output can stay in memory.\nGeneration\nAn identity for a worker lifetime, used to ignore reports from an older worker.\nCold / warm / fallback\nLocal execution / retained daemon execution / local execution after a recoverable daemon problem.\nFacade / port / hook\nA small public doorway / a limited capability interface / host-specific behavior supplied to a reusable base.\nAdmission / acceptance\nChecks before taking work / the daemon's promise to own that request identity.\nFIFO / backpressure\nFirst accepted turn goes first / slow consumption makes the sender wait.\n\n03 / THE COMPLETE CHOICE SHEET\n\nKnow the choices\nbefore the machinery.\n\nThis is the rest of the top layer: 117 recorded PR decisions, policy values, and the additional changes found in the delta. Choice text stays visible. Open a row for its reason and original source; that adds evidence for the same choice.\n\nstated\nA reason appears in a supplied PR or plan.\nunexplained\nNo specific reason found in the inspected material.\n\nThe six facts above are a lossy index of this sheet, not a replacement for it. Intermediate decisions are marked where later PRs supersede them. Source inspection is bounded; the evidence drawer also includes every changed file and a mechanical test-title screen.\n\nState\nHost\nPolicy & identity\nTransport\nDaemon life\nTests & carried choices\nState: which preparation survives another command?\n\nPortable state moves from TypeScript and CLI into core. The TypeScript backend remains responsible for its toolchain and the meaning of queries.\n\n#123\nShare the source-text cache without requiring TypeScript\n\nA cache of file bytes moves to core; selection refresh still replaces its revision set.\n\nChose core ownership over TypeScript-backend ownership\nstated\nChose snapshot replacement over coverage-aware merging\nstated\nChose a FileSystem facade over cache-specific reads\nstated\nworkspace-source-cache.ts ↗ workspace-source-cache.test.ts ↗Original #123 ↗\n#124\nPublish each prepared-file index only after preparation succeeds\n\nCore compares revisions and validates candidate indexes; TypeScript supplies a reversible toolchain transaction. One-file ensure operations preserve earlier progress.\n\nChose an incremental overlay candidate over requiring complete preparation output\nstated\nChose candidate validation before subclass commit over post-commit validation\nstated\nChose one-file selection transactions for ensureFiles over one aggregate transaction\nstated\nChose a TypeScript-owned mutation journal over core mutation callbacks\nstated\nChose reversible path staging before source removal over recreating removed sources\nstated\nrevisioned-backend-state.ts ↗ typescript-workspace-state.ts ↗Original #124 ↗\n#126\nPublish file-to-project membership as one graph\n\nCore owns discovery, observed input changes, canonical membership, and publication. TypeScript supplies configuration parsing and project construction.\n\nChose a core abstract base over leaving reusable graph mechanics in TypeScript\nstated\nChose one fresh collector per rebuild over retaining observations across graphs\nstated\nChose exact active-input validation over an undocumented subclass precondition\nstated\nChose canonical snapshot members over relative-path-only membership\nstated\nChose complete validation followed by one state assignment over incremental mutation\nstated\nproject-graph.ts ↗ typescript-project-graph.ts ↗Original #126 ↗\n#127\nLet six query caches share a lifetime, not their contents\n\nThe queries keep their separate key/value spaces and cached promise identities. Only the lifetime mechanism moves.\n\nChose one scope with six handles over one shared map\nstated\nChose Map.has before Map.get over truthiness checks\nstated\nChose synchronous cache clearing before project release over clearing after the await\nstated\nChose to begin the next turn only after refresh succeeds over clearing at refresh entry\nstated\nturn-scoped-cache-scope.ts ↗ typescript-semantic-query-service.ts ↗ typescript-backend.ts ↗Original #127 ↗\n#128\nGive a workspace session to core\n\nCold request discovery and retained daemon discovery use one session interface, with deliberate selection isolation and release behavior.\n\nChose explicit request/session discovery retention over one cached strategy\nstated\nChose fresh selection discovery over retained-catalog reconciliation\nstated\nChose a copied backend array and fresh router per turn over a persistent router\nstated\nChose explicit workspace opening before validation and preparation after validation over one combined call\nstated\nChose repeatable concurrent release over permanent session closure\nstated\nworkspace-session.ts ↗ workspace-session.test.ts ↗ command.ts ↗Original #128 ↗\nHost: who knows what a symnav command means?\n\nThe CLI supplies product knowledge. The daemon provides the machinery to keep an executor available and deliver its output. Renderer and telemetry retain distinct jobs.\n\n#129\nResolve the shared state directory at the CLI boundary\n\nThe CLI selects and canonicalizes one path, then injects it into both daemon and telemetry composition.\n\nChose a CLI-owned class over renamed telemetry functions\nstated\nChose one top-level resolved value over per-consumer resolution\nstated\nChose longest-existing-ancestor canonicalization over requiring the final directory to exist\nstated\nChose constructor-injected environment and home values over test-time global mutation\nstated\nstate-directory-resolver.ts ↗ state-dir.ts ↗Original #129 ↗\n#135\nLoad a host executor instead of importing the CLI from daemon code\n\nAn absolute file URL supplies the executor. Worker machinery validates it, sequences and rechunks output, and asks for request-local heap sampling without knowing CLI phase types.\n\nChose an absolute injected file URL over importing CLI code from daemon mechanisms\nstated\nChose recursive JSON-like diagnostics over a CLI refresh-summary contract\nstated\nChose worker-side rechunking and sequencing over transport metadata in executor output\nstated\nChose runtime validation over trusting dynamically imported TypeScript shapes\nstated\nChose a daemon-owned no-payload sampling callback over sharing CLI command-phase types\nstated\ndaemon-executor.ts ↗ daemon-executor.ts ↗ navigation-worker-entry.ts ↗Original #135 ↗\n#136\nMove start/status/stop formatting to renderer\n\nDaemon reports are portable data. Renderer owns their text and JSON bytes; CLI still selects format and writes the terminal.\n\nChose one stateless renderer class over command-specific formatter functions\nstated\nChose public @symnav/daemon report imports over daemon internal subpaths\nstated\ndaemon-lifecycle-renderer.ts ↗ register-daemon-command.ts ↗Original #136 ↗\n#148\nPut the mechanism package behind DaemonClient\n\nA small public façade loads its Node runtime dynamically. Ordered lazy routing stops later side effects. The package owns warm capture and controlled failure output.\n\nPackage staging, not the shipped CLI switch. Both copies exist at this point. #149 changes the active consumer and removes the app-local mechanisms.\n\nChose a Node-free public façade with a dynamically loaded internal runtime over exposing Node-backed mechanisms\nstated\nChose ordered lazy routing guards over eager registry and transport observation\nstated\nChose package staging with a frozen CLI compatibility graph over switching production consumers during relocation\nstated\nChose package-owned result capture and controlled failure outputs over host-provided storage or output factories\nstated\nChose to preserve acceptance-based idle timing over correcting it during extraction\nstated\ndaemon-client.ts ↗ daemon-client-runtime.ts ↗ daemon-routing-policy.ts ↗ process-coordinator.ts ↗Original #148 ↗\n#149\nSwitch the active CLI and enforce physical ownership\n\nCliInvocationCoordinator calls the public client. External tests use a read-only inspector; package actors own internal setup. Compiler-backed inventories enforce imports, exports, clocks, and storage access.\n\nChose a CLI invocation coordinator over the app-local daemon dispatcher\nstated\nChose a read-only testing inspector over exposing registry, diagnostic, or spool paths\nstated\nChose package-owned actors with an injected executor URL over package tests naming CLI build artifacts\nstated\nChose focused package transport composition over retaining LocalDaemonTransport\nstated\nChose exact compiler-backed import, export, clock, and storage inventories over regex or compatibility aliases\nstated\ncli-invocation-coordinator.ts ↗ daemon-testing-inspector.ts ↗ daemon-storage-boundary.test.ts ↗ cli-daemon-reachability.test.ts ↗Original #149 ↗\nPolicy and identity: who gets to decide?\n\nLimits, names, failure classification, and guard order become explicit authorities. The package is introduced before every mechanism moves into it.\n\n#130\nIntroduce the daemon package and one complete policy snapshot\n\nContracts and thresholds acquire a leaf package. Detached process and worker configuration receive the complete versioned snapshot.\n\nIntermediate step: mechanisms still live in CLI here. The temporary policy-testing export is gone at #149; final test factories are package-local and serialization is internal.\n\nChose a zero-internal-dependency package over keeping portable contracts in CLI\nstated\nChose a complete versioned snapshot over partial per-hop options\nstated\nChose a restricted ./policy-testing subpath over root-level overrides\nstated\nChose AST, declaration, runtime, manifest, and dependency allowlists over documentation alone\nstated\nChose a cut after snapshot propagation over including operational consumer migration\nstated\ndaemon-policy.ts ↗ process-launcher.ts ↗ package.json ↗Original #130 ↗\n#131\nMake every mechanism consume its policy section\n\nPolicy transport becomes policy use: required slices replace local numeric defaults. Status observation uses 100 ms; ordinary single-response exchanges use 250 ms.\n\nChose required policy slices over optional per-consumer numbers\nstated\nChose composition-purpose timeout selection over request-kind selection\nstated\nChose independent numeric resume and reattachment counters over one shared boolean\nstated\nChose test-only adapters over production compatibility overloads\nstated\ndaemon-transport.ts ↗ daemon-policy.ts ↗ daemon-policy.md ↗Original #131 ↗\n#132\nCarry the command name; do not guess it from arguments\n\nCLI syntax decides command identity once. The daemon carries and validates it alongside opaque argv, including duplicate compatibility.\n\nChose a frozen daemon-owned tuple over another app-local set\nstated\nChose an exhaustive CLI record over deriving workspace routes from the full tuple\nstated\nChose commandName beside opaque argv over nesting or reparsing it\nstated\nChose to include commandName in accepted-request compatibility over comparing argv alone\nstated\nChose a new protocol generation over optional or legacy command metadata\nstated\ndaemon-command-name.ts ↗ invocation-workspace-selector.ts ↗ protocol.ts ↗ accepted-request-ledger.ts ↗Original #132 ↗\n#133\nSeparate worker failure from accepted-request failure\n\nOuter classification keeps this priority: resource interruption, response capacity, worker exit, then shutdown context. Worker failures retain their separate wire-level values.\n\nThe CLI-derived error facts in this PR become package-owned mechanism facts when the implementations move. The classification boundary remains.\n\nChose one private outer tuple with a derived union over repeated app-local unions\nstated\nChose a distinct worker type with no shared literals over retaining the colliding alias\nstated\nChose a pure context classifier over lifecycle-specific branching at the call site\nstated\nChose app-owned instanceof fact derivation over constructor-name or error.name reflection\nstated\ndaemon-execution-failure.ts ↗ accepted-execution-session.ts ↗Original #133 ↗\n#134\nMake the first failed admission guard authoritative\n\nAuthentication → worker readiness → resource pressure → queue state → duplicate compatibility. Rejection code determines retry safety.\n\nThe request field was deliberately temporary/opaque at this stage. Executor contracts arrive in #135; the final admission context still uses unknown because guards do not inspect product payloads.\n\nChose explicit guard classes over inline conditionals\nstated\nChose side-effect-free ledger compatibility over mutation-time corruption handling\nstated\nChose code-derived retry safety over trusting wire booleans\nstated\nChose unknown for the temporary request field over importing the CLI request type\nstated\ndaemon-admission.ts ↗ protocol-validator.ts ↗Original #134 ↗\nTransport: who owns each part of the conversation?\n\nA socket connection, a frame, a complete request, and a result transfer have different lifetimes. These PRs separate them before the final package move.\n\n#137\nSeparate byte framing from protocol meaning\n\nCodec owns frame boundaries and binary integrity. Validator owns shapes and correlation. Consumers depend on operation-shaped interfaces.\n\nThe intermediate LocalDaemonTransport error-mapping boundary becomes the split package composition by #149. Its monolithic implementation is removed.\n\nChose operation-shaped transport interfaces over LocalDaemonTransport and consumer-local transport shapes\nstated\nChose separate control and transfer decoders over one binary-aware decoder\nstated\nChose response-kind-specific JSON limits over one control limit\nstated\nChose to map DaemonProtocolError at the facade boundary over changing DaemonTransportError\nstated\nChose to absorb result-chunk header and digest validation into DaemonWireCodec over retaining a standalone chunk codec\nstated\nwire-codec.ts ↗ protocol-validator.ts ↗ contracts.ts ↗Original #137 ↗\n#138\nRetain receipt state across a resumed result fetch\n\nThe receiver owns manifest identity, record offset, and finish validation. Output capture owns storage; successful finish hands disposal ownership to the caller.\n\nChose daemon-scoped capture over extending CLI OrderedCommandOutput\nstated\nChose to advance resume offsets after awaited append over advancing on frame receipt\nstated\nChose one receiver across initial and fetch connections over rebuilding receipt state\nstated\nChose fresh wire decoders per connection over retaining decoder state\nstated\nChose caller ownership after successful finish over receiver-owned cleanup\nstated\nresult-transfer-receiver.ts ↗ client-result-capture.ts ↗Original #138 ↗\n#139\nGive raw outbound sockets one owner\n\nA pull-driven iterator controls read flow; a connection-owned FIFO preserves write order under backpressure.\n\nKeeping protocol and inbound serving in the façade is an intermediate split. #140–#142 extract the remaining state machines before #149 removes that façade.\n\nChose a pull-driven async iterator over forwarded data events\nstated\nChose a connection-owned FIFO over façade-owned drain handling\nstated\nKept protocol decoding and delivery-state translation in LocalDaemonTransport over moving them into the socket client\nstated\nKept inbound server sockets in LocalDaemonTransport over extracting both directions together\nstated\nsocket-client.ts ↗ socket-client.test.ts ↗Original #139 ↗\n#140\nShare the bounded, one-response exchange machinery\n\nLifecycle calls, execution-status, and result acknowledgements share correlation and cleanup mechanics, while capability ports stay narrow.\n\nChose one client for lifecycle, execution-status, and result-acknowledgement exchanges over separate request-specific clients\nstated\nKept result acknowledgement off DaemonLifecycleRequester over widening the port\nstated\nChose timeout injection at composition over request-kind selection\nstated\nChose semantic validation before assigning accepted over treating every decoded frame as accepted\nstated\nChose a shared transport-error module over lifecycle-client ownership\nstated\nlifecycle-client.ts ↗ transport-error.ts ↗Original #140 ↗\n#141\nGive inbound connections their own server\n\nEndpoint binding, each connection’s response/write chains, and shared graceful/forced shutdown belong together.\n\nChose a dedicated socket-server owner over retaining inbound mechanics in the transport façade\nstated\nChose the injected DaemonSocketClient over a second outbound connection path\nstated\nChose independent per-connection response and write chains over a server-wide queue\nstated\nChose one cached shutdown promise over independent close operations\nstated\nsocket-server.ts ↗ socket-server.test.ts ↗Original #141 ↗\n#142\nRecover accepted execution in one client state machine\n\nOne execution attempt can resume its result transfer. A permitted reattachment creates a fresh capture for the same request. The two counters stay independent.\n\nChose a dedicated execution client over a generic response chain\nstated\nChose a fresh output capture per execute attempt over reusing interrupted capture state\nstated\nChose independent numeric policy counters over boolean recovery flags\nstated\nChose the lifecycle client's acknowledgement-only surface over widening DaemonLifecycleRequester\nstated\nChose an internal fetch-ended error over changing the public exhausted-fetch failure\nstated\nexecution-client.ts ↗ execution-client.test.ts ↗Original #142 ↗\n#143\nMake the remaining transport façade only compose and delegate\n\nRequire the policy, inject components directly, and remove leftover framing checks. An architecture test constrains responsibilities rather than line count.\n\nThis is a temporary compatibility façade. #149 replaces it with DaemonTransportFactory; it is not an extra layer in the final runtime.\n\nChose one required DaemonPolicy over an optional system-policy fallback\nstated\nChose direct component injection over module mocking\nstated\nChose to remove canFrame over delegating the probe\nstated\nChose a source architecture oracle over a line-count limit\nstated\ndaemon-transport.ts ↗ daemon-transport-composition.test.ts ↗Original #143 ↗\nDaemon life: who keeps accepted work coherent?\n\nThe process shell becomes a coordinator of dedicated owners. The ledger, queue, resources, workers, and output storage retain their own state.\n\n#144\nProject status from explicit state snapshots\n\nA pure projector receives clocks, queue/resources, process state, and worker state. It preserves the distinction between reported generation, sampled spool usage, and legacy pong fields.\n\nChose a static projector over an injected service\nstated\nChose explicit clock and process values over callbacks\nstated\nChose worker snapshot generation over resource snapshot generation\nstated\nChose sampled resources.spoolBytes over a completion-store read\nstated\nKept legacy pong fileCount independent of worker readiness over matching activity optionality\nstated\nactivity-projector.ts ↗ activity-projector.test.ts ↗Original #144 ↗\n#145\nGive each worker lifetime an explicit generation\n\nOne manager owns startup, execution, replacement, fencing, release, and shutdown. Resource policy decides recovery; explicit activation publishes readiness after sampling.\n\nChose one generation manager over process-shell worker fields\nstated\nChose a recovery port over importing the resource supervisor\nstated\nChose explicit readiness activation over publishing readiness with the worker report\nstated\nChose one stored replacement operation over parallel transitions\nstated\nChose separate close and termination operations over one shutdown promise\nstated\nworker-generation-manager.ts ↗ worker-generation-manager.test.ts ↗Original #145 ↗\n#146\nCoordinate delivery without taking ownership of ledger or spool data\n\nThe delivery session attaches clients, tracks the latest transfer promise, acknowledges results, and fences retained diagnostic traces.\n\nChose one injected delivery session over process-shell delivery fields\nstated\nChose narrow ledger and spool ports over moving their data into the session\nstated\nChose the latest per-request delivery promise over aggregating duplicate attachments\nstated\nChose retention-fenced trace handles over raw observer handles\nstated\nChose physical cleanup before logical acknowledgement over conditional journal acknowledgement\nstated\ndelivery-session.ts ↗ delivery-session.test.ts ↗Original #146 ↗\n#147\nCoordinate one FIFO turn per accepted identity\n\nImmutable acceptance metadata stays in the ledger. A session queues execution and turn-boundary sampling; duplicate attachment does not repeat acceptance side effects.\n\nChose immutable acceptance metadata on each ledger entry over a parallel process map\nstated\nChose an injected session over moving ledger, queue, delivery, worker, resource, lifetime, or shutdown state\nstated\nChose a narrow process-lifecycle port over exposing the process shell\nstated\nChose turn-boundary sampling inside each queued operation over post-hoc process scheduling\nstated\nChose duplicate attachment over acceptance replay\nstated\naccepted-execution-session.ts ↗ accepted-request-ledger.ts ↗ request-queue.ts ↗Original #147 ↗\nTests, deferred behavior, and adjacent edits\n\nThese carry the same weight as moving a package. A lower-level test can exercise a mechanism while a removed end-to-end scenario no longer exercises the composed CLI path.\n\nRemove the TypeScript root revision/index helper types and telemetry state-path resolvers as their responsibilities move to core and CLI.\nstated\nPreserve cached undefined values and promise identity, including rejected promises; do not cache a synchronously thrown factory failure.\nstated\nKeep publication local: one backend index or project graph at a time; earlier successful work can survive a later failure.\nstated\nKeep FIFO configuration discovery, last configured owner as the primary project, and an inferred project for unowned files.\nunexplained\nRetain idle timing from construction and latest new acceptance; do not reset it at readiness or completion.\nstated\nDefer eight follow-ups: ledger eviction, startup-silence bound, control-plane start readiness, endpoint relocation, socket-bind election evaluation, source-byte retention, and two idle-timing changes.\nstated\nMake external test observation read-only, including invalid/missing/malformed/unavailable storage reads; keep policy test factories internal.\nstated\nDuring #148 staging, normalize line endings in the source-copy test hash; at #149 replace that test with a physical-absence check.\nunexplained\nNormalize relative --cwd for daemon control commands at the CLI host.\nstated\nChange the PR template: plain-text change trees, Context, language-neutral signatures, and a Visuals section replace prior embed and reading-order guidance.\nunexplained\nRemove the CLI cross-process starting-owner scenario; add a package client/actor scenario for the same ownership topic.\nunexplained\nRemove the CLI live-silent-daemon status scenario; exercise a live silent peer through the package client.\nunexplained\nRemove the CLI malformed-activity status scenario; exercise malformed activity redaction through the package client.\nunexplained\nRemove the CLI warm-up-after-caller-kill scenario; retain related registry and startup-coordinator tests.\nunexplained\nRemove the CLI stale current-schema record cleanup scenario; keep related controller and registry observation tests.\nunexplained\nRemove the CLI prompt-status-under-stuck-work scenario; keep process-level activity and responsiveness tests.\nunexplained\nRemove the CLI workspace-deletion cold-output parity scenario; keep daemon workspace-disappearance handling tests.\nunexplained\nRemove the built stop-command in-flight drain scenario; retain process/session drain tests.\nunexplained\nRemove the built stop-command forced-termination scenario; retain a real-process force-stop test in the daemon package.\nunexplained\nRemove the built stop-command launched-startup exit scenario; retain controller tests for exact launched-process exit.\nunexplained\nRemove end-to-end diagnostic log filename, backup-count, and per-file size assertions; keep logger unit coverage.\nunexplained\nNarrow diagnostic redaction assertions from raw log contents to parsed inspector events.\nunexplained\nReplace disconnected-caller completion-state polling with telemetry observation and a subsequent successful warm call.\nunexplained\nReplace persistent-pressure endpoint and process-token checks with read-only instance inspection and public status cleanup.\nunexplained\nRun the FIFO freshness scenario through two public overview commands instead of a raw protocol version request followed by overview.\nstated\nThe actual policy choices\n\nThese are the recorded defaults and derivations. “No timer” is a choice too. The numeric record states a purpose for each value; several purposes say only that existing timing is preserved.\n\nOwned value / recipe\tDefault\tWhere it applies\tReason\ntransport.singleResponseTimeoutMs\t250 ms\tOrdinary lifecycle and execution-status exchanges\t\nstated\nBound one-response local socket waits\ntransport.statusResponseTimeoutMs\t100 ms\tStatus observer lifecycle exchange\t\nstated\nKeep status aggregation responsive independently of routing\ntransport.executionAdmissionTimeoutMs\t5 s\tExecute submission until acceptance\t\nstated\nBound admission without timing accepted completion\ntransport.maximumJsonPayloadBytes\t8 MiB\tOrdinary JSON control frames\t\nstated\nBound decoded control input\ntransport.maximumExecutionControlPayloadBytes\t256 KiB\tExecution transfer control frames\t\nstated\nKeep binary-transfer control bounded separately\nstartup.coordinationGraceMs\t15 s\tStartup ownership and missing-owner observation\t\nstated\nPreserve election recovery grace\nstartup.heartbeatIntervalMs\t100 ms\tStartup-owner heartbeat\t\nstated\nMaintain live ownership while warming\nstartup.authorizationPollIntervalMs\t10 ms\tProcess authorization wait\t\nstated\nPreserve the distinct fast authorization cadence\nstartup.observationPollIntervalMs\t20 ms\tLauncher readiness observation\t\nstated\nPreserve current readiness polling cadence\nstartup.previousInstanceTerminationTimeoutMs\t5 min\tReplacement of a previous instance\t\nstated\nAllow controlled termination before new ownership proceeds\nstartup.childFailureRetryLimit\t1 retry\tExplicit startup child failure\t\nstated\nPreserve one fresh launch after a failed child\nshutdown.idleTimeoutMs\t30 min\tWarm daemon idle lifetime\t\nstated\nRelease retained resources after inactivity\nshutdown.stopTimeoutMs\t5 s\tUser-requested stop\t\nstated\nBound graceful stop and forced escalation together\nshutdown.forcedTerminationReserveMaximumMs\t500 ms\tStop escalation reserve\t\nstated\nLeave bounded time for authenticated force termination\nrecipe.forcedTerminationReserve\tmin(forcedTerminationReserveMaximumMs, floor(stopTimeoutMs / 2))\tEffective stop escalation reserve\t\nstated\nPreserve small overridden stop windows\nshutdown.controllerPollIntervalMs\t20 ms\tController process/registry observation\t\nstated\nPreserve control-plane polling cadence\nshutdown.processSignalExitTimeoutMs\t500 ms after SIGTERM and 500 ms after SIGKILL\tDirect process termination\t\nstated\nGive each signal a bounded exit interval\nshutdown.processExitPollIntervalMs\t20 ms\tDirect process termination\t\nstated\nPreserve process-exit polling cadence independently\nshutdown.resourceDrainAcknowledgementGraceMs\t250 ms\tCompletion acknowledgement during drain\t\nstated\nPermit an attached client to acknowledge before cleanup\nshutdown.resourceDrainAcknowledgementPollIntervalMs\t5 ms\tCompletion acknowledgement during drain\t\nstated\nPreserve the distinct fast acknowledgement cadence\ndelivery.postAcceptanceExecutionReattachmentLimit\t1 reattachment\tAuthenticated close after acceptance\t\nstated\nRecover the accepted request without local replay\ndelivery.resultTransferResumeLimitPerExecutionAttempt\t1 fetch resume per execute attempt\tInterrupted manifest transfer\t\nstated\nResume one transfer independently for each execute attempt\noutput.maximumChunkRawBytes\t64 KiB\tWorker and result chunks\t\nstated\nBound one raw output record\noutput.inlineRawBytes\t256 KiB\tInline result storage\t\nstated\nAvoid files for small results\noutput.maximumResultRawBytes\t256 MiB\tOne completed result\t\nstated\nBound retained output for one request\noutput.maximumAggregateSpoolRawBytes\t512 MiB\tAll retained completions for one daemon\t\nstated\nBound aggregate spool pressure\nrecipe.effectiveMemorySelection\tUse constrained bytes only when positive and smaller than total bytes; preserve selected raw bytes\tMemory derivation input\t\nstated\nRespect real lower constraints without rounding identity\nresources.effectiveMemoryBytes\tSelected raw effective bytes\tResource reports and derived thresholds\t\nstated\nPreserve non-MiB-aligned system information exactly\nrecipe.effectiveMemoryMiB\tmax(1, floor(effectiveMemoryBytes / MiB))\tMemory threshold derivation\t\nstated\nGive sub-MiB inputs a stable minimum\nrecipe.hardProcessRss\tclamp(floor(effectiveMemoryMiB / 2), 256, 8192) * MiB\tHard daemon RSS limit\t\nstated\nReserve memory for the host while bounding small and large systems\nresources.hardProcessRssBytes\tHard-process-RSS recipe\tProcess replacement and worker launch\t\nstated\nTrigger controlled replacement before OOM\nresources.softProcessRssBytes\tfloor(hardProcessRssMiB * 0.8) * MiB\tTransient resource shedding\t\nstated\nShed before hard replacement\nresources.resumeProcessRssBytes\tfloor(hardProcessRssMiB * 0.7) * MiB\tAdmission resumption\t\nstated\nRequire lower RSS before resuming work\nrecipe.workerOldGeneration\tclamp(floor(effectiveMemoryMiB / 4), 128, 4096) MiB\tWorker V8 old generation\t\nstated\nBound worker heap within process budget\nresources.workerMaxOldGenerationSizeMiB\tWorker-old-generation recipe\tWorker resource limits\t\nstated\nPass the derived V8 limit unchanged\nresources.supervisionIntervalMs\t250 ms\tProcess RSS and spool sampling\t\nstated\nDetect sustained pressure without per-operation overhead\nresources.replacementWindowMs\t10 min\tReplacement circuit\t\nstated\nCount only recent replacements\nresources.replacementLimit\t2 replacements; third drains\tReplacement circuit\t\nstated\nStop persistent replacement churn\nresources.workerHeapSampleIntervalMs\t25 ms\tActive worker heap high-water sampling\t\nstated\nObserve short-lived heap peaks\ndiagnostics.logRotateBytes\t10 MiB\tDiagnostic log rotation\t\nstated\nBound active diagnostic file size\ndiagnostics.logBackupCount\t4 backups plus active log\tDiagnostic log rotation\t\nstated\nRetain a bounded diagnostic history\ndiagnostics.maximumQueuedEvents\t1,024\tPending diagnostic writes\t\nstated\nBound memory when storage is slow\ndiagnostics.disconnectedTraceRetentionMs\t5 min\tDisconnected operation traces\t\nstated\nRetain reconnect evidence without changing result retention\ndiagnostics.maximumDisconnectedTraces\t1,024 with effective minimum 1\tDisconnected operation traces\t\nstated\nBound diagnostic-only retention\nIntentional absences\nHealthy startup: None\nProgressing warm-up has no project-size deadline.\nstated\nStartup silence: None\nSilence handling is deferred to the follow-up contract.\nstated\nPost-accept completion: None\nAccepted work is not replayed or failed because it runs long.\nstated\nWorker output acknowledgement: None\nBackpressure waits for durable consumption without a timer.\nstated\nUnacknowledged result: None\nRetention eviction is deferred to the follow-up contract.\nstated\nRead the complete policy record ↗\nYou can stop at this layer.\nThe decisions are on the page. Below, the same facts become concrete requests, lifetimes, and source lines.\nReturn to the ownership map ↑\n\n04 / WORKED EXAMPLE\n\nFollow one command\nthrough the map.\n\nsymnav overview src/a.ts selects one file. The CLI finds its workspace; DaemonClient selects a route. Acceptance separates safe local recovery from recovery of the already accepted request.\n\nIllustrative trace, derived from source. No symnav code runs here. Steps combine multiple function calls and omit election details; the scenario descriptions state the branches being illustrated.\n\nReady daemon\nNo daemon record\nRejected for pressure\nAccepted, then disconnected\n\nA compatible daemon is ready, guards pass, and delivery finishes. One new accepted identity enters one FIFO turn. Selection discovers a.ts without reconciling unrelated retained siblings.\n\n01 · CLI host\nClassify the question\n02 · DaemonClient · caller\nChoose the warm route\n03 · Daemon coordinator\nAdmit, then accept\n04 · Accepted execution session\nEnter one FIFO turn\n05 · Host executor · worker\nRefresh and answer\n06 · Delivery + client receiver\nTransfer and verify output\n07 · CLI host · caller\nWrite the answer\n← Previous step\n1 / 7\nNext step →\nReset\n\nCLI host\n\nClassify the question\n\nInvocationWorkspaceSelector labels the command overview and normalizes argv. CliInvocationCoordinator resolves the workspace root before calling DaemonClient.\n\nNo daemon request has been accepted.\n\nOpen the implementing boundary ↗\nBEFORE / NOT ACCEPTED\nLocal execution is available only when the failure is retry-safe.\nNot-ready, pressure, and draining rejections are retry-safe. An incompatible duplicate is not. Authentication mismatch disconnects.\nACCEPTED\n↓\nsame identity\nAFTER ACCEPTANCE\nRecover delivery or return a controlled failure.\nNever rerun the work locally. A long command has no completion timeout. Duplicate attachment creates no new queue turn, trace, or idle reset.\nWarm route and controlled failures ↗ Admission order and retry codes ↗\n↑ The decisions behind this path\n\n05 / DIFFERENT KINDS OF WARM\n\nA saved file is not\na saved answer.\n\nThe stack moves reusable lifetimes to core while leaving TypeScript-specific interpretation in the backend. The same cache word hides four different retention rules.\n\nWhat is held\tOwner after the stack\tWhat ends or replaces it\nWorkspace discovery and backend instances\tWorkspaceSession in core\tCold requests discover afresh; retained sessions reuse catalog identity. Selected-file discovery bypasses retained sibling reconciliation.\nSource text bytes\tWorkspaceSourceCache in core\tEvery supplied snapshot replaces the byte-cache revision set, including selections. Changed paths/revisions invalidate bytes; omitted files are evicted.\nPrepared file and project indexes\tCore bases, with TypeScript hooks\tValidate a candidate, then publish it. Backend selection overlays retain omitted prepared files; full refresh removes absent files. Each index/graph has its own publication boundary.\nSix semantic query maps\tTurnScopedCacheScope in core\tClear after successful refresh begins the next turn; also clear synchronously before project release. A failed refresh keeps the preceding successful turn's maps.\nSuccessful full refresh\nSelection: a.ts only\nBackend preparation fails\nRelease pending or rejects\nFull refresh supplies a.ts and b.ts\n\nAssume both files are unchanged and this backend refresh succeeds. Prepared identities may be reused; the semantic maps begin a new turn.\n\nSource bytes\na.ts · retained\nb.ts · retained\nCore byte cache matches the supplied authoritative revision set.\nPrepared index\na.ts · prepared\nb.ts · prepared\nSame revisions reuse prepared entries; candidate publication is local to this index.\nProject graph\nconfigured membership\ninferred fallback\nUnchanged files and observed inputs let the current graph remain published.\nSemantic maps\nsix empty maps\nbeginTurn clears previous entries after successful refresh.\nOpen this lifetime boundary ↗\n\nIllustration: two files and symbolic values stand in for real bytes, nodes, and queries. It distinguishes byte-cache eviction from prepared-index retention; it does not simulate a language backend.\n\nThe publication boundary is smaller than “the workspace”\nPrior published index\n→\nPrepare + validate candidate\n→\nTypeScript commit\n→\nAssign new index\n\nA backend preparation failure rolls back that preparation. ensureFiles performs one selection transaction per missing file, so earlier successful files remain when a later one fails. Source refresh, project-graph refresh, and other backend commits are separate. A workspace scope is not returned after a failed refresh.\n\nBackend publication ↗ Later backend failure after an earlier commit ↗\n↑ The state decisions\n\n06 / TWO DIFFERENT RECOVERIES\n\nBring the answer back.\nKeep the work's identity.\n\nThe server's ledger owns accepted identity. Its spool owns completed bytes. The client owns a receiver and capture. A receiver survives fetch connections; a new execute attachment uses a fresh capture for the same accepted request.\n\nFetch resumes this transfer\nReattach to the accepted request\nSame receiver. New socket.\nDefault: 1 fetch resume per execute attempt\nDaemon process\n\nLedger: accepted request R\nSpool: completed records for R\n\n0\n1\n2\n3\nRead the stored transfer from offset 2.\n→\nCaller process\n\nKeep receiver, manifest and captured records.\nCreate a new wire decoder for this connection.\n\n0\n1\n2\n3\nRecords 0 and 1 were appended. The first not-yet-appended record is 2.\n\nawait append(record 2) → nextOffset becomes 3\n\nReceiving a frame is not enough to advance the offset. Finish requires the manifest’s record count, byte total, and digest to match captured output. The completed output is handed to the caller for disposal.\n\nOpen the recovery implementation ↗Open duplicate acceptance ↗\n\nIllustration: record numbers stand in for output records, not byte offsets. Default budgets are shown; this is not a socket execution.\n\nSix jobs the old transport façade held together\nCodec + validator\nFrame sizes, binary headers, digests, message shape and correlation\nSocket client\nDemand-driven reads; ordered writes; timeout and closure\nSocket server\nEndpoint binding; per-connection chains; draining and forced close\nLifecycle client\nOne-response exchanges and result acknowledgement\nExecution client\nAcceptance, transfer, reattachment, terminal outcome\nReceiver + capture\nManifest identity, durable append position, verified result, cleanup\nThe worker can change while the daemon stays\nGeneration N\nold reports fenced out\n→\nOne shared replacement operation\nresource policy decides whether to replace\n→\nGeneration N+1\nwarm-up sampling, then explicit readiness\n\nThe activity projector uses the worker's generation during replacement, the resource supervisor's sampled spool size, and the legacy pong file count independently of readiness. Worker close and forced termination remain separate operations.\n\nGeneration manager ↗ Snapshot projection ↗\n↑ The transport decisions\n\n07 / BELOW THE MAP\n\nFollow a claim\nto the actual delta.\n\nFrozen from the supplied Git revisions. The page makes no correctness verdict. PR descriptions report their own verification; this experiment does not rerun or certify those suites.\n\nBase\nb6801ebdd2421d0ca2e4bdd61ec0f04c24ddd73e\nHead\nd07002357d3e9596bfaae910a1ac63b77981620b\nCombined delta, with rename detection\n254 files changed, 27533 insertions(+), 8698 deletions(-)\nMechanical test-title screen: 40 baseline titles absent verbatim at head\nFind a changed file\n\n261 of 261 source pairs · includes unchanged context and one explicitly marked intermediate test snapshot\n\nM\n.github/PULL_REQUEST_TEMPLATE.md ↗\n+26 / −68\nM\nAGENTS.md ↗\n+13 / −9\nM\napps/cli/package.json ↗\n+1 / −0\nA\napps/cli/src/cli-invocation-coordinator.test.ts ↗\n+107 / −0\nA\napps/cli/src/cli-invocation-coordinator.ts ↗\n+44 / −0\nM\napps/cli/src/cli-program-executor.test.ts ↗\n+146 / −11\nM\napps/cli/src/cli-program-executor.ts ↗\n+6 / −5\nM\napps/cli/src/cli.test.ts ↗\n+71 / −67\nM\napps/cli/src/cli.ts ↗\n+15 / −10\nM\napps/cli/src/command-execution-result.ts ↗\n+28 / −19\nM\napps/cli/src/command.ts ↗\n+25 / −18\nA\napps/cli/src/commands/daemon/register-daemon-command.test.ts ↗\n+224 / −0\nM\napps/cli/src/commands/daemon/register-daemon-command.ts ↗\n+20 / −33\nA\napps/cli/src/daemon-executor.test.ts ↗\n+197 / −0\nA\napps/cli/src/daemon-executor.ts ↗\n+150 / −0\nD\napps/cli/src/daemon/daemon-clock.test.ts ↗\n+0 / −33\nD\napps/cli/src/daemon/daemon-command-dispatcher.integration.test.ts ↗\n+0 / −246\nD\napps/cli/src/daemon/daemon-command-dispatcher.test.ts ↗\n+0 / −377\nD\napps/cli/src/daemon/daemon-command-dispatcher.ts ↗\n+0 / −303\nD\napps/cli/src/daemon/daemon-entry.test.ts ↗\n+0 / −113\nD\napps/cli/src/daemon/daemon-entry.ts ↗\n+0 / −54\nD\napps/cli/src/daemon/daemon-lifecycle-renderer.test.ts ↗\n+0 / −60\nD\napps/cli/src/daemon/daemon-lifetime.test.ts ↗\n+0 / −51\nD\napps/cli/src/daemon/daemon-navigation-worker.test.ts ↗\n+0 / −158\nD\napps/cli/src/daemon/daemon-result-chunk-codec.ts ↗\n+0 / −162\nD\napps/cli/src/daemon/daemon-runtime-values.ts ↗\n+0 / −24\nD\napps/cli/src/daemon/invocation-route.ts ↗\n+0 / −9\nD\napps/cli/src/daemon/invocation-workspace-selector.test.ts ↗\n+0 / −76\nD\napps/cli/src/daemon/local-daemon-transport.ts ↗\n+0 / −1488\nD\napps/cli/src/daemon/retained-workspace-program.ts ↗\n+0 / −35\nD\napps/cli/src/daemon/workspace-daemon.ts ↗\n+0 / −1199\nA\napps/cli/src/default-dependencies.test.ts ↗\n+44 / −0\nA\napps/cli/src/invocation-route.ts ↗\n+15 / −0\nA\napps/cli/src/invocation-workspace-selector.test.ts ↗\n+99 / −0\nR061\napps/cli/src/daemon/invocation-workspace-selector.ts → apps/cli/src/invocation-workspace-selector.ts ↗\n+32 / −17\nM\napps/cli/src/program-dependencies.ts ↗\n+12 / −3\nM\napps/cli/src/program.test.ts ↗\n+16 / −4\nM\napps/cli/src/program.ts ↗\n+35 / −10\nA\napps/cli/src/state-directory-resolver.test.ts ↗\n+95 / −0\nA\napps/cli/src/state-directory-resolver.ts ↗\n+29 / −0\nD\napps/cli/src/workspace-request-scope.test.ts ↗\n+0 / −157\nD\napps/cli/src/workspace-request-scope.ts ↗\n+0 / −55\nM\napps/cli/test/benchmark/daemon-benchmark-gate.ts ↗\n+1 / −1\nM\napps/cli/test/benchmark/daemon-scale-benchmark-harness.test.ts ↗\n+10 / −17\nM\napps/cli/test/benchmark/daemon-scale-benchmark-harness.ts ↗\n+59 / −62\nM\napps/cli/test/e2e/daemon/diagnostic-output.test.ts ↗\n+27 / −78\nM\napps/cli/test/e2e/daemon/nested-workspaces.test.ts ↗\n+3 / −6\nM\napps/cli/test/e2e/daemon/parity.test.ts ↗\n+79 / −132\nM\napps/cli/test/e2e/daemon/persistent-pressure.test.ts ↗\n+42 / −68\nM\napps/cli/test/e2e/daemon/start.test.ts ↗\n+3 / −7\nM\napps/cli/test/e2e/daemon/state-isolation.test.ts ↗\n+25 / −36\nM\napps/cli/test/e2e/daemon/status.test.ts ↗\n+11 / −662\nM\napps/cli/test/e2e/daemon/stop.test.ts ↗\n+12 / −274\nM\napps/cli/test/e2e/navigation-mode-cleanup.test.ts ↗\n+2 / −3\nM\napps/cli/test/e2e/telemetry/telemetry.test.ts ↗\n+4 / −3\nD\napps/cli/test/helpers/daemon-accepted-caller.ts ↗\n+0 / −30\nM\napps/cli/test/helpers/daemon-malicious-output.cjs ↗\n+1 / −1\nA\napps/cli/test/helpers/daemon-resource-policy.ts ↗\n+34 / −0\nD\napps/cli/test/helpers/daemon-startup-caller-exit.ts ↗\n+0 / −215\nD\napps/cli/test/helpers/daemon-state-files.ts ↗\n+0 / −21\nA\napps/cli/test/helpers/daemon-testing.ts ↗\n+16 / −0\nM\napps/cli/test/helpers/e2e-process-cleanup.test.ts ↗\n+6 / −7\nM\napps/cli/test/helpers/e2e-process-cleanup.ts ↗\n+59 / −20\nM\napps/cli/test/integration/commands/helpers/fake-program-dependencies.ts ↗\n+13 / −0\nM\napps/cli/test/integration/commands/overview/overview-command.test.ts ↗\n+89 / −12\nM\napps/cli/test/integration/commands/run-command.test.ts ↗\n+30 / −0\nM\napps/cli/tsconfig.json ↗\n+1 / −0\nM\neslint.config.mjs ↗\n+27 / −15\nA\nmeta-tests/src/cli-daemon-reachability.test.ts ↗\n+184 / −0\nA\nmeta-tests/src/daemon-compatibility-copy.test.ts ↗\n+12 / −0\nA\nmeta-tests/src/daemon-package.test.ts ↗\n+265 / −0\nA\nmeta-tests/src/daemon-storage-boundary.test.ts ↗\n+1346 / −0\nM\nmeta-tests/src/lint-rule.test.ts ↗\n+103 / −0\nM\nmeta-tests/src/project-refs.test.ts ↗\n+26 / −3\nA\nmeta-tests/src/renderer-package.test.ts ↗\n+49 / −0\nM\npackages/backend-typescript/src/call-graph/find-callees.ts ↗\n+1 / −1\nM\npackages/backend-typescript/src/definition/find-definitions.ts ↗\n+1 / −1\nM\npackages/backend-typescript/src/identity/workspace-declaration-index.test.ts ↗\n+27 / −25\nM\npackages/backend-typescript/src/index.ts ↗\n+0 / −3\nM\npackages/backend-typescript/src/resolve/resolve-symbols.ts ↗\n+1 / −1\nM\npackages/backend-typescript/src/typescript-backend/typescript-backend.ts ↗\n+11 / −12\nM\npackages/backend-typescript/src/typescript-backend/typescript-project-graph.test.ts ↗\n+71 / −1\nM\npackages/backend-typescript/src/typescript-backend/typescript-project-graph.ts ↗\n+126 / −194\nM\npackages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts ↗\n+195 / −1\nM\npackages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts ↗\n+55 / −64\nM\npackages/backend-typescript/src/typescript-backend/typescript-workspace-state.test.ts ↗\n+279 / −53\nM\npackages/backend-typescript/src/typescript-backend/typescript-workspace-state.ts ↗\n+134 / −302\nM\npackages/backend-typescript/test/integration/typescript-backend.test.ts ↗\n+37 / −0\nA\npackages/core/src/backend/revisioned-backend-state.test.ts ↗\n+360 / −0\nA\npackages/core/src/backend/revisioned-backend-state.ts ↗\n+293 / −0\nA\npackages/core/src/backend/turn-scoped-cache-scope.test.ts ↗\n+92 / −0\nA\npackages/core/src/backend/turn-scoped-cache-scope.ts ↗\n+46 / −0\nM\npackages/core/src/index.ts ↗\n+30 / −0\nA\npackages/core/src/workspace/project-graph.test.ts ↗\n+555 / −0\nA\npackages/core/src/workspace/project-graph.ts ↗\n+340 / −0\nA\npackages/core/src/workspace/workspace-session.test.ts ↗\n+296 / −0\nA\npackages/core/src/workspace/workspace-session.ts ↗\n+81 / −0\nA\npackages/core/src/workspace/workspace-source-cache.test.ts ↗\n+233 / −0\nR094\npackages/backend-typescript/src/typescript-backend/workspace-source-cache.ts → packages/core/src/workspace/workspace-source-cache.ts ↗\n+2 / −1\nA\npackages/daemon/package.json ↗\n+38 / −0\nA\npackages/daemon/src/client/daemon-client-contracts.ts ↗\n+36 / −0\nA\npackages/daemon/src/client/daemon-client-control.test.ts ↗\n+112 / −0\nA\npackages/daemon/src/client/daemon-client-public.test.ts ↗\n+43 / −0\nA\npackages/daemon/src/client/daemon-client-runtime.ts ↗\n+298 / −0\nA\npackages/daemon/src/client/daemon-client.test.ts ↗\n+447 / −0\nA\npackages/daemon/src/client/daemon-client.ts ↗\n+64 / −0\nA\npackages/daemon/src/client/daemon-routing-policy.test.ts ↗\n+219 / −0\nA\npackages/daemon/src/client/daemon-routing-policy.ts ↗\n+137 / −0\nA\npackages/daemon/src/daemon-admission.test.ts ↗\n+150 / −0\nA\npackages/daemon/src/daemon-admission.ts ↗\n+129 / −0\nA\npackages/daemon/src/daemon-command-name.test.ts ↗\n+43 / −0\nA\npackages/daemon/src/daemon-command-name.ts ↗\n+32 / −0\nA\npackages/daemon/src/daemon-diagnostics.ts ↗\n+40 / −0\nA\npackages/daemon/src/daemon-execution-failure.test.ts ↗\n+122 / −0\nA\npackages/daemon/src/daemon-execution-failure.ts ↗\n+35 / −0\nA\npackages/daemon/src/daemon-executor-module-loader.test.ts ↗\n+136 / −0\nA\npackages/daemon/src/daemon-executor.ts ↗\n+216 / −0\nA\npackages/daemon/src/daemon-lifecycle-report.ts ↗\n+92 / −0\nA\npackages/daemon/src/daemon-policy.test.ts ↗\n+163 / −0\nA\npackages/daemon/src/daemon-policy.ts ↗\n+341 / −0\nR076\napps/cli/src/daemon/completion-spool.test.ts → packages/daemon/src/delivery/completion-spool.test.ts ↗\n+72 / −17\nR076\napps/cli/src/daemon/completion-spool.ts → packages/daemon/src/delivery/completion-spool.ts ↗\n+88 / −25\nA\npackages/daemon/src/delivery/delivery-session.test.ts ↗\n+646 / −0\nA\npackages/daemon/src/delivery/delivery-session.ts ↗\n+519 / −0\nR083\napps/cli/src/daemon/daemon-logger.test.ts → packages/daemon/src/diagnostics/logger.test.ts ↗\n+68 / −5\nR090\napps/cli/src/daemon/daemon-logger.ts → packages/daemon/src/diagnostics/logger.ts ↗\n+23 / −39\nR097\napps/cli/src/daemon/daemon-operation-observer.test.ts → packages/daemon/src/diagnostics/operation-observer.test.ts ↗\n+2 / −5\nR094\napps/cli/src/daemon/daemon-operation-observer.ts → packages/daemon/src/diagnostics/operation-observer.ts ↗\n+7 / −7\nA\npackages/daemon/src/entry-boundary.test.ts ↗\n+52 / −0\nA\npackages/daemon/src/execution/accepted-execution-session-contracts.ts ↗\n+66 / −0\nA\npackages/daemon/src/execution/accepted-execution-session.test.ts ↗\n+330 / −0\nA\npackages/daemon/src/execution/accepted-execution-session.ts ↗\n+194 / −0\nR050\napps/cli/src/daemon/accepted-request-ledger.test.ts → packages/daemon/src/execution/accepted-request-ledger.test.ts ↗\n+71 / −36\nR074\napps/cli/src/daemon/accepted-request-ledger.ts → packages/daemon/src/execution/accepted-request-ledger.ts ↗\n+54 / −19\nR099\napps/cli/src/daemon/workspace-request-queue.test.ts → packages/daemon/src/execution/request-queue.test.ts ↗\n+1 / −1\nR090\napps/cli/src/daemon/workspace-request-queue.ts → packages/daemon/src/execution/request-queue.ts ↗\n+10 / −5\nA\npackages/daemon/src/host-contract.test.ts ↗\n+380 / −0\nA\npackages/daemon/src/index.ts ↗\n+33 / −0\nA\npackages/daemon/src/lifecycle/daemon-clock.test.ts ↗\n+801 / −0\nR100\napps/cli/src/daemon/daemon-clock.ts → packages/daemon/src/lifecycle/daemon-clock.ts ↗\n+0 / −0\nA\npackages/daemon/src/lifecycle/daemon-lifetime.test.ts ↗\n+79 / −0\nR065\napps/cli/src/daemon/daemon-lifetime.ts → packages/daemon/src/lifecycle/daemon-lifetime.ts ↗\n+11 / −9\nA\npackages/daemon/src/package-boundary.test.ts ↗\n+37 / −0\nA\npackages/daemon/src/process-entry.ts ↗\n+43 / −0\nA\npackages/daemon/src/process/activity-projector.test.ts ↗\n+327 / −0\nA\npackages/daemon/src/process/activity-projector.ts ↗\n+126 / −0\nR088\napps/cli/src/daemon/daemon-controller.test.ts → packages/daemon/src/process/controller.test.ts ↗\n+38 / −50\nR075\napps/cli/src/daemon/daemon-controller.ts → packages/daemon/src/process/controller.ts ↗\n+74 / −78\nA\npackages/daemon/src/process/process-coordinator-construction.test.ts ↗\n+218 / −0\nR073\napps/cli/src/daemon/workspace-daemon-requests.test.ts → packages/daemon/src/process/process-coordinator-requests.test.ts ↗\n+740 / −44\nR088\napps/cli/src/daemon/workspace-daemon.test.ts → packages/daemon/src/process/process-coordinator.test.ts ↗\n+60 / −41\nA\npackages/daemon/src/process/process-coordinator.ts ↗\n+676 / −0\nR052\napps/cli/src/daemon/daemon-process-launcher.test.ts → packages/daemon/src/process/process-launcher.test.ts ↗\n+123 / −27\nR070\napps/cli/src/daemon/daemon-process-launcher.ts → packages/daemon/src/process/process-launcher.ts ↗\n+67 / −38\nR094\napps/cli/src/daemon/daemon-process-termination-observer.test.ts → packages/daemon/src/process/process-termination-observer.test.ts ↗\n+2 / −2\nR092\napps/cli/src/daemon/daemon-process-termination-observer.ts → packages/daemon/src/process/process-termination-observer.ts ↗\n+5 / −2\nA\npackages/daemon/src/process/runtime-values.ts ↗\n+11 / −0\nR095\napps/cli/src/daemon/daemon-record-observer.test.ts → packages/daemon/src/registry/record-observer.test.ts ↗\n+5 / −8\nR092\napps/cli/src/daemon/daemon-record-observer.ts → packages/daemon/src/registry/record-observer.ts ↗\n+9 / −5\nR074\napps/cli/src/daemon/daemon-registry.test.ts → packages/daemon/src/registry/registry.test.ts ↗\n+299 / −41\nR073\napps/cli/src/daemon/daemon-registry.ts → packages/daemon/src/registry/registry.ts ↗\n+244 / −107\nR089\napps/cli/src/daemon/daemon-startup-coordinator.test.ts → packages/daemon/src/registry/startup-coordinator.test.ts ↗\n+124 / −72\nR082\napps/cli/src/daemon/daemon-startup-coordinator.ts → packages/daemon/src/registry/startup-coordinator.ts ↗\n+69 / −69\nR082\napps/cli/src/daemon/daemon-workspace-identity.test.ts → packages/daemon/src/registry/workspace-identity.test.ts ↗\n+11 / −8\nR100\napps/cli/src/daemon/daemon-workspace-identity.ts → packages/daemon/src/registry/workspace-identity.ts ↗\n+0 / −0\nR068\napps/cli/src/daemon/daemon-resource-monitor.test.ts → packages/daemon/src/resources/resource-supervisor.test.ts ↗\n+92 / −93\nR071\napps/cli/src/daemon/daemon-resource-monitor.ts → packages/daemon/src/resources/resource-supervisor.ts ↗\n+14 / −69\nA\npackages/daemon/src/testing/daemon-testing-inspector.test.ts ↗\n+145 / −0\nA\npackages/daemon/src/testing/daemon-testing-inspector.ts ↗\n+167 / −0\nA\npackages/daemon/src/testing/index.ts ↗\n+7 / −0\nA\npackages/daemon/src/transport/client-result-capture.test.ts ↗\n+262 / −0\nA\npackages/daemon/src/transport/client-result-capture.ts ↗\n+231 / −0\nA\npackages/daemon/src/transport/contracts.ts ↗\n+71 / −0\nR074\napps/cli/src/daemon/daemon-result-chunk-codec.test.ts → packages/daemon/src/transport/daemon-result-chunk-codec.test.ts ↗\n+11 / −6\nA\npackages/daemon/src/transport/daemon-transport-composition.test.ts ↗\n+34 / −0\nR058\napps/cli/src/daemon/local-daemon-transport-execution.test.ts → packages/daemon/src/transport/daemon-transport-execution.test.ts ↗\n+601 / −96\nA\npackages/daemon/src/transport/daemon-transport-socket-client.test.ts ↗\n+361 / −0\nR075\napps/cli/src/daemon/local-daemon-transport-validation.test.ts → packages/daemon/src/transport/daemon-transport-validation.test.ts ↗\n+147 / −46\nR081\napps/cli/src/daemon/local-daemon-transport.test.ts → packages/daemon/src/transport/daemon-transport.test.ts ↗\n+33 / −65\nA\npackages/daemon/src/transport/daemon-transport.ts ↗\n+87 / −0\nA\npackages/daemon/src/transport/execution-client.test.ts ↗\n+298 / −0\nA\npackages/daemon/src/transport/execution-client.ts ↗\n+447 / −0\nA\npackages/daemon/src/transport/lifecycle-client.test.ts ↗\n+401 / −0\nA\npackages/daemon/src/transport/lifecycle-client.ts ↗\n+183 / −0\nA\npackages/daemon/src/transport/protocol-validator.test.ts ↗\n+322 / −0\nA\npackages/daemon/src/transport/protocol-validator.ts ↗\n+672 / −0\nR092\napps/cli/src/daemon/daemon-protocol.ts → packages/daemon/src/transport/protocol.ts ↗\n+17 / −43\nA\npackages/daemon/src/transport/result-transfer-receiver.test.ts ↗\n+287 / −0\nA\npackages/daemon/src/transport/result-transfer-receiver.ts ↗\n+153 / −0\nA\npackages/daemon/src/transport/socket-client.test.ts ↗\n+270 / −0\nA\npackages/daemon/src/transport/socket-client.ts ↗\n+171 / −0\nA\npackages/daemon/src/transport/socket-server.test.ts ↗\n+484 / −0\nA\npackages/daemon/src/transport/socket-server.ts ↗\n+181 / −0\nA\npackages/daemon/src/transport/transport-error.ts ↗\n+38 / −0\nA\npackages/daemon/src/transport/wire-codec.test.ts ↗\n+126 / −0\nA\npackages/daemon/src/transport/wire-codec.ts ↗\n+289 / −0\nA\npackages/daemon/src/worker-entry.ts ↗\n+1 / −0\nR050\napps/cli/src/daemon/daemon-navigation-worker-entry.ts → packages/daemon/src/worker/navigation-worker-entry.ts ↗\n+161 / −64\nA\npackages/daemon/src/worker/navigation-worker.test.ts ↗\n+462 / −0\nR084\napps/cli/src/daemon/daemon-navigation-worker.ts → packages/daemon/src/worker/navigation-worker.ts ↗\n+36 / −20\nA\npackages/daemon/src/worker/worker-generation-manager.test.ts ↗\n+470 / −0\nA\npackages/daemon/src/worker/worker-generation-manager.ts ↗\n+250 / −0\nR074\napps/cli/src/daemon/daemon-navigation-worker-protocol.test.ts → packages/daemon/src/worker/worker-protocol.test.ts ↗\n+50 / −5\nR079\napps/cli/src/daemon/daemon-navigation-worker-protocol.ts → packages/daemon/src/worker/worker-protocol.ts ↗\n+54 / −31\nA\npackages/daemon/test/actors/daemon-accepted-caller.ts ↗\n+43 / −0\nR085\napps/cli/test/helpers/daemon-live-silent.ts → packages/daemon/test/actors/daemon-live-silent.ts ↗\n+2 / −2\nR083\napps/cli/test/helpers/daemon-malformed-activity.ts → packages/daemon/test/actors/daemon-malformed-activity.ts ↗\n+4 / −4\nR050\napps/cli/test/helpers/workspace-daemon-stuck.ts → packages/daemon/test/actors/daemon-process-coordinator-controlled.ts ↗\n+118 / −45\nR064\napps/cli/test/helpers/workspace-daemon-persistent-pressure.ts → packages/daemon/test/actors/daemon-process-coordinator-persistent-pressure.ts ↗\n+49 / −20\nA\npackages/daemon/test/actors/daemon-startup-mutation-owner.ts ↗\n+65 / −0\nR081\napps/cli/test/helpers/daemon-startup-publisher.ts → packages/daemon/test/actors/daemon-startup-publisher.ts ↗\n+8 / −5\nA\npackages/daemon/test/fixtures/executor-module.mjs ↗\n+58 / −0\nA\npackages/daemon/test/fixtures/executor-module.test.ts ↗\n+75 / −0\nA\npackages/daemon/test/fixtures/executor-module.ts ↗\n+95 / −0\nA\npackages/daemon/test/fixtures/observable-executor-module.mjs ↗\n+46 / −0\nA\npackages/daemon/test/helpers/adversarial-daemon-peer-harness.ts ↗\n+229 / −0\nA\npackages/daemon/test/helpers/canonical-path.ts ↗\n+17 / −0\nA\npackages/daemon/test/helpers/daemon-controller.ts ↗\n+49 / −0\nR093\napps/cli/test/helpers/daemon-navigation-worker-fixture.mjs → packages/daemon/test/helpers/daemon-navigation-worker-fixture.mjs ↗\n+10 / −0\nA\npackages/daemon/test/helpers/daemon-policy.ts ↗\n+21 / −0\nA\npackages/daemon/test/helpers/daemon-process-coordinator-stuck.ts ↗\n+99 / −0\nA\npackages/daemon/test/helpers/daemon-process-coordinator.ts ↗\n+133 / −0\nA\npackages/daemon/test/helpers/daemon-process-terminator.ts ↗\n+24 / −0\nR085\napps/cli/test/helpers/daemon-registry-cleaner.ts → packages/daemon/test/helpers/daemon-registry-cleaner.ts ↗\n+2 / −2\nA\npackages/daemon/test/helpers/daemon-registry.ts ↗\n+24 / −0\nA\npackages/daemon/test/helpers/daemon-resource-policy.ts ↗\n+34 / −0\nA\npackages/daemon/test/helpers/daemon-startup-coordinator.ts ↗\n+53 / −0\nR082\napps/cli/test/helpers/daemon-startup-mutation-owner.ts → packages/daemon/test/helpers/daemon-startup-mutation-owner.ts ↗\n+8 / −5\nA\npackages/daemon/test/helpers/daemon-transport.ts ↗\n+106 / −0\nA\npackages/daemon/test/helpers/executor-output.ts ↗\n+33 / −0\nA\npackages/daemon/test/helpers/injected-daemon-executor-fixture.mjs ↗\n+49 / −0\nA\npackages/daemon/test/helpers/resource-sampling-daemon-executor-fixture.mjs ↗\n+31 / −0\nA\npackages/daemon/test/integration/adversarial-daemon-peers.test.ts ↗\n+76 / −0\nA\npackages/daemon/test/integration/built-entry-artifacts.test.ts ↗\n+79 / −0\nA\npackages/daemon/test/integration/built-process-entry.test.ts ↗\n+284 / −0\nA\npackages/daemon/test/integration/built-process-launcher.test.ts ↗\n+61 / −0\nA\npackages/daemon/test/public-import.test.ts ↗\n+77 / −0\nA\npackages/daemon/test/testing-public-import.test.ts ↗\n+20 / −0\nA\npackages/daemon/tsconfig.json ↗\n+7 / −0\nA\npackages/daemon/tsconfig.test.json ↗\n+14 / −0\nA\npackages/daemon/vitest.config.ts ↗\n+7 / −0\nM\npackages/renderer/package.json ↗\n+2 / −1\nM\npackages/renderer/src/index.ts ↗\n+1 / −0\nA\npackages/renderer/src/lifecycle/daemon-lifecycle-renderer.test.ts ↗\n+210 / −0\nR097\napps/cli/src/daemon/daemon-lifecycle-renderer.ts → packages/renderer/src/lifecycle/daemon-lifecycle-renderer.ts ↗\n+1 / −5\nM\npackages/renderer/tsconfig.json ↗\n+1 / −1\nM\npackages/telemetry/src/index.ts ↗\n+1 / −1\nM\npackages/telemetry/src/state-dir.test.ts ↗\n+9 / −55\nM\npackages/telemetry/src/state-dir.ts ↗\n+1 / −30\nM\nplans/000/symnav-stages.md ↗\n+10 / −4\nM\nplans/005/daemon-follow-ups-functional-spec.md ↗\n+56 / −14\nA\nplans/005/daemon-policy.md ↗\n+66 / −0\nM\npnpm-lock.yaml ↗\n+15 / −0\nM\ntsconfig.json ↗\n+1 / −0\ncontext\nREADME.md ↗\n+0 / −0\ncontext\nplans/005/daemon-architecture-functional-spec.md ↗\n+0 / −0\ncontext\nplans/005/daemon-functional-spec.md ↗\n+0 / −0\ncontext\nplans/000/symnav-functional-spec.md ↗\n+0 / −0\ncontext\npackages/core/src/workspace/workspace-catalog.ts ↗\n+0 / −0\ncontext\npackages/core/src/backend/backend-router.ts ↗\n+0 / −0\nstage\nDuring #148: meta-tests/src/daemon-compatibility-copy.test.ts ↗\n+1 / −1\n\nA WAY TO CHECK YOUR OWN MAP\n\nExplain where a second command's speed comes from, and why a broken socket doesn't mean “run it again.”\nShow the two ideas\n↑ Back to the place, now that you know the names\nEXPERIMENT 14 · OUTSIDER PERSONA\nExperiment notes\nAssigned brief\nRead-only · all interactions stay in memory",
+  "headings": [
+    {
+      "id": "",
+      "text": "First, know\nthe place."
+    },
+    {
+      "id": "",
+      "text": "One terminal visit. A longer-lived workshop."
+    },
+    {
+      "id": "",
+      "text": "The workshop existed.\nThe ownership lines move."
+    },
+    {
+      "id": "",
+      "text": "Before\nmain"
+    },
+    {
+      "id": "",
+      "text": "After\ntip of #149"
+    },
+    {
+      "id": "",
+      "text": "Production imports have a direction"
+    },
+    {
+      "id": "",
+      "text": "Carry these six facts into every detail."
+    },
+    {
+      "id": "",
+      "text": "Know the choices\nbefore the machinery."
+    },
+    {
+      "id": "",
+      "text": "State: which preparation survives another command?"
+    },
+    {
+      "id": "",
+      "text": "Host: who knows what a symnav command means?"
+    },
+    {
+      "id": "",
+      "text": "Policy and identity: who gets to decide?"
+    },
+    {
+      "id": "",
+      "text": "Transport: who owns each part of the conversation?"
+    },
+    {
+      "id": "",
+      "text": "Daemon life: who keeps accepted work coherent?"
+    },
+    {
+      "id": "",
+      "text": "Tests, deferred behavior, and adjacent edits"
+    },
+    {
+      "id": "",
+      "text": "The actual policy choices"
+    },
+    {
+      "id": "",
+      "text": "Follow one command\nthrough the map."
+    },
+    {
+      "id": "",
+      "text": "Classify the question"
+    },
+    {
+      "id": "",
+      "text": "A saved file is not\na saved answer."
+    },
+    {
+      "id": "",
+      "text": "Full refresh supplies a.ts and b.ts"
+    },
+    {
+      "id": "",
+      "text": "The publication boundary is smaller than “the workspace”"
+    },
+    {
+      "id": "",
+      "text": "Bring the answer back.\nKeep the work's identity."
+    },
+    {
+      "id": "",
+      "text": "Same receiver. New socket."
+    },
+    {
+      "id": "",
+      "text": "Six jobs the old transport façade held together"
+    },
+    {
+      "id": "",
+      "text": "The worker can change while the daemon stays"
+    },
+    {
+      "id": "",
+      "text": "Follow a claim\nto the actual delta."
+    },
+    {
+      "id": "",
+      "text": "Explain where a second command's speed comes from, and why a broken socket doesn't mean “run it again.”"
+    },
+    {
+      "id": "source-title",
+      "text": ""
+    }
+  ],
+  "controls": [
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Open the architecture contract ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Locked dependency table ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Façade and lazy runtime ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose core ownership over TypeScript-backend ownership\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose snapshot replacement over coverage-aware merging\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose a FileSystem facade over cache-specific reads\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "workspace-source-cache.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "workspace-source-cache.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Original #123 ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose an incremental overlay candidate over requiring complete preparation output\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose candidate validation before subclass commit over post-commit validation\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose one-file selection transactions for ensureFiles over one aggregate transaction\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose a TypeScript-owned mutation journal over core mutation callbacks\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose reversible path staging before source removal over recreating removed sources\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "revisioned-backend-state.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "typescript-workspace-state.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Original #124 ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose a core abstract base over leaving reusable graph mechanics in TypeScript\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose one fresh collector per rebuild over retaining observations across graphs\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose exact active-input validation over an undocumented subclass precondition\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose canonical snapshot members over relative-path-only membership\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose complete validation followed by one state assignment over incremental mutation\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "project-graph.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "typescript-project-graph.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Original #126 ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose one scope with six handles over one shared map\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose Map.has before Map.get over truthiness checks\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose synchronous cache clearing before project release over clearing after the await\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose to begin the next turn only after refresh succeeds over clearing at refresh entry\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "turn-scoped-cache-scope.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "typescript-semantic-query-service.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "typescript-backend.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Original #127 ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose explicit request/session discovery retention over one cached strategy\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose fresh selection discovery over retained-catalog reconciliation\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose a copied backend array and fresh router per turn over a persistent router\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose explicit workspace opening before validation and preparation after validation over one combined call\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose repeatable concurrent release over permanent session closure\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "workspace-session.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "workspace-session.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "command.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Original #128 ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose a CLI-owned class over renamed telemetry functions\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose one top-level resolved value over per-consumer resolution\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose longest-existing-ancestor canonicalization over requiring the final directory to exist\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose constructor-injected environment and home values over test-time global mutation\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "state-directory-resolver.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "state-dir.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Original #129 ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose an absolute injected file URL over importing CLI code from daemon mechanisms\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose recursive JSON-like diagnostics over a CLI refresh-summary contract\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose worker-side rechunking and sequencing over transport metadata in executor output\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose runtime validation over trusting dynamically imported TypeScript shapes\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose a daemon-owned no-payload sampling callback over sharing CLI command-phase types\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "daemon-executor.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "daemon-executor.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "navigation-worker-entry.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Original #135 ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose one stateless renderer class over command-specific formatter functions\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose public @symnav/daemon report imports over daemon internal subpaths\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "daemon-lifecycle-renderer.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "register-daemon-command.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Original #136 ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose a Node-free public façade with a dynamically loaded internal runtime over exposing Node-backed mechanisms\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose ordered lazy routing guards over eager registry and transport observation\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose package staging with a frozen CLI compatibility graph over switching production consumers during relocation\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose package-owned result capture and controlled failure outputs over host-provided storage or output factories\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose to preserve acceptance-based idle timing over correcting it during extraction\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "daemon-client.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "daemon-client-runtime.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "daemon-routing-policy.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "process-coordinator.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Original #148 ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose a CLI invocation coordinator over the app-local daemon dispatcher\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose a read-only testing inspector over exposing registry, diagnostic, or spool paths\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose package-owned actors with an injected executor URL over package tests naming CLI build artifacts\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose focused package transport composition over retaining LocalDaemonTransport\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose exact compiler-backed import, export, clock, and storage inventories over regex or compatibility aliases\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "cli-invocation-coordinator.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "daemon-testing-inspector.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "daemon-storage-boundary.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "cli-daemon-reachability.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Original #149 ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose a zero-internal-dependency package over keeping portable contracts in CLI\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose a complete versioned snapshot over partial per-hop options\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose a restricted ./policy-testing subpath over root-level overrides\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose AST, declaration, runtime, manifest, and dependency allowlists over documentation alone\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose a cut after snapshot propagation over including operational consumer migration\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "daemon-policy.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "process-launcher.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "package.json ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Original #130 ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose required policy slices over optional per-consumer numbers\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose composition-purpose timeout selection over request-kind selection\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose independent numeric resume and reattachment counters over one shared boolean\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose test-only adapters over production compatibility overloads\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "daemon-transport.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "daemon-policy.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "daemon-policy.md ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Original #131 ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose a frozen daemon-owned tuple over another app-local set\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose an exhaustive CLI record over deriving workspace routes from the full tuple\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose commandName beside opaque argv over nesting or reparsing it\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose to include commandName in accepted-request compatibility over comparing argv alone\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose a new protocol generation over optional or legacy command metadata\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "daemon-command-name.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "invocation-workspace-selector.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "protocol.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "accepted-request-ledger.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Original #132 ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose one private outer tuple with a derived union over repeated app-local unions\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose a distinct worker type with no shared literals over retaining the colliding alias\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose a pure context classifier over lifecycle-specific branching at the call site\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose app-owned instanceof fact derivation over constructor-name or error.name reflection\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "daemon-execution-failure.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "accepted-execution-session.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Original #133 ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose explicit guard classes over inline conditionals\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose side-effect-free ledger compatibility over mutation-time corruption handling\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose code-derived retry safety over trusting wire booleans\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose unknown for the temporary request field over importing the CLI request type\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "daemon-admission.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "protocol-validator.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Original #134 ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose operation-shaped transport interfaces over LocalDaemonTransport and consumer-local transport shapes\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose separate control and transfer decoders over one binary-aware decoder\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose response-kind-specific JSON limits over one control limit\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose to map DaemonProtocolError at the facade boundary over changing DaemonTransportError\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose to absorb result-chunk header and digest validation into DaemonWireCodec over retaining a standalone chunk codec\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "wire-codec.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "protocol-validator.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "contracts.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Original #137 ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose daemon-scoped capture over extending CLI OrderedCommandOutput\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose to advance resume offsets after awaited append over advancing on frame receipt\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose one receiver across initial and fetch connections over rebuilding receipt state\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose fresh wire decoders per connection over retaining decoder state\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose caller ownership after successful finish over receiver-owned cleanup\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "result-transfer-receiver.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "client-result-capture.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Original #138 ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose a pull-driven async iterator over forwarded data events\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose a connection-owned FIFO over façade-owned drain handling\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Kept protocol decoding and delivery-state translation in LocalDaemonTransport over moving them into the socket client\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Kept inbound server sockets in LocalDaemonTransport over extracting both directions together\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "socket-client.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "socket-client.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Original #139 ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose one client for lifecycle, execution-status, and result-acknowledgement exchanges over separate request-specific clients\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Kept result acknowledgement off DaemonLifecycleRequester over widening the port\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose timeout injection at composition over request-kind selection\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose semantic validation before assigning accepted over treating every decoded frame as accepted\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose a shared transport-error module over lifecycle-client ownership\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "lifecycle-client.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "transport-error.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Original #140 ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose a dedicated socket-server owner over retaining inbound mechanics in the transport façade\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose the injected DaemonSocketClient over a second outbound connection path\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose independent per-connection response and write chains over a server-wide queue\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose one cached shutdown promise over independent close operations\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "socket-server.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "socket-server.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Original #141 ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose a dedicated execution client over a generic response chain\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose a fresh output capture per execute attempt over reusing interrupted capture state\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose independent numeric policy counters over boolean recovery flags\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose the lifecycle client's acknowledgement-only surface over widening DaemonLifecycleRequester\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose an internal fetch-ended error over changing the public exhausted-fetch failure\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "execution-client.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "execution-client.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Original #142 ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose one required DaemonPolicy over an optional system-policy fallback\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose direct component injection over module mocking\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose to remove canFrame over delegating the probe\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose a source architecture oracle over a line-count limit\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "daemon-transport.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "daemon-transport-composition.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Original #143 ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose a static projector over an injected service\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose explicit clock and process values over callbacks\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose worker snapshot generation over resource snapshot generation\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose sampled resources.spoolBytes over a completion-store read\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Kept legacy pong fileCount independent of worker readiness over matching activity optionality\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "activity-projector.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "activity-projector.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Original #144 ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose one generation manager over process-shell worker fields\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose a recovery port over importing the resource supervisor\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose explicit readiness activation over publishing readiness with the worker report\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose one stored replacement operation over parallel transitions\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose separate close and termination operations over one shutdown promise\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "worker-generation-manager.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "worker-generation-manager.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Original #145 ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose one injected delivery session over process-shell delivery fields\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose narrow ledger and spool ports over moving their data into the session\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose the latest per-request delivery promise over aggregating duplicate attachments\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose retention-fenced trace handles over raw observer handles\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose physical cleanup before logical acknowledgement over conditional journal acknowledgement\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "delivery-session.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "delivery-session.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Original #146 ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose immutable acceptance metadata on each ledger entry over a parallel process map\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose an injected session over moving ledger, queue, delivery, worker, resource, lifetime, or shutdown state\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose a narrow process-lifecycle port over exposing the process shell\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose turn-boundary sampling inside each queued operation over post-hoc process scheduling\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Chose duplicate attachment over acceptance replay\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "accepted-execution-session.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "accepted-request-ledger.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "request-queue.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Original #147 ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Remove the TypeScript root revision/index helper types and telemetry state-path resolvers as their responsibilities move to core and CLI.\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Preserve cached undefined values and promise identity, including rejected promises; do not cache a synchronously thrown factory failure.\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Keep publication local: one backend index or project graph at a time; earlier successful work can survive a later failure.\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Keep FIFO configuration discovery, last configured owner as the primary project, and an inferred project for unowned files.\nunexplained"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Retain idle timing from construction and latest new acceptance; do not reset it at readiness or completion.\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Defer eight follow-ups: ledger eviction, startup-silence bound, control-plane start readiness, endpoint relocation, socket-bind election evaluation, source-byte retention, and two idle-timing changes.\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Make external test observation read-only, including invalid/missing/malformed/unavailable storage reads; keep policy test factories internal.\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "During #148 staging, normalize line endings in the source-copy test hash; at #149 replace that test with a physical-absence check.\nunexplained"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Normalize relative --cwd for daemon control commands at the CLI host.\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Change the PR template: plain-text change trees, Context, language-neutral signatures, and a Visuals section replace prior embed and reading-order guidance.\nunexplained"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Remove the CLI cross-process starting-owner scenario; add a package client/actor scenario for the same ownership topic.\nunexplained"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Remove the CLI live-silent-daemon status scenario; exercise a live silent peer through the package client.\nunexplained"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Remove the CLI malformed-activity status scenario; exercise malformed activity redaction through the package client.\nunexplained"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Remove the CLI warm-up-after-caller-kill scenario; retain related registry and startup-coordinator tests.\nunexplained"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Remove the CLI stale current-schema record cleanup scenario; keep related controller and registry observation tests.\nunexplained"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Remove the CLI prompt-status-under-stuck-work scenario; keep process-level activity and responsiveness tests.\nunexplained"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Remove the CLI workspace-deletion cold-output parity scenario; keep daemon workspace-disappearance handling tests.\nunexplained"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Remove the built stop-command in-flight drain scenario; retain process/session drain tests.\nunexplained"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Remove the built stop-command forced-termination scenario; retain a real-process force-stop test in the daemon package.\nunexplained"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Remove the built stop-command launched-startup exit scenario; retain controller tests for exact launched-process exit.\nunexplained"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Remove end-to-end diagnostic log filename, backup-count, and per-file size assertions; keep logger unit coverage.\nunexplained"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Narrow diagnostic redaction assertions from raw log contents to parsed inspector events.\nunexplained"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Replace disconnected-caller completion-state polling with telemetry observation and a subsequent successful warm call.\nunexplained"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Replace persistent-pressure endpoint and process-token checks with read-only instance inspection and public status cleanup.\nunexplained"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Run the FIFO freshness scenario through two public overview commands instead of a raw protocol version request followed by overview.\nstated"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Read the complete policy record ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Ready daemon",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "No daemon record",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Rejected for pressure",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Accepted, then disconnected",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "01 · CLI host\nClassify the question",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "02 · DaemonClient · caller\nChoose the warm route",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "03 · Daemon coordinator\nAdmit, then accept",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "04 · Accepted execution session\nEnter one FIFO turn",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "05 · Host executor · worker\nRefresh and answer",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "06 · Delivery + client receiver\nTransfer and verify output",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "07 · CLI host · caller\nWrite the answer",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "previous-step",
+      "text": "← Previous step",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "next-step",
+      "text": "Next step →",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "reset-trace",
+      "text": "Reset",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Open the implementing boundary ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Warm route and controlled failures ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Admission order and retry codes ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Successful full refresh",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Selection: a.ts only",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Backend preparation fails",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Release pending or rejects",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Open this lifetime boundary ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Backend publication ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Later backend failure after an earlier commit ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Fetch resumes this transfer",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Reattach to the accepted request",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Open the recovery implementation ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Open duplicate acceptance ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Generation manager ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Snapshot projection ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Mechanical test-title screen: 40 baseline titles absent verbatim at head"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "type": "submit"
+    },
+    {
+      "tag": "INPUT",
+      "id": "file-search",
+      "text": "",
+      "type": "search"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": ".github/PULL_REQUEST_TEMPLATE.md ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "AGENTS.md ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/package.json ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/cli-invocation-coordinator.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/cli-invocation-coordinator.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/cli-program-executor.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/cli-program-executor.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/cli.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/cli.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/command-execution-result.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/command.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/commands/daemon/register-daemon-command.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/commands/daemon/register-daemon-command.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon-executor.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon-executor.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-clock.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-command-dispatcher.integration.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-command-dispatcher.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-command-dispatcher.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-entry.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-entry.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-lifecycle-renderer.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-lifetime.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-navigation-worker.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-result-chunk-codec.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-runtime-values.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/invocation-route.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/invocation-workspace-selector.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/local-daemon-transport.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/retained-workspace-program.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/workspace-daemon.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/default-dependencies.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/invocation-route.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/invocation-workspace-selector.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/invocation-workspace-selector.ts → apps/cli/src/invocation-workspace-selector.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/program-dependencies.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/program.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/program.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/state-directory-resolver.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/state-directory-resolver.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/workspace-request-scope.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/workspace-request-scope.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/benchmark/daemon-benchmark-gate.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/benchmark/daemon-scale-benchmark-harness.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/benchmark/daemon-scale-benchmark-harness.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/e2e/daemon/diagnostic-output.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/e2e/daemon/nested-workspaces.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/e2e/daemon/parity.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/e2e/daemon/persistent-pressure.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/e2e/daemon/start.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/e2e/daemon/state-isolation.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/e2e/daemon/status.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/e2e/daemon/stop.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/e2e/navigation-mode-cleanup.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/e2e/telemetry/telemetry.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/helpers/daemon-accepted-caller.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/helpers/daemon-malicious-output.cjs ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/helpers/daemon-resource-policy.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/helpers/daemon-startup-caller-exit.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/helpers/daemon-state-files.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/helpers/daemon-testing.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/helpers/e2e-process-cleanup.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/helpers/e2e-process-cleanup.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/integration/commands/helpers/fake-program-dependencies.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/integration/commands/overview/overview-command.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/integration/commands/run-command.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/tsconfig.json ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "eslint.config.mjs ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "meta-tests/src/cli-daemon-reachability.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "meta-tests/src/daemon-compatibility-copy.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "meta-tests/src/daemon-package.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "meta-tests/src/daemon-storage-boundary.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "meta-tests/src/lint-rule.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "meta-tests/src/project-refs.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "meta-tests/src/renderer-package.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/backend-typescript/src/call-graph/find-callees.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/backend-typescript/src/definition/find-definitions.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/backend-typescript/src/identity/workspace-declaration-index.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/backend-typescript/src/index.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/backend-typescript/src/resolve/resolve-symbols.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/backend-typescript/src/typescript-backend/typescript-backend.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/backend-typescript/src/typescript-backend/typescript-project-graph.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/backend-typescript/src/typescript-backend/typescript-project-graph.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/backend-typescript/src/typescript-backend/typescript-workspace-state.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/backend-typescript/src/typescript-backend/typescript-workspace-state.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/backend-typescript/test/integration/typescript-backend.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/core/src/backend/revisioned-backend-state.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/core/src/backend/revisioned-backend-state.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/core/src/backend/turn-scoped-cache-scope.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/core/src/backend/turn-scoped-cache-scope.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/core/src/index.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/core/src/workspace/project-graph.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/core/src/workspace/project-graph.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/core/src/workspace/workspace-session.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/core/src/workspace/workspace-session.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/core/src/workspace/workspace-source-cache.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/backend-typescript/src/typescript-backend/workspace-source-cache.ts → packages/core/src/workspace/workspace-source-cache.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/package.json ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/client/daemon-client-contracts.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/client/daemon-client-control.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/client/daemon-client-public.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/client/daemon-client-runtime.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/client/daemon-client.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/client/daemon-client.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/client/daemon-routing-policy.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/client/daemon-routing-policy.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/daemon-admission.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/daemon-admission.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/daemon-command-name.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/daemon-command-name.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/daemon-diagnostics.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/daemon-execution-failure.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/daemon-execution-failure.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/daemon-executor-module-loader.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/daemon-executor.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/daemon-lifecycle-report.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/daemon-policy.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/daemon-policy.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/completion-spool.test.ts → packages/daemon/src/delivery/completion-spool.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/completion-spool.ts → packages/daemon/src/delivery/completion-spool.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/delivery/delivery-session.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/delivery/delivery-session.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-logger.test.ts → packages/daemon/src/diagnostics/logger.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-logger.ts → packages/daemon/src/diagnostics/logger.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-operation-observer.test.ts → packages/daemon/src/diagnostics/operation-observer.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-operation-observer.ts → packages/daemon/src/diagnostics/operation-observer.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/entry-boundary.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/execution/accepted-execution-session-contracts.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/execution/accepted-execution-session.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/execution/accepted-execution-session.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/accepted-request-ledger.test.ts → packages/daemon/src/execution/accepted-request-ledger.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/accepted-request-ledger.ts → packages/daemon/src/execution/accepted-request-ledger.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/workspace-request-queue.test.ts → packages/daemon/src/execution/request-queue.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/workspace-request-queue.ts → packages/daemon/src/execution/request-queue.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/host-contract.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/index.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/lifecycle/daemon-clock.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-clock.ts → packages/daemon/src/lifecycle/daemon-clock.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/lifecycle/daemon-lifetime.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-lifetime.ts → packages/daemon/src/lifecycle/daemon-lifetime.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/package-boundary.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/process-entry.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/process/activity-projector.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/process/activity-projector.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-controller.test.ts → packages/daemon/src/process/controller.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-controller.ts → packages/daemon/src/process/controller.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/process/process-coordinator-construction.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/workspace-daemon-requests.test.ts → packages/daemon/src/process/process-coordinator-requests.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/workspace-daemon.test.ts → packages/daemon/src/process/process-coordinator.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/process/process-coordinator.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-process-launcher.test.ts → packages/daemon/src/process/process-launcher.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-process-launcher.ts → packages/daemon/src/process/process-launcher.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-process-termination-observer.test.ts → packages/daemon/src/process/process-termination-observer.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-process-termination-observer.ts → packages/daemon/src/process/process-termination-observer.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/process/runtime-values.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-record-observer.test.ts → packages/daemon/src/registry/record-observer.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-record-observer.ts → packages/daemon/src/registry/record-observer.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-registry.test.ts → packages/daemon/src/registry/registry.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-registry.ts → packages/daemon/src/registry/registry.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-startup-coordinator.test.ts → packages/daemon/src/registry/startup-coordinator.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-startup-coordinator.ts → packages/daemon/src/registry/startup-coordinator.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-workspace-identity.test.ts → packages/daemon/src/registry/workspace-identity.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-workspace-identity.ts → packages/daemon/src/registry/workspace-identity.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-resource-monitor.test.ts → packages/daemon/src/resources/resource-supervisor.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-resource-monitor.ts → packages/daemon/src/resources/resource-supervisor.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/testing/daemon-testing-inspector.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/testing/daemon-testing-inspector.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/testing/index.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/transport/client-result-capture.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/transport/client-result-capture.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/transport/contracts.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-result-chunk-codec.test.ts → packages/daemon/src/transport/daemon-result-chunk-codec.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/transport/daemon-transport-composition.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/local-daemon-transport-execution.test.ts → packages/daemon/src/transport/daemon-transport-execution.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/transport/daemon-transport-socket-client.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/local-daemon-transport-validation.test.ts → packages/daemon/src/transport/daemon-transport-validation.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/local-daemon-transport.test.ts → packages/daemon/src/transport/daemon-transport.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/transport/daemon-transport.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/transport/execution-client.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/transport/execution-client.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/transport/lifecycle-client.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/transport/lifecycle-client.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/transport/protocol-validator.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/transport/protocol-validator.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-protocol.ts → packages/daemon/src/transport/protocol.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/transport/result-transfer-receiver.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/transport/result-transfer-receiver.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/transport/socket-client.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/transport/socket-client.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/transport/socket-server.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/transport/socket-server.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/transport/transport-error.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/transport/wire-codec.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/transport/wire-codec.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/worker-entry.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-navigation-worker-entry.ts → packages/daemon/src/worker/navigation-worker-entry.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/worker/navigation-worker.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-navigation-worker.ts → packages/daemon/src/worker/navigation-worker.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/worker/worker-generation-manager.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/src/worker/worker-generation-manager.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-navigation-worker-protocol.test.ts → packages/daemon/src/worker/worker-protocol.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-navigation-worker-protocol.ts → packages/daemon/src/worker/worker-protocol.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/test/actors/daemon-accepted-caller.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/helpers/daemon-live-silent.ts → packages/daemon/test/actors/daemon-live-silent.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/helpers/daemon-malformed-activity.ts → packages/daemon/test/actors/daemon-malformed-activity.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/helpers/workspace-daemon-stuck.ts → packages/daemon/test/actors/daemon-process-coordinator-controlled.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/helpers/workspace-daemon-persistent-pressure.ts → packages/daemon/test/actors/daemon-process-coordinator-persistent-pressure.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/test/actors/daemon-startup-mutation-owner.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/helpers/daemon-startup-publisher.ts → packages/daemon/test/actors/daemon-startup-publisher.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/test/fixtures/executor-module.mjs ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/test/fixtures/executor-module.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/test/fixtures/executor-module.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/test/fixtures/observable-executor-module.mjs ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/test/helpers/adversarial-daemon-peer-harness.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/test/helpers/canonical-path.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/test/helpers/daemon-controller.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/helpers/daemon-navigation-worker-fixture.mjs → packages/daemon/test/helpers/daemon-navigation-worker-fixture.mjs ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/test/helpers/daemon-policy.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/test/helpers/daemon-process-coordinator-stuck.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/test/helpers/daemon-process-coordinator.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/test/helpers/daemon-process-terminator.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/helpers/daemon-registry-cleaner.ts → packages/daemon/test/helpers/daemon-registry-cleaner.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/test/helpers/daemon-registry.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/test/helpers/daemon-resource-policy.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/test/helpers/daemon-startup-coordinator.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/test/helpers/daemon-startup-mutation-owner.ts → packages/daemon/test/helpers/daemon-startup-mutation-owner.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/test/helpers/daemon-transport.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/test/helpers/executor-output.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/test/helpers/injected-daemon-executor-fixture.mjs ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/test/helpers/resource-sampling-daemon-executor-fixture.mjs ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/test/integration/adversarial-daemon-peers.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/test/integration/built-entry-artifacts.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/test/integration/built-process-entry.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/test/integration/built-process-launcher.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/test/public-import.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/test/testing-public-import.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/tsconfig.json ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/tsconfig.test.json ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/daemon/vitest.config.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/renderer/package.json ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/renderer/src/index.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/renderer/src/lifecycle/daemon-lifecycle-renderer.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-lifecycle-renderer.ts → packages/renderer/src/lifecycle/daemon-lifecycle-renderer.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/renderer/tsconfig.json ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/telemetry/src/index.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/telemetry/src/state-dir.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/telemetry/src/state-dir.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "plans/000/symnav-stages.md ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "plans/005/daemon-follow-ups-functional-spec.md ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "plans/005/daemon-policy.md ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "pnpm-lock.yaml ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "tsconfig.json ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "README.md ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "plans/005/daemon-architecture-functional-spec.md ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "plans/005/daemon-functional-spec.md ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "plans/000/symnav-functional-spec.md ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/core/src/workspace/workspace-catalog.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "packages/core/src/backend/backend-router.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "During #148: meta-tests/src/daemon-compatibility-copy.test.ts ↗",
+      "type": "submit"
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "Show the two ideas"
+    }
+  ],
+  "links": [
+    {
+      "text": "Skip to the system map",
+      "href": "#map"
+    },
+    {
+      "text": "s↗ symnav\nFIRST VISIT / 14",
+      "href": "#map"
+    },
+    {
+      "text": "01\nThe system",
+      "href": "#map"
+    },
+    {
+      "text": "02\nThe moved boundaries",
+      "href": "#boundary"
+    },
+    {
+      "text": "03\nThe complete choice sheet",
+      "href": "#decisions"
+    },
+    {
+      "text": "04\nFollow a command",
+      "href": "#request"
+    },
+    {
+      "text": "05\nWhat stays warm",
+      "href": "#state"
+    },
+    {
+      "text": "06\nBring the answer back",
+      "href": "#transfer"
+    },
+    {
+      "text": "07\nCheck the sources",
+      "href": "#evidence"
+    },
+    {
+      "text": "Names in plain language ↗",
+      "href": "#glossary"
+    },
+    {
+      "text": "CLI host\nReads arguments and environment\nFinds the workspace · writes output\napps/cli",
+      "href": "#choices-host"
+    },
+    {
+      "text": "DaemonClient\nSelects warm, cold, or fallback\nOwns startup and recovery\n@symnav/daemon",
+      "href": "#choices-host"
+    },
+    {
+      "text": "See routing →",
+      "href": "#request"
+    },
+    {
+      "text": "Transport owners →",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "Process coordinator\nAdmission · accepted-request ledger · FIFO queue\nDelivery · resources · worker generations · status\n@symnav/daemon",
+      "href": "#choices-process"
+    },
+    {
+      "text": "The injection decision →",
+      "href": "#pr-135"
+    },
+    {
+      "text": "CLI-provided executor\nKnows what a symnav command means\napps/cli/src/daemon-executor.ts",
+      "href": "#choices-host"
+    },
+    {
+      "text": "Core\nWorkspace/session\nReusable state & cache lifetimes",
+      "href": "#choices-state"
+    },
+    {
+      "text": "TypeScript backend\nTypeScript parsing\nSymbols & semantic queries",
+      "href": "#choices-state"
+    },
+    {
+      "text": "Renderer\nFormats results",
+      "href": "#pr-136"
+    },
+    {
+      "text": "Who owns those paths? →",
+      "href": "#pr-129"
+    },
+    {
+      "text": "CLI application\nSyntax + environment + host executor + composition",
+      "href": "#choices-host"
+    },
+    {
+      "text": "Daemon package\nEvery daemon mechanism behind DaemonClient",
+      "href": "#choices-host"
+    },
+    {
+      "text": "Core\nSessions, source bytes, indexes, project publication,\nturn-scoped cache lifetime",
+      "href": "#choices-state"
+    },
+    {
+      "text": "TypeScript\nLanguage-specific hooks",
+      "href": "#choices-state"
+    },
+    {
+      "text": "Renderer\nAlso lifecycle reports",
+      "href": "#pr-136"
+    },
+    {
+      "text": "01 / STATE\nRetain preparation; renew meaning.\n\nSource bytes, file indexes, project membership, and a session live longer than one query. Six independent semantic caches clear on a successful new turn or before release. Publication is per backend index or project graph; there is no whole-pipeline transaction. Selection refresh still evicts omitted source bytes.",
+      "href": "#choices-state"
+    },
+    {
+      "text": "02 / HOST\nThe host knows the product.\n\nThe CLI classifies syntax, resolves the workspace and state path, supplies an absolute executor module URL, and writes output. The daemon owns routing and captures warm output. The renderer also formats lifecycle reports. Build rules enforce the final package surface.",
+      "href": "#choices-host"
+    },
+    {
+      "text": "03 / POLICY & IDENTITY\nOne owner for each rule.\n\nImmutable policy sections cross process and worker boundaries. Values stay fixed for users. One command vocabulary, distinct failure vocabularies, ordered routing and admission guards, and code-derived retry safety replace scattered authorities. Generation 5 makes command identity mandatory.",
+      "href": "#choices-policy"
+    },
+    {
+      "text": "04 / TRANSPORT\nFinishing bytes is different from doing work.\n\nSeparate owners handle framing, validation, raw sockets, bounded lifecycle exchanges, accepted execution, and resumable result receipt. Appended records advance the resume position. Fetches keep transfer state; reattachments keep request identity but create fresh capture. Each has its own retry budget.",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "05 / DAEMON LIFE\nAccepted work has a continuing identity.\n\nThe ledger deduplicates; one FIFO queue executes; delivery tracks the current stream; a generation manager fences old workers. Resources gate readiness and later turns. Activity uses explicit snapshots. Cleanup failure can be diagnostic while acknowledgement succeeds. Accepted failure never triggers local replay.",
+      "href": "#choices-process"
+    },
+    {
+      "text": "06 / CARRIED CHOICES\nPreservation has a cost.\n\nIdle time still starts at construction and resets on acceptance. Ledger eviction, startup silence, control-plane start readiness, endpoint relocation, new election, selection-aware byte retention, and readiness/completion idle changes are deferred. Tests lose or change some composed observations; the PR template also changes without a stated reason.",
+      "href": "#choices-edges"
+    },
+    {
+      "text": "State",
+      "href": "#choices-state"
+    },
+    {
+      "text": "Host",
+      "href": "#choices-host"
+    },
+    {
+      "text": "Policy & identity",
+      "href": "#choices-policy"
+    },
+    {
+      "text": "Transport",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "Daemon life",
+      "href": "#choices-process"
+    },
+    {
+      "text": "Tests & carried choices",
+      "href": "#choices-edges"
+    },
+    {
+      "text": "#123",
+      "href": "#pr-123"
+    },
+    {
+      "text": "",
+      "href": "#choices-state"
+    },
+    {
+      "text": "",
+      "href": "#choices-state"
+    },
+    {
+      "text": "",
+      "href": "#choices-state"
+    },
+    {
+      "text": "#124",
+      "href": "#pr-124"
+    },
+    {
+      "text": "",
+      "href": "#choices-state"
+    },
+    {
+      "text": "",
+      "href": "#choices-state"
+    },
+    {
+      "text": "",
+      "href": "#choices-state"
+    },
+    {
+      "text": "",
+      "href": "#choices-state"
+    },
+    {
+      "text": "",
+      "href": "#choices-state"
+    },
+    {
+      "text": "#126",
+      "href": "#pr-126"
+    },
+    {
+      "text": "",
+      "href": "#choices-state"
+    },
+    {
+      "text": "",
+      "href": "#choices-state"
+    },
+    {
+      "text": "",
+      "href": "#choices-state"
+    },
+    {
+      "text": "",
+      "href": "#choices-state"
+    },
+    {
+      "text": "",
+      "href": "#choices-state"
+    },
+    {
+      "text": "#127",
+      "href": "#pr-127"
+    },
+    {
+      "text": "",
+      "href": "#choices-state"
+    },
+    {
+      "text": "",
+      "href": "#choices-state"
+    },
+    {
+      "text": "",
+      "href": "#choices-state"
+    },
+    {
+      "text": "",
+      "href": "#choices-state"
+    },
+    {
+      "text": "#128",
+      "href": "#pr-128"
+    },
+    {
+      "text": "",
+      "href": "#choices-state"
+    },
+    {
+      "text": "",
+      "href": "#choices-state"
+    },
+    {
+      "text": "",
+      "href": "#choices-state"
+    },
+    {
+      "text": "",
+      "href": "#choices-state"
+    },
+    {
+      "text": "",
+      "href": "#choices-state"
+    },
+    {
+      "text": "#129",
+      "href": "#pr-129"
+    },
+    {
+      "text": "",
+      "href": "#choices-host"
+    },
+    {
+      "text": "",
+      "href": "#choices-host"
+    },
+    {
+      "text": "",
+      "href": "#choices-host"
+    },
+    {
+      "text": "",
+      "href": "#choices-host"
+    },
+    {
+      "text": "#135",
+      "href": "#pr-135"
+    },
+    {
+      "text": "",
+      "href": "#choices-host"
+    },
+    {
+      "text": "",
+      "href": "#choices-host"
+    },
+    {
+      "text": "",
+      "href": "#choices-host"
+    },
+    {
+      "text": "",
+      "href": "#choices-host"
+    },
+    {
+      "text": "",
+      "href": "#choices-host"
+    },
+    {
+      "text": "#136",
+      "href": "#pr-136"
+    },
+    {
+      "text": "",
+      "href": "#choices-host"
+    },
+    {
+      "text": "",
+      "href": "#choices-host"
+    },
+    {
+      "text": "#148",
+      "href": "#pr-148"
+    },
+    {
+      "text": "",
+      "href": "#choices-host"
+    },
+    {
+      "text": "",
+      "href": "#choices-host"
+    },
+    {
+      "text": "",
+      "href": "#choices-host"
+    },
+    {
+      "text": "",
+      "href": "#choices-host"
+    },
+    {
+      "text": "",
+      "href": "#choices-host"
+    },
+    {
+      "text": "#149",
+      "href": "#pr-149"
+    },
+    {
+      "text": "",
+      "href": "#choices-host"
+    },
+    {
+      "text": "",
+      "href": "#choices-host"
+    },
+    {
+      "text": "",
+      "href": "#choices-host"
+    },
+    {
+      "text": "",
+      "href": "#choices-host"
+    },
+    {
+      "text": "",
+      "href": "#choices-host"
+    },
+    {
+      "text": "#130",
+      "href": "#pr-130"
+    },
+    {
+      "text": "",
+      "href": "#choices-policy"
+    },
+    {
+      "text": "",
+      "href": "#choices-policy"
+    },
+    {
+      "text": "",
+      "href": "#choices-policy"
+    },
+    {
+      "text": "",
+      "href": "#choices-policy"
+    },
+    {
+      "text": "",
+      "href": "#choices-policy"
+    },
+    {
+      "text": "#131",
+      "href": "#pr-131"
+    },
+    {
+      "text": "",
+      "href": "#choices-policy"
+    },
+    {
+      "text": "",
+      "href": "#choices-policy"
+    },
+    {
+      "text": "",
+      "href": "#choices-policy"
+    },
+    {
+      "text": "",
+      "href": "#choices-policy"
+    },
+    {
+      "text": "#132",
+      "href": "#pr-132"
+    },
+    {
+      "text": "",
+      "href": "#choices-policy"
+    },
+    {
+      "text": "",
+      "href": "#choices-policy"
+    },
+    {
+      "text": "",
+      "href": "#choices-policy"
+    },
+    {
+      "text": "",
+      "href": "#choices-policy"
+    },
+    {
+      "text": "",
+      "href": "#choices-policy"
+    },
+    {
+      "text": "#133",
+      "href": "#pr-133"
+    },
+    {
+      "text": "",
+      "href": "#choices-policy"
+    },
+    {
+      "text": "",
+      "href": "#choices-policy"
+    },
+    {
+      "text": "",
+      "href": "#choices-policy"
+    },
+    {
+      "text": "",
+      "href": "#choices-policy"
+    },
+    {
+      "text": "#134",
+      "href": "#pr-134"
+    },
+    {
+      "text": "",
+      "href": "#choices-policy"
+    },
+    {
+      "text": "",
+      "href": "#choices-policy"
+    },
+    {
+      "text": "",
+      "href": "#choices-policy"
+    },
+    {
+      "text": "",
+      "href": "#choices-policy"
+    },
+    {
+      "text": "#137",
+      "href": "#pr-137"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "#138",
+      "href": "#pr-138"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "#139",
+      "href": "#pr-139"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "#140",
+      "href": "#pr-140"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "#141",
+      "href": "#pr-141"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "#142",
+      "href": "#pr-142"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "#143",
+      "href": "#pr-143"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "#144",
+      "href": "#pr-144"
+    },
+    {
+      "text": "",
+      "href": "#choices-process"
+    },
+    {
+      "text": "",
+      "href": "#choices-process"
+    },
+    {
+      "text": "",
+      "href": "#choices-process"
+    },
+    {
+      "text": "",
+      "href": "#choices-process"
+    },
+    {
+      "text": "",
+      "href": "#choices-process"
+    },
+    {
+      "text": "#145",
+      "href": "#pr-145"
+    },
+    {
+      "text": "",
+      "href": "#choices-process"
+    },
+    {
+      "text": "",
+      "href": "#choices-process"
+    },
+    {
+      "text": "",
+      "href": "#choices-process"
+    },
+    {
+      "text": "",
+      "href": "#choices-process"
+    },
+    {
+      "text": "",
+      "href": "#choices-process"
+    },
+    {
+      "text": "#146",
+      "href": "#pr-146"
+    },
+    {
+      "text": "",
+      "href": "#choices-process"
+    },
+    {
+      "text": "",
+      "href": "#choices-process"
+    },
+    {
+      "text": "",
+      "href": "#choices-process"
+    },
+    {
+      "text": "",
+      "href": "#choices-process"
+    },
+    {
+      "text": "",
+      "href": "#choices-process"
+    },
+    {
+      "text": "#147",
+      "href": "#pr-147"
+    },
+    {
+      "text": "",
+      "href": "#choices-process"
+    },
+    {
+      "text": "",
+      "href": "#choices-process"
+    },
+    {
+      "text": "",
+      "href": "#choices-process"
+    },
+    {
+      "text": "",
+      "href": "#choices-process"
+    },
+    {
+      "text": "",
+      "href": "#choices-process"
+    },
+    {
+      "text": "",
+      "href": "#choices-edges"
+    },
+    {
+      "text": "",
+      "href": "#choices-edges"
+    },
+    {
+      "text": "",
+      "href": "#choices-edges"
+    },
+    {
+      "text": "",
+      "href": "#choices-edges"
+    },
+    {
+      "text": "",
+      "href": "#choices-edges"
+    },
+    {
+      "text": "",
+      "href": "#choices-edges"
+    },
+    {
+      "text": "",
+      "href": "#choices-edges"
+    },
+    {
+      "text": "",
+      "href": "#choices-edges"
+    },
+    {
+      "text": "",
+      "href": "#choices-edges"
+    },
+    {
+      "text": "",
+      "href": "#choices-edges"
+    },
+    {
+      "text": "",
+      "href": "#choices-edges"
+    },
+    {
+      "text": "",
+      "href": "#choices-edges"
+    },
+    {
+      "text": "",
+      "href": "#choices-edges"
+    },
+    {
+      "text": "",
+      "href": "#choices-edges"
+    },
+    {
+      "text": "",
+      "href": "#choices-edges"
+    },
+    {
+      "text": "",
+      "href": "#choices-edges"
+    },
+    {
+      "text": "",
+      "href": "#choices-edges"
+    },
+    {
+      "text": "",
+      "href": "#choices-edges"
+    },
+    {
+      "text": "",
+      "href": "#choices-edges"
+    },
+    {
+      "text": "",
+      "href": "#choices-edges"
+    },
+    {
+      "text": "",
+      "href": "#choices-edges"
+    },
+    {
+      "text": "",
+      "href": "#choices-edges"
+    },
+    {
+      "text": "",
+      "href": "#choices-edges"
+    },
+    {
+      "text": "",
+      "href": "#choices-edges"
+    },
+    {
+      "text": "",
+      "href": "#choices-edges"
+    },
+    {
+      "text": "Return to the ownership map ↑",
+      "href": "#boundary"
+    },
+    {
+      "text": "↑ The decisions behind this path",
+      "href": "#choices-policy"
+    },
+    {
+      "text": "↑ The state decisions",
+      "href": "#choices-state"
+    },
+    {
+      "text": "Codec + validator\nFrame sizes, binary headers, digests, message shape and correlation",
+      "href": "#pr-137"
+    },
+    {
+      "text": "Socket client\nDemand-driven reads; ordered writes; timeout and closure",
+      "href": "#pr-139"
+    },
+    {
+      "text": "Socket server\nEndpoint binding; per-connection chains; draining and forced close",
+      "href": "#pr-141"
+    },
+    {
+      "text": "Lifecycle client\nOne-response exchanges and result acknowledgement",
+      "href": "#pr-140"
+    },
+    {
+      "text": "Execution client\nAcceptance, transfer, reattachment, terminal outcome",
+      "href": "#pr-142"
+    },
+    {
+      "text": "Receiver + capture\nManifest identity, durable append position, verified result, cleanup",
+      "href": "#pr-138"
+    },
+    {
+      "text": "↑ The transport decisions",
+      "href": "#choices-transport"
+    },
+    {
+      "text": "↑ Back to the place, now that you know the names",
+      "href": "#map"
+    },
+    {
+      "text": "Experiment notes",
+      "href": "README.md"
+    },
+    {
+      "text": "Assigned brief",
+      "href": "brief.md"
+    }
+  ],
+  "experiment": "14-outsider-persona",
+  "captured_utc": "2026-09-13T03:14:11.029Z"
+}

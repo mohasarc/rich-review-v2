@@ -1,0 +1,3667 @@
+apps/cli/src/cli-program-executor.test.ts
+-import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
++import { DaemonPolicyTestFactory } from "../test/helpers/daemon-policy.js";
+
+apps/cli/src/cli.test.ts
+-import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
++import { DaemonPolicyTestFactory } from "../test/helpers/daemon-policy.js";
+
+apps/cli/src/daemon-executor.test.ts
++  it("rejects a product version that does not match the CLI", () => {
++    expect(() =>
++      createDaemonExecutor({
++        stateDirectory: temporaryDirectory(temporaryDirectories),
++        productVersion: "0.0.9",
++        sampleResources: () => undefined,
++      }),
++    ).toThrow("Daemon executor version does not match host product");
++  });
++
+
+apps/cli/src/daemon/daemon-entry.test.ts
+-import { readFileSync } from "node:fs";
+-import { afterEach, expect, it, vi } from "vitest";
+-import { DaemonPolicy } from "@symnav/daemon";
+-import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
+-import { DAEMON_PROTOCOL_VERSION, type DaemonIdentityCoordinates } from "./daemon-protocol.js";
+-import { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
+-
+-interface DaemonProcessConfiguration extends DaemonIdentityCoordinates {
+-  readonly protocolVersion: number;
+-  readonly stateDirectory: string;
+-  readonly symnavVersion: string;
+-  readonly executorModuleUrl: string;
+-  readonly policy: ReturnType<DaemonPolicy["toSerialized"]>;
+-}
+-
+-afterEach(() => {
+-  vi.resetModules();
+-  vi.restoreAllMocks();
+-  vi.doUnmock("./daemon-process-launcher.js");
+-  vi.doUnmock("./daemon-registry.js");
+-  vi.doUnmock("./local-daemon-transport.js");
+-  vi.doUnmock("./workspace-daemon.js");
+-  vi.doUnmock("./daemon-clock.js");
+-  vi.doUnmock("./daemon-logger.js");
+-  vi.doUnmock("./daemon-process-termination-observer.js");
+-});
+-
+-it("starts the detached daemon with only daemon-owned process configuration", async () => {
+-  const configuredStateDirectory = "/canonical/state-a";
+-  const retargetedStateDirectory = "/canonical/state-b";
+-  const identity = DaemonWorkspaceIdentity.from("/workspace", configuredStateDirectory);
+-  const policy = DaemonPolicyTestFactory.withOverrides(
+-    DaemonPolicy.fromSystemMemory({ totalBytes: 1024 * 1024 * 1024 }),
+-    {
+-      resources: {
+-        hardProcessRssBytes: 512 * 1024 * 1024,
+-        softProcessRssBytes: 409 * 1024 * 1024,
+-        resumeProcessRssBytes: 358 * 1024 * 1024,
+-        workerMaxOldGenerationSizeMiB: 257,
+-        workerHeapSampleIntervalMs: 26,
+-      },
+-    },
+-  );
+-  const configuration: DaemonProcessConfiguration = {
+-    protocolVersion: DAEMON_PROTOCOL_VERSION,
+-    symnavVersion: "0.1.0",
+-    executorModuleUrl: "file:///absolute/daemon-executor.js",
+-    workspaceRoot: identity.workspaceRoot,
+-    stateDirectory: identity.stateDirectory,
+-    workspaceKey: identity.workspaceKey,
+-    stateKey: identity.stateKey,
+-    identityKey: identity.identityKey,
+-    instanceId: "instance",
+-    processToken: "token",
+-    endpoint: identity.endpoint("instance"),
+-    policy: policy.toSerialized(),
+-  };
+-  let daemonStateDirectory = "";
+-  let daemonExecutorModuleUrl = "";
+-  let daemonWorkerLimit = 0;
+-  let daemonLogger: unknown;
+-  let terminationRecorder: unknown;
+-  let terminationObserverInstalled = false;
+-  vi.doMock("./daemon-process-launcher.js", () => ({
+-    DaemonProcessConfigurationParser: { parse: () => configuration },
+-  }));
+-  vi.doMock("./daemon-registry.js", () => ({ DaemonRegistry: class {} }));
+-  vi.doMock("./local-daemon-transport.js", () => ({ LocalDaemonTransport: class {} }));
+-  vi.doMock("./daemon-clock.js", () => ({ NodeDaemonClock: class {} }));
+-  vi.doMock("./daemon-logger.js", () => ({ DaemonLogger: class {} }));
+-  vi.doMock("./daemon-process-termination-observer.js", () => ({
+-    DaemonProcessTerminationObserver: class {
+-      constructor(recorder: unknown) {
+-        terminationRecorder = recorder;
+-      }
+-
+-      install(): void {
+-        terminationObserverInstalled = true;
+-      }
+-    },
+-  }));
+-  vi.doMock("./workspace-daemon.js", () => ({
+-    WorkspaceDaemon: class {
+-      constructor(options: {
+-        readonly identity: { readonly stateDirectory: string };
+-        readonly executorModuleUrl: string;
+-        readonly policy: DaemonPolicy;
+-        readonly logger: unknown;
+-      }) {
+-        daemonStateDirectory = options.identity.stateDirectory;
+-        daemonExecutorModuleUrl = options.executorModuleUrl;
+-        daemonWorkerLimit = options.policy.values.resources.workerMaxOldGenerationSizeMiB;
+-        daemonLogger = options.logger;
+-      }
+-
+-      async start(): Promise<void> {}
+-    },
+-  }));
+-
+-  await import("./daemon-entry.js");
+-
+-  expect(daemonStateDirectory).toBe(configuredStateDirectory);
+-  expect(daemonExecutorModuleUrl).toBe(configuration.executorModuleUrl);
+-  expect(daemonWorkerLimit).toBe(257);
+-  expect(terminationObserverInstalled).toBe(true);
+-  expect(terminationRecorder).toBe(daemonLogger);
+-});
+-
+-it("keeps the process and worker entries independent from CLI and core modules", () => {
+-  for (const file of [
+-    "daemon-entry.ts",
+-    "daemon-navigation-worker-entry.ts",
+-    "daemon-navigation-worker-protocol.ts",
+-    "local-daemon-transport.ts",
+-    "workspace-daemon.ts",
+-  ]) {
+-    const source = readFileSync(new URL(file, import.meta.url), "utf8");
+-    expect(source).not.toMatch(
+-      /@symnav\/core|\.\.\/(program|program-dependencies|command-execution-result)/,
+-    );
+-  }
+-});
+
+apps/cli/src/daemon/daemon-transport.test.ts
+-import type { WorkspaceDaemon, WorkspaceDaemonOptions } from "./workspace-daemon.js";
++import type {
++  DaemonProcessCoordinator,
++  DaemonProcessCoordinatorOptions,
++} from "./daemon-process-coordinator.js";
+-    expectTypeOf<WorkspaceDaemonOptions["transport"]>().toEqualTypeOf<DaemonRequestServer>();
++    expectTypeOf<DaemonProcessCoordinatorOptions["server"]>().toEqualTypeOf<DaemonRequestServer>();
+-      ConstructorParameters<typeof WorkspaceDaemon>[0]["transport"]
++      ConstructorParameters<typeof DaemonProcessCoordinator>[0]["server"]
+
+apps/cli/test/e2e/daemon/parity.test.ts
+-        fileURLToPath(new URL("../../helpers/workspace-daemon-stuck.ts", import.meta.url)),
++        fileURLToPath(
++          new URL("../../helpers/daemon-process-coordinator-stuck.ts", import.meta.url),
++        ),
+
+apps/cli/test/e2e/daemon/persistent-pressure.test.ts
+-          new URL("../../helpers/workspace-daemon-persistent-pressure.ts", import.meta.url),
++          new URL(
++            "../../helpers/daemon-process-coordinator-persistent-pressure.ts",
++            import.meta.url,
++          ),
+
+apps/cli/test/e2e/daemon/status.test.ts
+-      fileURLToPath(new URL("../../helpers/workspace-daemon-stuck.ts", import.meta.url)),
++      fileURLToPath(new URL("../../helpers/daemon-process-coordinator-stuck.ts", import.meta.url)),
+
+apps/cli/test/e2e/daemon/stop.test.ts
+-      fileURLToPath(new URL("../../helpers/workspace-daemon-stuck.ts", import.meta.url)),
++      fileURLToPath(new URL("../../helpers/daemon-process-coordinator-stuck.ts", import.meta.url)),
+
+apps/cli/test/helpers/daemon-controller.ts
+-import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
++import { DaemonPolicyTestFactory } from "./daemon-policy.js";
+-      ...(options.now === undefined ? {} : { now: options.now }),
++      ...(options.now === undefined ? {} : { clock: { wallNowMs: options.now } }),
+
+apps/cli/test/helpers/daemon-policy.ts
+-import { DaemonPolicy, type DaemonPolicyValues } from "./daemon-policy.js";
++import { DaemonPolicy, type DaemonPolicyValues } from "@symnav/daemon";
+
+apps/cli/test/helpers/daemon-process-coordinator-persistent-pressure.ts
+-import { TestWorkspaceDaemon as WorkspaceDaemon } from "./workspace-daemon.js";
++import { TestDaemonProcessCoordinator as DaemonProcessCoordinator } from "./daemon-process-coordinator.js";
+-const daemon = new WorkspaceDaemon({
++const daemon = new DaemonProcessCoordinator({
+
+apps/cli/test/helpers/daemon-process-coordinator-stuck.ts
+-import { TestWorkspaceDaemon as WorkspaceDaemon } from "./workspace-daemon.js";
++import { TestDaemonProcessCoordinator as DaemonProcessCoordinator } from "./daemon-process-coordinator.js";
+-const daemon = new WorkspaceDaemon({
++const daemon = new DaemonProcessCoordinator({
+
+apps/cli/test/helpers/daemon-process-coordinator.ts
+-import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
++import { DaemonPolicyTestFactory } from "./daemon-policy.js";
++import { performance } from "node:perf_hooks";
++import { NodeDaemonClock, type DaemonClock } from "../../src/daemon/daemon-clock.js";
++import type { DaemonRequestServer } from "../../src/daemon/daemon-transport.js";
+-  WorkspaceDaemon as RuntimeWorkspaceDaemon,
+-  type WorkspaceDaemonOptions,
+-} from "../../src/daemon/workspace-daemon.js";
++  DaemonProcessCoordinator as RuntimeDaemonProcessCoordinator,
++  type DaemonProcessCoordinatorOptions,
++} from "../../src/daemon/daemon-process-coordinator.js";
+-interface TestWorkspaceDaemonPolicyOptions {
++interface TestDaemonProcessCoordinatorPolicyOptions {
+-export type TestWorkspaceDaemonOptions = Omit<WorkspaceDaemonOptions, "dependencies" | "policy"> &
+-  TestWorkspaceDaemonPolicyOptions & { readonly dependencies: ProgramDependencies };
++export type TestDaemonProcessCoordinatorOptions = Omit<
++  DaemonProcessCoordinatorOptions,
++  "clock" | "coordinates" | "productVersion" | "server" | "workspaceExists" | "policy"
++> &
++  TestDaemonProcessCoordinatorPolicyOptions & {
++    readonly dependencies: ProgramDependencies;
++    readonly instanceId: string;
++    readonly processToken: string;
++    readonly symnavVersion: string;
++    readonly transport: DaemonRequestServer;
++    readonly clock?: DaemonClock;
++    readonly now?: () => number;
++  };
+-export class TestWorkspaceDaemon extends RuntimeWorkspaceDaemon {
+-  constructor(options: TestWorkspaceDaemonOptions) {
++export class TestDaemonProcessCoordinator extends RuntimeDaemonProcessCoordinator {
++  constructor(options: TestDaemonProcessCoordinatorOptions) {
++      coordinates: {
++        workspaceRoot: options.identity.workspaceRoot,
++        workspaceKey: options.identity.workspaceKey,
++        stateKey: options.identity.stateKey,
++        identityKey: options.identity.identityKey,
++        instanceId: options.instanceId,
++        processToken: options.processToken,
++        endpoint: options.identity.endpoint(options.instanceId),
++      },
++      productVersion: options.symnavVersion,
++      server: options.transport,
++      workspaceExists: (workspaceRoot) => options.dependencies.fs.exists(workspaceRoot),
++      clock:
++        options.clock ??
++        new NodeDaemonClock({
++          wallNowMs: options.now ?? Date.now,
++          monotonicNowMs: () => performance.now(),
++        }),
+
+apps/cli/test/helpers/daemon-process-terminator.ts
+-import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
++import { DaemonPolicyTestFactory } from "./daemon-policy.js";
+
+apps/cli/test/helpers/daemon-registry.ts
++import { NodeDaemonClock } from "../../src/daemon/daemon-clock.js";
++        new NodeDaemonClock(),
+-    super(registryDirectory, platformOrPolicy, process.platform, renamePath);
++    super(registryDirectory, platformOrPolicy, new NodeDaemonClock(), process.platform, renamePath);
+
+apps/cli/test/helpers/daemon-startup-caller-exit.ts
+-import { TestWorkspaceDaemon as WorkspaceDaemon } from "./workspace-daemon.js";
++import { TestDaemonProcessCoordinator as DaemonProcessCoordinator } from "./daemon-process-coordinator.js";
+-    await new WorkspaceDaemon({
++    await new DaemonProcessCoordinator({
+
+apps/cli/test/helpers/daemon-startup-coordinator.ts
+-import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
++import { DaemonPolicyTestFactory } from "./daemon-policy.js";
+-      ...(options.now === undefined ? {} : { now: options.now }),
++      ...(options.now === undefined ? {} : { clock: { wallNowMs: options.now } }),
+
+apps/cli/test/helpers/local-daemon-transport.ts
+-import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
++import { DaemonPolicyTestFactory } from "./daemon-policy.js";
+
+meta-tests/src/daemon-compatibility-copy.test.ts
++import { createHash } from "node:crypto";
++import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { dirname, join, resolve } from "node:path";
++import { fileURLToPath } from "node:url";
++import { describe, expect, it } from "vitest";
++
++class DaemonCompatibilityCopyInventory {
++  static readonly expectedDigest =
++    "d0ff136f3be132ea004d3b13985192e055d1dfbad1abb773b607e89c54a1f41e";
++
++  static files(repositoryRoot: string): readonly string[] {
++    const daemonDirectory = join(repositoryRoot, "apps/cli/src/daemon");
++    const cliOwnedSources = new Set([
++      "daemon-command-dispatcher.ts",
++      "invocation-route.ts",
++      "invocation-workspace-selector.ts",
++    ]);
++    return readdirSync(daemonDirectory)
++      .filter(
++        (name) => name.endsWith(".ts") && !name.endsWith(".test.ts") && !cliOwnedSources.has(name),
++      )
++      .map((name) => `apps/cli/src/daemon/${name}`)
++      .sort();
++  }
++
++  static digest(repositoryRoot: string, files: readonly string[]): string {
++    const hash = createHash("sha256");
++    for (const file of files) {
++      hash.update(file);
++      hash.update("\0");
++      hash.update(readFileSync(join(repositoryRoot, file), "utf8").replace(/\r\n/g, "\n"));
++      hash.update("\0");
++    }
++    return hash.digest("hex");
++  }
++}
++
++describe("CLI daemon compatibility copies", () => {
++  it("remain frozen while package-local mechanisms are staged", () => {
++    const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
++    const files = DaemonCompatibilityCopyInventory.files(repositoryRoot);
++
++    expect(files).toHaveLength(38);
++    expect(DaemonCompatibilityCopyInventory.digest(repositoryRoot, files)).toBe(
++      DaemonCompatibilityCopyInventory.expectedDigest,
++    );
++  });
++
++  it("hashes semantic source content independently of checkout line endings", () => {
++    const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
++    const files = DaemonCompatibilityCopyInventory.files(repositoryRoot);
++    const crlfCheckoutRoot = mkdtempSync(join(tmpdir(), "symnav-daemon-compatibility-"));
++
++    try {
++      for (const file of files) {
++        const source = readFileSync(join(repositoryRoot, file), "utf8").replace(/\r?\n/g, "\r\n");
++        const crlfFile = join(crlfCheckoutRoot, file);
++        mkdirSync(dirname(crlfFile), { recursive: true });
++        writeFileSync(crlfFile, source);
++      }
++
++      expect(DaemonCompatibilityCopyInventory.digest(crlfCheckoutRoot, files)).toBe(
++        DaemonCompatibilityCopyInventory.expectedDigest,
++      );
++
++      const changedFile = join(crlfCheckoutRoot, files[0]!);
++      writeFileSync(changedFile, `${readFileSync(changedFile, "utf8")}export {};\r\n`);
++
++      expect(DaemonCompatibilityCopyInventory.digest(crlfCheckoutRoot, files)).not.toBe(
++        DaemonCompatibilityCopyInventory.expectedDigest,
++      );
++    } finally {
++      rmSync(crlfCheckoutRoot, { recursive: true, force: true });
++    }
++  });
++});
+
+meta-tests/src/daemon-package.test.ts
+-  it("has the exact private ESM root and temporary policy-testing exports", () => {
++  it("has the exact private ESM root and executable entry exports", () => {
+-        "./policy-testing": {
+-          types: "./dist/policy-testing.d.ts",
+-          default: "./dist/policy-testing.js",
++        "./process-entry": {
++          default: "./dist/process-entry.js",
++        },
++        "./worker-entry": {
++          default: "./dist/worker-entry.js",
+-    expect(Object.keys(manifest.exports)).toEqual([".", "./policy-testing"]);
++    expect(Object.keys(manifest.exports)).toEqual([".", "./process-entry", "./worker-entry"]);
+
+meta-tests/src/lint-rule.test.ts
+-  it("allows CLI test files to import the temporary daemon policy factory", async () => {
+-    const eslint = await makeESLint();
+-    const code = `import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";\nexport const value = DaemonPolicyTestFactory;\n`;
+-    const [result] = await eslint.lintText(code, {
+-      filePath: join(repoRoot, "apps/cli/src/daemon/policy.test.ts"),
+-    });
+-    expect(result!.errorCount).toBe(0);
+-  });
+-
+-  it("rejects production imports of the temporary daemon policy factory", async () => {
+-    const eslint = await makeESLint();
+-    const code = `import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";\nexport const value = DaemonPolicyTestFactory;\n`;
+-    const [result] = await eslint.lintText(code, {
+-      filePath: join(repoRoot, "apps/cli/src/daemon/policy.ts"),
+-    });
+-    const restricted = result!.messages.filter(
+-      (message) => message.ruleId === "no-restricted-imports",
+-    );
+-    expect(restricted).toHaveLength(1);
+-  });
+-
+
+packages/daemon/src/client/daemon-client-control.test.ts
++import { afterEach, describe, expect, it, vi } from "vitest";
++import type { DaemonExecutor } from "@symnav/daemon";
++import { DaemonPolicy } from "../daemon-policy.js";
++import { DaemonController } from "../process/controller.js";
++import { LocalDaemonTransport } from "../transport/local-transport.js";
++import { DaemonClientRuntime as DaemonClient } from "./daemon-client-runtime.js";
++
++describe("DaemonClient control", () => {
++  afterEach(() => vi.restoreAllMocks());
++
++  it("owns one start/status/stop composition with distinct response timeouts", async () => {
++    const policy = DaemonPolicy.currentSystem();
++    const client = createClient(policy);
++    const composition = ClientControlInspection.read(client);
++    const start = vi.spyOn(DaemonController.prototype, "start").mockResolvedValue({
++      status: "ready",
++      workspaceRoot: "/workspace",
++      fileCount: 4,
++      loadDurationMs: 2,
++    });
++    const status = vi.spyOn(DaemonController.prototype, "status").mockResolvedValue([]);
++    const stop = vi
++      .spyOn(DaemonController.prototype, "stop")
++      .mockResolvedValue({ status: "not-running", workspaceRoot: "/workspace" });
++
++    await client.control({ action: "start", workspaceRoot: "/workspace" });
++    await client.control({ action: "status" });
++    await client.control({ action: "stop", workspaceRoot: "/workspace" });
++    await client.control({ action: "status" });
++
++    expect(start).toHaveBeenCalledOnce();
++    expect(status).toHaveBeenCalledTimes(2);
++    expect(stop).toHaveBeenCalledOnce();
++    expect(ClientControlInspection.read(client)).toEqual(composition);
++    expect(ClientControlInspection.responseTimeout(composition.routingTransport)).toBe(
++      policy.values.transport.singleResponseTimeoutMs,
++    );
++    expect(ClientControlInspection.responseTimeout(composition.statusTransport)).toBe(
++      policy.values.transport.statusResponseTimeoutMs,
++    );
++  });
++
++  it("returns disabled start without invoking lifecycle mechanisms", async () => {
++    const start = vi.spyOn(DaemonController.prototype, "start");
++    const client = createClient(DaemonPolicy.currentSystem(), false);
++
++    await expect(client.control({ action: "start", workspaceRoot: "/workspace" })).resolves.toEqual(
++      { status: "disabled" },
++    );
++
++    expect(start).not.toHaveBeenCalled();
++  });
++
++  it.each(["start", "status", "stop"] as const)(
++    "rejects %s mechanism errors for the host wrapper",
++    async (action) => {
++      vi.spyOn(DaemonController.prototype, action).mockRejectedValue(new Error(`${action} failed`));
++      const client = createClient(DaemonPolicy.currentSystem());
++
++      if (action === "status") {
++        await expect(client.control({ action })).rejects.toThrow(`${action} failed`);
++      } else if (action === "start") {
++        await expect(client.control({ action, workspaceRoot: "/workspace" })).rejects.toThrow(
++          `${action} failed`,
++        );
++      } else {
++        await expect(client.control({ action, workspaceRoot: "/workspace" })).rejects.toThrow(
++          `${action} failed`,
++        );
++      }
++    },
++  );
++});
++
++class ClientControlInspection {
++  static read(client: DaemonClient): {
++    readonly routingTransport: LocalDaemonTransport;
++    readonly statusTransport: LocalDaemonTransport;
++    readonly controlController: DaemonController;
++    readonly statusController: DaemonController;
++  } {
++    return client as unknown as ReturnType<typeof ClientControlInspection.read>;
++  }
++
++  static responseTimeout(transport: LocalDaemonTransport): number {
++    const composition = transport as unknown as {
++      readonly lifecycle: { readonly options: { readonly responseTimeoutMs: number } };
++    };
++    return composition.lifecycle.options.responseTimeoutMs;
++  }
++}
++
++function createClient(policy: DaemonPolicy, daemonEnabled = true): DaemonClient {
++  return new DaemonClient({
++    stateDirectory: "/state",
++    productVersion: "0.1.0",
++    daemonEnabled,
++    executorFactory: () => localExecutor(),
++    executorModuleUrl: "file:///executor.js",
++    readinessProbe: { commandName: "version", argv: ["--version"] },
++    policy,
++  });
++}
++
++function localExecutor(): DaemonExecutor {
++  return {
++    initialize: async () => ({ fileCount: 0 }),
++    execute: async () => {
++      throw new Error("Local execution was not expected");
++    },
++    releaseTransientResources: async () => undefined,
++  };
++}
+
+packages/daemon/src/client/daemon-client-public.test.ts
++import { describe, expect, it, vi } from "vitest";
++import { DaemonClient, DaemonPolicy, type DaemonExecutor } from "@symnav/daemon";
++import { CommandOutputSnapshot } from "../../test/helpers/executor-output.js";
++
++describe("public DaemonClient", () => {
++  it("loads its package runtime and delegates execution and control", async () => {
++    const execute = vi.fn(async () => ({ exitCode: 0, output: new CommandOutputSnapshot([]) }));
++    const executorFactory = vi.fn(
++      (): DaemonExecutor => ({
++        initialize: async () => ({ fileCount: 0 }),
++        execute,
++        releaseTransientResources: async () => undefined,
++      }),
++    );
++    const client = new DaemonClient({
++      stateDirectory: "/state",
++      productVersion: "0.1.0",
++      daemonEnabled: false,
++      executorFactory,
++      executorModuleUrl: "file:///executor.js",
++      readinessProbe: { commandName: "version", argv: ["--version"] },
++      policy: DaemonPolicy.currentSystem(),
++    });
++
++    await expect(
++      client.execute({
++        workspaceRoot: "/workspace",
++        commandName: "overview",
++        argv: ["overview", "src/a.ts"],
++        cwd: "/workspace",
++        telemetryEnabled: false,
++      }),
++    ).resolves.toMatchObject({ mode: "cold", result: { exitCode: 0 } });
++    await expect(client.control({ action: "start", workspaceRoot: "/workspace" })).resolves.toEqual(
++      { status: "disabled" },
++    );
++
++    expect(executorFactory).toHaveBeenCalledOnce();
++    expect(execute).toHaveBeenCalledWith(
++      expect.objectContaining({ executionMode: "cold", telemetryEnabled: false }),
++    );
++  });
++});
+
+packages/daemon/src/client/daemon-client.test.ts
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { tmpdir } from "node:os";
++import type {
++  DaemonExecutionFailureCode,
++  DaemonExecutor,
++  DaemonExecutorExecutionResult,
++  DaemonExecutorRequest,
++} from "@symnav/daemon";
++import { DaemonPolicy } from "../daemon-policy.js";
++import { CommandOutputSnapshot } from "../../test/helpers/executor-output.js";
++import { DaemonStartupCoordinator } from "../registry/startup-coordinator.js";
++import { DaemonRecordObserver, type DaemonObservation } from "../registry/record-observer.js";
++import { DaemonRegistry } from "../registry/registry.js";
++import { LocalDaemonTransport } from "../transport/local-transport.js";
++import type { DaemonOutputCapture } from "../transport/client-result-capture.js";
++import {
++  DAEMON_PROTOCOL_VERSION,
++  DAEMON_RECORD_SCHEMA_VERSION,
++  type DaemonPong,
++  type DaemonRecord,
++} from "../transport/protocol.js";
++import { DaemonTransportError } from "../transport/transport-error.js";
++import { DaemonClientRuntime as DaemonClient } from "./daemon-client-runtime.js";
++
++const success: DaemonExecutorExecutionResult = {
++  exitCode: 0,
++  output: new CommandOutputSnapshot([{ stream: "stdout", bytes: Buffer.from("answer\n") }]),
++};
++
++describe("DaemonClient execution", () => {
++  afterEach(() => vi.restoreAllMocks());
++
++  it.each([
++    ["disabled", { daemonEnabled: false }, "cold", "cold", 1, 0, 0, 0, 0, 0],
++    ["absent", { record: undefined }, "cold", "cold", 1, 0, 1, 1, 0, 0],
++    [
++      "registry recovery",
++      { readFailure: new Error("registry unavailable") },
++      "cold",
++      "cold",
++      1,
++      0,
++      0,
++      1,
++      0,
++      0,
++    ],
++    [
++      "starting record",
++      { record: daemonRecord({ state: "starting" }) },
++      "cold",
++      "cold",
++      1,
++      0,
++      0,
++      1,
++      0,
++      0,
++    ],
++    ["ready idle", {}, "warm", undefined, 0, 1, 0, 1, 1, 0],
++    ["ready busy", { pongState: "busy" }, "warm", undefined, 0, 1, 0, 1, 1, 0],
++    ["responsive starting", { pongState: "starting" }, "cold", "cold", 1, 0, 0, 1, 1, 0],
++    ["unresponsive", { observationKind: "unresponsive" }, "cold", "cold", 1, 0, 0, 1, 1, 0],
++    ["exited", { observationKind: "exited" }, "fallback", "fallback", 1, 0, 1, 1, 1, 1],
++    [
++      "record version mismatch",
++      { record: daemonRecord({ symnavVersion: "0.0.9" }) },
++      "fallback",
++      "fallback",
++      1,
++      0,
++      1,
++      1,
++      0,
++      0,
++    ],
++    ["pong version mismatch", { pongVersion: "0.0.9" }, "fallback", "fallback", 1, 0, 1, 1, 1, 0],
++    [
++      "invalid observation",
++      { observationKind: "corrupt" },
++      "fallback",
++      "fallback",
++      1,
++      0,
++      1,
++      1,
++      1,
++      0,
++    ],
++  ] as const)(
++    "routes %s with exact execution and first-decision effects",
++    async (
++      _name,
++      options,
++      mode,
++      executionMode,
++      localExecutions,
++      warmExecutions,
++      triggers,
++      reads,
++      observations,
++      removals,
++    ) => {
++      const harness = new ClientHarness(options);
++
++      await expect(harness.client.execute(harness.request())).resolves.toEqual({
++        mode,
++        result: success,
++      });
++
++      expect(harness.executorFactory).toHaveBeenCalledTimes(localExecutions);
++      expect(harness.localRequests).toHaveLength(localExecutions);
++      if (executionMode !== undefined) {
++        expect(harness.localRequests).toEqual([
++          expect.objectContaining({ executionMode, telemetryEnabled: true }),
++        ]);
++      }
++      expect(harness.warmRequests).toHaveLength(warmExecutions);
++      expect(harness.trigger).toHaveBeenCalledTimes(triggers);
++      expect(harness.registryRead).toHaveBeenCalledTimes(reads);
++      expect(harness.observe).toHaveBeenCalledTimes(observations);
++      expect(harness.removeIfProcess).toHaveBeenCalledTimes(removals);
++    },
++  );
++
++  it("does not await independent warmup or switch a chosen cold route", async () => {
++    const harness = new ClientHarness({ record: undefined, neverResolveTrigger: true });
++
++    await expect(harness.client.execute(harness.request())).resolves.toEqual({
++      mode: "cold",
++      result: success,
++    });
++
++    expect(harness.executorFactory).toHaveBeenCalledOnce();
++    expect(harness.warmRequests).toHaveLength(0);
++  });
++
++  it("creates a new executor for every local attempt", async () => {
++    const harness = new ClientHarness({ record: undefined });
++
++    await harness.client.execute(harness.request());
++    await harness.client.execute(harness.request());
++
++    expect(harness.executorFactory).toHaveBeenCalledTimes(2);
++    expect(harness.executors).toHaveLength(2);
++    expect(harness.executors[0]).not.toBe(harness.executors[1]);
++  });
++
++  it("composes fresh warm result captures from output policy in the OS temporary directory", () => {
++    const harness = new ClientHarness({});
++    const createOutput = ClientCaptureInspection.createOutput(harness.client);
++
++    const first = createOutput();
++    const second = createOutput();
++
++    expect(first).not.toBe(second);
++    expect(ClientCaptureInspection.capture(first)).toMatchObject({
++      directory: tmpdir(),
++      maximumChunkRawBytes: DaemonPolicy.currentSystem().values.output.maximumChunkRawBytes,
++      inlineRawBytes: DaemonPolicy.currentSystem().values.output.inlineRawBytes,
++      maximumResultRawBytes: DaemonPolicy.currentSystem().values.output.maximumResultRawBytes,
++    });
++    expect(harness.executorFactory).not.toHaveBeenCalled();
++  });
++
++  it("executes ready requests warm without creating a host executor", async () => {
++    const harness = new ClientHarness({});
++
++    await expect(harness.client.execute(harness.request())).resolves.toEqual({
++      mode: "warm",
++      result: success,
++    });
++
++    expect(harness.executorFactory).not.toHaveBeenCalled();
++    expect(harness.warmRequests).toEqual([
++      expect.objectContaining({
++        commandName: "overview",
++        request: {
++          argv: ["overview", "src/a.ts"],
++          cwd: "/workspace",
++          telemetryEnabled: true,
++          executionMode: "warm",
++        },
++      }),
++    ]);
++  });
++
++  it.each([
++    new DaemonTransportError("unreachable", "not-submitted", "connection refused"),
++    new DaemonTransportError(
++      "rejected",
++      "submitted-unconfirmed",
++      "not ready",
++      "instance-1",
++      "not-ready",
++    ),
++  ])("falls back once after retry-safe warm failure %#", async (failure) => {
++    const harness = new ClientHarness({ warmFailure: failure });
++
++    await expect(harness.client.execute(harness.request())).resolves.toEqual({
++      mode: "fallback",
++      result: success,
++    });
++
++    expect(harness.executorFactory).toHaveBeenCalledOnce();
++    expect(harness.localRequests).toHaveLength(1);
++  });
++
++  it.each([
++    new DaemonTransportError("timeout", "submitted-unconfirmed", "request timed out"),
++    new DaemonTransportError("closed", "accepted", "request closed", "instance-1"),
++    new DaemonTransportError(
++      "rejected",
++      "submitted-unconfirmed",
++      "incompatible",
++      "instance-1",
++      "incompatible",
++    ),
++    new Error("malformed response"),
++  ])("does not replay uncertain warm failure %#", async (failure) => {
++    const harness = new ClientHarness({ warmFailure: failure });
++
++    const result = await harness.client.execute(harness.request());
++
++    expect(result.mode).toBe("warm");
++    expect(result.result.exitCode).toBe(1);
++    await expect(outputText(result.result)).resolves.toBe(
++      "Cannot answer: accepted daemon request did not complete.\n",
++    );
++    expect(harness.executorFactory).not.toHaveBeenCalled();
++  });
++
++  it.each([
++    ["controlled-resource", "Cannot answer: daemon workspace capacity exceeded.\n"],
++    ["response-capacity", "Cannot answer: daemon response capacity exceeded.\n"],
++    ["worker-exit", "Cannot answer: accepted daemon request did not complete.\n"],
++    ["stopping", "Cannot answer: accepted daemon request did not complete.\n"],
++    ["internal", "Cannot answer: accepted daemon request did not complete.\n"],
++  ] as const)("owns the exact controlled result for %s", async (code, message) => {
++    const harness = new ClientHarness({ terminalFailure: code });
++
++    const result = await harness.client.execute(harness.request());
++
++    expect(result.mode).toBe("warm");
++    expect(result.result.exitCode).toBe(1);
++    await expect(outputText(result.result)).resolves.toBe(message);
++    expect(harness.executorFactory).not.toHaveBeenCalled();
++  });
++
++  it("disposes malformed warm output before returning its controlled result", async () => {
++    const output = new CommandOutputSnapshot([]);
++    const dispose = vi.spyOn(output, "dispose");
++    const harness = new ClientHarness({ warmResult: { exitCode: 1.5, output } });
++
++    const result = await harness.client.execute(harness.request());
++
++    expect(result.mode).toBe("warm");
++    expect(result.result.exitCode).toBe(1);
++    expect(dispose).toHaveBeenCalledOnce();
++  });
++
++  it("replaces a completed warm result without output and does not replay or mutate", async () => {
++    const harness = new ClientHarness({
++      warmResult: { exitCode: 0, output: undefined } as unknown as DaemonExecutorExecutionResult,
++    });
++
++    const result = await harness.client.execute(harness.request());
++
++    expect(result.mode).toBe("warm");
++    expect(result.result.exitCode).toBe(1);
++    await expect(outputText(result.result)).resolves.toBe(
++      "Cannot answer: accepted daemon request did not complete.\n",
++    );
++    expect(harness.executorFactory).not.toHaveBeenCalled();
++    expect(harness.trigger).not.toHaveBeenCalled();
++    expect(harness.removeIfProcess).not.toHaveBeenCalled();
++  });
++});
++
++interface ClientHarnessOptions {
++  readonly daemonEnabled?: boolean;
++  readonly record?: DaemonRecord | undefined;
++  readonly readFailure?: Error;
++  readonly neverResolveTrigger?: boolean;
++  readonly observationKind?: DaemonObservation["kind"];
++  readonly pongState?: DaemonPong["state"];
++  readonly pongVersion?: string;
++  readonly warmFailure?: Error;
++  readonly warmResult?: DaemonExecutorExecutionResult;
++  readonly terminalFailure?: DaemonExecutionFailureCode;
++}
++
++class ClientHarness {
++  readonly executorFactory = vi.fn();
++  readonly executors: DaemonExecutor[] = [];
++  readonly localRequests: DaemonExecutorRequest[] = [];
++  readonly warmRequests: unknown[] = [];
++  readonly registryRead = vi.fn();
++  readonly observe = vi.fn();
++  readonly removeIfProcess = vi.fn(() => true);
++  readonly trigger = vi.fn();
++  readonly client: DaemonClient;
++
++  constructor(options: ClientHarnessOptions) {
++    this.registryRead.mockImplementation(() => {
++      if (options.readFailure !== undefined) throw options.readFailure;
++      return Object.hasOwn(options, "record") ? options.record : daemonRecord();
++    });
++    vi.spyOn(DaemonRegistry.prototype, "read").mockImplementation(this.registryRead);
++    this.observe.mockImplementation(async (observed: DaemonRecord): Promise<DaemonObservation> => {
++      const kind = options.observationKind ?? "responsive";
++      if (kind === "responsive") {
++        return {
++          kind,
++          record: observed,
++          pong: {
++            kind: "pong",
++            protocolVersion: observed.protocolVersion,
++            instanceId: observed.instanceId,
++            symnavVersion: options.pongVersion ?? observed.symnavVersion,
++            state: options.pongState ?? "ready",
++          },
++        };
++      }
++      if (kind === "starting" || kind === "exited") return { kind, record: observed };
++      if (kind === "unresponsive") return { kind, record: observed, failureCode: "timeout" };
++      return {
++        kind,
++        record: observed,
++        evidence: {
++          instanceId: observed.instanceId,
++          processToken: observed.processToken,
++          pid: observed.pid,
++          startedAt: observed.startedAt,
++        },
++      };
++    });
++    vi.spyOn(DaemonRecordObserver.prototype, "observe").mockImplementation(this.observe);
++    vi.spyOn(DaemonRegistry.prototype, "removeIfProcess").mockImplementation(this.removeIfProcess);
++    this.trigger.mockImplementation(() =>
++      options.neverResolveTrigger
++        ? new Promise(() => {})
++        : Promise.resolve({ status: "launched", instanceId: "replacement", pid: 321 }),
++    );
++    vi.spyOn(DaemonStartupCoordinator.prototype, "trigger").mockImplementation(this.trigger);
++    vi.spyOn(LocalDaemonTransport.prototype, "execute").mockImplementation(
++      async (_endpoint, request) => {
++        this.warmRequests.push(request);
++        if (options.warmFailure !== undefined) throw options.warmFailure;
++        return {
++          acceptance: {
++            requestId: request.requestId,
++            instanceId: request.instanceId,
++            acceptedAt: 1,
++            queuePosition: 0,
++          },
++          completion:
++            options.terminalFailure === undefined
++              ? Promise.resolve({ status: "completed", result: options.warmResult ?? success })
++              : Promise.resolve({ status: "failed", code: options.terminalFailure }),
++        };
++      },
++    );
++    this.executorFactory.mockImplementation(() => {
++      const executor: DaemonExecutor = {
++        initialize: async () => ({ fileCount: 0 }),
++        execute: async (request) => {
++          this.localRequests.push(request);
++          return success;
++        },
++        releaseTransientResources: async () => undefined,
++      };
++      this.executors.push(executor);
++      return executor;
++    });
++    this.client = new DaemonClient({
++      stateDirectory: "/state",
++      productVersion: "0.1.0",
++      daemonEnabled: options.daemonEnabled ?? true,
++      executorFactory: this.executorFactory,
++      executorModuleUrl: "file:///executor.js",
++      readinessProbe: { commandName: "version", argv: ["--version"] },
++      policy: DaemonPolicy.currentSystem(),
++    });
++  }
++
++  request() {
++    return {
++      workspaceRoot: "/workspace",
++      commandName: "overview" as const,
++      argv: ["overview", "src/a.ts"],
++      cwd: "/workspace",
++      telemetryEnabled: true,
++    };
++  }
++}
++
++class ClientCaptureInspection {
++  static createOutput(client: DaemonClient): () => DaemonOutputCapture {
++    const composition = client as unknown as {
++      readonly routingTransport: {
++        readonly execution: {
++          readonly options: { readonly createOutput: () => DaemonOutputCapture };
++        };
++      };
++    };
++    return composition.routingTransport.execution.options.createOutput;
++  }
++
++  static capture(capture: DaemonOutputCapture): {
++    readonly directory: string;
++    readonly maximumChunkRawBytes: number;
++    readonly inlineRawBytes: number;
++    readonly maximumResultRawBytes: number;
++  } {
++    return capture as unknown as ReturnType<typeof ClientCaptureInspection.capture>;
++  }
++}
++
++function daemonRecord(overrides: Partial<DaemonRecord> = {}): DaemonRecord {
++  return {
++    schemaVersion: DAEMON_RECORD_SCHEMA_VERSION,
++    protocolVersion: DAEMON_PROTOCOL_VERSION,
++    symnavVersion: "0.1.0",
++    workspaceRoot: "/workspace",
++    workspaceKey: "workspace-key",
++    stateKey: "state-key",
++    identityKey: "identity-key",
++    instanceId: "instance-1",
++    processToken: "process-1",
++    endpoint: "/endpoint",
++    pid: 123,
++    state: "ready",
++    startedAt: 1,
++    readyAt: 2,
++    fileCount: 1,
++    memoryCapBytes: 1024,
++    ...overrides,
++  };
++}
++
++async function outputText(result: DaemonExecutorExecutionResult): Promise<string> {
++  const chunks: Uint8Array[] = [];
++  for await (const outputRecord of result.output.records()) chunks.push(outputRecord.bytes);
++  await result.output.dispose();
++  return Buffer.concat(chunks).toString();
++}
+
+packages/daemon/src/client/daemon-routing-policy.test.ts
++import { describe, expect, it, vi } from "vitest";
++import {
++  DaemonRoutingContextState,
++  DaemonRoutingPolicy,
++  type DaemonRouteSnapshot,
++  type DaemonRoutingContext,
++} from "./daemon-routing-policy.js";
++import {
++  DAEMON_PROTOCOL_VERSION,
++  DAEMON_RECORD_SCHEMA_VERSION,
++  type DaemonPong,
++  type DaemonRecord,
++} from "../transport/protocol.js";
++import type { DaemonObservation } from "../registry/record-observer.js";
++import type { DaemonWorkspaceIdentity } from "../registry/workspace-identity.js";
++
++describe("DaemonRoutingPolicy", () => {
++  it.each([
++    ["absent", { record: undefined }, { kind: "cold", reason: "absent" }, 1, 0, 0],
++    [
++      "registry recovery",
++      { readFailure: new Error("registry unavailable") },
++      { kind: "cold", reason: "recovering" },
++      1,
++      0,
++      0,
++    ],
++    [
++      "starting record",
++      { record: record({ state: "starting" }) },
++      { kind: "cold", reason: "starting" },
++      1,
++      0,
++      0,
++    ],
++    [
++      "record version mismatch",
++      { record: record({ symnavVersion: "0.0.9" }) },
++      { kind: "fallback", reason: "incompatible" },
++      1,
++      0,
++      0,
++    ],
++    ["ready idle", { pongState: "ready" }, { kind: "warm", record: record() }, 1, 1, 0],
++    ["ready busy", { pongState: "busy" }, { kind: "warm", record: record() }, 1, 1, 0],
++    [
++      "responsive starting",
++      { pongState: "starting" },
++      { kind: "cold", reason: "recovering" },
++      1,
++      1,
++      0,
++    ],
++    [
++      "pong version mismatch",
++      { pongVersion: "0.0.9" },
++      { kind: "fallback", reason: "incompatible" },
++      1,
++      1,
++      0,
++    ],
++    [
++      "observation recovery",
++      { observationFailure: new Error("probe unavailable") },
++      { kind: "cold", reason: "recovering" },
++      1,
++      1,
++      0,
++    ],
++    [
++      "starting observation",
++      { observationKind: "starting" },
++      { kind: "cold", reason: "starting" },
++      1,
++      1,
++      0,
++    ],
++    [
++      "unresponsive observation",
++      { observationKind: "unresponsive" },
++      { kind: "cold", reason: "recovering" },
++      1,
++      1,
++      0,
++    ],
++    [
++      "exited observation",
++      { observationKind: "exited" },
++      { kind: "fallback", reason: "dead" },
++      1,
++      1,
++      1,
++    ],
++    [
++      "incompatible observation",
++      { observationKind: "incompatible" },
++      { kind: "fallback", reason: "incompatible" },
++      1,
++      1,
++      0,
++    ],
++    [
++      "corrupt observation",
++      { observationKind: "corrupt" },
++      { kind: "fallback", reason: "incompatible" },
++      1,
++      1,
++      0,
++    ],
++  ] as const)(
++    "routes %s with lazy first-decision effects",
++    async (_name, options, expected, reads, observations, removals) => {
++      const harness = new RoutingHarness(options);
++
++      await expect(new DaemonRoutingPolicy().decide(harness.context)).resolves.toEqual(expected);
++
++      expect(harness.readRecord).toHaveBeenCalledTimes(reads);
++      expect(harness.observe).toHaveBeenCalledTimes(observations);
++      expect(harness.removeIfProcess).toHaveBeenCalledTimes(removals);
++    },
++  );
++
++  it("performs no work until a decision and memoizes context operations", async () => {
++    const harness = new RoutingHarness({});
++
++    expect(harness.readRecord).not.toHaveBeenCalled();
++    expect(harness.observe).not.toHaveBeenCalled();
++    await harness.context.readRecord();
++    await harness.context.readRecord();
++    await harness.context.observe(record());
++    await harness.context.observe(record());
++
++    expect(harness.readRecord).toHaveBeenCalledOnce();
++    expect(harness.observe).toHaveBeenCalledOnce();
++  });
++});
++
++interface RoutingHarnessOptions {
++  readonly record?: DaemonRecord | undefined;
++  readonly readFailure?: Error;
++  readonly observationFailure?: Error;
++  readonly observationKind?: DaemonObservation["kind"];
++  readonly pongState?: DaemonPong["state"];
++  readonly pongVersion?: string;
++}
++
++class RoutingHarness {
++  readonly readRecord = vi.fn();
++  readonly observe = vi.fn();
++  readonly removeIfProcess = vi.fn(() => true);
++  readonly context: DaemonRoutingContext;
++
++  constructor(options: RoutingHarnessOptions) {
++    this.readRecord.mockImplementation(() => {
++      if (options.readFailure !== undefined) throw options.readFailure;
++      return Object.hasOwn(options, "record") ? options.record : record();
++    });
++    this.observe.mockImplementation(async (observed: DaemonRecord): Promise<DaemonObservation> => {
++      if (options.observationFailure !== undefined) throw options.observationFailure;
++      const kind = options.observationKind ?? "responsive";
++      if (kind === "responsive") {
++        return {
++          kind,
++          record: observed,
++          pong: {
++            kind: "pong",
++            protocolVersion: observed.protocolVersion,
++            instanceId: observed.instanceId,
++            symnavVersion: options.pongVersion ?? observed.symnavVersion,
++            state: options.pongState ?? "ready",
++          },
++        };
++      }
++      if (kind === "starting" || kind === "exited") return { kind, record: observed };
++      if (kind === "unresponsive") {
++        return { kind, record: observed, failureCode: "timeout" };
++      }
++      return {
++        kind,
++        record: observed,
++        evidence: {
++          instanceId: observed.instanceId,
++          processToken: observed.processToken,
++          pid: observed.pid,
++          startedAt: observed.startedAt,
++        },
++      };
++    });
++    this.context = new DaemonRoutingContextState(
++      {} as DaemonWorkspaceIdentity,
++      "0.1.0",
++      this.readRecord,
++      this.observe,
++      this.removeIfProcess,
++    );
++  }
++}
++
++function record(overrides: Partial<DaemonRecord> = {}): DaemonRecord {
++  return {
++    schemaVersion: DAEMON_RECORD_SCHEMA_VERSION,
++    protocolVersion: DAEMON_PROTOCOL_VERSION,
++    symnavVersion: "0.1.0",
++    workspaceRoot: "/workspace",
++    workspaceKey: "workspace-key",
++    stateKey: "state-key",
++    identityKey: "identity-key",
++    instanceId: "instance-1",
++    processToken: "process-1",
++    endpoint: "/endpoint",
++    pid: 123,
++    state: "ready",
++    startedAt: 1,
++    readyAt: 2,
++    fileCount: 1,
++    memoryCapBytes: 1024,
++    ...overrides,
++  };
++}
+
+packages/daemon/src/daemon-policy.test.ts
+-import { DaemonPolicyTestFactory } from "./policy-testing.js";
++import { DaemonPolicyTestFactory } from "../test/helpers/daemon-policy.js";
+
+packages/daemon/src/delivery/completion-spool.test.ts
+-import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
++import { DaemonPolicyTestFactory } from "../../test/helpers/daemon-policy.js";
+
+packages/daemon/src/delivery/delivery-session.test.ts
+-import { AcceptedRequestLedger } from "./accepted-request-ledger.js";
+-import type { DaemonClock } from "./daemon-clock.js";
++import { AcceptedRequestLedger } from "../execution/accepted-request-ledger.js";
++import type { DaemonClock } from "../lifecycle/daemon-clock.js";
+-import { DaemonDeliverySession, type DaemonDiagnosticRecorder } from "./daemon-delivery-session.js";
+-import { DaemonOperationObserver } from "./daemon-operation-observer.js";
+-import type { DaemonDiagnosticEvent, DaemonServerMessage } from "./daemon-protocol.js";
+-import type { DaemonServerSend } from "./daemon-transport.js";
++import { DaemonDeliverySession, type DaemonDiagnosticRecorder } from "./delivery-session.js";
++import { DaemonOperationObserver } from "../diagnostics/operation-observer.js";
++import type { DaemonDiagnosticEvent, DaemonServerMessage } from "../transport/protocol.js";
++import type { DaemonServerSend } from "../transport/contracts.js";
+-    const journal = new AcceptedRequestLedger(() => 1);
++    const journal = new AcceptedRequestLedger({ wallNowMs: () => 1 });
+
+packages/daemon/src/diagnostics/logger.test.ts
+-import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
+-import { NodeDaemonClock, type DaemonClock } from "./daemon-clock.js";
+-import { DaemonLogger as RuntimeDaemonLogger, type DaemonLogStorage } from "./daemon-logger.js";
+-import type { DaemonDiagnosticEvent } from "./daemon-protocol.js";
+-import { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
++import { DaemonPolicyTestFactory } from "../../test/helpers/daemon-policy.js";
++import { NodeDaemonClock, type DaemonClock } from "../lifecycle/daemon-clock.js";
++import { DaemonLogger as RuntimeDaemonLogger, type DaemonLogStorage } from "./logger.js";
++import type { DaemonDiagnosticEvent } from "../transport/protocol.js";
++import { DaemonWorkspaceIdentity } from "../registry/workspace-identity.js";
+
+packages/daemon/src/diagnostics/operation-observer.test.ts
+-import type { DaemonClock } from "./daemon-clock.js";
+-import {
+-  DaemonOperationObserver,
+-  type DaemonDiagnosticEvent,
+-} from "./daemon-operation-observer.js";
++import type { DaemonClock } from "../lifecycle/daemon-clock.js";
++import { DaemonOperationObserver, type DaemonDiagnosticEvent } from "./operation-observer.js";
+
+packages/daemon/src/entry-boundary.test.ts
++import { readFileSync } from "node:fs";
++import { dirname, join } from "node:path";
++import { fileURLToPath } from "node:url";
++import { describe, expect, it } from "vitest";
++import ts from "typescript";
++
++class EntryExportInventory {
++  static namedExports(path: string): readonly string[] {
++    const source = readFileSync(path, "utf8");
++    const sourceFile = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
++    return sourceFile.statements.flatMap((statement) =>
++      EntryExportInventory.exportsName(statement) ? [statement.getText(sourceFile)] : [],
++    );
++  }
++
++  private static exportsName(statement: ts.Statement): boolean {
++    if (ts.isExportAssignment(statement) || ts.isNamespaceExportDeclaration(statement)) return true;
++    if (ts.isExportDeclaration(statement)) {
++      if (statement.exportClause === undefined || ts.isNamespaceExport(statement.exportClause)) {
++        return true;
++      }
++      return statement.exportClause.elements.length > 0;
++    }
++    return (
++      ts.canHaveModifiers(statement) &&
++      (ts
++        .getModifiers(statement)
++        ?.some(
++          (modifier) =>
++            modifier.kind === ts.SyntaxKind.ExportKeyword ||
++            modifier.kind === ts.SyntaxKind.DefaultKeyword,
++        ) ??
++        false)
++    );
++  }
++}
++
++describe("daemon executable entry boundary", () => {
++  it.each(["process-entry", "worker-entry"])(
++    "keeps %s source and declarations side-effect-only",
++    (entry) => {
++      const packageDirectory = dirname(dirname(fileURLToPath(import.meta.url)));
++
++      expect(
++        EntryExportInventory.namedExports(join(packageDirectory, "src", `${entry}.ts`)),
++      ).toEqual([]);
++      expect(
++        EntryExportInventory.namedExports(join(packageDirectory, "dist", `${entry}.d.ts`)),
++      ).toEqual([]);
++    },
++  );
++});
+
+packages/daemon/src/execution/accepted-execution-session.test.ts
+-import type { DaemonCompletionWriter } from "./daemon-delivery-session.js";
+-import type { DaemonDiagnosticEvent, DaemonOperationTrace } from "./daemon-operation-observer.js";
+-import type { DaemonResourceSupervisor } from "./daemon-resource-monitor.js";
+-import type { DaemonWorkerGenerationManager } from "./daemon-worker-generation-manager.js";
+-import { WorkspaceRequestQueue } from "./workspace-request-queue.js";
++import type { DaemonCompletionWriter } from "../delivery/delivery-session.js";
++import type {
++  DaemonDiagnosticEvent,
++  DaemonOperationTrace,
++} from "../diagnostics/operation-observer.js";
++import type { DaemonResourceSupervisor } from "../resources/resource-supervisor.js";
++import type { DaemonWorkerGenerationManager } from "../worker/worker-generation-manager.js";
++import { WorkspaceRequestQueue } from "./request-queue.js";
+-    const ledger = new AcceptedRequestLedger(() => this.wallNowMs());
++    const ledger = new AcceptedRequestLedger({ wallNowMs: () => this.wallNowMs() });
+-    const queue = new WorkspaceRequestQueue(() => this.monotonicNow++);
++    const queue = new WorkspaceRequestQueue({ monotonicNowMs: () => this.monotonicNow++ });
+
+packages/daemon/src/execution/accepted-request-ledger.test.ts
+-    const ledger = new AcceptedRequestLedger(() => 10);
++    const ledger = new AcceptedRequestLedger({ wallNowMs: () => 10 });
+-    const ledger = new AcceptedRequestLedger(() => 10);
++    const ledger = new AcceptedRequestLedger({ wallNowMs: () => 10 });
+-    const ledger = new AcceptedRequestLedger(() => 10);
++    const ledger = new AcceptedRequestLedger({ wallNowMs: () => 10 });
+-    const ledger = new AcceptedRequestLedger(() => 10);
++    const ledger = new AcceptedRequestLedger({ wallNowMs: () => 10 });
+-    const queued = new AcceptedRequestLedger(() => 10);
++    const queued = new AcceptedRequestLedger({ wallNowMs: () => 10 });
+-    const ledger = new AcceptedRequestLedger(() => 10);
++    const ledger = new AcceptedRequestLedger({ wallNowMs: () => 10 });
+-    const ledger = new AcceptedRequestLedger(() => 10);
++    const ledger = new AcceptedRequestLedger({ wallNowMs: () => 10 });
+-    const ledger = new AcceptedRequestLedger(() => 10);
++    const ledger = new AcceptedRequestLedger({ wallNowMs: () => 10 });
+-    const ledger = new AcceptedRequestLedger(() => 10);
++    const ledger = new AcceptedRequestLedger({ wallNowMs: () => 10 });
+-    const ledger = new AcceptedRequestLedger(() => 10);
++    const ledger = new AcceptedRequestLedger({ wallNowMs: () => 10 });
+
+packages/daemon/src/execution/request-queue.test.ts
+-import { WorkspaceRequestQueue, type WorkspaceQueuedRequest } from "./workspace-request-queue.js";
++import { WorkspaceRequestQueue, type WorkspaceQueuedRequest } from "./request-queue.js";
+
+packages/daemon/src/host-contract.test.ts
+-import * as policyTestingRuntime from "./policy-testing.js";
++  DaemonClientExecuteRequest,
++  DaemonClientExecuteResult,
++  DaemonClientOptions,
++  DaemonControlRequest,
++  DaemonClient,
++    { kind: "runtime", name: "DaemonClient" },
++    { kind: "type", name: "DaemonClientExecuteRequest" },
++    { kind: "type", name: "DaemonClientExecuteResult" },
++    { kind: "type", name: "DaemonClientOptions" },
++    { kind: "type", name: "DaemonControlRequest" },
+-  public static readonly policyTestingExports: readonly ExportedSymbol[] = [
+-    { kind: "runtime", name: "DaemonPolicyTestFactory" },
++  public static readonly clientMembers = [
++    "instance:control",
++    "instance:control",
++    "instance:control",
++    "instance:control",
++    "instance:execute",
++    "client/daemon-client-contracts.ts",
++    "client/daemon-client-runtime.ts",
++    "client/daemon-client.ts",
++    "client/daemon-routing-policy.ts",
++    "delivery/completion-spool.ts",
++    "delivery/delivery-session.ts",
++    "diagnostics/logger.ts",
++    "diagnostics/operation-observer.ts",
++    "execution/accepted-execution-session-contracts.ts",
++    "execution/accepted-execution-session.ts",
++    "execution/accepted-request-ledger.ts",
++    "execution/request-queue.ts",
+-    "policy-testing.ts",
++    "lifecycle/daemon-clock.ts",
++    "lifecycle/daemon-lifetime.ts",
++    "process-entry.ts",
++    "process/activity-projector.ts",
++    "process/controller.ts",
++    "process/process-coordinator.ts",
++    "process/process-launcher.ts",
++    "process/process-termination-observer.ts",
++    "process/runtime-values.ts",
++    "registry/record-observer.ts",
++    "registry/registry.ts",
++    "registry/startup-coordinator.ts",
++    "registry/workspace-identity.ts",
++    "resources/resource-supervisor.ts",
++    "transport/client-result-capture.ts",
++    "transport/contracts.ts",
++    "transport/execution-client.ts",
++    "transport/lifecycle-client.ts",
++    "transport/local-transport.ts",
++    "transport/protocol-validator.ts",
++    "transport/protocol.ts",
++    "transport/result-transfer-receiver.ts",
++    "transport/socket-client.ts",
++    "transport/socket-server.ts",
++    "transport/transport-error.ts",
++    "transport/wire-codec.ts",
++    "worker-entry.ts",
++    "worker/navigation-worker-entry.ts",
++    "worker/navigation-worker.ts",
++    "worker/worker-generation-manager.ts",
++    "worker/worker-protocol.ts",
++  it("defines the exact daemon client host boundary", () => {
++    expectTypeOf<DaemonClientOptions>().toEqualTypeOf<{
++      readonly stateDirectory: string;
++      readonly productVersion: string;
++      readonly daemonEnabled: boolean;
++      readonly executorFactory: DaemonExecutorFactory;
++      readonly executorModuleUrl: DaemonExecutorModuleUrl;
++      readonly readinessProbe: DaemonReadinessProbe;
++      readonly policy?: DaemonPolicy;
++    }>();
++    expectTypeOf<DaemonClientExecuteRequest>().toEqualTypeOf<{
++      readonly workspaceRoot: string;
++      readonly commandName: DaemonCommandName;
++      readonly argv: readonly string[];
++      readonly cwd: string;
++      readonly telemetryEnabled: boolean;
++    }>();
++    expectTypeOf<DaemonClientExecuteResult>().toEqualTypeOf<{
++      readonly mode: DaemonExecutionMode;
++      readonly result: DaemonExecutorExecutionResult;
++    }>();
++    expectTypeOf<DaemonControlRequest>().toEqualTypeOf<
++      | { readonly action: "start"; readonly workspaceRoot: string }
++      | { readonly action: "status" }
++      | { readonly action: "stop"; readonly workspaceRoot: string }
++    >();
++    expectTypeOf<ConstructorParameters<typeof DaemonClient>>().toEqualTypeOf<
++      [DaemonClientOptions]
++    >();
++    expectTypeOf<DaemonClient["execute"]>().parameters.toEqualTypeOf<
++      [DaemonClientExecuteRequest]
++    >();
++    expectTypeOf<DaemonClient["execute"]>().returns.toEqualTypeOf<
++      Promise<DaemonClientExecuteResult>
++    >();
++    const assertControlReturnTypes = (client: DaemonClient): void => {
++      const start: Promise<DaemonStartResult> = client.control({
++        action: "start",
++        workspaceRoot: "/workspace",
++      });
++      const status: Promise<readonly RunningDaemonStatus[]> = client.control({ action: "status" });
++      const stop: Promise<DaemonStopResult> = client.control({
++        action: "stop",
++        workspaceRoot: "/workspace",
++      });
++      expectTypeOf(start).toEqualTypeOf<Promise<DaemonStartResult>>();
++      expectTypeOf(status).toEqualTypeOf<Promise<readonly RunningDaemonStatus[]>>();
++      expectTypeOf(stop).toEqualTypeOf<Promise<DaemonStopResult>>();
++    };
++    expectTypeOf(assertControlReturnTypes).returns.toEqualTypeOf<void>();
++
++    const sourceRoot = DaemonContractSourcePath.root(import.meta.url);
++    const source = ts.sys.readFile(join(sourceRoot, "client/daemon-client.ts"));
++    expect(source).toBeDefined();
++    expect(TypeScriptClassMemberInventory.read(source ?? "", "DaemonClient")).toEqual(
++      DaemonContractExpectation.clientMembers,
++    );
++  });
++
++      "DaemonClient",
+-  it("exports exactly one policy-testing source and runtime symbol", () => {
+-    const sourceRoot = DaemonContractSourcePath.root(import.meta.url);
+-    const source = ts.sys.readFile(join(sourceRoot, "policy-testing.ts"));
+-    expect(source).toBeDefined();
+-    expect(TypeScriptExportInventory.read(source ?? "")).toEqual(
+-      DaemonContractExpectation.policyTestingExports,
+-    );
+-    expect(Object.keys(policyTestingRuntime)).toEqual(["DaemonPolicyTestFactory"]);
+-  });
+-
+-  it.each([
+-    ["type", "export interface ExtraPolicyTestingType {}"],
+-    ["runtime", "export const extraPolicyTestingRuntime = true;"],
+-  ])("detects an extra policy-testing %s export", (_, addition) => {
+-    const sourceRoot = DaemonContractSourcePath.root(import.meta.url);
+-    const source = ts.sys.readFile(join(sourceRoot, "policy-testing.ts")) ?? "";
+-    expect(TypeScriptExportInventory.read(`${source}\n${addition}\n`)).not.toEqual(
+-      DaemonContractExpectation.policyTestingExports,
+-    );
+-  });
+-
+-  it("emits only the policy test factory from the temporary subpath", () => {
+-    const sourceRoot = DaemonContractSourcePath.root(import.meta.url);
+-    const compilation = NodeFreeDeclarationCompiler.compile([
+-      join(sourceRoot, "policy-testing.ts"),
+-    ]);
+-    expect(compilation.diagnostics).toEqual([]);
+-    const declaration = [...compilation.outputs].find(([path]) =>
+-      path.endsWith("/policy-testing.d.ts"),
+-    );
+-    expect(declaration).toBeDefined();
+-    expect(TypeScriptExportInventory.read(declaration?.[1] ?? "")).toEqual(
+-      DaemonContractExpectation.policyTestingExports,
+-    );
+-  });
+-
+
+packages/daemon/src/lifecycle/daemon-clock.test.ts
++import { readFileSync, readdirSync } from "node:fs";
++
++describe("daemon production clock ownership", () => {
++  it("keeps raw time sources and telemetry clocks outside daemon mechanisms", () => {
++    const violations = readdirSync(new URL(".", import.meta.url))
++      .filter(
++        (file) => file.endsWith(".ts") && !file.endsWith(".test.ts") && file !== "daemon-clock.ts",
++      )
++      .flatMap((file) => {
++        const source = readFileSync(new URL(file, import.meta.url), "utf8");
++        return /Date\.now|performance\.now|@symnav\/telemetry/.test(source) ? [file] : [];
++      });
++
++    expect(violations).toEqual([]);
++  });
++});
+
+packages/daemon/src/lifecycle/daemon-lifetime.test.ts
+-import type { Clock } from "@symnav/telemetry";
+-import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
++import { DaemonPolicyTestFactory } from "../../test/helpers/daemon-policy.js";
++import type { DaemonClock } from "./daemon-clock.js";
+-    const clock: Clock = { now: () => now };
++    const clock: Pick<DaemonClock, "wallNowMs"> = { wallNowMs: () => now };
+-    const lifetime = new DaemonLifetime({ now: () => now }, idlePolicy(10), onIdle);
++    const lifetime = new DaemonLifetime({ wallNowMs: () => now }, idlePolicy(10), onIdle);
++  it("keeps the constructor-started acceptance deadline after completion", async () => {
++    let now = 0;
++    const onIdle = vi.fn(async () => undefined);
++    const lifetime = new DaemonLifetime({ wallNowMs: () => now }, idlePolicy(10), onIdle);
++
++    now = 8;
++    vi.advanceTimersByTime(8);
++    lifetime.navigationAccepted();
++    now = 18;
++    await vi.advanceTimersByTimeAsync(10);
++    expect(onIdle).not.toHaveBeenCalled();
++
++    lifetime.queueBecameIdle();
++    await Promise.resolve();
++
++    expect(onIdle).toHaveBeenCalledOnce();
++  });
++
+-    const lifetime = new DaemonLifetime({ now: () => now }, idlePolicy(10), onIdle);
++    const lifetime = new DaemonLifetime({ wallNowMs: () => now }, idlePolicy(10), onIdle);
+
+packages/daemon/src/package-boundary.test.ts
++import { readFileSync, readdirSync, statSync } from "node:fs";
++import { dirname, join, relative } from "node:path";
++import { fileURLToPath } from "node:url";
++import { describe, expect, it } from "vitest";
++
++class DaemonProductionBoundary {
++  static files(sourceRoot: string): readonly string[] {
++    return DaemonProductionBoundary.walk(sourceRoot).filter(
++      (path) => path.endsWith(".ts") && !path.endsWith(".test.ts"),
++    );
++  }
++
++  static violations(sourceRoot: string): readonly string[] {
++    return DaemonProductionBoundary.files(sourceRoot).flatMap((path) => {
++      const source = readFileSync(path, "utf8");
++      const forbidden = [
++        /from ["']@symnav\/(?:core|telemetry|renderer|backend-typescript|testing)["']/,
++        /from ["'][^"']*apps\/cli[^"']*["']/,
++      ];
++      return forbidden.some((pattern) => pattern.test(source)) ? [relative(sourceRoot, path)] : [];
++    });
++  }
++
++  private static walk(directory: string): readonly string[] {
++    return readdirSync(directory).flatMap((name) => {
++      const path = join(directory, name);
++      return statSync(path).isDirectory() ? DaemonProductionBoundary.walk(path) : [path];
++    });
++  }
++}
++
++describe("daemon package production boundary", () => {
++  it("has no internal production dependency or CLI import", () => {
++    const sourceRoot = dirname(fileURLToPath(import.meta.url));
++    expect(DaemonProductionBoundary.violations(sourceRoot)).toEqual([]);
++  });
++});
+
+packages/daemon/src/process/activity-projector.test.ts
+-} from "./daemon-activity-projector.js";
++} from "./activity-projector.js";
+-  it("keeps daemon snapshot formatting outside WorkspaceDaemon", () => {
++  it("keeps daemon snapshot formatting outside DaemonProcessCoordinator", () => {
+-      fileURLToPath(new URL("./workspace-daemon.ts", import.meta.url)),
++      fileURLToPath(new URL("./process-coordinator.ts", import.meta.url)),
+-      fileURLToPath(new URL("./daemon-activity-projector.ts", import.meta.url)),
++      fileURLToPath(new URL("./activity-projector.ts", import.meta.url)),
+-      'import type { DaemonWorkerGenerationSnapshot } from "./daemon-worker-generation-manager.js";',
++      'import type { DaemonWorkerGenerationSnapshot } from "../worker/worker-generation-manager.js";',
+
+packages/daemon/src/process/controller.test.ts
+-import type { DaemonProcessLauncher, DaemonProcessTerminator } from "./daemon-process-launcher.js";
++import type { DaemonProcessLauncher, DaemonProcessTerminator } from "./process-launcher.js";
+-} from "./daemon-protocol.js";
++} from "../transport/protocol.js";
+-import { DaemonStartupCoordinator } from "./daemon-startup-coordinator.js";
+-import { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
++import { DaemonStartupCoordinator } from "../registry/startup-coordinator.js";
++import { DaemonWorkspaceIdentity } from "../registry/workspace-identity.js";
+
+packages/daemon/src/process/process-coordinator-construction.test.ts
++import { mkdtempSync, rmSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import {
++  DaemonPolicy,
++  type DaemonCommandName,
++  type DaemonExecutorRequest,
++  type DaemonOutputSink,
++} from "@symnav/daemon";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { AcceptedExecutionSession } from "../execution/accepted-execution-session.js";
++import { NodeDaemonClock } from "../lifecycle/daemon-clock.js";
++import type {
++  DaemonNavigationWorker,
++  DaemonNavigationWorkerExit,
++} from "../worker/navigation-worker.js";
++import type { DaemonNavigationWorkerResponse } from "../worker/worker-protocol.js";
++import {
++  DaemonProcessCoordinator,
++  type DaemonProcessCoordinatorOptions,
++} from "./process-coordinator.js";
++import type { DaemonIdentityCoordinates, DaemonServer } from "../transport/protocol.js";
++import type { DaemonRequestHandler, DaemonRequestServer } from "../transport/contracts.js";
++import { DaemonWorkspaceIdentity } from "../registry/workspace-identity.js";
++import { TestDaemonRegistry as DaemonRegistry } from "../../test/helpers/daemon-registry.js";
++
++interface CoordinatorPrototypeTestAccess {
++  recoverWorkerExit(exit: DaemonNavigationWorkerExit): Promise<void>;
++  initiateResourceDrain(): Promise<void>;
++  workspaceDeletedAfterDelivery(): Promise<void>;
++  drainAndShutdown(reason: "idle"): Promise<void>;
++}
++
++interface CoordinatorCompositionTestAccess {
++  readonly workerManager: {
++    readonly options: {
++      readonly exitRecovery: { recover(exit: DaemonNavigationWorkerExit): Promise<void> };
++      readonly onActiveResourceInterruption: (cause: "hard-pressure") => void;
++    };
++  };
++  readonly resourceSupervisor: {
++    readonly options: {
++      readonly scheduleAtTurnBoundary: (operation: () => Promise<void>) => Promise<void>;
++      readonly drain: () => Promise<void>;
++    };
++  };
++  readonly acceptedExecutionSession: {
++    readonly options: {
++      readonly processLifecycle: { workspaceDeletedAfterDelivery(): Promise<void> };
++    };
++  };
++  readonly lifetime: { readonly onIdle: () => Promise<void> };
++}
++
++describe("DaemonProcessCoordinator construction", () => {
++  const roots: string[] = [];
++
++  afterEach(() => {
++    vi.restoreAllMocks();
++    for (const root of roots) rmSync(root, { recursive: true, force: true });
++    roots.length = 0;
++  });
++
++  it.each([
++    ["workspaceRoot", "/other-workspace"],
++    ["workspaceKey", "other-workspace-key"],
++    ["stateKey", "other-state-key"],
++    ["identityKey", "other-identity-key"],
++    ["instanceId", "other-instance"],
++    ["endpoint", "other-endpoint"],
++  ] as const)("rejects a mismatched %s before observing a component", (field, value) => {
++    const stateDirectory = mkdtempSync(join(tmpdir(), "symnav-coordinator-construction-"));
++    roots.push(stateDirectory);
++    const identity = DaemonWorkspaceIdentity.from("/workspace", stateDirectory);
++    const coordinates: DaemonIdentityCoordinates = {
++      workspaceRoot: identity.workspaceRoot,
++      workspaceKey: identity.workspaceKey,
++      stateKey: identity.stateKey,
++      identityKey: identity.identityKey,
++      instanceId: "instance",
++      processToken: "token",
++      endpoint: identity.endpoint("instance"),
++      [field]: value,
++    };
++    let componentObserved = false;
++    const options = {
++      identity,
++      coordinates,
++      get policy(): never {
++        componentObserved = true;
++        throw new Error("Coordinator observed policy before validating coordinates");
++      },
++    } as unknown as DaemonProcessCoordinatorOptions;
++
++    expect(() => new DaemonProcessCoordinator(options)).toThrow(
++      "Daemon process identity does not match configuration",
++    );
++    expect(componentObserved).toBe(false);
++  });
++
++  it("binds every cyclic callback without routing during construction", async () => {
++    const acceptedInterruption = vi
++      .spyOn(AcceptedExecutionSession.prototype, "markActiveResourceInterrupted")
++      .mockImplementation(() => undefined);
++    const acceptedTurnBoundary = vi
++      .spyOn(AcceptedExecutionSession.prototype, "scheduleAtTurnBoundary")
++      .mockResolvedValue(undefined);
++    const coordinatorPrototype =
++      DaemonProcessCoordinator.prototype as unknown as CoordinatorPrototypeTestAccess;
++    const workerExit = vi
++      .spyOn(coordinatorPrototype, "recoverWorkerExit")
++      .mockResolvedValue(undefined);
++    const resourceDrain = vi
++      .spyOn(coordinatorPrototype, "initiateResourceDrain")
++      .mockResolvedValue(undefined);
++    const acceptedCallback = vi
++      .spyOn(coordinatorPrototype, "workspaceDeletedAfterDelivery")
++      .mockResolvedValue(undefined);
++    const idleCallback = vi
++      .spyOn(coordinatorPrototype, "drainAndShutdown")
++      .mockResolvedValue(undefined);
++    const coordinator = createCoordinator(roots);
++    const composition = coordinator as unknown as CoordinatorCompositionTestAccess;
++
++    expect(
++      [
++        workerExit,
++        acceptedInterruption,
++        acceptedTurnBoundary,
++        resourceDrain,
++        acceptedCallback,
++        idleCallback,
++      ].map((route) => route.mock.calls.length),
++    ).toEqual([0, 0, 0, 0, 0, 0]);
++
++    await composition.workerManager.options.exitRecovery.recover({
++      generation: 1,
++      cause: "closed",
++    });
++    composition.workerManager.options.onActiveResourceInterruption("hard-pressure");
++    await composition.resourceSupervisor.options.scheduleAtTurnBoundary(async () => undefined);
++    await composition.resourceSupervisor.options.drain();
++    await composition.acceptedExecutionSession.options.processLifecycle.workspaceDeletedAfterDelivery();
++    await composition.lifetime.onIdle();
++
++    expect(
++      [
++        workerExit,
++        acceptedInterruption,
++        acceptedTurnBoundary,
++        resourceDrain,
++        acceptedCallback,
++        idleCallback,
++      ].map((route) => route.mock.calls.length),
++    ).toEqual([1, 1, 1, 1, 1, 1]);
++  });
++});
++
++function createCoordinator(roots: string[]): DaemonProcessCoordinator {
++  const stateDirectory = mkdtempSync(join(tmpdir(), "symnav-coordinator-composition-"));
++  roots.push(stateDirectory);
++  const identity = DaemonWorkspaceIdentity.from("/workspace", stateDirectory);
++  const instanceId = "instance";
++  return new DaemonProcessCoordinator({
++    identity,
++    coordinates: {
++      workspaceRoot: identity.workspaceRoot,
++      workspaceKey: identity.workspaceKey,
++      stateKey: identity.stateKey,
++      identityKey: identity.identityKey,
++      instanceId,
++      processToken: "token",
++      endpoint: identity.endpoint(instanceId),
++    },
++    productVersion: "test",
++    policy: DaemonPolicy.currentSystem(),
++    registry: new DaemonRegistry(identity.registryDirectory),
++    server: new InertRequestServer(),
++    navigationWorker: new InertNavigationWorker(),
++    clock: new NodeDaemonClock(),
++  });
++}
++
++class InertRequestServer implements DaemonRequestServer {
++  async listen(_endpoint: string, _handler: DaemonRequestHandler): Promise<DaemonServer> {
++    throw new Error("Construction must not listen");
++  }
++
++  async removeUnavailableEndpoint(_endpoint: string): Promise<boolean> {
++    return false;
++  }
++}
++
++class InertNavigationWorker implements DaemonNavigationWorker {
++  readonly generation = 1;
++  readonly exited = new Promise<DaemonNavigationWorkerExit>(() => undefined);
++
++  async start(_workspaceRoot: string): Promise<DaemonNavigationWorkerResponse> {
++    throw new Error("Construction must not start the worker");
++  }
++
++  async execute(
++    _requestId: string,
++    _commandName: DaemonCommandName,
++    _request: DaemonExecutorRequest,
++    _output: DaemonOutputSink,
++  ): Promise<DaemonNavigationWorkerResponse> {
++    throw new Error("Construction must not execute navigation");
++  }
++
++  async releaseTransientResources(): Promise<DaemonNavigationWorkerResponse> {
++    throw new Error("Construction must not release resources");
++  }
++
++  async drainAndClose(): Promise<void> {
++    throw new Error("Construction must not close the worker");
++  }
++
++  async terminate(): Promise<void> {
++    throw new Error("Construction must not terminate the worker");
++  }
++}
+
+packages/daemon/src/process/process-coordinator-requests.test.ts
+-import { DaemonPolicy, type DaemonCommandName } from "@symnav/daemon";
++import { DAEMON_COMMAND_NAMES, DaemonPolicy, type DaemonCommandName } from "@symnav/daemon";
+-} from "../command-execution-result.js";
+-import { createDefaultDependencies } from "../program.js";
+-import { DaemonActivityProjector } from "./daemon-activity-projector.js";
+-import { InvocationWorkspaceSelector } from "./invocation-workspace-selector.js";
++} from "../../test/helpers/executor-output.js";
++import { DaemonActivityProjector } from "./activity-projector.js";
+-} from "./daemon-protocol.js";
+-import { DAEMON_PROTOCOL_VERSION, DAEMON_RECORD_SCHEMA_VERSION } from "./daemon-protocol.js";
++} from "../transport/protocol.js";
++import { DAEMON_PROTOCOL_VERSION, DAEMON_RECORD_SCHEMA_VERSION } from "../transport/protocol.js";
+-} from "./completion-spool.js";
++} from "../delivery/completion-spool.js";
+-import { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
+-import type { DaemonRequestServer, DaemonServerSend } from "./daemon-transport.js";
+-import type { AcceptedRequestLedger } from "./accepted-request-ledger.js";
+-import type { AcceptedExecutionSession } from "./accepted-execution-session.js";
++import { DaemonWorkspaceIdentity } from "../registry/workspace-identity.js";
++import type { DaemonRequestServer, DaemonServerSend } from "../transport/contracts.js";
++import type { AcceptedRequestLedger } from "../execution/accepted-request-ledger.js";
++import type { AcceptedExecutionSession } from "../execution/accepted-execution-session.js";
+-} from "./daemon-navigation-worker.js";
++} from "../worker/navigation-worker.js";
+-} from "./daemon-navigation-worker.js";
+-import type { DaemonNavigationWorkerResponse } from "./daemon-navigation-worker-protocol.js";
++} from "../worker/navigation-worker.js";
++import type { DaemonNavigationWorkerResponse } from "../worker/worker-protocol.js";
+-} from "./daemon-resource-monitor.js";
+-import type { DaemonWorkerGenerationManager } from "./daemon-worker-generation-manager.js";
++} from "../resources/resource-supervisor.js";
++import type { DaemonWorkerGenerationManager } from "../worker/worker-generation-manager.js";
+-  TestWorkspaceDaemon as WorkspaceDaemon,
+-  type TestWorkspaceDaemonOptions as WorkspaceDaemonOptions,
+-} from "../../test/helpers/workspace-daemon.js";
++  TestDaemonProcessCoordinator as DaemonProcessCoordinator,
++  type TestDaemonProcessCoordinatorOptions as DaemonProcessCoordinatorOptions,
++} from "../../test/helpers/daemon-process-coordinator.js";
+-describe("WorkspaceDaemon requests", () => {
++describe("DaemonProcessCoordinator requests", () => {
++    await expect(
++      harness.transport.receive({
++        kind: "kill",
++        instanceId: harness.instanceId,
++        processToken: "wrong-token",
++      }),
++    ).rejects.toThrow("termination");
++  it.each([
++    {
++      kind: "execute",
++      requestId: "auth-execute",
++      commandName: "version",
++      request: {
++        argv: ["--version"],
++        cwd: "/workspace",
++        telemetryEnabled: false,
++        executionMode: "warm",
++      },
++    },
++    { kind: "execution-status", requestId: "auth-status" },
++    { kind: "result-fetch", requestId: "auth-fetch", offset: 0 },
++    { kind: "result-ack", requestId: "auth-ack", transferId: "transfer" },
++  ] as const)("validates $kind protocol and instance before its token", async (request) => {
++    const harness = await RequestHarness.start(new ImmediateExecutor());
++    harnesses.push(harness);
++    const authenticatedRequest = {
++      ...request,
++      protocolVersion: DAEMON_PROTOCOL_VERSION,
++      instanceId: harness.instanceId,
++      processToken: harness.processToken,
++    } as DaemonRequest;
++    const withAuthentication = (authentication: {
++      readonly protocolVersion?: number;
++      readonly instanceId?: string;
++      readonly processToken?: string;
++    }): DaemonRequest => ({ ...authenticatedRequest, ...authentication }) as DaemonRequest;
++
++    await expect(
++      harness.transport.receive(
++        withAuthentication({
++          protocolVersion: DAEMON_PROTOCOL_VERSION + 1,
++          processToken: "wrong-token",
++        }),
++      ),
++    ).rejects.toThrow("protocol or instance");
++    await expect(
++      harness.transport.receive(
++        withAuthentication({
++          instanceId: "wrong-instance",
++          processToken: "wrong-token",
++        }),
++      ),
++    ).rejects.toThrow("protocol or instance");
++    await expect(
++      harness.transport.receive(withAuthentication({ processToken: "wrong-token" })),
++    ).rejects.toThrow("execution request");
++  });
++
++  it("keeps ping and stop authenticated only by protocol and instance", async () => {
++    const harness = await RequestHarness.start(new ImmediateExecutor());
++    harnesses.push(harness);
++
++    await expect(harness.ping()).resolves.toMatchObject({ kind: "pong" });
++    await expect(harness.stop()).resolves.toEqual({
++      kind: "stopped",
++      instanceId: harness.instanceId,
++    });
++  });
++
+-  private daemon: WorkspaceDaemon | undefined;
++  private daemon: DaemonProcessCoordinator | undefined;
+-    readonly daemon: WorkspaceDaemon;
++    readonly daemon: DaemonProcessCoordinator;
+-    const daemon = new WorkspaceDaemon({
++    const daemon = new DaemonProcessCoordinator({
+-      dependencies: createDefaultDependencies(harness.identity.stateDirectory, daemonPolicy),
+-    return new InvocationWorkspaceSelector().select(argv, this.workspaceRoot).commandName;
++    const commandName = argv.find((argument): argument is DaemonCommandName =>
++      DAEMON_COMMAND_NAMES.includes(argument as DaemonCommandName),
++    );
++    return commandName ?? "version";
+-  readonly completionSpoolLimits?: WorkspaceDaemonOptions["completionSpoolLimits"];
+-  readonly completionSpoolStorage?: WorkspaceDaemonOptions["completionSpoolStorage"];
++  readonly completionSpoolLimits?: DaemonProcessCoordinatorOptions["completionSpoolLimits"];
++  readonly completionSpoolStorage?: DaemonProcessCoordinatorOptions["completionSpoolStorage"];
+
+packages/daemon/src/process/process-coordinator.test.ts
+-} from "../command-execution-result.js";
+-import { createDefaultDependencies } from "../program.js";
+-import { StateDirectoryResolver } from "../state-directory-resolver.js";
++} from "../../test/helpers/executor-output.js";
++import { CanonicalTestPath } from "../../test/helpers/canonical-path.js";
+-} from "./daemon-navigation-worker.js";
+-import type { DaemonNavigationWorkerResponse } from "./daemon-navigation-worker-protocol.js";
+-import type { DaemonProcessTerminator } from "./daemon-process-launcher.js";
++} from "../worker/navigation-worker.js";
++import type { DaemonNavigationWorkerResponse } from "../worker/worker-protocol.js";
++import type { DaemonProcessTerminator } from "./process-launcher.js";
+-} from "./daemon-protocol.js";
++} from "../transport/protocol.js";
+-import { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
+-import type { DaemonServerSend } from "./daemon-transport.js";
++import { DaemonWorkspaceIdentity } from "../registry/workspace-identity.js";
++import type { DaemonServerSend } from "../transport/contracts.js";
+-import { TestWorkspaceDaemon as WorkspaceDaemon } from "../../test/helpers/workspace-daemon.js";
++import { TestDaemonProcessCoordinator as DaemonProcessCoordinator } from "../../test/helpers/daemon-process-coordinator.js";
+-describe("WorkspaceDaemon runtime lifecycle", () => {
+-  const harnesses: WorkspaceDaemonHarness[] = [];
++describe("DaemonProcessCoordinator runtime lifecycle", () => {
++  const harnesses: DaemonProcessCoordinatorHarness[] = [];
+-    const harness = await WorkspaceDaemonHarness.start(executor);
++    const harness = await DaemonProcessCoordinatorHarness.start(executor);
+-    const harness = await WorkspaceDaemonHarness.start(executor, {
++    const harness = await DaemonProcessCoordinatorHarness.start(executor, {
+-    const harness = await WorkspaceDaemonHarness.start(executor);
++    const harness = await DaemonProcessCoordinatorHarness.start(executor);
+-    const harness = await WorkspaceDaemonHarness.start(new ImmediateExecutor(), {
++    const harness = await DaemonProcessCoordinatorHarness.start(new ImmediateExecutor(), {
+-    const stateDirectory = StateDirectoryResolver.canonicalize(
++    const stateDirectory = CanonicalTestPath.resolve(
+-    const harness = await WorkspaceDaemonHarness.start(new ImmediateExecutor(), {
++    const harness = await DaemonProcessCoordinatorHarness.start(new ImmediateExecutor(), {
+-    const harness = await WorkspaceDaemonHarness.start(new ImmediateExecutor(), { transport });
++    const harness = await DaemonProcessCoordinatorHarness.start(new ImmediateExecutor(), {
++      transport,
++    });
+-    const harness = await WorkspaceDaemonHarness.start(new ImmediateExecutor());
++    const harness = await DaemonProcessCoordinatorHarness.start(new ImmediateExecutor());
+-    const harness = await WorkspaceDaemonHarness.start(new RejectThenSucceedExecutor(), {
++    const harness = await DaemonProcessCoordinatorHarness.start(new RejectThenSucceedExecutor(), {
+-    const harness = await WorkspaceDaemonHarness.start(new ImmediateExecutor(), {
++    const harness = await DaemonProcessCoordinatorHarness.start(new ImmediateExecutor(), {
+-    const harness = await WorkspaceDaemonHarness.start(executor, {
++    const harness = await DaemonProcessCoordinatorHarness.start(executor, {
+-class WorkspaceDaemonHarness {
++class DaemonProcessCoordinatorHarness {
+-  ): Promise<WorkspaceDaemonHarness> {
+-    const harness = new WorkspaceDaemonHarness(runtime.transport);
++  ): Promise<DaemonProcessCoordinatorHarness> {
++    const harness = new DaemonProcessCoordinatorHarness(runtime.transport);
+-    const daemon = new WorkspaceDaemon({
++    const daemon = new DaemonProcessCoordinator({
+-      dependencies: createDefaultDependencies(harness.identity.stateDirectory, daemonPolicy),
+-      fileURLToPath(new URL("../../test/helpers/workspace-daemon-stuck.ts", import.meta.url)),
++      fileURLToPath(
++        new URL("../../test/helpers/daemon-process-coordinator-stuck.ts", import.meta.url),
++      ),
+
+packages/daemon/src/process/process-launcher.test.ts
+-import { StateDirectoryResolver } from "../state-directory-resolver.js";
++import { CanonicalTestPath } from "../../test/helpers/canonical-path.js";
+-import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
++import { DaemonPolicyTestFactory } from "../../test/helpers/daemon-policy.js";
+-import {
+-  DaemonProcessConfigurationParser,
+-  NodeDaemonProcessLauncher,
+-} from "./daemon-process-launcher.js";
+-import { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
++import { DaemonProcessConfigurationParser, NodeDaemonProcessLauncher } from "./process-launcher.js";
++import { DaemonWorkspaceIdentity } from "../registry/workspace-identity.js";
+-        StateDirectoryResolver.canonicalize(identityStateDirectory(stateDirectory)),
++        CanonicalTestPath.resolve(identityStateDirectory(stateDirectory)),
+-      const absoluteStateDirectory = StateDirectoryResolver.canonicalize(resolve(stateDirectory));
++      const absoluteStateDirectory = CanonicalTestPath.resolve(resolve(stateDirectory));
+
+packages/daemon/src/process/process-termination-observer.test.ts
+-import type { DaemonDiagnosticEvent } from "./daemon-protocol.js";
+-import { DaemonProcessTerminationObserver } from "./daemon-process-termination-observer.js";
++import type { DaemonDiagnosticEvent } from "../transport/protocol.js";
++import { DaemonProcessTerminationObserver } from "./process-termination-observer.js";
+
+packages/daemon/src/registry/record-observer.test.ts
+-import type { DaemonProcessTerminator } from "./daemon-process-launcher.js";
++import type { DaemonProcessTerminator } from "../process/process-launcher.js";
+-} from "./daemon-protocol.js";
+-import { DaemonRecordObserver } from "./daemon-record-observer.js";
+-import { DaemonTransportError } from "./daemon-transport-error.js";
++} from "../transport/protocol.js";
++import { DaemonRecordObserver } from "./record-observer.js";
++import { DaemonTransportError } from "../transport/transport-error.js";
+
+packages/daemon/src/registry/registry.test.ts
+-import { afterEach, describe, expect, it } from "vitest";
++import { afterEach, describe, expect, it, vi } from "vitest";
+-import type { DaemonProcessTerminator } from "./daemon-process-launcher.js";
++import type { DaemonProcessTerminator } from "../process/process-launcher.js";
+-import { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
++import { DaemonWorkspaceIdentity } from "./workspace-identity.js";
+-} from "./daemon-protocol.js";
++} from "../transport/protocol.js";
++  startupOwnershipMatches(
++    identity: DaemonWorkspaceIdentity,
++    expectation: Record<string, unknown>,
++  ): unknown;
++interface CallerOwnershipRegistryTestAccess {
++  daemonOwnsStartupProcess(
++    identity: DaemonWorkspaceIdentity,
++    instanceId: string,
++    processToken: string,
++    pid: number,
++  ): boolean;
++  startupOwnerForInstance(identity: DaemonWorkspaceIdentity, instanceId: string): unknown;
++  startupOwnerForRecordCredentials(
++    identity: DaemonWorkspaceIdentity,
++    record: DaemonRecord,
++  ): unknown;
++  removeStartupLockIfLauncher(
++    identity: DaemonWorkspaceIdentity,
++    instanceId: string,
++    processToken: string,
++  ): boolean;
++  removeAbandonedStartupOwner(identity: DaemonWorkspaceIdentity, owner: unknown): boolean;
++}
++
++  it("routes process startup ownership decisions through one predicate", () => {
++    const identity = DaemonWorkspaceIdentity.from("/repo", temporaryDirectory(roots));
++    const registry = new DaemonRegistry(identity.registryDirectory);
++    const processRegistry = registry as unknown as StartupProcessRegistryTestAccess;
++    const ownership = vi.spyOn(processRegistry, "startupOwnershipMatches");
++    const starting = {
++      ...record(identity, "starting", "starting"),
++      pid: 777,
++    } satisfies DaemonRecord;
++    const expectDelegation = (operation: () => unknown): unknown => {
++      const callsBefore = ownership.mock.calls.length;
++      const result = operation();
++      expect(ownership.mock.calls.length).toBeGreaterThan(callsBefore);
++      return result;
++    };
++
++    expect(
++      registry.acquireStartup(identity, {
++        identityKey: identity.identityKey,
++        instanceId: starting.instanceId,
++        processToken: starting.processToken,
++        ownerPid: process.pid,
++        ownerKind: "launcher",
++        heartbeatAt: Date.now(),
++      }),
++    ).toBeDefined();
++    expect(
++      expectDelegation(() =>
++        registry.claimStartupForDaemon(
++          identity,
++          starting.instanceId,
++          starting.processToken,
++          starting.pid,
++        ),
++      ),
++    ).toBeDefined();
++    expect(expectDelegation(() => registry.writeStartingIfStartupOwner(identity, starting))).toBe(
++      true,
++    );
++    expect(
++      expectDelegation(() => processRegistry.startupOwnerMatchesProcess(identity, starting)),
++    ).toBe(true);
++    expect(
++      expectDelegation(() =>
++        registry.writeIfStartupOwner(identity, {
++          ...starting,
++          state: "ready",
++          readyAt: 20,
++          fileCount: 2,
++        }),
++      ),
++    ).toBe(true);
++    expect(
++      expectDelegation(() => processRegistry.removeStartupLockIfProcess(identity, starting)),
++    ).toBe(true);
++  });
++
++  it("makes the canonical predicate authoritative for every caller ownership operation", () => {
++    const identity = DaemonWorkspaceIdentity.from("/repo", temporaryDirectory(roots));
++    const registry = new DaemonRegistry(identity.registryDirectory);
++    const processRegistry = registry as unknown as StartupProcessRegistryTestAccess;
++    const callerRegistry = registry as unknown as CallerOwnershipRegistryTestAccess;
++    expect(registry.acquireStartup(identity, "starting")).toBeDefined();
++    const starting = {
++      ...record(identity, "starting", "starting"),
++      pid: 777,
++    } satisfies DaemonRecord;
++    expect(registry.writeStartingIfStartupOwner(identity, starting)).toBe(true);
++    const owner = registry.startupOwner(identity)!;
++    vi.spyOn(processRegistry, "startupOwnershipMatches").mockReturnValue(undefined);
++
++    expect(
++      callerRegistry.daemonOwnsStartupProcess(
++        identity,
++        starting.instanceId,
++        starting.processToken,
++        starting.pid,
++      ),
++    ).toBe(false);
++    expect(callerRegistry.startupOwnerForInstance(identity, starting.instanceId)).toBeUndefined();
++    expect(callerRegistry.startupOwnerForRecordCredentials(identity, starting)).toBeUndefined();
++    expect(callerRegistry.removeAbandonedStartupOwner(identity, owner)).toBe(false);
++    expect(registry.startupOwner(identity)).toBeDefined();
++  });
++
++  it.each([
++    ["identity", "other-instance", "starting-process", 777],
++    ["instance", "other-instance", "starting-process", 777],
++    ["process token", "starting", "other-process", 777],
++    ["process identifier", "starting", "starting-process", 778],
++  ] as const)(
++    "requires the daemon startup owner %s coordinate",
++    (coordinate, instanceId, processToken, pid) => {
++      const stateDirectory = temporaryDirectory(roots);
++      const identity = DaemonWorkspaceIdentity.from("/repo", stateDirectory);
++      const registry = new DaemonRegistry(identity.registryDirectory);
++      expect(
++        registry.acquireStartup(identity, {
++          identityKey: identity.identityKey,
++          instanceId: "starting",
++          processToken: "starting-process",
++          ownerPid: process.pid,
++          ownerKind: "launcher",
++          heartbeatAt: 10,
++        }),
++      ).toBeDefined();
++      expect(
++        registry.claimStartupForDaemon(identity, "starting", "starting-process", 777),
++      ).toBeDefined();
++      const candidateIdentity =
++        coordinate === "identity"
++          ? DaemonWorkspaceIdentity.from("/other-repo", stateDirectory)
++          : identity;
++
++      expect(
++        registry.daemonOwnsStartupProcess(candidateIdentity, instanceId, processToken, pid),
++      ).toBe(false);
++    },
++  );
++
++  it("requires daemon ownership when authenticating a startup process", () => {
++    const identity = DaemonWorkspaceIdentity.from("/repo", temporaryDirectory(roots));
++    const registry = new DaemonRegistry(identity.registryDirectory);
++    expect(
++      registry.acquireStartup(identity, {
++        identityKey: identity.identityKey,
++        instanceId: "starting",
++        processToken: "starting-process",
++        ownerPid: 777,
++        ownerKind: "launcher",
++        heartbeatAt: 10,
++      }),
++    ).toBeDefined();
++
++    expect(registry.daemonOwnsStartupProcess(identity, "starting", "starting-process", 777)).toBe(
++      false,
++    );
++  });
++
++  it.each(["identity", "instance", "process token"] as const)(
++    "requires the stored record %s coordinate for startup ownership",
++    (coordinate) => {
++      const stateDirectory = temporaryDirectory(roots);
++      const identity = DaemonWorkspaceIdentity.from("/repo", stateDirectory);
++      const registry = new DaemonRegistry(identity.registryDirectory);
++      expect(
++        registry.acquireStartup(identity, {
++          identityKey: identity.identityKey,
++          instanceId: "starting",
++          processToken: "starting-process",
++          ownerPid: process.pid,
++          ownerKind: "launcher",
++          heartbeatAt: 10,
++        }),
++      ).toBeDefined();
++      const candidateIdentity = DaemonWorkspaceIdentity.from(
++        coordinate === "identity" ? "/other-repo" : "/repo",
++        stateDirectory,
++      );
++      const candidateRecord = {
++        ...record(
++          candidateIdentity,
++          "starting",
++          coordinate === "instance" ? "other-instance" : "starting",
++        ),
++        processToken: coordinate === "process token" ? "other-process" : "starting-process",
++      } satisfies DaemonRecord;
++
++      expect(
++        registry.startupOwnerForRecordCredentials(candidateIdentity, candidateRecord),
++      ).toBeUndefined();
++    },
++  );
++
++  it("makes launcher removal delegate to the canonical predicate", () => {
++    const identity = DaemonWorkspaceIdentity.from("/repo", temporaryDirectory(roots));
++    const registry = new DaemonRegistry(identity.registryDirectory);
++    const processRegistry = registry as unknown as StartupProcessRegistryTestAccess;
++    const callerRegistry = registry as unknown as CallerOwnershipRegistryTestAccess;
++    expect(registry.acquireStartup(identity, "starting")).toBeDefined();
++    const owner = registry.startupOwner(identity)!;
++    vi.spyOn(processRegistry, "startupOwnershipMatches").mockReturnValue(undefined);
++
++    expect(
++      callerRegistry.removeStartupLockIfLauncher(identity, owner.instanceId, owner.processToken),
++    ).toBe(false);
++    expect(registry.startupOwner(identity)).toBeDefined();
++  });
++
++  it("checks the complete adopted owner through the canonical predicate after replacement", () => {
++    const identity = DaemonWorkspaceIdentity.from("/repo", temporaryDirectory(roots));
++    const registry = new DaemonRegistry(identity.registryDirectory);
++    const processRegistry = registry as unknown as StartupProcessRegistryTestAccess;
++    expect(registry.acquireStartup(identity, "starting")).toBeDefined();
++    const starting = {
++      ...record(identity, "starting", "starting"),
++      pid: 0,
++    } satisfies DaemonRecord;
++    expect(registry.writeStartingIfStartupOwner(identity, starting)).toBe(true);
++    const original = processRegistry.startupOwnershipMatches.bind(processRegistry);
++    let predicateCalls = 0;
++    vi.spyOn(processRegistry, "startupOwnershipMatches").mockImplementation(
++      (candidateIdentity, expectation) => {
++        predicateCalls += 1;
++        if (predicateCalls === 3) return undefined;
++        return original(candidateIdentity, expectation);
++      },
++    );
++
++    expect(registry.armStartingProcessLaunch(identity, starting)).toBe(false);
++    expect(predicateCalls).toBe(3);
++  });
++
++  it.each([
++    ["identityKey", "other-identity"],
++    ["instanceId", "other-instance"],
++    ["processToken", "other-token"],
++    ["ownerKind", "launcher"],
++    ["ownerPid", 778],
++    ["acquiredAt", -1],
++    ["heartbeatAt", -1],
++    ["revision", "other-revision"],
++  ] as const)("rejects a stale exact owner when %s differs", (field, value) => {
++    const identity = DaemonWorkspaceIdentity.from("/repo", temporaryDirectory(roots));
++    const registry = new DaemonRegistry(identity.registryDirectory);
++    expect(registry.acquireStartup(identity, "starting")).toBeDefined();
++    const starting = {
++      ...record(identity, "starting", "starting"),
++      pid: 777,
++    } satisfies DaemonRecord;
++    expect(registry.writeStartingIfStartupOwner(identity, starting)).toBe(true);
++    const owner = registry.startupOwner(identity)!;
++
++    expect(registry.removeStartupLockIfOwner(identity, { ...owner, [field]: value })).toBe(false);
++    expect(registry.startupOwner(identity)).toEqual(owner);
++  });
++
+
+packages/daemon/src/registry/startup-coordinator.test.ts
+-import { DaemonPolicy, type DaemonPolicyValues } from "@symnav/daemon";
+-import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
+-import { CommandOutputSnapshot } from "../command-execution-result.js";
+-import { StateDirectoryResolver } from "../state-directory-resolver.js";
++import { DaemonPolicy, type DaemonPolicyValues, type DaemonReadinessProbe } from "@symnav/daemon";
++import { DaemonPolicyTestFactory } from "../../test/helpers/daemon-policy.js";
++import { CommandOutputSnapshot } from "../../test/helpers/executor-output.js";
++import { CanonicalTestPath } from "../../test/helpers/canonical-path.js";
+-} from "./daemon-process-launcher.js";
++} from "../process/process-launcher.js";
+-} from "./daemon-protocol.js";
++} from "../transport/protocol.js";
+-import { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
++import { DaemonWorkspaceIdentity } from "./workspace-identity.js";
+-} from "./daemon-transport.js";
++} from "../transport/contracts.js";
++    const readinessProbe: DaemonReadinessProbe = {
++      commandName: "version",
++      argv: ["--version", "from-host"],
++    };
+-    await expect(harness.coordinator().ensureRunning(harness.identity)).resolves.toMatchObject({
+-      status: "ready",
+-    });
++    await expect(
++      harness.coordinator({ readinessProbe }).ensureRunning(harness.identity),
++    ).resolves.toMatchObject({ status: "ready" });
+-          argv: ["--version"],
++          argv: ["--version", "from-host"],
++      readonly readinessProbe?: DaemonReadinessProbe;
++      ...(options.readinessProbe === undefined ? {} : { readinessProbe: options.readinessProbe }),
+-  const root = StateDirectoryResolver.canonicalize(mkdtempSync(join(tmpdir(), "symnav-startup-")));
++  const root = CanonicalTestPath.resolve(mkdtempSync(join(tmpdir(), "symnav-startup-")));
+
+packages/daemon/src/registry/workspace-identity.test.ts
+-import { StateDirectoryResolver } from "../state-directory-resolver.js";
+-import { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
++import { CanonicalTestPath } from "../../test/helpers/canonical-path.js";
++import { DaemonWorkspaceIdentity } from "./workspace-identity.js";
+-    const first = DaemonWorkspaceIdentity.from(
+-      "/workspace",
+-      StateDirectoryResolver.canonicalize(firstState),
+-    );
++    const first = DaemonWorkspaceIdentity.from("/workspace", CanonicalTestPath.resolve(firstState));
+-      StateDirectoryResolver.canonicalize(secondState),
++      CanonicalTestPath.resolve(secondState),
+-      StateDirectoryResolver.canonicalize(firstState),
++      CanonicalTestPath.resolve(firstState),
+-      StateDirectoryResolver.canonicalize(stateDirectory),
++      CanonicalTestPath.resolve(stateDirectory),
+-      DaemonWorkspaceIdentity.from(
+-        "/workspace",
+-        StateDirectoryResolver.canonicalize(stateLocation),
+-      ),
++      DaemonWorkspaceIdentity.from("/workspace", CanonicalTestPath.resolve(stateLocation)),
+-    const identity = DaemonWorkspaceIdentity.from(
+-      "/workspace",
+-      StateDirectoryResolver.canonicalize(root),
+-    );
++    const identity = DaemonWorkspaceIdentity.from("/workspace", CanonicalTestPath.resolve(root));
+
+packages/daemon/src/resources/resource-supervisor.test.ts
+-import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
+-import { DaemonResourceSupervisor } from "./daemon-resource-monitor.js";
+-import type { DaemonWorkerExitRecovery } from "./daemon-worker-generation-manager.js";
++import { DaemonPolicyTestFactory } from "../../test/helpers/daemon-policy.js";
++import { DaemonResourceSupervisor } from "./resource-supervisor.js";
++import type { DaemonWorkerExitRecovery } from "../worker/worker-generation-manager.js";
+-      now: () => now,
++      clock: { wallNowMs: () => now },
+-      now: () => now,
++      clock: { wallNowMs: () => now },
+
+packages/daemon/src/transport/client-result-capture.test.ts
+-import { DaemonClientResultCapture } from "./daemon-client-result-capture.js";
++import { DaemonClientResultCapture } from "./client-result-capture.js";
+
+packages/daemon/src/transport/daemon-result-chunk-codec.test.ts
+-import type { DaemonResultChunk } from "./daemon-protocol.js";
+-import { DaemonWireCodec } from "./daemon-wire-codec.js";
++import type { DaemonResultChunk } from "./protocol.js";
++import { DaemonWireCodec } from "./wire-codec.js";
+
+packages/daemon/src/transport/execution-client.test.ts
+-import { DaemonExecutionClient } from "./daemon-execution-client.js";
+-import type { DaemonOutputCapture } from "./daemon-client-result-capture.js";
++import { DaemonExecutionClient } from "./execution-client.js";
++import type { DaemonOutputCapture } from "./client-result-capture.js";
+-} from "./daemon-protocol.js";
+-import { DaemonProtocolValidator } from "./daemon-protocol-validator.js";
+-import type { DaemonSocketClient, DaemonSocketConnection } from "./daemon-transport.js";
+-import { DaemonTransportError } from "./daemon-transport-error.js";
+-import { DaemonWireCodec } from "./daemon-wire-codec.js";
++} from "./protocol.js";
++import { DaemonProtocolValidator } from "./protocol-validator.js";
++import type { DaemonSocketClient, DaemonSocketConnection } from "./contracts.js";
++import { DaemonTransportError } from "./transport-error.js";
++import { DaemonWireCodec } from "./wire-codec.js";
+
+packages/daemon/src/transport/lifecycle-client.test.ts
+-import { DaemonLifecycleClient } from "./daemon-lifecycle-client.js";
++import { DaemonLifecycleClient } from "./lifecycle-client.js";
+-} from "./daemon-protocol.js";
+-import { DAEMON_PROTOCOL_VERSION } from "./daemon-protocol.js";
+-import { DaemonProtocolValidator } from "./daemon-protocol-validator.js";
+-import type { DaemonSocketClient, DaemonSocketConnection } from "./daemon-transport.js";
+-import { DaemonWireCodec } from "./daemon-wire-codec.js";
++} from "./protocol.js";
++import { DAEMON_PROTOCOL_VERSION } from "./protocol.js";
++import { DaemonProtocolValidator } from "./protocol-validator.js";
++import type { DaemonSocketClient, DaemonSocketConnection } from "./contracts.js";
++import { DaemonWireCodec } from "./wire-codec.js";
+
+packages/daemon/src/transport/local-daemon-transport-composition.test.ts
+-} from "./daemon-protocol.js";
+-import {
+-  DaemonClientResultCapture,
+-  type DaemonOutputCapture,
+-} from "./daemon-client-result-capture.js";
+-import { DaemonExecutionClient } from "./daemon-execution-client.js";
+-import { DaemonLifecycleClient } from "./daemon-lifecycle-client.js";
+-import { DaemonProtocolValidator } from "./daemon-protocol-validator.js";
++} from "./protocol.js";
++import { DaemonClientResultCapture, type DaemonOutputCapture } from "./client-result-capture.js";
++import { DaemonExecutionClient } from "./execution-client.js";
++import { DaemonLifecycleClient } from "./lifecycle-client.js";
++import { DaemonProtocolValidator } from "./protocol-validator.js";
+-} from "./daemon-transport.js";
+-import { DaemonWireCodec, type DaemonWireLimits } from "./daemon-wire-codec.js";
+-import { LocalDaemonSocketClient } from "./local-daemon-socket-client.js";
+-import { LocalDaemonSocketServer } from "./local-daemon-socket-server.js";
+-import { LocalDaemonTransport } from "./local-daemon-transport.js";
++} from "./contracts.js";
++import { DaemonWireCodec, type DaemonWireLimits } from "./wire-codec.js";
++import { LocalDaemonSocketClient } from "./socket-client.js";
++import { LocalDaemonSocketServer } from "./socket-server.js";
++import { LocalDaemonTransport } from "./local-transport.js";
+-      fileURLToPath(new URL("./local-daemon-transport.ts", import.meta.url)),
++      fileURLToPath(new URL("./local-transport.ts", import.meta.url)),
+
+packages/daemon/src/transport/local-daemon-transport-execution.test.ts
+-import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
++import { DaemonPolicyTestFactory } from "../../test/helpers/daemon-policy.js";
+-} from "./daemon-protocol.js";
+-import { DaemonTransportError } from "./daemon-transport-error.js";
++} from "./protocol.js";
++import { DaemonTransportError } from "./transport-error.js";
+-} from "./completion-spool.js";
+-import { DaemonWireCodec } from "./daemon-wire-codec.js";
+-import { DaemonClientResultCapture } from "./daemon-client-result-capture.js";
++} from "../delivery/completion-spool.js";
++import { DaemonWireCodec } from "./wire-codec.js";
++import { DaemonClientResultCapture } from "./client-result-capture.js";
+-  manifest: import("./completion-spool.js").CompletionSpoolManifest,
++  manifest: import("../delivery/completion-spool.js").CompletionSpoolManifest,
+-  manifest: import("./completion-spool.js").CompletionSpoolManifest,
++  manifest: import("../delivery/completion-spool.js").CompletionSpoolManifest,
+-  spool: import("./completion-spool.js").CompletionSpool,
++  spool: import("../delivery/completion-spool.js").CompletionSpool,
+-  spool: import("./completion-spool.js").CompletionSpool,
+-  manifest: import("./completion-spool.js").CompletionSpoolManifest,
++  spool: import("../delivery/completion-spool.js").CompletionSpool,
++  manifest: import("../delivery/completion-spool.js").CompletionSpoolManifest,
+-  spool: import("./completion-spool.js").CompletionSpool,
+-  manifest: import("./completion-spool.js").CompletionSpoolManifest,
++  spool: import("../delivery/completion-spool.js").CompletionSpool,
++  manifest: import("../delivery/completion-spool.js").CompletionSpoolManifest,
+
+packages/daemon/src/transport/local-daemon-transport-socket-client.test.ts
+-import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
+-import type { DaemonSocketClient, DaemonSocketConnection } from "./daemon-transport.js";
+-import { DAEMON_PROTOCOL_VERSION } from "./daemon-protocol.js";
+-import { DaemonWireCodec } from "./daemon-wire-codec.js";
+-import { LocalDaemonTransport } from "./local-daemon-transport.js";
++import { DaemonPolicyTestFactory } from "../../test/helpers/daemon-policy.js";
++import type { DaemonSocketClient, DaemonSocketConnection } from "./contracts.js";
++import { DAEMON_PROTOCOL_VERSION } from "./protocol.js";
++import { DaemonWireCodec } from "./wire-codec.js";
++import { LocalDaemonTransport } from "./local-transport.js";
+-    } satisfies import("./completion-spool.js").CompletionSpoolManifest;
++    } satisfies import("../delivery/completion-spool.js").CompletionSpoolManifest;
+
+packages/daemon/src/transport/local-daemon-transport-validation.test.ts
+-import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
++import { DaemonPolicyTestFactory } from "../../test/helpers/daemon-policy.js";
+-} from "./daemon-protocol.js";
+-import { DAEMON_PROTOCOL_VERSION } from "./daemon-protocol.js";
+-import { DaemonTransportError } from "./daemon-transport-error.js";
+-import { LocalDaemonTransport as RuntimeLocalDaemonTransport } from "./local-daemon-transport.js";
++} from "./protocol.js";
++import { DAEMON_PROTOCOL_VERSION } from "./protocol.js";
++import { DaemonTransportError } from "./transport-error.js";
++import { LocalDaemonTransport as RuntimeLocalDaemonTransport } from "./local-transport.js";
+
+packages/daemon/src/transport/local-transport.test.ts
+-import { DAEMON_PROTOCOL_VERSION, type DaemonRequest } from "./daemon-protocol.js";
++import { DAEMON_PROTOCOL_VERSION, type DaemonRequest } from "./protocol.js";
+
+packages/daemon/src/transport/protocol-validator.test.ts
+-import { DaemonProtocolValidator } from "./daemon-protocol-validator.js";
++import { DaemonProtocolValidator } from "./protocol-validator.js";
+-} from "./daemon-protocol.js";
++} from "./protocol.js";
+
+packages/daemon/src/transport/result-transfer-receiver.test.ts
+-import type { CompletionSpoolManifest } from "./completion-spool.js";
+-import type { DaemonExecutionServerFrame, DaemonResultChunk } from "./daemon-protocol.js";
++import type { CompletionSpoolManifest } from "../delivery/completion-spool.js";
++import type { DaemonExecutionServerFrame, DaemonResultChunk } from "./protocol.js";
+-} from "./daemon-client-result-capture.js";
+-import { DaemonResultTransferReceiver } from "./daemon-result-transfer-receiver.js";
++} from "./client-result-capture.js";
++import { DaemonResultTransferReceiver } from "./result-transfer-receiver.js";
+
+packages/daemon/src/transport/socket-client.test.ts
+-import { LocalDaemonSocketClient } from "./local-daemon-socket-client.js";
++import { LocalDaemonSocketClient } from "./socket-client.js";
+
+packages/daemon/src/transport/socket-server.test.ts
+-import type { DaemonSocketClient, DaemonSocketConnection } from "./daemon-transport.js";
+-import { DAEMON_PROTOCOL_VERSION, type DaemonRequest } from "./daemon-protocol.js";
+-import { DaemonProtocolValidator } from "./daemon-protocol-validator.js";
+-import { DaemonWireCodec } from "./daemon-wire-codec.js";
+-import { LocalDaemonSocketClient } from "./local-daemon-socket-client.js";
+-import { LocalDaemonSocketServer } from "./local-daemon-socket-server.js";
++import type { DaemonSocketClient, DaemonSocketConnection } from "./contracts.js";
++import { DAEMON_PROTOCOL_VERSION, type DaemonRequest } from "./protocol.js";
++import { DaemonProtocolValidator } from "./protocol-validator.js";
++import { DaemonWireCodec } from "./wire-codec.js";
++import { LocalDaemonSocketClient } from "./socket-client.js";
++import { LocalDaemonSocketServer } from "./socket-server.js";
+
+packages/daemon/src/transport/wire-codec.test.ts
+-import type { DaemonResultChunk } from "./daemon-protocol.js";
+-import { DaemonWireCodec, type DaemonWireLimits } from "./daemon-wire-codec.js";
++import type { DaemonResultChunk } from "./protocol.js";
++import { DaemonWireCodec, type DaemonWireLimits } from "./wire-codec.js";
+
+packages/daemon/src/worker/navigation-worker.test.ts
+-import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
++import { DaemonPolicyTestFactory } from "../../test/helpers/daemon-policy.js";
+-import { NodeDaemonNavigationWorker } from "./daemon-navigation-worker.js";
++import { NodeDaemonNavigationWorker } from "./navigation-worker.js";
+-  it("classifies a CLI executor version mismatch as an initialization failure", async () => {
+-    const directory = mkdtempSync(join(tmpdir(), "symnav-injected-worker-version-"));
+-    const worker = createInjectedWorker(
+-      new URL("../../dist/daemon-executor.js", import.meta.url).href,
+-      directory,
+-      "definitely-not-the-product-version",
+-    );
+-    try {
+-      await expect(worker.start(fixturePath("overview-cases"))).rejects.toThrow(
+-        /initialization failure/i,
+-      );
+-    } finally {
+-      await worker.terminate();
+-      rmSync(directory, { recursive: true, force: true });
+-    }
+-  });
+-
+-  it("proves readiness through the injected CLI version command with legacy cold input", async () => {
++  it("proves readiness through the generic executor module", async () => {
+-    const workspaceRoot = fixturePath("overview-cases");
+-      new URL("../../dist/daemon-executor.js", import.meta.url).href,
++      new URL("../../test/fixtures/executor-module.mjs", import.meta.url).href,
+-      "0.1.0",
++      "test",
+-      await expect(worker.start(workspaceRoot)).resolves.toMatchObject({
++      await expect(worker.start("files:17")).resolves.toMatchObject({
+-        startupDurations: {
+-          discoveryMs: 0,
+-          indexingMs: expect.any(Number),
+-          totalMs: expect.any(Number),
+-        },
+-            argv: ["--version"],
+-            cwd: workspaceRoot,
++            argv: ["stdout:0.1.0\n"],
++            cwd: directory,
+-        durations: {
+-          freshnessMs: 0,
+-          navigationMs: 0,
+-          renderMs: 0,
+-          outputMs: expect.any(Number),
+-        },
+-    entryUrl: new URL("../../dist/daemon/daemon-navigation-worker-entry.js", import.meta.url),
++    entryUrl: new URL("../../dist/worker-entry.js", import.meta.url),
+
+packages/daemon/src/worker/worker-generation-manager.test.ts
+-import type {
+-  DaemonNavigationWorker,
+-  DaemonNavigationWorkerExit,
+-} from "./daemon-navigation-worker.js";
+-import { DaemonNavigationWorkerExitedError } from "./daemon-navigation-worker.js";
+-import type { DaemonNavigationWorkerResponse } from "./daemon-navigation-worker-protocol.js";
++import type { DaemonNavigationWorker, DaemonNavigationWorkerExit } from "./navigation-worker.js";
++import { DaemonNavigationWorkerExitedError } from "./navigation-worker.js";
++import type { DaemonNavigationWorkerResponse } from "./worker-protocol.js";
+-} from "./daemon-worker-generation-manager.js";
+-import { DaemonWorkerGenerationManager } from "./daemon-worker-generation-manager.js";
++} from "./worker-generation-manager.js";
++import { DaemonWorkerGenerationManager } from "./worker-generation-manager.js";
+
+packages/daemon/src/worker/worker-protocol.test.ts
+-} from "./daemon-navigation-worker-protocol.js";
++} from "./worker-protocol.js";
+
+packages/daemon/test/fixtures/executor-module.mjs
++class FixtureOutput {
++  constructor(records) {
++    this.outputRecords = records;
++  }
++
++  async *records() {
++    yield* this.outputRecords;
++  }
++
++  dispose() {
++    return Promise.resolve();
++  }
++}
++
++class FixtureExecutor {
++  constructor(options) {
++    this.options = options;
++  }
++
++  async initialize(workspaceRoot) {
++    if (workspaceRoot === "fail:initialize") throw new Error("fixture initialize failure");
++    return {
++      fileCount: workspaceRoot.startsWith("files:")
++        ? Number.parseInt(workspaceRoot.slice("files:".length), 10)
++        : 1,
++    };
++  }
++
++  async execute(request) {
++    if (request.argv[0] === "fail:execute") throw new Error("fixture execute failure");
++    const records = request.argv.flatMap((instruction) => {
++      const separator = instruction.indexOf(":");
++      const kind = instruction.slice(0, separator);
++      const value = instruction.slice(separator + 1);
++      if (kind !== "stdout" && kind !== "stderr") return [];
++      return [{ stream: kind, bytes: Buffer.from(value) }];
++    });
++    const exitInstruction = request.argv.find((instruction) => instruction.startsWith("exit:"));
++    return {
++      exitCode:
++        exitInstruction === undefined
++          ? 0
++          : Number.parseInt(exitInstruction.slice("exit:".length), 10),
++      output: new FixtureOutput(records),
++    };
++  }
++
++  async releaseTransientResources() {
++    if (this.options.productVersion === "fail:release") {
++      throw new Error("fixture release failure");
++    }
++    this.options.sampleResources();
++  }
++}
++
++export function createDaemonExecutor(options) {
++  return new FixtureExecutor(options);
++}
+
+packages/daemon/test/fixtures/executor-module.test.ts
++import { readFileSync } from "node:fs";
++import { fileURLToPath } from "node:url";
++import { describe, expect, it } from "vitest";
++import type { DaemonExecutorFactory } from "../../src/daemon-executor.js";
++import * as executorModule from "./executor-module.js";
++
++describe("generic daemon executor fixture", () => {
++  it("exports only the public executor factory", () => {
++    expect(Object.keys(executorModule)).toEqual(["createDaemonExecutor"]);
++    expect(executorModule.createDaemonExecutor satisfies DaemonExecutorFactory).toBeDefined();
++    expect(
++      readFileSync(fileURLToPath(new URL("./executor-module.ts", import.meta.url)), "utf8"),
++    ).not.toMatch(/\b(?:import|export)\s+(?:type\s+)?[^;]*\sfrom\s/);
++  });
++
++  it("initializes, executes ordered output, and releases deterministically", async () => {
++    let resourceSamples = 0;
++    const executor = executorModule.createDaemonExecutor({
++      stateDirectory: "/state",
++      productVersion: "test",
++      sampleResources: () => {
++        resourceSamples += 1;
++      },
++    });
++
++    await expect(executor.initialize("files:3")).resolves.toEqual({ fileCount: 3 });
++    const result = await executor.execute({
++      argv: ["stdout:one", "stderr:two", "exit:7"],
++      cwd: "/workspace",
++      telemetryEnabled: false,
++      executionMode: "warm",
++    });
++    const records = [];
++    for await (const record of result.output.records()) records.push(record);
++    expect(records).toEqual([
++      { stream: "stdout", bytes: Buffer.from("one") },
++      { stream: "stderr", bytes: Buffer.from("two") },
++    ]);
++    expect(result.exitCode).toBe(7);
++    await executor.releaseTransientResources();
++    expect(resourceSamples).toBe(1);
++  });
++
++  it.each([
++    ["initialize", "fail:initialize", "test", "fixture initialize failure"],
++    ["execute", "files:1", "test", "fixture execute failure"],
++    ["release", "files:1", "fail:release", "fixture release failure"],
++  ] as const)(
++    "supports deterministic %s failure",
++    async (operation, workspaceRoot, version, error) => {
++      const executor = executorModule.createDaemonExecutor({
++        stateDirectory: "/state",
++        productVersion: version,
++        sampleResources: () => undefined,
++      });
++      if (operation === "initialize") {
++        await expect(executor.initialize(workspaceRoot)).rejects.toThrow(error);
++        return;
++      }
++      await executor.initialize(workspaceRoot);
++      if (operation === "execute") {
++        await expect(
++          executor.execute({
++            argv: ["fail:execute"],
++            cwd: "/workspace",
++            telemetryEnabled: false,
++            executionMode: "warm",
++          }),
++        ).rejects.toThrow(error);
++        return;
++      }
++      await expect(executor.releaseTransientResources()).rejects.toThrow(error);
++    },
++  );
++});
+
+packages/daemon/test/fixtures/executor-module.ts
++interface DaemonExecutorFactoryOptions {
++  readonly stateDirectory: string;
++  readonly productVersion: string;
++  readonly sampleResources: () => void;
++}
++
++interface DaemonExecutorRequest {
++  readonly argv: readonly string[];
++  readonly cwd: string;
++  readonly telemetryEnabled: boolean;
++  readonly executionMode: "cold" | "warm" | "fallback";
++}
++
++interface DaemonOutputRecord {
++  readonly stream: "stdout" | "stderr";
++  readonly bytes: Uint8Array;
++}
++
++interface DaemonExecutorOutput {
++  records(): AsyncIterable<DaemonOutputRecord>;
++  dispose(): Promise<void>;
++}
++
++interface DaemonExecutor {
++  initialize(workspaceRoot: string): Promise<{ readonly fileCount: number }>;
++  execute(request: DaemonExecutorRequest): Promise<{
++    readonly exitCode: number;
++    readonly output: DaemonExecutorOutput;
++  }>;
++  releaseTransientResources(): Promise<void>;
++}
++
++class FixtureOutput implements DaemonExecutorOutput {
++  constructor(private readonly outputRecords: readonly DaemonOutputRecord[]) {}
++
++  async *records(): AsyncIterable<DaemonOutputRecord> {
++    yield* this.outputRecords;
++  }
++
++  dispose(): Promise<void> {
++    return Promise.resolve();
++  }
++}
++
++class FixtureExecutor implements DaemonExecutor {
++  private released = false;
++
++  constructor(private readonly options: DaemonExecutorFactoryOptions) {}
++
++  async initialize(workspaceRoot: string): Promise<{ readonly fileCount: number }> {
++    if (workspaceRoot === "fail:initialize") throw new Error("fixture initialize failure");
++    const fileCount = workspaceRoot.startsWith("files:")
++      ? Number.parseInt(workspaceRoot.slice("files:".length), 10)
++      : 1;
++    return { fileCount };
++  }
++
++  async execute(request: DaemonExecutorRequest): Promise<{
++    readonly exitCode: number;
++    readonly output: DaemonExecutorOutput;
++  }> {
++    if (request.argv[0] === "fail:execute") throw new Error("fixture execute failure");
++    const records = request.argv.flatMap((instruction): readonly DaemonOutputRecord[] => {
++      const separator = instruction.indexOf(":");
++      const kind = instruction.slice(0, separator);
++      const value = instruction.slice(separator + 1);
++      if (kind !== "stdout" && kind !== "stderr") return [];
++      return [{ stream: kind, bytes: Buffer.from(value) }];
++    });
++    const exitInstruction = request.argv.find((instruction) => instruction.startsWith("exit:"));
++    return {
++      exitCode:
++        exitInstruction === undefined
++          ? 0
++          : Number.parseInt(exitInstruction.slice("exit:".length), 10),
++      output: new FixtureOutput(records),
++    };
++  }
++
++  async releaseTransientResources(): Promise<void> {
++    if (this.options.productVersion === "fail:release") {
++      throw new Error("fixture release failure");
++    }
++    this.released = true;
++    this.options.sampleResources();
++  }
++
++  isReleased(): boolean {
++    return this.released;
++  }
++}
++
++export function createDaemonExecutor(options: DaemonExecutorFactoryOptions): DaemonExecutor {
++  return new FixtureExecutor(options);
++}
+
+packages/daemon/test/fixtures/observable-executor-module.mjs
++import { appendFileSync } from "node:fs";
++import { join } from "node:path";
++
++class EmptyExecutorOutput {
++  async *records() {}
++
++  dispose() {
++    return Promise.resolve();
++  }
++}
++
++class ObservableExecutor {
++  constructor(options) {
++    this.options = options;
++    this.record({
++      kind: "create",
++      stateDirectory: options.stateDirectory,
++      productVersion: options.productVersion,
++    });
++  }
++
++  initialize(workspaceRoot) {
++    this.record({ kind: "initialize", workspaceRoot });
++    return Promise.resolve({ fileCount: 1 });
++  }
++
++  execute() {
++    return Promise.resolve({ exitCode: 0, output: new EmptyExecutorOutput() });
++  }
++
++  releaseTransientResources() {
++    this.options.sampleResources();
++    return Promise.resolve();
++  }
++
++  record(event) {
++    appendFileSync(
++      join(this.options.stateDirectory, "executor-events.jsonl"),
++      `${JSON.stringify(event)}\n`,
++    );
++  }
++}
++
++export function createDaemonExecutor(options) {
++  return new ObservableExecutor(options);
++}
+
+packages/daemon/test/helpers/canonical-path.ts
++import { existsSync, realpathSync } from "node:fs";
++import { basename, dirname, join, resolve } from "node:path";
++
++export class CanonicalTestPath {
++  static resolve(path: string): string {
++    const absolutePath = resolve(path);
++    const missingSegments: string[] = [];
++    let existingAncestor = absolutePath;
++    while (!existsSync(existingAncestor)) {
++      const parent = dirname(existingAncestor);
++      if (parent === existingAncestor) return absolutePath;
++      missingSegments.unshift(basename(existingAncestor));
++      existingAncestor = parent;
++    }
++    return join(realpathSync(existingAncestor), ...missingSegments);
++  }
++}
+
+packages/daemon/test/helpers/daemon-controller.ts
+-import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
+-import { DaemonController as RuntimeDaemonController } from "../../src/daemon/daemon-controller.js";
++import { DaemonPolicyTestFactory } from "./daemon-policy.js";
++import { DaemonController as RuntimeDaemonController } from "../../src/process/controller.js";
+-} from "../../src/daemon/daemon-process-launcher.js";
+-import type { DaemonRegistry } from "../../src/daemon/daemon-registry.js";
++} from "../../src/process/process-launcher.js";
++import type { DaemonRegistry } from "../../src/registry/registry.js";
+-} from "../../src/daemon/daemon-transport.js";
++} from "../../src/transport/contracts.js";
+-      ...(options.now === undefined ? {} : { now: options.now }),
++      ...(options.now === undefined ? {} : { clock: { wallNowMs: options.now } }),
+
+packages/daemon/test/helpers/daemon-navigation-worker-fixture.mjs
+
+packages/daemon/test/helpers/daemon-policy.ts
+-import { DaemonPolicy, type DaemonPolicyValues } from "./daemon-policy.js";
++import { DaemonPolicy, type DaemonPolicyValues } from "../../src/daemon-policy.js";
+
+packages/daemon/test/helpers/daemon-process-coordinator-stuck.ts
++import { writeFileSync } from "node:fs";
++import type { DaemonExecutorRequest, DaemonOutputSink } from "../../src/daemon-executor.js";
++import type { DaemonCommandName } from "../../src/daemon-command-name.js";
++import type {
++  DaemonNavigationWorker,
++  DaemonNavigationWorkerExit,
++} from "../../src/worker/navigation-worker.js";
++import type { DaemonNavigationWorkerResponse } from "../../src/worker/worker-protocol.js";
++import { DaemonWorkspaceIdentity } from "../../src/registry/workspace-identity.js";
++import { CanonicalTestPath } from "./canonical-path.js";
++import { TestDaemonProcessCoordinator as DaemonProcessCoordinator } from "./daemon-process-coordinator.js";
++import { TestDaemonRegistry as DaemonRegistry } from "./daemon-registry.js";
++import { TestLocalDaemonTransport as LocalDaemonTransport } from "./local-daemon-transport.js";
++
++class StuckNavigationWorker implements DaemonNavigationWorker {
++  readonly generation = 1;
++  readonly exited = new Promise<DaemonNavigationWorkerExit>(() => undefined);
++  private rejectExecution!: (error: Error) => void;
++  private readonly termination = new Promise<never>((_resolve, reject) => {
++    this.rejectExecution = reject;
++  });
++
++  constructor(private readonly requestStartedPath: string) {
++    void this.termination.catch(() => undefined);
++  }
++
++  start(): Promise<DaemonNavigationWorkerResponse> {
++    return Promise.resolve({
++      kind: "ready",
++      generation: this.generation,
++      fileCount: 1,
++      refresh: { added: 1, changed: 0, removed: 0, unchanged: 0 },
++      startupDurations: { discoveryMs: 0, indexingMs: 1, totalMs: 1 },
++    });
++  }
++
++  async execute(
++    _requestId: string,
++    _commandName: DaemonCommandName,
++    _request: DaemonExecutorRequest,
++    _output: DaemonOutputSink,
++  ): Promise<DaemonNavigationWorkerResponse> {
++    writeFileSync(this.requestStartedPath, "started");
++    return this.termination;
++  }
++
++  releaseTransientResources(): Promise<DaemonNavigationWorkerResponse> {
++    return Promise.resolve({
++      kind: "heap",
++      generation: this.generation,
++      operationId: "controlled-release",
++      usedHeapBytes: 1,
++      heapLimitBytes: 2,
++    });
++  }
++
++  drainAndClose(): Promise<void> {
++    return Promise.resolve();
++  }
++
++  terminate(): Promise<void> {
++    this.rejectExecution(new Error("worker terminated"));
++    return Promise.resolve();
++  }
++}
++
++class StuckDaemonActor {
++  static async run(arguments_: readonly string[]): Promise<void> {
++    const [workspaceRoot, stateDirectory, instanceId, processToken, readyPath, requestStartedPath] =
++      arguments_;
++    if (
++      workspaceRoot === undefined ||
++      stateDirectory === undefined ||
++      instanceId === undefined ||
++      processToken === undefined ||
++      readyPath === undefined ||
++      requestStartedPath === undefined
++    ) {
++      process.exit(2);
++    }
++    const canonicalStateDirectory = CanonicalTestPath.resolve(stateDirectory);
++    const identity = DaemonWorkspaceIdentity.from(workspaceRoot, canonicalStateDirectory);
++    writeFileSync(`${readyPath}.boot`, String(process.pid));
++    const daemon = new DaemonProcessCoordinator({
++      identity,
++      instanceId,
++      processToken,
++      symnavVersion: "test",
++      memoryCapBytes: Number.MAX_SAFE_INTEGER,
++      registry: new DaemonRegistry(identity.registryDirectory),
++      transport: new LocalDaemonTransport(),
++      navigationWorker: new StuckNavigationWorker(requestStartedPath),
++    });
++    await daemon.start();
++    writeFileSync(readyPath, "ready");
++  }
++}
++
++await StuckDaemonActor.run(process.argv.slice(2));
+
+packages/daemon/test/helpers/daemon-process-coordinator.ts
+-import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
+-import type { ProgramDependencies } from "../../src/program-dependencies.js";
++import { existsSync } from "node:fs";
++import { performance } from "node:perf_hooks";
++import { NodeDaemonClock, type DaemonClock } from "../../src/lifecycle/daemon-clock.js";
++import type { DaemonRequestServer } from "../../src/transport/contracts.js";
++import { DaemonPolicyTestFactory } from "./daemon-policy.js";
+-  WorkspaceDaemon as RuntimeWorkspaceDaemon,
+-  type WorkspaceDaemonOptions,
+-} from "../../src/daemon/workspace-daemon.js";
++  DaemonProcessCoordinator as RuntimeDaemonProcessCoordinator,
++  type DaemonProcessCoordinatorOptions,
++} from "../../src/process/process-coordinator.js";
+-interface TestWorkspaceDaemonPolicyOptions {
++interface TestDaemonProcessCoordinatorPolicyOptions {
+-export type TestWorkspaceDaemonOptions = Omit<WorkspaceDaemonOptions, "dependencies" | "policy"> &
+-  TestWorkspaceDaemonPolicyOptions & { readonly dependencies: ProgramDependencies };
++export type TestDaemonProcessCoordinatorOptions = Omit<
++  DaemonProcessCoordinatorOptions,
++  "clock" | "coordinates" | "productVersion" | "server" | "workspaceExists" | "policy"
++> &
++  TestDaemonProcessCoordinatorPolicyOptions & {
++    readonly instanceId: string;
++    readonly processToken: string;
++    readonly symnavVersion: string;
++    readonly transport: DaemonRequestServer;
++    readonly clock?: DaemonClock;
++    readonly now?: () => number;
++    readonly workspaceExists?: (workspaceRoot: string) => Promise<boolean>;
++  };
+-export class TestWorkspaceDaemon extends RuntimeWorkspaceDaemon {
+-  constructor(options: TestWorkspaceDaemonOptions) {
+-    const base = options.policy ?? options.dependencies.daemonPolicy;
++export class TestDaemonProcessCoordinator extends RuntimeDaemonProcessCoordinator {
++  constructor(options: TestDaemonProcessCoordinatorOptions) {
++    const base = options.policy ?? DaemonPolicy.currentSystem();
++      coordinates: {
++        workspaceRoot: options.identity.workspaceRoot,
++        workspaceKey: options.identity.workspaceKey,
++        stateKey: options.identity.stateKey,
++        identityKey: options.identity.identityKey,
++        instanceId: options.instanceId,
++        processToken: options.processToken,
++        endpoint: options.identity.endpoint(options.instanceId),
++      },
++      productVersion: options.symnavVersion,
++      server: options.transport,
++      workspaceExists:
++        options.workspaceExists ?? ((workspaceRoot) => Promise.resolve(existsSync(workspaceRoot))),
++      clock:
++        options.clock ??
++        new NodeDaemonClock({
++          wallNowMs: options.now ?? Date.now,
++          monotonicNowMs: () => performance.now(),
++        }),
+
+packages/daemon/test/helpers/daemon-process-terminator.ts
+-import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
+-import { NodeDaemonProcessTerminator as RuntimeNodeDaemonProcessTerminator } from "../../src/daemon/daemon-process-launcher.js";
++import { DaemonPolicyTestFactory } from "./daemon-policy.js";
++import { NodeDaemonProcessTerminator as RuntimeNodeDaemonProcessTerminator } from "../../src/process/process-launcher.js";
+
+packages/daemon/test/helpers/daemon-registry-cleaner.ts
+-import { DaemonWorkspaceIdentity } from "../../src/daemon/daemon-workspace-identity.js";
++import { DaemonWorkspaceIdentity } from "../../src/registry/workspace-identity.js";
+
+packages/daemon/test/helpers/daemon-registry.ts
+-import { DaemonRegistry as RuntimeDaemonRegistry } from "../../src/daemon/daemon-registry.js";
++import { DaemonRegistry as RuntimeDaemonRegistry } from "../../src/registry/registry.js";
++import { NodeDaemonClock } from "../../src/lifecycle/daemon-clock.js";
++        new NodeDaemonClock(),
+-    super(registryDirectory, platformOrPolicy, process.platform, renamePath);
++    super(registryDirectory, platformOrPolicy, new NodeDaemonClock(), process.platform, renamePath);
+
+packages/daemon/test/helpers/daemon-resource-policy.ts
+
+packages/daemon/test/helpers/daemon-startup-coordinator.ts
+-import { DaemonPolicy, type DaemonPolicyValues } from "@symnav/daemon";
+-import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
++import { DaemonPolicy, type DaemonPolicyValues, type DaemonReadinessProbe } from "@symnav/daemon";
++import { DaemonPolicyTestFactory } from "./daemon-policy.js";
+-} from "../../src/daemon/daemon-process-launcher.js";
+-import type { DaemonRegistry } from "../../src/daemon/daemon-registry.js";
+-import { DaemonStartupCoordinator as RuntimeDaemonStartupCoordinator } from "../../src/daemon/daemon-startup-coordinator.js";
++} from "../../src/process/process-launcher.js";
++import type { DaemonRegistry } from "../../src/registry/registry.js";
++import { DaemonStartupCoordinator as RuntimeDaemonStartupCoordinator } from "../../src/registry/startup-coordinator.js";
+-} from "../../src/daemon/daemon-transport.js";
++} from "../../src/transport/contracts.js";
++  readonly readinessProbe?: DaemonReadinessProbe;
+-      ...(options.now === undefined ? {} : { now: options.now }),
++      ...(options.now === undefined ? {} : { clock: { wallNowMs: options.now } }),
++      ...(options.readinessProbe === undefined ? {} : { readinessProbe: options.readinessProbe }),
+
+packages/daemon/test/helpers/daemon-startup-mutation-owner.ts
+-import { StateDirectoryResolver } from "../../src/state-directory-resolver.js";
++import { CanonicalTestPath } from "./canonical-path.js";
+-} from "../../src/daemon/daemon-protocol.js";
++} from "../../src/transport/protocol.js";
+-import { DaemonWorkspaceIdentity } from "../../src/daemon/daemon-workspace-identity.js";
++import { DaemonWorkspaceIdentity } from "../../src/registry/workspace-identity.js";
+-  StateDirectoryResolver.canonicalize(stateDirectory),
++  CanonicalTestPath.resolve(stateDirectory),
+
+packages/daemon/test/helpers/executor-output.ts
++import type {
++  DaemonExecutorExecutionResult,
++  DaemonExecutorOutput,
++  DaemonExecutorRequest,
++  DaemonSequencedOutputRecord,
++} from "../../src/daemon-executor.js";
++
++export type CliExecutionRequest = DaemonExecutorRequest;
++export type CommandOutputRecord = DaemonSequencedOutputRecord;
++
++interface CommandOutput extends DaemonExecutorOutput {
++  records(): AsyncIterable<CommandOutputRecord>;
++}
++
++export interface CommandExecutionResult extends DaemonExecutorExecutionResult {
++  readonly output: CommandOutput;
++}
++
++export class CommandOutputSnapshot implements DaemonExecutorOutput {
++  private readonly captured: readonly CommandOutputRecord[];
++
++  constructor(records: readonly Omit<CommandOutputRecord, "sequence">[]) {
++    this.captured = records.map((record, sequence) => ({ ...record, sequence }));
++  }
++
++  async *records(): AsyncIterable<CommandOutputRecord> {
++    yield* this.captured;
++  }
++
++  dispose(): Promise<void> {
++    return Promise.resolve();
++  }
++}
+
+packages/daemon/test/helpers/injected-daemon-executor-fixture.mjs
+
+packages/daemon/test/helpers/local-daemon-transport.ts
+-import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
+-import { LocalDaemonTransport as RuntimeLocalDaemonTransport } from "../../src/daemon/local-daemon-transport.js";
++import { DaemonPolicyTestFactory } from "./daemon-policy.js";
++import { LocalDaemonTransport as RuntimeLocalDaemonTransport } from "../../src/transport/local-transport.js";
+
+packages/daemon/test/helpers/resource-sampling-daemon-executor-fixture.mjs
+
+packages/daemon/test/integration/built-entry-artifacts.test.ts
++import { dirname, join } from "node:path";
++import { fileURLToPath, pathToFileURL } from "node:url";
++import { describe, expect, it } from "vitest";
++import { DaemonPolicy } from "../../src/daemon-policy.js";
++import { NodeDaemonNavigationWorker } from "../../dist/worker/navigation-worker.js";
++
++describe("built daemon entry artifacts", () => {
++  const packageDirectory = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
++  const executorModuleUrl = pathToFileURL(
++    join(packageDirectory, "test", "fixtures", "executor-module.mjs"),
++  ).href;
++  const policy = DaemonPolicy.fromSystemMemory({ totalBytes: 512 * 1024 * 1024 });
++
++  it("runs the package-relative worker entry with an absolute executor file URL", async () => {
++    const worker = new NodeDaemonNavigationWorker({
++      generation: 1,
++      configuration: {
++        stateDirectory: join(packageDirectory, "test"),
++        productVersion: "test",
++        executorModuleUrl,
++        policy: policy.toSerialized(),
++      },
++      resourceLimits: { maxOldGenerationSizeMb: 128 },
++    });
++    try {
++      await expect(worker.start("files:3")).resolves.toMatchObject({
++        kind: "ready",
++        fileCount: 3,
++      });
++      const output: string[] = [];
++      await expect(
++        worker.execute(
++          "request",
++          "version",
++          {
++            argv: ["stdout:one", "stderr:two", "exit:7"],
++            cwd: packageDirectory,
++            telemetryEnabled: false,
++            executionMode: "warm",
++          },
++          {
++            append: async (record) => {
++              output.push(`${record.stream}:${Buffer.from(record.bytes).toString()}`);
++            },
++          },
++        ),
++      ).resolves.toMatchObject({ kind: "result", result: { exitCode: 7 } });
++      expect(output).toEqual(["stdout:one", "stderr:two"]);
++      await worker.releaseTransientResources();
++      await worker.drainAndClose();
++    } finally {
++      await worker.terminate();
++    }
++  });
++
++  it.each([
++    [
++      "missing module",
++      pathToFileURL(join(packageDirectory, "test", "fixtures", "missing.mjs")).href,
++    ],
++    ["missing export", pathToFileURL(join(packageDirectory, "package.json")).href],
++  ])("retains %s initialization failure", async (_scenario, moduleUrl) => {
++    const worker = new NodeDaemonNavigationWorker({
++      generation: 1,
++      configuration: {
++        stateDirectory: join(packageDirectory, "test"),
++        productVersion: "test",
++        executorModuleUrl: moduleUrl,
++        policy: policy.toSerialized(),
++      },
++      resourceLimits: { maxOldGenerationSizeMb: 128 },
++    });
++    try {
++      await expect(worker.start("files:1")).rejects.toThrow(/initialization failure/i);
++    } finally {
++      await worker.terminate();
++    }
++  });
++});
+
+packages/daemon/test/integration/built-process-entry.test.ts
++import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { dirname, join } from "node:path";
++import { setTimeout as delay } from "node:timers/promises";
++import { fileURLToPath, pathToFileURL } from "node:url";
++import { describe, expect, it } from "vitest";
++import { DaemonPolicy } from "../../dist/daemon-policy.js";
++import {
++  type DaemonProcess,
++  type DaemonProcessExit,
++  NodeDaemonProcessLauncher,
++} from "../../dist/process/process-launcher.js";
++import { DaemonRegistry } from "../../dist/registry/registry.js";
++import { DaemonWorkspaceIdentity } from "../../dist/registry/workspace-identity.js";
++import {
++  DAEMON_PROTOCOL_VERSION,
++  DAEMON_RECORD_SCHEMA_VERSION,
++  type DaemonRecord,
++} from "../../dist/transport/protocol.js";
++import { DaemonPolicyTestFactory } from "../helpers/daemon-policy.js";
++
++interface ExecutorCreationEvent {
++  readonly kind: "create";
++  readonly stateDirectory: string;
++  readonly productVersion: string;
++}
++
++interface ExecutorInitializationEvent {
++  readonly kind: "initialize";
++  readonly workspaceRoot: string;
++}
++
++type ExecutorEvent = ExecutorCreationEvent | ExecutorInitializationEvent;
++
++class BuiltProcessEntryHarness {
++  readonly root = mkdtempSync(join(tmpdir(), "symnav-built-process-entry-"));
++  readonly stateDirectory = join(this.root, "state");
++  readonly workspaceRoot = join(this.root, "workspace");
++  readonly identity = DaemonWorkspaceIdentity.from(this.workspaceRoot, this.stateDirectory);
++  readonly instanceId = "built-process-entry";
++  readonly processToken = "built-process-entry-token";
++  readonly productVersion = "built-process-entry-version";
++  readonly startedAt = Date.now();
++  readonly eventPath = join(this.stateDirectory, "executor-events.jsonl");
++  readonly policy = DaemonPolicyTestFactory.withOverrides(
++    DaemonPolicy.fromSystemMemory({ totalBytes: 512 * 1024 * 1024 }),
++    {
++      startup: {
++        coordinationGraceMs: 2_000,
++        heartbeatIntervalMs: 20,
++        authorizationPollIntervalMs: 5,
++      },
++      shutdown: {
++        processSignalExitTimeoutMs: 1_000,
++        processExitPollIntervalMs: 5,
++      },
++    },
++  );
++  readonly registry = new DaemonRegistry(
++    this.identity.registryDirectory,
++    this.policy.values.startup,
++  );
++  private daemonProcess: DaemonProcess | undefined;
++  private observedExit: DaemonProcessExit | undefined;
++
++  constructor(readonly executorModuleUrl: string) {
++    mkdirSync(this.workspaceRoot, { recursive: true });
++    mkdirSync(this.stateDirectory, { recursive: true });
++  }
++
++  async launch(): Promise<void> {
++    const lease = this.registry.acquireStartup(this.identity, {
++      identityKey: this.identity.identityKey,
++      instanceId: this.instanceId,
++      processToken: this.processToken,
++      ownerPid: process.pid,
++      ownerKind: "launcher",
++      heartbeatAt: Date.now(),
++    });
++    if (lease === undefined) throw new Error("Built process entry startup lease unavailable");
++    const startingRecord = this.startingRecord(0);
++    if (!this.registry.writeStartingIfStartupOwner(this.identity, startingRecord)) {
++      throw new Error("Built process entry starting record unavailable");
++    }
++    const daemonProcess = await new NodeDaemonProcessLauncher(
++      this.productVersion,
++      this.executorModuleUrl,
++      this.policy,
++    ).launch(this.identity, this.instanceId, this.processToken);
++    this.daemonProcess = daemonProcess;
++    void daemonProcess.exited.then((exit) => {
++      this.observedExit = exit;
++    });
++    const transferred = lease.transferToDaemon(daemonProcess.pid, this.processToken);
++    if (
++      !transferred &&
++      !this.registry.daemonOwnsStartupProcess(
++        this.identity,
++        this.instanceId,
++        this.processToken,
++        daemonProcess.pid,
++      )
++    ) {
++      throw new Error("Built process entry startup ownership unavailable");
++    }
++    if (
++      !this.registry.writeStartingIfStartupOwner(
++        this.identity,
++        this.startingRecord(daemonProcess.pid),
++      )
++    ) {
++      throw new Error("Built process entry process record unavailable");
++    }
++  }
++
++  async waitForReady(): Promise<DaemonRecord> {
++    for (let attempt = 0; attempt < 400; attempt += 1) {
++      const record = this.registry.readInstance(this.identity, this.instanceId);
++      if (record?.state === "ready") return record;
++      if (this.observedExit !== undefined) {
++        throw new Error(
++          `Built process entry exited before readiness: ${JSON.stringify({ exit: this.observedExit, events: this.events(), diagnostics: this.diagnostics() })}`,
++        );
++      }
++      await delay(5);
++    }
++    throw new Error("Built process entry did not publish readiness");
++  }
++
++  async waitForExit(): Promise<DaemonProcessExit> {
++    const daemonProcess = this.daemonProcess;
++    if (daemonProcess === undefined) throw new Error("Built process entry was not launched");
++    return Promise.race([
++      daemonProcess.exited,
++      delay(5_000).then(() => {
++        throw new Error("Built process entry did not exit");
++      }),
++    ]);
++  }
++
++  events(): readonly ExecutorEvent[] {
++    if (!existsSync(this.eventPath)) return [];
++    return readFileSync(this.eventPath, "utf8")
++      .trim()
++      .split("\n")
++      .filter((line) => line.length > 0)
++      .map((line) => JSON.parse(line) as ExecutorEvent);
++  }
++
++  diagnosticKinds(): readonly string[] {
++    if (!existsSync(this.identity.logPath)) return [];
++    return readFileSync(this.identity.logPath, "utf8")
++      .trim()
++      .split("\n")
++      .filter((line) => line.length > 0)
++      .map((line) => JSON.parse(line) as { readonly kind: string })
++      .map((event) => event.kind);
++  }
++
++  diagnostics(): readonly unknown[] {
++    if (!existsSync(this.identity.logPath)) return [];
++    return readFileSync(this.identity.logPath, "utf8")
++      .trim()
++      .split("\n")
++      .filter((line) => line.length > 0)
++      .map((line) => JSON.parse(line) as unknown);
++  }
++
++  startupArtifacts(): { readonly record: DaemonRecord | undefined; readonly owner: unknown } {
++    return {
++      record: this.registry.readInstance(this.identity, this.instanceId),
++      owner: this.registry.startupOwner(this.identity),
++    };
++  }
++
++  removeExitedProcess(record: DaemonRecord): boolean {
++    return this.registry.removeIfProcess(this.identity, record.instanceId, record.processToken);
++  }
++
++  async terminate(): Promise<DaemonProcessExit | undefined> {
++    if (this.daemonProcess === undefined) return undefined;
++    await this.daemonProcess.terminate();
++    return this.waitForExit();
++  }
++
++  async dispose(): Promise<void> {
++    await this.terminate();
++    rmSync(this.root, { recursive: true, force: true });
++  }
++
++  private startingRecord(pid: number): DaemonRecord {
++    return {
++      schemaVersion: DAEMON_RECORD_SCHEMA_VERSION,
++      protocolVersion: DAEMON_PROTOCOL_VERSION,
++      symnavVersion: this.productVersion,
++      workspaceRoot: this.identity.workspaceRoot,
++      workspaceKey: this.identity.workspaceKey,
++      stateKey: this.identity.stateKey,
++      identityKey: this.identity.identityKey,
++      instanceId: this.instanceId,
++      processToken: this.processToken,
++      endpoint: this.identity.endpoint(this.instanceId),
++      pid,
++      state: "starting",
++      startedAt: this.startedAt,
++      memoryCapBytes: this.policy.values.resources.hardProcessRssBytes,
++    };
++  }
++}
++
++describe("built daemon process entry", () => {
++  const packageDirectory = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
++  const observableExecutorModuleUrl = pathToFileURL(
++    join(packageDirectory, "test", "fixtures", "observable-executor-module.mjs"),
++  ).href;
++
++  it("executes its parsed generic executor configuration exactly once", async () => {
++    const harness = new BuiltProcessEntryHarness(observableExecutorModuleUrl);
++    try {
++      await harness.launch();
++      const ready = await harness.waitForReady();
++      await delay(1_000);
++
++      expect(ready).toMatchObject({
++        state: "ready",
++        workspaceRoot: harness.workspaceRoot,
++        symnavVersion: harness.productVersion,
++        instanceId: harness.instanceId,
++        processToken: harness.processToken,
++        fileCount: 1,
++      });
++      expect(harness.events()).toEqual([
++        {
++          kind: "create",
++          stateDirectory: harness.stateDirectory,
++          productVersion: harness.productVersion,
++        },
++        { kind: "initialize", workspaceRoot: harness.workspaceRoot },
++      ]);
++      expect(harness.diagnosticKinds().filter((kind) => kind === "start")).toEqual(["start"]);
++      expect(harness.diagnosticKinds().filter((kind) => kind === "startup-completed")).toEqual([
++        "startup-completed",
++      ]);
++      expect(harness.diagnosticKinds().filter((kind) => kind === "ready")).toEqual(["ready"]);
++      await expect(harness.terminate()).resolves.toMatchObject({ cause: "exit", code: 1 });
++      const processTerminationDiagnostics = harness
++        .diagnosticKinds()
++        .filter((kind) => kind === "process-termination");
++      if (process.platform === "win32") {
++        expect(harness.startupArtifacts()).toEqual({ record: ready, owner: undefined });
++        expect(processTerminationDiagnostics).toEqual([]);
++        expect(harness.removeExitedProcess(ready)).toBe(true);
++      } else {
++        expect(harness.startupArtifacts()).toEqual({ record: undefined, owner: undefined });
++        expect(processTerminationDiagnostics).toEqual(["process-termination"]);
++      }
++      expect(harness.startupArtifacts()).toEqual({ record: undefined, owner: undefined });
++    } finally {
++      await harness.dispose();
++    }
++  }, 10_000);
++
++  it.each([
++    [
++      "missing module",
++      pathToFileURL(join(packageDirectory, "test", "fixtures", "missing.mjs")).href,
++    ],
++    ["missing export", pathToFileURL(join(packageDirectory, "package.json")).href],
++  ])(
++    "retains %s startup failure and exact ownership cleanup",
++    async (_scenario, moduleUrl) => {
++      const harness = new BuiltProcessEntryHarness(moduleUrl);
++      try {
++        await harness.launch();
++
++        await expect(harness.waitForExit()).resolves.toMatchObject({ cause: "exit", code: 1 });
++        expect(harness.startupArtifacts()).toEqual({ record: undefined, owner: undefined });
++      } finally {
++        await harness.dispose();
++      }
++    },
++    10_000,
++  );
++});
+
+packages/daemon/test/integration/built-process-launcher.test.ts
++import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { pathToFileURL } from "node:url";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { DaemonPolicy } from "../../src/daemon-policy.js";
++import {
++  DaemonProcessConfigurationParser,
++  NodeDaemonProcessLauncher,
++} from "../../dist/process/process-launcher.js";
++import { DaemonWorkspaceIdentity } from "../../dist/registry/workspace-identity.js";
++
++const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
++
++vi.mock("node:child_process", () => ({ spawn: spawnMock }));
++
++describe("built daemon process launcher", () => {
++  const roots: string[] = [];
++
++  afterEach(() => {
++    spawnMock.mockReset();
++    for (const root of roots) rmSync(root, { recursive: true, force: true });
++    roots.length = 0;
++  });
++
++  it.each([
++    ["POSIX", pathToFileURL("/tmp/symnav executor.mjs").href],
++    ["Windows", "file:///C:/symnav/executor-module.mjs"],
++  ])("resolves process-entry.js and retains the %s executor file URL", async (_form, moduleUrl) => {
++    spawnMock.mockImplementation(() => {
++      const child: {
++        readonly pid: number;
++        readonly once: ReturnType<typeof vi.fn>;
++        readonly unref: ReturnType<typeof vi.fn>;
++      } = {
++        pid: 4321,
++        once: vi.fn((event: string, listener: () => void) => {
++          if (event === "spawn") queueMicrotask(listener);
++          return child;
++        }),
++        unref: vi.fn(),
++      };
++      return child;
++    });
++    const root = mkdtempSync(join(tmpdir(), "symnav-built-launcher-"));
++    roots.push(root);
++    const identity = DaemonWorkspaceIdentity.from(join(root, "workspace"), join(root, "state"));
++    mkdirSync(identity.identityDirectory, { recursive: true });
++
++    await new NodeDaemonProcessLauncher(
++      "1.2.3",
++      moduleUrl,
++      DaemonPolicy.fromSystemMemory({ totalBytes: 512 * 1024 * 1024 }),
++    ).launch(identity, "instance", "process-token");
++
++    const [executable, arguments_] = spawnMock.mock.calls[0] as [string, readonly string[]];
++    expect(executable).toBe(process.execPath);
++    expect(arguments_[0]).toMatch(/packages[/\\]daemon[/\\]dist[/\\]process-entry\.js$/);
++    expect(DaemonProcessConfigurationParser.parse(arguments_[1]).executorModuleUrl).toBe(moduleUrl);
++  });
++});
+
+packages/daemon/test/public-import.test.ts
++  DaemonClientOptions,
++  DaemonClient,
++    expectTypeOf<DaemonClientOptions>().toBeObject();
++    expect(DaemonClient).toBeTypeOf("function");
++      "DaemonClient",

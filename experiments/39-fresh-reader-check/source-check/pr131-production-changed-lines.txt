@@ -1,0 +1,549 @@
+diff --git a/apps/cli/src/cli-program-executor.ts b/apps/cli/src/cli-program-executor.ts
+-    private readonly outputOptions: OrderedCommandOutputOptions = {},
+-    const output = new OrderedCommandOutput(this.outputOptions);
++    const output = new OrderedCommandOutput({
++      policy: this.dependencies.daemonPolicy.values.output,
++    });
+
+diff --git a/apps/cli/src/command-execution-result.ts b/apps/cli/src/command-execution-result.ts
+-  readonly inlineBytes?: number;
++  readonly policy: DaemonPolicyValues["output"];
+-  readonly maximumBytes?: number;
+-const DEFAULT_INLINE_BYTES = 256 * 1024;
+-const MAXIMUM_RECORD_BYTES = 64 * 1024;
+-const DEFAULT_MAXIMUM_BYTES = 256 * 1024 * 1024;
++    private readonly maximumRecordBytes?: number,
+-        : OrderedCommandOutput.decodeFileRecords(this.filePath);
++        : OrderedCommandOutput.decodeFileRecords(this.filePath, this.maximumRecordBytes!);
++  private readonly maximumRecordBytes: number;
+-  constructor(options: OrderedCommandOutputOptions = {}) {
+-    this.inlineBytes = options.inlineBytes ?? DEFAULT_INLINE_BYTES;
++  constructor(options: OrderedCommandOutputOptions) {
++    const policy = options.policy;
++    this.inlineBytes = policy.inlineRawBytes;
+-    this.maximumBytes = options.maximumBytes ?? DEFAULT_MAXIMUM_BYTES;
++    this.maximumBytes = policy.maximumResultRawBytes;
++    this.maximumRecordBytes = policy.maximumChunkRawBytes;
+-      if (record.bytes.byteLength > MAXIMUM_RECORD_BYTES) {
++      if (record.bytes.byteLength > this.maximumRecordBytes) {
++      this.maximumRecordBytes,
+-    for (let offset = 0; offset < bytes.byteLength; offset += MAXIMUM_RECORD_BYTES) {
++    for (let offset = 0; offset < bytes.byteLength; offset += this.maximumRecordBytes) {
+-        Math.min(MAXIMUM_RECORD_BYTES, bytes.byteLength - offset),
++        Math.min(this.maximumRecordBytes, bytes.byteLength - offset),
+-        this.pending.bytes.byteLength + chunk.byteLength <= MAXIMUM_RECORD_BYTES
++        this.pending.bytes.byteLength + chunk.byteLength <= this.maximumRecordBytes
+-  static async *decodeFileRecords(filePath: string): AsyncIterable<CommandOutputRecord> {
++  static async *decodeFileRecords(
++    filePath: string,
++    maximumRecordBytes: number,
++  ): AsyncIterable<CommandOutputRecord> {
+-        if (sequence !== expectedSequence || streamByte > 1 || length > MAXIMUM_RECORD_BYTES) {
++        if (sequence !== expectedSequence || streamByte > 1 || length > maximumRecordBytes) {
+
+diff --git a/apps/cli/src/commands/daemon/register-daemon-command.ts b/apps/cli/src/commands/daemon/register-daemon-command.ts
+-      const registry = new DaemonRegistry(identity.registryDirectory);
++      const registry = new DaemonRegistry(
++        identity.registryDirectory,
++        dependencies.daemonPolicy.values.startup,
++      );
+-        new LocalDaemonTransport(),
++        new LocalDaemonTransport(dependencies.daemonPolicy.values),
++          policy: dependencies.daemonPolicy.values,
+-    const registry = new DaemonRegistry(DaemonWorkspaceIdentity.registryDirectory(stateDirectory));
++    const registry = new DaemonRegistry(
++      DaemonWorkspaceIdentity.registryDirectory(stateDirectory),
++      dependencies.daemonPolicy.values.startup,
++    );
+-      new LocalDaemonTransport({ requestTimeoutMs: 100 }),
++      new LocalDaemonTransport(dependencies.daemonPolicy.values, {
++        responseTimeoutPurpose: "status-observer",
++      }),
++      { policy: dependencies.daemonPolicy.values },
++        dependencies.daemonPolicy.values.startup,
++      );
++      const controller = new DaemonController(
++        registry,
++        new LocalDaemonTransport(dependencies.daemonPolicy.values),
++        stateDirectory,
++        { policy: dependencies.daemonPolicy.values },
+-      const controller = new DaemonController(registry, new LocalDaemonTransport(), stateDirectory);
+
+diff --git a/apps/cli/src/daemon/completion-spool.ts b/apps/cli/src/daemon/completion-spool.ts
+-export const COMMAND_OUTPUT_CHUNK_BYTES = 64 * 1024;
+-export const DAEMON_MAXIMUM_CONTROL_FRAME_BYTES = 256 * 1024;
+-export const COMMAND_OUTPUT_LIMIT_BYTES = 256 * 1024 * 1024;
+-export const DAEMON_COMPLETION_SPOOL_LIMIT_BYTES = 512 * 1024 * 1024;
+-export const COMPLETION_SPOOL_INLINE_BYTES = 256 * 1024;
+-  readonly inlineBytes?: number;
+-  readonly maximumResultBytes?: number;
+-  readonly maximumAggregateBytes?: number;
++  readonly policy: DaemonPolicyValues["output"];
+-  records(path: string): AsyncIterable<CommandOutputRecord>;
++  records(path: string, maximumChunkBytes: number): AsyncIterable<CommandOutputRecord>;
+-  records(path: string): AsyncIterable<CommandOutputRecord> {
+-    return OrderedCommandOutput.decodeFileRecords(path);
++  records(path: string, maximumChunkBytes: number): AsyncIterable<CommandOutputRecord> {
++    return OrderedCommandOutput.decodeFileRecords(path, maximumChunkBytes);
++  readonly maximumChunkBytes: number;
+-    if (record.bytes.byteLength > COMMAND_OUTPUT_CHUNK_BYTES) {
++    if (record.bytes.byteLength > this.options.maximumChunkBytes) {
+-          : this.options.storage.records(this.filePath);
++          : this.options.storage.records(this.filePath, this.options.maximumChunkBytes);
++  private readonly maximumChunkBytes: number;
+-    this.inlineBytes = options.inlineBytes ?? COMPLETION_SPOOL_INLINE_BYTES;
+-    this.maximumResultBytes = options.maximumResultBytes ?? COMMAND_OUTPUT_LIMIT_BYTES;
+-    this.maximumAggregateBytes =
+-      options.maximumAggregateBytes ?? DAEMON_COMPLETION_SPOOL_LIMIT_BYTES;
++    const policy = options.policy;
++    this.maximumChunkBytes = policy.maximumChunkRawBytes;
++    this.inlineBytes = policy.inlineRawBytes;
++    this.maximumResultBytes = policy.maximumResultRawBytes;
++    this.maximumAggregateBytes = policy.maximumAggregateSpoolRawBytes;
++      maximumChunkBytes: this.maximumChunkBytes,
+
+diff --git a/apps/cli/src/daemon/daemon-command-dispatcher.ts b/apps/cli/src/daemon/daemon-command-dispatcher.ts
+-    const registry = new DaemonRegistry(identity.registryDirectory);
+-    const transport = new LocalDaemonTransport();
+-    const processTerminator = new NodeDaemonProcessTerminator();
++    const registry = new DaemonRegistry(identity.registryDirectory, policy.values.startup);
++    const transport = new LocalDaemonTransport(policy.values);
++    const processTerminator = new NodeDaemonProcessTerminator(policy.values.shutdown);
++        policy: policy.values,
+
+diff --git a/apps/cli/src/daemon/daemon-controller.ts b/apps/cli/src/daemon/daemon-controller.ts
++  readonly policy: Pick<DaemonPolicyValues, "startup" | "shutdown">;
+-  readonly stopTimeoutMs?: number;
+-  readonly pollIntervalMs?: number;
++  private readonly policy: Pick<DaemonPolicyValues, "startup" | "shutdown">;
+-    options: DaemonControllerOptions = {},
++    options: DaemonControllerOptions,
++    this.policy = options.policy;
+-    this.stopTimeoutMs = options.stopTimeoutMs ?? 5_000;
+-    this.pollIntervalMs = options.pollIntervalMs ?? 20;
+-    this.processTerminator = options.processTerminator ?? new NodeDaemonProcessTerminator();
++    this.stopTimeoutMs = this.policy.shutdown.stopTimeoutMs;
++    this.pollIntervalMs = this.policy.shutdown.controllerPollIntervalMs;
++    this.processTerminator =
++      options.processTerminator ?? new NodeDaemonProcessTerminator(this.policy.shutdown);
+-    const coordinator = new DaemonStartupCoordinator(this.registry, this.launcher, this.transport);
++    const coordinator = new DaemonStartupCoordinator(this.registry, this.launcher, this.transport, {
++      policy: this.policy,
++    });
+-    const forceWaitMs = Math.min(500, Math.floor(this.stopTimeoutMs / 2));
++    const forceWaitMs = Math.min(
++      this.policy.shutdown.forcedTerminationReserveMaximumMs,
++      Math.floor(this.stopTimeoutMs / 2),
++    );
+
+diff --git a/apps/cli/src/daemon/daemon-entry.ts b/apps/cli/src/daemon/daemon-entry.ts
+-    const registry = new DaemonRegistry(identity.registryDirectory);
++    const registry = new DaemonRegistry(identity.registryDirectory, policy.values.startup);
+-    const logger = new DaemonLogger(identity, configuration.instanceId, clock);
++    const logger = new DaemonLogger(identity, configuration.instanceId, clock, {
++      policy: policy.values.diagnostics,
++    });
+-      memoryCapBytes: policy.values.resources.hardProcessRssBytes,
+-      resourcePolicy: DaemonResourcePolicy.fromSystemMemory(
+-        policy.values.resources.effectiveMemoryBytes,
+-      ),
+-      transport: new LocalDaemonTransport(),
++      transport: new LocalDaemonTransport(policy.values),
+
+diff --git a/apps/cli/src/daemon/daemon-lifetime.ts b/apps/cli/src/daemon/daemon-lifetime.ts
+-export const DAEMON_IDLE_TIMEOUT_MS = 30 * 60 * 1_000;
+-    private readonly idleTimeoutMs: number,
++    policy: Pick<DaemonPolicyValues["shutdown"], "idleTimeoutMs">,
++    this.idleTimeoutMs = policy.idleTimeoutMs;
++  private readonly idleTimeoutMs: number;
+
+diff --git a/apps/cli/src/daemon/daemon-logger.ts b/apps/cli/src/daemon/daemon-logger.ts
+-export const DAEMON_LOG_ROTATE_BYTES = 10 * 1024 * 1024;
+-export const DAEMON_LOG_BACKUP_COUNT = 4;
+-  readonly rotateBytes?: number;
+-  readonly maximumQueuedEvents?: number;
++  readonly policy: DaemonPolicyValues["diagnostics"];
++  private readonly backupCount: number;
+-    options: DaemonLoggerOptions = {},
++    options: DaemonLoggerOptions,
+-    this.rotateBytes = options.rotateBytes ?? DAEMON_LOG_ROTATE_BYTES;
+-    this.maximumQueuedEvents = options.maximumQueuedEvents ?? 1_024;
++    const policy = options.policy;
++    this.rotateBytes = policy.logRotateBytes;
++    this.maximumQueuedEvents = policy.maximumQueuedEvents;
++    this.backupCount = policy.logBackupCount;
+-    await this.storage.remove(`${this.identity.logPath}.${DAEMON_LOG_BACKUP_COUNT}`);
+-    for (let index = DAEMON_LOG_BACKUP_COUNT - 1; index >= 1; index -= 1) {
++    await this.storage.remove(`${this.identity.logPath}.${this.backupCount}`);
++    for (let index = this.backupCount - 1; index >= 1; index -= 1) {
+
+diff --git a/apps/cli/src/daemon/daemon-navigation-worker-entry.ts b/apps/cli/src/daemon/daemon-navigation-worker-entry.ts
+-    const heapMonitor = new WorkerHeapHighWater();
++    const heapMonitor = new WorkerHeapHighWater(
++      this.policy.values.resources.workerHeapSampleIntervalMs,
++    );
+-    const validated = DaemonNavigationWorkerProtocol.response(response);
++    const validated = DaemonNavigationWorkerProtocol.response(
++      response,
++      this.policy.values.output.maximumChunkRawBytes,
++    );
+-  constructor() {
++  constructor(sampleIntervalMs: number) {
+-    this.timer = setInterval(() => this.sample(), 25);
++    this.timer = setInterval(() => this.sample(), sampleIntervalMs);
+
+diff --git a/apps/cli/src/daemon/daemon-navigation-worker-protocol.ts b/apps/cli/src/daemon/daemon-navigation-worker-protocol.ts
+-  static response(value: unknown): DaemonNavigationWorkerResponse {
++  static response(value: unknown, maximumChunkRawBytes: number): DaemonNavigationWorkerResponse {
+-      value.bytes.byteLength <= COMMAND_OUTPUT_CHUNK_BYTES
++      value.bytes.byteLength <= maximumChunkRawBytes
+
+diff --git a/apps/cli/src/daemon/daemon-navigation-worker.ts b/apps/cli/src/daemon/daemon-navigation-worker.ts
++  private readonly maximumChunkRawBytes: number;
++    this.maximumChunkRawBytes = DaemonPolicy.fromSerialized(
++      options.configuration.policy,
++    ).values.output.maximumChunkRawBytes;
+-      response = DaemonNavigationWorkerProtocol.response(value);
++      response = DaemonNavigationWorkerProtocol.response(value, this.maximumChunkRawBytes);
+
+diff --git a/apps/cli/src/daemon/daemon-process-launcher.ts b/apps/cli/src/daemon/daemon-process-launcher.ts
+-  constructor(
+-    private readonly gracefulTimeoutMs = 500,
+-    private readonly pollIntervalMs = 20,
+-  ) {}
++  private readonly gracefulTimeoutMs: number;
++  private readonly pollIntervalMs: number;
++  constructor(policy: DaemonPolicyValues["shutdown"]) {
++    this.gracefulTimeoutMs = policy.processSignalExitTimeoutMs;
++    this.pollIntervalMs = policy.processExitPollIntervalMs;
++  }
+-    terminator: DaemonProcessTerminator = new NodeDaemonProcessTerminator(),
++    terminator: DaemonProcessTerminator = new NodeDaemonProcessTerminator(policy.values.shutdown),
+
+diff --git a/apps/cli/src/daemon/daemon-registry.ts b/apps/cli/src/daemon/daemon-registry.ts
+-export const DAEMON_STARTUP_TIMEOUT_MS = 15_000;
++  private readonly platform: NodeJS.Platform;
++  private readonly renamePath: typeof renameSync;
++  private readonly startupPolicy: DaemonPolicyValues["startup"];
+-    private readonly platform = process.platform,
+-    private readonly renamePath: typeof renameSync = renameSync,
+-  ) {}
++    startupPolicy: DaemonPolicyValues["startup"],
++    platform: NodeJS.Platform = process.platform,
++    renamePath: typeof renameSync = renameSync,
++  ) {
++    this.platform = platform;
++    this.renamePath = renamePath;
++    this.startupPolicy = startupPolicy;
++  }
+-    graceMs = DAEMON_STARTUP_TIMEOUT_MS,
++    graceMs = this.startupPolicy.coordinationGraceMs,
+-      Date.now() - observedOwner.acquiredAt <= DAEMON_STARTUP_TIMEOUT_MS
++      Date.now() - observedOwner.acquiredAt <= this.startupPolicy.coordinationGraceMs
+
+diff --git a/apps/cli/src/daemon/daemon-resource-monitor.ts b/apps/cli/src/daemon/daemon-resource-monitor.ts
+-const MEBIBYTE = 1024 * 1024;
+-const MINIMUM_PROCESS_MEMORY_MIB = 256;
+-const MAXIMUM_PROCESS_MEMORY_MIB = 8 * 1024;
+-const MINIMUM_WORKER_OLD_GENERATION_MIB = 128;
+-const MAXIMUM_WORKER_OLD_GENERATION_MIB = 4 * 1024;
+-export const DAEMON_RESOURCE_SAMPLE_INTERVAL_MS = 250;
+-export const DAEMON_RESOURCE_RESTART_WINDOW_MS = 10 * 60 * 1000;
+-export const DAEMON_RESOURCE_RESTART_LIMIT = 2;
+-export interface DaemonResourcePolicyRecord {
+-  readonly effectiveMemoryBytes: number;
+-  readonly hardProcessRssBytes: number;
+-  readonly softProcessRssBytes: number;
+-  readonly resumeProcessRssBytes: number;
+-  readonly workerMaxOldGenerationSizeMb: number;
+-}
+-export class DaemonResourcePolicy {
+-  private constructor(readonly record: DaemonResourcePolicyRecord) {}
+-  static fromSystemMemory(
+-    totalMemoryBytes: number,
+-    constrainedMemoryBytes?: number,
+-  ): DaemonResourcePolicy {
+-    const effectiveMemoryBytes =
+-      constrainedMemoryBytes !== undefined &&
+-      constrainedMemoryBytes > 0 &&
+-      constrainedMemoryBytes < totalMemoryBytes
+-        ? constrainedMemoryBytes
+-        : totalMemoryBytes;
+-    const effectiveMemoryMib = Math.max(1, Math.floor(effectiveMemoryBytes / MEBIBYTE));
+-    const hardProcessRssMib = DaemonResourcePolicy.clamp(
+-      Math.floor(effectiveMemoryMib / 2),
+-      MINIMUM_PROCESS_MEMORY_MIB,
+-      MAXIMUM_PROCESS_MEMORY_MIB,
+-    );
+-    const workerMaxOldGenerationSizeMb = DaemonResourcePolicy.clamp(
+-      Math.floor(effectiveMemoryMib / 4),
+-      MINIMUM_WORKER_OLD_GENERATION_MIB,
+-      MAXIMUM_WORKER_OLD_GENERATION_MIB,
+-    );
+-    return new DaemonResourcePolicy({
+-      effectiveMemoryBytes,
+-      hardProcessRssBytes: hardProcessRssMib * MEBIBYTE,
+-      softProcessRssBytes: Math.floor(hardProcessRssMib * 0.8) * MEBIBYTE,
+-      resumeProcessRssBytes: Math.floor(hardProcessRssMib * 0.7) * MEBIBYTE,
+-      workerMaxOldGenerationSizeMb,
+-    });
+-  }
+-  private static clamp(value: number, minimum: number, maximum: number): number {
+-    return Math.max(minimum, Math.min(maximum, value));
+-  }
+-}
+-  readonly policy: DaemonResourcePolicy;
++  readonly policy: DaemonPolicyValues["resources"];
+-  readonly intervalMs?: number;
+-      this.options.intervalMs ?? DAEMON_RESOURCE_SAMPLE_INTERVAL_MS,
++      this.options.policy.supervisionIntervalMs,
+-    const policy = this.options.policy.record;
++    const policy = this.options.policy;
+-    const cutoff = this.now() - DAEMON_RESOURCE_RESTART_WINDOW_MS;
++    const cutoff = this.now() - this.options.policy.replacementWindowMs;
+-    if (this.replacementTimes.length >= DAEMON_RESOURCE_RESTART_LIMIT) {
++    if (this.replacementTimes.length >= this.options.policy.replacementLimit) {
+
+diff --git a/apps/cli/src/daemon/daemon-result-chunk-codec.ts b/apps/cli/src/daemon/daemon-result-chunk-codec.ts
+-  static encode(chunk: DaemonResultChunk): Buffer {
+-    DaemonResultChunkCodec.assertChunk(chunk);
++  static encode(chunk: DaemonResultChunk, maximumChunkRawBytes: number): Buffer {
++    DaemonResultChunkCodec.assertChunk(chunk, maximumChunkRawBytes);
+-  static decode(payload: Buffer): DaemonResultChunk {
++  static decode(payload: Buffer, maximumChunkRawBytes: number): DaemonResultChunk {
+-    if (!DaemonResultChunkCodec.isHeader(parsed) || parsed.payloadLength !== bytes.byteLength) {
++    if (
++      !DaemonResultChunkCodec.isHeader(parsed, maximumChunkRawBytes) ||
++      parsed.payloadLength !== bytes.byteLength
++    ) {
+-    DaemonResultChunkCodec.assertChunk(chunk);
++    DaemonResultChunkCodec.assertChunk(chunk, maximumChunkRawBytes);
+-  private static assertChunk(chunk: DaemonResultChunk): void {
++  private static assertChunk(chunk: DaemonResultChunk, maximumChunkRawBytes: number): void {
+-      chunk.bytes.byteLength > COMMAND_OUTPUT_CHUNK_BYTES
++      chunk.bytes.byteLength > maximumChunkRawBytes
+-  private static isHeader(value: unknown): value is DaemonResultChunkHeader {
++  private static isHeader(
++    value: unknown,
++    maximumChunkRawBytes: number,
++  ): value is DaemonResultChunkHeader {
+-      Number(header.payloadLength) <= COMMAND_OUTPUT_CHUNK_BYTES &&
++      Number(header.payloadLength) <= maximumChunkRawBytes &&
+-  constructor(private readonly maximumControlFrameBytes: number) {}
++  constructor(
++    private readonly maximumControlFrameBytes: number,
++    private readonly maximumChunkRawBytes: number,
++  ) {}
+-        ? this.maximumControlFrameBytes + COMMAND_OUTPUT_CHUNK_BYTES
++        ? this.maximumControlFrameBytes + this.maximumChunkRawBytes
+-        values.push(DaemonResultChunkCodec.decode(payload));
++        values.push(DaemonResultChunkCodec.decode(payload, this.maximumChunkRawBytes));
+
+diff --git a/apps/cli/src/daemon/daemon-startup-coordinator.ts b/apps/cli/src/daemon/daemon-startup-coordinator.ts
+-  DAEMON_STARTUP_TIMEOUT_MS,
+-  type DaemonRegistry,
+-  type StartupOwner,
+-  readonly startupTimeoutMs?: number;
+-  readonly terminationTimeoutMs?: number;
+-  readonly pollIntervalMs?: number;
++  readonly policy: Pick<DaemonPolicyValues, "startup" | "shutdown">;
+-const DAEMON_TERMINATION_TIMEOUT_MS = 5 * 60_000;
+-  private readonly startupTimeoutMs: number;
++  private readonly coordinationGraceMs: number;
++  private readonly childFailureRetryLimit: number;
+-    options: DaemonStartupCoordinatorOptions = {},
++    options: DaemonStartupCoordinatorOptions,
+-    this.startupTimeoutMs = options.startupTimeoutMs ?? Number.POSITIVE_INFINITY;
+-    this.terminationTimeoutMs = options.terminationTimeoutMs ?? DAEMON_TERMINATION_TIMEOUT_MS;
+-    this.pollIntervalMs = options.pollIntervalMs ?? 20;
++    const policy = options.policy;
++    this.coordinationGraceMs = policy.startup.coordinationGraceMs;
++    this.childFailureRetryLimit = policy.startup.childFailureRetryLimit;
++    this.terminationTimeoutMs = policy.startup.previousInstanceTerminationTimeoutMs;
++    this.pollIntervalMs = policy.startup.observationPollIntervalMs;
+-    this.processTerminator = options.processTerminator ?? new NodeDaemonProcessTerminator();
++    this.processTerminator =
++      options.processTerminator ?? new NodeDaemonProcessTerminator(policy.shutdown);
+-    try {
+-      return await this.triggerAndWait(identity);
+-    } catch (error) {
+-      if (!(error instanceof DaemonChildExitError || error instanceof DaemonWarmupLostError)) {
+-        throw error;
++    let failureCount = 0;
++    while (true) {
++      try {
++        return await this.triggerAndWait(identity);
++      } catch (error) {
++        if (
++          !(error instanceof DaemonChildExitError || error instanceof DaemonWarmupLostError) ||
++          failureCount >= this.childFailureRetryLimit
++        ) {
++          throw error;
++        }
++        failureCount += 1;
+-      return this.triggerAndWait(identity);
+-        if (this.now() - missingOwner.firstObservedAt <= DAEMON_STARTUP_TIMEOUT_MS) {
++        if (this.now() - missingOwner.firstObservedAt <= this.coordinationGraceMs) {
+
+diff --git a/apps/cli/src/daemon/local-daemon-transport.ts b/apps/cli/src/daemon/local-daemon-transport.ts
+-  DAEMON_MAXIMUM_CONTROL_FRAME_BYTES,
+-  type CompletionSpoolManifest,
+-const DEFAULT_MAXIMUM_FRAME_BYTES = 8 * 1024 * 1024;
+-const DEFAULT_REQUEST_TIMEOUT_MS = 250;
+-const DEFAULT_EXECUTION_REQUEST_TIMEOUT_MS = 5_000;
+-  readonly maximumFrameBytes?: number;
+-  readonly requestTimeoutMs?: number;
+-  readonly executionRequestTimeoutMs?: number;
++  readonly responseTimeoutPurpose?: "ordinary" | "status-observer";
+-  readonly outputInlineBytes?: number;
++export type LocalDaemonTransportPolicy = Pick<
++  DaemonPolicyValues,
++  "transport" | "delivery" | "output"
++>;
+-  private readonly outputInlineBytes: number | undefined;
+-  constructor(options: LocalDaemonTransportOptions = {}) {
+-    this.maximumFrameBytes = options.maximumFrameBytes ?? DEFAULT_MAXIMUM_FRAME_BYTES;
+-    this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+-    this.executionRequestTimeoutMs =
+-      options.executionRequestTimeoutMs ?? DEFAULT_EXECUTION_REQUEST_TIMEOUT_MS;
++  private readonly maximumControlFrameBytes: number;
++  private readonly maximumChunkRawBytes: number;
++  private readonly outputPolicy: DaemonPolicyValues["output"];
++  private readonly deliveryPolicy: DaemonPolicyValues["delivery"];
++  constructor(policy: LocalDaemonTransportPolicy, options: LocalDaemonTransportOptions = {}) {
++    this.maximumFrameBytes = policy.transport.maximumJsonPayloadBytes;
++    this.requestTimeoutMs =
++      options.responseTimeoutPurpose === "status-observer"
++        ? policy.transport.statusResponseTimeoutMs
++        : policy.transport.singleResponseTimeoutMs;
++    this.executionRequestTimeoutMs = policy.transport.executionAdmissionTimeoutMs;
++    this.maximumControlFrameBytes = policy.transport.maximumExecutionControlPayloadBytes;
++    this.maximumChunkRawBytes = policy.output.maximumChunkRawBytes;
++    this.outputPolicy = policy.output;
++    this.deliveryPolicy = policy.delivery;
+-    this.outputInlineBytes = options.outputInlineBytes;
+-      completion: this.completeWithOneReattachment(endpoint, request, receipt.completion),
++      completion: this.completeWithReattachments(endpoint, request, receipt.completion),
+-  private async completeWithOneReattachment(
++  private async completeWithReattachments(
+-    try {
+-      return await completion;
+-    } catch (firstError) {
+-      if (!LocalDaemonTransport.isAcceptedConnectionClose(firstError, request)) throw firstError;
++    let currentCompletion = completion;
++    let reattachmentCount = 0;
++    while (true) {
+-        const reattached = await this.executeOnce(endpoint, request);
+-        return await reattached.completion;
+-      } catch {
+-        throw firstError;
++        return await currentCompletion;
++      } catch (firstError) {
++        if (
++          !LocalDaemonTransport.isAcceptedConnectionClose(firstError, request) ||
++          reattachmentCount >= this.deliveryPolicy.postAcceptanceExecutionReattachmentLimit
++        ) {
++          throw firstError;
++        }
++        try {
++          const reattached = await this.executeOnce(endpoint, request);
++          currentCompletion = reattached.completion;
++          reattachmentCount += 1;
++        } catch {
++          throw firstError;
++        }
+-      const decoder = new DaemonTransferFrameDecoder(DAEMON_MAXIMUM_CONTROL_FRAME_BYTES);
++      const decoder = new DaemonTransferFrameDecoder(
++        this.maximumControlFrameBytes,
++        this.maximumChunkRawBytes,
++      );
++        policy: this.outputPolicy,
+-        ...(this.outputInlineBytes === undefined ? {} : { inlineBytes: this.outputInlineBytes }),
+-      let resumeStarted = false;
++      let resumeCount = 0;
+-          resumeStarted ||
++          resumeCount >= this.deliveryPolicy.resultTransferResumeLimitPerExecutionAttempt ||
+-        resumeStarted = true;
++        resumeCount += 1;
+-      const decoder = new DaemonTransferFrameDecoder(DAEMON_MAXIMUM_CONTROL_FRAME_BYTES);
++      const decoder = new DaemonTransferFrameDecoder(
++        this.maximumControlFrameBytes,
++        this.maximumChunkRawBytes,
++      );
+-    await this.writeEncodedServerFrame(socket, DaemonResultChunkCodec.encode(message));
++    await this.writeEncodedServerFrame(
++      socket,
++      DaemonResultChunkCodec.encode(message, this.maximumChunkRawBytes),
++    );
+
+diff --git a/apps/cli/src/daemon/workspace-daemon.ts b/apps/cli/src/daemon/workspace-daemon.ts
+-  DaemonResourcePolicy,
+-  DAEMON_STARTUP_TIMEOUT_MS,
+-  type DaemonRegistry,
+-  type DaemonStartupLease,
+-  readonly memoryCapBytes: number;
+-  readonly resourcePolicy?: DaemonResourcePolicy;
+-  readonly idleTimeoutMs?: number;
+-  readonly resourceCheckIntervalMs?: number;
+-  readonly startupHeartbeatIntervalMs?: number;
+-  readonly completionSpoolLimits?: {
+-    readonly inlineBytes?: number;
+-    readonly maximumResultBytes?: number;
+-    readonly maximumAggregateBytes?: number;
+-  };
+-  readonly operationTraceRetentionMs?: number;
+-  readonly maximumRetainedOperationTraces?: number;
+-const DEFAULT_OPERATION_TRACE_RETENTION_MS = 5 * 60 * 1000;
+-const DEFAULT_MAXIMUM_RETAINED_OPERATION_TRACES = 1_024;
+-  private readonly resourcePolicy: DaemonResourcePolicy;
++  private readonly resourcePolicy: DaemonPolicyValues["resources"];
+-      ...options.completionSpoolLimits,
++      policy: policy.values.output,
+-      options.logger ?? new DaemonLogger(options.identity, options.instanceId, this.clock);
+-    const resourcePolicy =
+-      options.resourcePolicy ??
+-      DaemonResourcePolicy.fromSystemMemory(
+-        Math.max(options.memoryCapBytes * 2, 512 * 1024 * 1024),
+-      );
++      options.logger ??
++      new DaemonLogger(options.identity, options.instanceId, this.clock, {
++        policy: policy.values.diagnostics,
++      });
++    const resourcePolicy = policy.values.resources;
+-                maxOldGenerationSizeMb: resourcePolicy.record.workerMaxOldGenerationSizeMb,
++                maxOldGenerationSizeMb: resourcePolicy.workerMaxOldGenerationSizeMiB,
+-    this.lifetime = new DaemonLifetime(
+-      { now: this.now },
+-      options.idleTimeoutMs ?? DAEMON_IDLE_TIMEOUT_MS,
+-      () => this.drainAndShutdown("idle"),
++    this.lifetime = new DaemonLifetime({ now: this.now }, policy.values.shutdown, () =>
++      this.drainAndShutdown("idle"),
+-      ...(options.resourceCheckIntervalMs === undefined
+-        ? {}
+-        : { intervalMs: options.resourceCheckIntervalMs }),
+-        this.options.startupHeartbeatIntervalMs ?? 100,
++        this.policy.values.startup.heartbeatIntervalMs,
+-        memoryCapBytes: this.options.memoryCapBytes,
++        memoryCapBytes: this.resourcePolicy.hardProcessRssBytes,
+-    const deadline = this.now() + DAEMON_STARTUP_TIMEOUT_MS;
++    const deadline = this.now() + this.policy.values.startup.coordinationGraceMs;
+-      this.options.operationTraceRetentionMs ?? DEFAULT_OPERATION_TRACE_RETENTION_MS,
++      this.policy.values.diagnostics.disconnectedTraceRetentionMs,
+-    const capacity = Math.max(
+-      1,
+-      this.options.maximumRetainedOperationTraces ?? DEFAULT_MAXIMUM_RETAINED_OPERATION_TRACES,
+-    );
++    const capacity = Math.max(1, this.policy.values.diagnostics.maximumDisconnectedTraces);
+-    const acknowledgementDeadline = Date.now() + 250;
++    const acknowledgementDeadline =
++      Date.now() + this.policy.values.shutdown.resourceDrainAcknowledgementGraceMs;
+-      await new Promise((resolve) => setTimeout(resolve, 5));
++      await new Promise((resolve) =>
++        setTimeout(resolve, this.policy.values.shutdown.resourceDrainAcknowledgementPollIntervalMs),
++      );
+-    return new Promise((resolve) => setTimeout(resolve, 10));
++    return new Promise((resolve) =>
++      setTimeout(resolve, this.policy.values.startup.authorizationPollIntervalMs),
++    );
+-      hardProcessRssBytes: this.resourcePolicy.record.hardProcessRssBytes,
++      hardProcessRssBytes: this.resourcePolicy.hardProcessRssBytes,

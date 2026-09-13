@@ -341,3 +341,8 @@ no changes added to commit (use "git add" and/or "git commit -a")
 - 2026-09-13 06:51:01 +03: START 44-fresh-reader-refresh-20 attempt 3 via codex, pid 66246
 - 2026-09-13 06:55:54 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log
 - 2026-09-13 06:56:41 +03: FINISH 40-best-of-synthesis via codex, exit 0, README present
+- 2026-09-13 06:56:41 +03: COMMIT OK 40-best-of-synthesis: [main 8acc31c] Add experiment 40 best-of-synthesis
+- 2026-09-13 06:56:41 +03: Generated brief 47-critique-refresh-40: recurring brief 38 after 40 completions
+- 2026-09-13 06:56:41 +03: Generated brief 48-fresh-reader-refresh-40: recurring brief 39 after 40 completions
+- 2026-09-13 06:56:41 +03: START 45-critique-refresh-30 attempt 1 via codex, pid 69410
+- 2026-09-13 06:59:12 +03: FINISH 39-fresh-reader-check via codex, exit 0, README present

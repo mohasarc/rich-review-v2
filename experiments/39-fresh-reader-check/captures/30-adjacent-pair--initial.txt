@@ -1,0 +1,368 @@
+Skip to the review
+∥
+adjacent pair
+30 / symnav
+The cut
+What crosses
+Try the wait
+Sources
+A REVIEW OF TWO CONSECUTIVE EXTRACTIONS
+01 → 02
+Split the owners.
+Keep the wait.
+
+#146 gathers how results reach clients.
+#147 gathers when accepted work runs.
+The execution turn still waits across that new boundary.
+
+WHY THIS SPLIT?
+Two lifecycles.
+One shared result.
+
+Delivery can outlive execution. The documented order extracts delivery first; the exact choice of two PRs is unexplained ↗.
+
+A
+Where the boundary moves
+
+Simplified ownership map. Select a stage; follow any box deeper.
+
+Before #146
+b8e8b7b8
+#146 · delivery leaves the shell
+f79ba362
+#147 · execution follows
+ba53c8e1
+Same daemon process
+apps/cli/src/daemon/
+WorkspaceDaemon
+composition · authentication · admission · shutdown
+↓ accept / status / drain / close
+↓ attach / fetch / ACK / cleanup
+EXTRACTED IN #147
+AcceptedExecutionSession
+
+Acceptance identity · queued worker turn
+ledger completion · delivery wait · resource sample
+
+EXTRACTED IN #146
+DaemonDeliverySession
+
+Writers · attachments · result transfer · ACK
+tracked stream promises · retained traces · cleanup
+
+AcceptedRequestLedger
+request identity + state
+shared by both coordinators
+WorkspaceRequestQueue
+FIFO order
+and turn boundaries
+CompletionSpoolStore
+retained result bytes
+and storage operations
+Other existing owners
+worker · resources
+lifetime · observer · policy · clock
+These mechanisms keep their own state. The sessions coordinate them.
+THE CONTRACTS ACROSS THE CUT
+Acceptance
+execution → shell → delivery
+Writer + trace
+delivery → execution → worker¹
+Ledger publication
+execution → journal → delivery
+Current promise
+delivery → waiting execution
+
+¹ Only the writer goes to the worker; execution keeps the trace. Delivery’s implementation is unchanged by #147, while its tests follow the relocated acceptance fields.
+
+B
+Everything this pair asks you to carry
+
+Read these six groups and stop, or open any decision for mechanism and evidence.
+
+STATED a source supplies a reason
+UNEXPLAINED no specific reason found in the inspected inputs
+01
+Cut coordination, keep the owners
+Two coordinators; the same process and package.
+STATED
+
+#146 extracts delivery and trace coordination. #147 extracts acceptance and FIFO execution. Both still live in apps/cli/src/daemon; CLI and protocol surfaces stay put.
+
+Reason: Attachment, transfer, acknowledgement and trace lifecycles form one boundary; existing mechanisms retain their owners.
+
+Share authoritative owners through selected ports.
+STATED
+
+The ledger owns request state; the spool store owns bytes; the queue owns FIFO order. Only some dependencies have small interfaces; several still use concrete class types.
+
+Reason: The author explicitly keeps each mechanism authoritative instead of moving its state into either session.
+
+Delivery lands first; the reason for two PRs is unstated.
+UNEXPLAINED
+
+#147 consumes the writer, trace and barrier surface introduced by #146. The order is documented; no comparison with a combined or reversed split was found.
+
+Missing reason: The bodies say “delivery before accepted execution.” They do not explain why this exact review boundary was chosen.
+
+02
+One acceptance, many connections
+Acceptance metadata moves from a shell map to the ledger.
+STATED
+
+acceptedAt and the original queuePosition survive queued, running, terminal and acknowledged states. Navigation activity is sampled separately.
+
+Reason: Every state shares one original acceptance identity; a parallel process map duplicated that ownership.
+
+A matching duplicate attaches; it does not run again.
+STATED
+
+The shell passes the same acceptance envelope to delivery. Execution adds no trace, queue turn, clock read or lifetime reset for an existing matching request.
+
+Reason: Request identity stays idempotent for the lifetime of this daemon.
+
+The shell authenticates; the “Authenticated” aliases add no check.
+UNEXPLAINED
+
+Both sessions receive requests already checked by the shell. Their new Authenticated… types are aliases of the original request types, without a type-level proof.
+
+Missing reason: No reason was found for choosing aliases over another way to express the caller’s authentication responsibility.
+
+03
+Lend handles across the cut
+Execution borrows a writer; delivery wraps the spool timing.
+STATED
+
+The writer crosses to the worker for ordered byte appends, then execution finishes or disposes it. The spool store remains the owner of completion bytes.
+
+Reason: The author keeps completion bytes in their existing owner and coordinates their lifecycle through delivery.
+
+Delivery owns retention; execution gets a fenced trace handle.
+STATED
+
+Late events stop when the trace expires or is evicted. Only disconnected traces are bounded; attachments are counted, and terminal delivery is recorded once in the ledger.
+
+Reason: Evicted or expired traces must ignore late diagnostics even when execution still holds a handle.
+
+04
+Keep the waits inside the turn
+The current delivery promise holds the FIFO turn.
+STATED
+
+Execution captures the latest tracked stream’s promise after ledger publication. It waits for that stream, not all attachments or a normal ACK; later fetches do not retarget the wait. A caught send failure also settles it.
+
+Reason: Queue completion must wait for the current stream without creating another request registry.
+
+A resource sample gates the next turn after success or failure.
+STATED
+
+The session schedules sampling in the queued operation’s finally block. The existing queue runs boundary work ahead of the next request; idle is signalled afterwards.
+
+Reason: Sampling must gate the next FIFO turn after either outcome, rather than be scheduled too late by the process.
+
+Execution classifies failure; cleanup and sampling report diagnostics.
+STATED
+
+The session consumes active resource interruption state, consults shutdown state, disposes incomplete output, and fails the ledger through the existing failure vocabulary.
+
+Reason: The stated boundary preserves each mechanism and exposes only the process state needed for shutdown classification.
+
+Workspace deletion crosses back to the process after delivery.
+STATED
+
+Execution checks workspace presence and later calls a narrow lifecycle port. The shell waits for ACKs or grace expiry and schedules shutdown; it retains shutdown ownership.
+
+Reason: Execution needs shutdown classification, workspace presence and the post-delivery deletion transition, not the whole process shell.
+
+05
+Keep the result after the work
+Resume retained records; a read failure can invalidate completion.
+STATED
+
+Delivery sends manifest → records from the requested offset → result-end. A spool read error disposes bytes and changes the completed journal entry to failed before sending failure.
+
+Reason: The architecture spec requires preserving output, lifecycle and failure behavior through the refactor.
+
+Validate transfer, attempt cleanup, then acknowledge logically.
+STATED
+
+A cleanup failure stays diagnostic and still permits protocol success. A mismatched transfer is rejected; ACK does not remove the ledger identity.
+
+Reason: Physical cleanup comes first, but cleanup failure must not withhold acknowledgement success.
+
+The process orders drain, bounded ACK waiting, worker close and cleanup.
+STATED
+
+Delivery polls ACKs through policy grace and cleans spools/traces when asked. Graceful shutdown waits for worker close before spool cleanup; cleanup failure remains diagnostic.
+
+Reason: The spec preserves lifecycle behavior; the new process test explicitly pins worker-before-spool ordering.
+
+06
+Account for the edits around the move
+#146 changes clock providers at two delivery sites.
+UNEXPLAINED
+
+ACK polling changes Date.now → injected clock.wallNowMs; read-failure timestamps change shell now → delivery clock.wallNowMs. #147 explicitly bridges execution’s wall time back to shell now.
+
+Missing reason: The spec says the daemon owns its clock, but no specific rationale was found for these provider substitutions during this extraction.
+
+#146 changes the disconnected-trace predicate and start order.
+UNEXPLAINED
+
+Reattachment now checks retained-trace/expiry state instead of just missing connections. Trace creation moves after navigation/lifetime signals, before attachment wiring.
+
+Missing reason: The body explains retention fencing, but gives no specific reason for this predicate and event-order rewrite.
+
+Add boundary tests; relocate the ledger expectations.
+STATED
+
+#146 adds delivery tests plus two process ordering cases; #147 adds five session tests. Metadata assertions move with the fields; no deleted case or weakened behavioral expectation was found. Session order uses resolved stubs; process delivery uses gated sends. Tests were read, not run here.
+
+Reason: The bodies and test names explicitly aim to preserve transfer, retention, timing, duplicate and shutdown behavior.
+
+The process test harness follows private state into the sessions.
+UNEXPLAINED
+
+Tests reach deliverySession.operationTraces and acceptedExecutionSession.options.ledger through casts. They preserve observations by coupling to the new private layout.
+
+Missing reason: No reason was found for choosing these private casts over a different observation surface.
+
+C
+Follow a crossing
+↑ Back to the decision
+01 / CUT COORDINATION, KEEP THE OWNERS
+Two coordinators; the same process and package.
+Share authoritative owners through selected ports.
+Delivery lands first; the reason for two PRs is unstated.
+02 / ONE ACCEPTANCE, MANY CONNECTIONS
+Acceptance metadata moves from a shell map to the ledger.
+A matching duplicate attaches; it does not run again.
+The shell authenticates; the “Authenticated” aliases add no check.
+03 / LEND HANDLES ACROSS THE CUT
+Execution borrows a writer; delivery wraps the spool timing.
+Delivery owns retention; execution gets a fenced trace handle.
+04 / KEEP THE WAITS INSIDE THE TURN
+The current delivery promise holds the FIFO turn.
+A resource sample gates the next turn after success or failure.
+Execution classifies failure; cleanup and sampling report diagnostics.
+Workspace deletion crosses back to the process after delivery.
+05 / KEEP THE RESULT AFTER THE WORK
+Resume retained records; a read failure can invalidate completion.
+Validate transfer, attempt cleanup, then acknowledge logically.
+The process orders drain, bounded ACK waiting, worker close and cleanup.
+06 / ACCOUNT FOR THE EDITS AROUND THE MOVE
+#146 changes clock providers at two delivery sites.
+#146 changes the disconnected-trace predicate and start order.
+Add boundary tests; relocate the ledger expectations.
+The process test harness follows private state into the sessions.
+04 / Keep the waits inside the turn
+STATED
+The current delivery promise holds the FIFO turn.
+
+Execution captures the latest tracked stream’s promise after ledger publication. It waits for that stream, not all attachments or a normal ACK; later fetches do not retarget the wait. A caught send failure also settles it.
+
+REASON FOUND IN THE INPUTS
+Queue completion must wait for the current stream without creating another request registry.
+Execution → ledger
+complete(A) publishes to subscribers
+Delivery → execution
+trackedCompletion(A) returns current promise
+Execution turn
+await that promise, then boundary work
+
+For attachments subscribed before publication, each completion callback installs a promise under requestId; the last callback’s promise is the one returned by trackedCompletion. Execution looks it up once immediately after ledger.complete publishes. An older promise cannot delete a newer one. A send error is caught and recorded by delivery, so settlement releases the turn’s delivery wait. A later fetch or already-completed attachment streams directly; it does not continually retarget an already-awaited promise.
+
+INSPECT THE EXACT SOURCE
+Attach paths and tracked getter ↗
+#146 · L133–170
+Latest promise and guarded cleanup ↗
+#146 · L281–295
+Publish then await ↗
+#147 · L130–146
+Process test: first end cannot release latest wait ↗
+#146 · L489–516
+Author’s reason ↗
+#146 · L111
+← Previous decision
+09 / 19
+Next decision →
+D
+Which finish releases the next request?
+Inspect this decision ↗
+
+Request A has two attached connections. Request B is queued behind it. Finish A’s worker, then settle the two delivery streams in either order.
+
+Illustrative model, derived from the pinned source. Both attachments subscribe before A completes. Send buttons settle promises; real I/O, clocks and shutdown are omitted. This does not run the daemon.
+
+Accepted execution
+the FIFO turn
+A
+Worker running
+one acceptance · one execution
+Finish worker A
+A owns the turn
+B
+Queued behind A
+execution count: 0
+Delivery
+one result · two streams
+First attachment
+Attached, waiting for completion
+Send first result-end
+Latest attachment
+Attached, waiting for completion
+Send latest result-end
+Disconnect latest
+trackedCompletion(A) ↖ returns this latest promise at publication
+Result A in the spool
+Writer open; result not yet finalized
+Acknowledge A
+Resource supervisor
+the next gate
+Runs after the delivery wait settles.
+Finish resource sample
+
+The queue runs this boundary operation before B.
+
+One acceptance, two attachments. A runs once. Its duplicate creates another delivery stream, and B waits behind the same turn.
+↻ Reset example
+Where the model stops
+E
+What the evidence actually establishes
+PINNED SNAPSHOTS · NO LIVE GITHUB DEPENDENCY
+
+Source and test assertions were inspected at the three commits shown above. The PRs report full validation; this experiment did not run symnav’s tests. The page’s interaction checks are recorded in the README.
+
+Open source manifest ↗
+CROSSING	WHAT WAS INSPECTED	LIMIT OF THAT EVIDENCE	RECEIPT
+Execution ↔ current stream	#146 process test stalls both result-end sends; completing the first leaves B waiting.	The complementary release order is illustrated from the map/getter implementation, not claimed as a new test run.	Process gate ↗
+Spool → ledger → delivery → resources	#147 session test records the cross-port event order, including workspace deletion.	Its delivery and resource ports return resolved promises; it establishes call order, not real socket backpressure.	Session order ↗
+Physical → logical ACK	#146 gates unlink for both success and failure, checks logical ACK stays false until the gate settles.	Controlled storage; separate from the real Unix-socket validation reported in the PR.	Cleanup gate ↗
+Worker close → spool cleanup	#146 process test blocks worker close and observes cleanup only afterwards.	That case specifically covers graceful worker shutdown.	Shutdown gate ↗
+Immutable identity → later states	#147 moves metadata expectations to the entry, checks they survive acknowledgement.	Internal state-shape assertions changed; this is not deletion of the acceptance contract.	Ledger assertions ↗
+#146
+Own completion delivery
+
+4 changed files · +1,334 / −346
+21 commits · f79ba362
+
+PR bodyFull diffCommits
+#147
+Serialize accepted execution
+
+8 changed files · +687 / −213
+6 commits · ba53c8e1
+
+PR bodyFull diffCommits
+INTENT
+Restructure; preserve behavior
+
+The functional spec asks for the two sessions and unchanged output, timing, failures and lifecycle.
+
+Behavior ruleRequested split
+
+Adjacent pair / experiment 30
+Prepared from local PR metadata and exact git objects. Earlier experiments ignored.
+
+Experiment README ↗
+Back to the cut ↑
