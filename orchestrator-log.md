@@ -260,3 +260,13 @@ BUILD OK stack-head
 - 2026-09-13 06:01:35 +03: COMMIT OK 33-pair-one-variable: [main 89c7524] Add experiment 33 pair-one-variable
 - 2026-09-13 06:01:35 +03: START 37-be-weird-b attempt 1 via codex, pid 46836
 - 2026-09-13 06:03:25 +03: FINISH 32-kit via codex, exit 0, README present
+- 2026-09-13 06:03:25 +03: COMMIT OK 32-kit: [main 79955ca] Add experiment 32 kit
+- 2026-09-13 06:03:25 +03: START 38-critique attempt 1 via claude-opus, pid 48265
+- 2026-09-13 06:03:35 +03: README MISSING 38-critique after worker exit 1
+- 2026-09-13 06:03:35 +03: REQUEUE 38-critique after attempt 1: worker exited 1 without README
+- 2026-09-13 06:03:35 +03: START 38-critique attempt 2 via claude-opus, pid 48321
+- 2026-09-13 06:03:45 +03: README MISSING 38-critique after worker exit 1
+- 2026-09-13 06:03:45 +03: REQUEUE 38-critique after attempt 2: worker exited 1 without README
+- 2026-09-13 06:03:45 +03: START 38-critique attempt 3 via codex, pid 48369
+- 2026-09-13 06:10:32 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log
+- 2026-09-13 06:11:15 +03: FINISH 35-future-self via codex, exit 0, README present
