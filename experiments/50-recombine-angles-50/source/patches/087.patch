@@ -1,0 +1,100 @@
+diff --git a/apps/cli/src/daemon/daemon-startup-coordinator.test.ts b/packages/daemon/src/registry/startup-coordinator.test.ts
+similarity index 98%
+rename from apps/cli/src/daemon/daemon-startup-coordinator.test.ts
+rename to packages/daemon/src/registry/startup-coordinator.test.ts
+index b1983b0fd..6be260513 100644
+--- a/apps/cli/src/daemon/daemon-startup-coordinator.test.ts
++++ b/packages/daemon/src/registry/startup-coordinator.test.ts
+@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
+ import { dirname, join } from "node:path";
+ import { fileURLToPath } from "node:url";
+ import { afterEach, describe, expect, it, vi } from "vitest";
+-import { DaemonPolicy, type DaemonPolicyValues } from "@symnav/daemon";
+-import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
+-import { CommandOutputSnapshot } from "../command-execution-result.js";
+-import { StateDirectoryResolver } from "../state-directory-resolver.js";
++import { DaemonPolicy, type DaemonPolicyValues, type DaemonReadinessProbe } from "@symnav/daemon";
++import { DaemonPolicyTestFactory } from "../../test/helpers/daemon-policy.js";
++import { CommandOutputSnapshot } from "../../test/helpers/executor-output.js";
++import { CanonicalTestPath } from "../../test/helpers/canonical-path.js";
+ import { TestDaemonController as DaemonController } from "../../test/helpers/daemon-controller.js";
+ import { TestDaemonStartupCoordinator as DaemonStartupCoordinator } from "../../test/helpers/daemon-startup-coordinator.js";
+ import {
+@@ -16,7 +16,7 @@ import {
+   type DaemonProcessExit,
+   type DaemonProcessLauncher,
+   type DaemonProcessTerminator,
+-} from "./daemon-process-launcher.js";
++} from "../process/process-launcher.js";
+ import { TestNodeDaemonProcessTerminator as NodeDaemonProcessTerminator } from "../../test/helpers/daemon-process-terminator.js";
+ import {
+   DAEMON_PROTOCOL_VERSION,
+@@ -26,15 +26,15 @@ import {
+   type DaemonRecord,
+   type DaemonRequest,
+   type DaemonResponse,
+-} from "./daemon-protocol.js";
++} from "../transport/protocol.js";
+ import { TestDaemonRegistry as DaemonRegistry } from "../../test/helpers/daemon-registry.js";
+-import { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
++import { DaemonWorkspaceIdentity } from "./workspace-identity.js";
+ import type {
+   DaemonExecutionReceipt,
+   DaemonExecutionRequester,
+   DaemonLifecycleRequestSender,
+   DaemonRequestServer,
+-} from "./daemon-transport.js";
++} from "../transport/contracts.js";
+ import { TestLocalDaemonTransport as LocalDaemonTransport } from "../../test/helpers/local-daemon-transport.js";
+ 
+ const STARTUP_COORDINATION_GRACE_MS =
+@@ -56,16 +56,20 @@ describe("DaemonStartupCoordinator", () => {
+ 
+   it("uses the explicit version readiness probe", async () => {
+     const harness = new CoordinatorHarness(roots);
++    const readinessProbe: DaemonReadinessProbe = {
++      commandName: "version",
++      argv: ["--version", "from-host"],
++    };
+ 
+-    await expect(harness.coordinator().ensureRunning(harness.identity)).resolves.toMatchObject({
+-      status: "ready",
+-    });
++    await expect(
++      harness.coordinator({ readinessProbe }).ensureRunning(harness.identity),
++    ).resolves.toMatchObject({ status: "ready" });
+ 
+     expect(harness.transport.executionRequests).toEqual([
+       expect.objectContaining({
+         commandName: "version",
+         request: {
+-          argv: ["--version"],
++          argv: ["--version", "from-host"],
+           cwd: harness.identity.workspaceRoot,
+           telemetryEnabled: false,
+           executionMode: "cold",
+@@ -925,6 +929,7 @@ class CoordinatorHarness {
+       readonly policy?: Pick<DaemonPolicyValues, "startup" | "shutdown">;
+       readonly processTerminator?: DaemonProcessTerminator;
+       readonly now?: () => number;
++      readonly readinessProbe?: DaemonReadinessProbe;
+     } = {},
+   ): DaemonStartupCoordinator {
+     return new DaemonStartupCoordinator(this.registry, this.launcher, this.transport, {
+@@ -935,6 +940,7 @@ class CoordinatorHarness {
+       pollIntervalMs: 1,
+       processTerminator: options.processTerminator ?? this.terminator,
+       ...(options.now === undefined ? {} : { now: options.now }),
++      ...(options.readinessProbe === undefined ? {} : { readinessProbe: options.readinessProbe }),
+     });
+   }
+ 
+@@ -1173,7 +1179,7 @@ class DelayedMarkerLauncher implements DaemonProcessLauncher {
+ }
+ 
+ function temporaryDirectory(roots: string[]): string {
+-  const root = StateDirectoryResolver.canonicalize(mkdtempSync(join(tmpdir(), "symnav-startup-")));
++  const root = CanonicalTestPath.resolve(mkdtempSync(join(tmpdir(), "symnav-startup-")));
+   roots.push(root);
+   return root;
+ }

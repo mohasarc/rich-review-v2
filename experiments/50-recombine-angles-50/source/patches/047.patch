@@ -1,0 +1,118 @@
+diff --git a/apps/cli/src/daemon/completion-spool.ts b/packages/daemon/src/delivery/completion-spool.ts
+similarity index 82%
+copy from apps/cli/src/daemon/completion-spool.ts
+copy to packages/daemon/src/delivery/completion-spool.ts
+index 5da5035a6..cf04a60cd 100644
+--- a/apps/cli/src/daemon/completion-spool.ts
++++ b/packages/daemon/src/delivery/completion-spool.ts
+@@ -1,12 +1,78 @@
+ import { createHash, randomUUID } from "node:crypto";
++import { constants } from "node:fs";
+ import { chmod, lstat, mkdir, open, rm, unlink } from "node:fs/promises";
++import type { FileHandle } from "node:fs/promises";
+ import { join } from "node:path";
+ import type { DaemonPolicyValues } from "@symnav/daemon";
+-import {
+-  OrderedCommandOutput,
+-  type CommandOutputRecord,
+-  type CommandOutputSummary,
+-} from "../command-execution-result.js";
++import type { DaemonSequencedOutputRecord as CommandOutputRecord } from "../daemon-executor.js";
++
++interface CommandOutputSummary {
++  readonly rawBytes: number;
++  readonly recordCount: number;
++  readonly sha256: string;
++}
++
++const RECORD_HEADER_BYTES = 9;
++
++class CompletionSpoolRecordCodec {
++  static encode(record: CommandOutputRecord): Buffer {
++    const header = Buffer.alloc(RECORD_HEADER_BYTES);
++    header.writeUInt32BE(record.sequence, 0);
++    header.writeUInt8(record.stream === "stdout" ? 0 : 1, 4);
++    header.writeUInt32BE(record.bytes.byteLength, 5);
++    return Buffer.concat([header, Buffer.from(record.bytes)]);
++  }
++
++  static async *decodeFile(
++    filePath: string,
++    maximumRecordBytes: number,
++  ): AsyncIterable<CommandOutputRecord> {
++    const noFollow = "O_NOFOLLOW" in constants ? constants.O_NOFOLLOW : 0;
++    const handle = await open(filePath, constants.O_RDONLY | noFollow);
++    try {
++      const metadata = await handle.stat();
++      if (!metadata.isFile()) throw new Error("Command output spool is not a regular file");
++      let position = 0;
++      let expectedSequence = 0;
++      while (position < metadata.size) {
++        const header = Buffer.alloc(RECORD_HEADER_BYTES);
++        await CompletionSpoolRecordCodec.readExact(handle, header, position);
++        position += RECORD_HEADER_BYTES;
++        const sequence = header.readUInt32BE(0);
++        const streamByte = header.readUInt8(4);
++        const length = header.readUInt32BE(5);
++        if (sequence !== expectedSequence || streamByte > 1 || length > maximumRecordBytes) {
++          throw new Error("Corrupt command output");
++        }
++        const bytes = Buffer.alloc(length);
++        await CompletionSpoolRecordCodec.readExact(handle, bytes, position);
++        position += length;
++        expectedSequence += 1;
++        yield { sequence, stream: streamByte === 0 ? "stdout" : "stderr", bytes };
++      }
++    } finally {
++      await handle.close();
++    }
++  }
++
++  private static async readExact(
++    handle: FileHandle,
++    buffer: Buffer,
++    position: number,
++  ): Promise<void> {
++    let offset = 0;
++    while (offset < buffer.byteLength) {
++      const { bytesRead } = await handle.read(
++        buffer,
++        offset,
++        buffer.byteLength - offset,
++        position + offset,
++      );
++      if (bytesRead === 0) throw new Error("Truncated command output");
++      offset += bytesRead;
++    }
++  }
++}
+ 
+ export interface CompletionSpoolIdentity {
+   readonly workspaceKey: string;
+@@ -63,7 +129,7 @@ export class NodeCompletionSpoolStorage implements CompletionSpoolStorage {
+   }
+ 
+   records(path: string, maximumChunkBytes: number): AsyncIterable<CommandOutputRecord> {
+-    return OrderedCommandOutput.decodeFileRecords(path, maximumChunkBytes);
++    return CompletionSpoolRecordCodec.decodeFile(path, maximumChunkBytes);
+   }
+ 
+   async unlink(path: string): Promise<void> {
+@@ -144,7 +210,7 @@ export class CompletionSpool {
+       ) {
+         await this.spillInlineRecords();
+       }
+-      const encoded = OrderedCommandOutput.encodeRecord(stored);
++      const encoded = CompletionSpoolRecordCodec.encode(stored);
+       if (this.file === undefined) this.inlineRecords.push(stored);
+       else await this.file.write(encoded);
+       this.hash.update(encoded.subarray(4));
+@@ -230,7 +296,7 @@ export class CompletionSpool {
+     this.filePath = join(instanceDirectory, `${this.options.identity.transferId}.spool`);
+     this.file = await this.options.storage.createFile(this.filePath);
+     for (const record of this.inlineRecords) {
+-      await this.file.write(OrderedCommandOutput.encodeRecord(record));
++      await this.file.write(CompletionSpoolRecordCodec.encode(record));
+     }
+     this.inlineRecords.length = 0;
+   }

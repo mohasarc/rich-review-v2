@@ -1,0 +1,85 @@
+diff --git a/apps/cli/test/helpers/workspace-daemon.ts b/packages/daemon/test/helpers/daemon-process-coordinator.ts
+similarity index 65%
+rename from apps/cli/test/helpers/workspace-daemon.ts
+rename to packages/daemon/test/helpers/daemon-process-coordinator.ts
+index 8edc7148b..9b5032bcf 100644
+--- a/apps/cli/test/helpers/workspace-daemon.ts
++++ b/packages/daemon/test/helpers/daemon-process-coordinator.ts
+@@ -1,13 +1,16 @@
+ import { DaemonPolicy } from "@symnav/daemon";
+-import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
+-import type { ProgramDependencies } from "../../src/program-dependencies.js";
++import { existsSync } from "node:fs";
++import { performance } from "node:perf_hooks";
++import { NodeDaemonClock, type DaemonClock } from "../../src/lifecycle/daemon-clock.js";
++import type { DaemonRequestServer } from "../../src/transport/contracts.js";
++import { DaemonPolicyTestFactory } from "./daemon-policy.js";
+ import type { TestDaemonResourcePolicy as DaemonResourcePolicy } from "./daemon-resource-policy.js";
+ import {
+-  WorkspaceDaemon as RuntimeWorkspaceDaemon,
+-  type WorkspaceDaemonOptions,
+-} from "../../src/daemon/workspace-daemon.js";
++  DaemonProcessCoordinator as RuntimeDaemonProcessCoordinator,
++  type DaemonProcessCoordinatorOptions,
++} from "../../src/process/process-coordinator.js";
+ 
+-interface TestWorkspaceDaemonPolicyOptions {
++interface TestDaemonProcessCoordinatorPolicyOptions {
+   readonly policy?: DaemonPolicy;
+   readonly memoryCapBytes?: number;
+   readonly resourcePolicy?: DaemonResourcePolicy;
+@@ -23,12 +26,23 @@ interface TestWorkspaceDaemonPolicyOptions {
+   readonly maximumRetainedOperationTraces?: number;
+ }
+ 
+-export type TestWorkspaceDaemonOptions = Omit<WorkspaceDaemonOptions, "dependencies" | "policy"> &
+-  TestWorkspaceDaemonPolicyOptions & { readonly dependencies: ProgramDependencies };
++export type TestDaemonProcessCoordinatorOptions = Omit<
++  DaemonProcessCoordinatorOptions,
++  "clock" | "coordinates" | "productVersion" | "server" | "workspaceExists" | "policy"
++> &
++  TestDaemonProcessCoordinatorPolicyOptions & {
++    readonly instanceId: string;
++    readonly processToken: string;
++    readonly symnavVersion: string;
++    readonly transport: DaemonRequestServer;
++    readonly clock?: DaemonClock;
++    readonly now?: () => number;
++    readonly workspaceExists?: (workspaceRoot: string) => Promise<boolean>;
++  };
+ 
+-export class TestWorkspaceDaemon extends RuntimeWorkspaceDaemon {
+-  constructor(options: TestWorkspaceDaemonOptions) {
+-    const base = options.policy ?? options.dependencies.daemonPolicy;
++export class TestDaemonProcessCoordinator extends RuntimeDaemonProcessCoordinator {
++  constructor(options: TestDaemonProcessCoordinatorOptions) {
++    const base = options.policy ?? DaemonPolicy.currentSystem();
+     const resourceRecord = options.resourcePolicy?.record;
+     const hardProcessRssBytes = resourceRecord?.hardProcessRssBytes;
+     const softProcessRssBytes = resourceRecord?.softProcessRssBytes;
+@@ -94,6 +108,25 @@ export class TestWorkspaceDaemon extends RuntimeWorkspaceDaemon {
+     });
+     super({
+       ...options,
++      coordinates: {
++        workspaceRoot: options.identity.workspaceRoot,
++        workspaceKey: options.identity.workspaceKey,
++        stateKey: options.identity.stateKey,
++        identityKey: options.identity.identityKey,
++        instanceId: options.instanceId,
++        processToken: options.processToken,
++        endpoint: options.identity.endpoint(options.instanceId),
++      },
++      productVersion: options.symnavVersion,
++      server: options.transport,
++      workspaceExists:
++        options.workspaceExists ?? ((workspaceRoot) => Promise.resolve(existsSync(workspaceRoot))),
++      clock:
++        options.clock ??
++        new NodeDaemonClock({
++          wallNowMs: options.now ?? Date.now,
++          monotonicNowMs: () => performance.now(),
++        }),
+       policy,
+     });
+   }

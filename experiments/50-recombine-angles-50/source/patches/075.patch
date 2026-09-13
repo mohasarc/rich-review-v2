@@ -1,0 +1,223 @@
+diff --git a/apps/cli/src/daemon/workspace-daemon-requests.test.ts b/packages/daemon/src/process/process-coordinator-requests.test.ts
+similarity index 95%
+rename from apps/cli/src/daemon/workspace-daemon-requests.test.ts
+rename to packages/daemon/src/process/process-coordinator-requests.test.ts
+index a234c57a3..b181a58d1 100644
+--- a/apps/cli/src/daemon/workspace-daemon-requests.test.ts
++++ b/packages/daemon/src/process/process-coordinator-requests.test.ts
+@@ -2,16 +2,14 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import { afterEach, describe, expect, it, vi } from "vitest";
+-import { DaemonPolicy, type DaemonCommandName } from "@symnav/daemon";
++import { DAEMON_COMMAND_NAMES, DaemonPolicy, type DaemonCommandName } from "@symnav/daemon";
+ import {
+   CommandOutputSnapshot,
+   type CliExecutionRequest,
+   type CommandExecutionResult,
+   type CommandOutputRecord,
+-} from "../command-execution-result.js";
+-import { createDefaultDependencies } from "../program.js";
+-import { DaemonActivityProjector } from "./daemon-activity-projector.js";
+-import { InvocationWorkspaceSelector } from "./invocation-workspace-selector.js";
++} from "../../test/helpers/executor-output.js";
++import { DaemonActivityProjector } from "./activity-projector.js";
+ import type {
+   DaemonExecutionServerFrame,
+   DaemonExecutionStatusResponse,
+@@ -19,39 +17,39 @@ import type {
+   DaemonResponse,
+   DaemonServerMessage,
+   DaemonServer,
+-} from "./daemon-protocol.js";
+-import { DAEMON_PROTOCOL_VERSION, DAEMON_RECORD_SCHEMA_VERSION } from "./daemon-protocol.js";
++} from "../transport/protocol.js";
++import { DAEMON_PROTOCOL_VERSION, DAEMON_RECORD_SCHEMA_VERSION } from "../transport/protocol.js";
+ import {
+   CompletionSpoolCapacityError,
+   NodeCompletionSpoolStorage,
+   type CompletionSpoolFile,
+-} from "./completion-spool.js";
++} from "../delivery/completion-spool.js";
+ import { TestDaemonRegistry as DaemonRegistry } from "../../test/helpers/daemon-registry.js";
+-import { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
+-import type { DaemonRequestServer, DaemonServerSend } from "./daemon-transport.js";
+-import type { AcceptedRequestLedger } from "./accepted-request-ledger.js";
+-import type { AcceptedExecutionSession } from "./accepted-execution-session.js";
++import { DaemonWorkspaceIdentity } from "../registry/workspace-identity.js";
++import type { DaemonRequestServer, DaemonServerSend } from "../transport/contracts.js";
++import type { AcceptedRequestLedger } from "../execution/accepted-request-ledger.js";
++import type { AcceptedExecutionSession } from "../execution/accepted-execution-session.js";
+ import type {
+   DaemonNavigationWorker,
+   DaemonNavigationWorkerExit,
+-} from "./daemon-navigation-worker.js";
++} from "../worker/navigation-worker.js";
+ import {
+   DaemonNavigationWorkerExitedError,
+   NodeDaemonNavigationWorker,
+-} from "./daemon-navigation-worker.js";
+-import type { DaemonNavigationWorkerResponse } from "./daemon-navigation-worker-protocol.js";
++} from "../worker/navigation-worker.js";
++import type { DaemonNavigationWorkerResponse } from "../worker/worker-protocol.js";
+ import type {
+   DaemonResourceSnapshot,
+   DaemonResourceSupervisor,
+-} from "./daemon-resource-monitor.js";
+-import type { DaemonWorkerGenerationManager } from "./daemon-worker-generation-manager.js";
++} from "../resources/resource-supervisor.js";
++import type { DaemonWorkerGenerationManager } from "../worker/worker-generation-manager.js";
+ import { TestDaemonResourcePolicy as DaemonResourcePolicy } from "../../test/helpers/daemon-resource-policy.js";
+ import {
+-  TestWorkspaceDaemon as WorkspaceDaemon,
+-  type TestWorkspaceDaemonOptions as WorkspaceDaemonOptions,
+-} from "../../test/helpers/workspace-daemon.js";
++  TestDaemonProcessCoordinator as DaemonProcessCoordinator,
++  type TestDaemonProcessCoordinatorOptions as DaemonProcessCoordinatorOptions,
++} from "../../test/helpers/daemon-process-coordinator.js";
+ 
+-describe("WorkspaceDaemon requests", () => {
++describe("DaemonProcessCoordinator requests", () => {
+   const harnesses: RequestHarness[] = [];
+ 
+   afterEach(async () => {
+@@ -227,6 +225,13 @@ describe("WorkspaceDaemon requests", () => {
+         processToken: "wrong-token",
+       }),
+     ).rejects.toThrow("termination");
++    await expect(
++      harness.transport.receive({
++        kind: "kill",
++        instanceId: harness.instanceId,
++        processToken: "wrong-token",
++      }),
++    ).rejects.toThrow("termination");
+     await expect(harness.terminate()).resolves.toEqual({
+       kind: "terminating",
+       instanceId: harness.instanceId,
+@@ -234,6 +239,68 @@ describe("WorkspaceDaemon requests", () => {
+     });
+   });
+ 
++  it.each([
++    {
++      kind: "execute",
++      requestId: "auth-execute",
++      commandName: "version",
++      request: {
++        argv: ["--version"],
++        cwd: "/workspace",
++        telemetryEnabled: false,
++        executionMode: "warm",
++      },
++    },
++    { kind: "execution-status", requestId: "auth-status" },
++    { kind: "result-fetch", requestId: "auth-fetch", offset: 0 },
++    { kind: "result-ack", requestId: "auth-ack", transferId: "transfer" },
++  ] as const)("validates $kind protocol and instance before its token", async (request) => {
++    const harness = await RequestHarness.start(new ImmediateExecutor());
++    harnesses.push(harness);
++    const authenticatedRequest = {
++      ...request,
++      protocolVersion: DAEMON_PROTOCOL_VERSION,
++      instanceId: harness.instanceId,
++      processToken: harness.processToken,
++    } as DaemonRequest;
++    const withAuthentication = (authentication: {
++      readonly protocolVersion?: number;
++      readonly instanceId?: string;
++      readonly processToken?: string;
++    }): DaemonRequest => ({ ...authenticatedRequest, ...authentication }) as DaemonRequest;
++
++    await expect(
++      harness.transport.receive(
++        withAuthentication({
++          protocolVersion: DAEMON_PROTOCOL_VERSION + 1,
++          processToken: "wrong-token",
++        }),
++      ),
++    ).rejects.toThrow("protocol or instance");
++    await expect(
++      harness.transport.receive(
++        withAuthentication({
++          instanceId: "wrong-instance",
++          processToken: "wrong-token",
++        }),
++      ),
++    ).rejects.toThrow("protocol or instance");
++    await expect(
++      harness.transport.receive(withAuthentication({ processToken: "wrong-token" })),
++    ).rejects.toThrow("execution request");
++  });
++
++  it("keeps ping and stop authenticated only by protocol and instance", async () => {
++    const harness = await RequestHarness.start(new ImmediateExecutor());
++    harnesses.push(harness);
++
++    await expect(harness.ping()).resolves.toMatchObject({ kind: "pong" });
++    await expect(harness.stop()).resolves.toEqual({
++      kind: "stopped",
++      instanceId: harness.instanceId,
++    });
++  });
++
+   it("reports protocol and process identity to matching pings", async () => {
+     const harness = await RequestHarness.start(new ImmediateExecutor());
+     harnesses.push(harness);
+@@ -1776,7 +1843,7 @@ class RequestHarness {
+   readonly instanceId = "request-instance";
+   readonly processToken = "request-token";
+   readonly exited: Promise<number>;
+-  private daemon: WorkspaceDaemon | undefined;
++  private daemon: DaemonProcessCoordinator | undefined;
+   private resolveExit!: (code: number) => void;
+ 
+   private constructor() {
+@@ -1803,7 +1870,7 @@ class RequestHarness {
+     executor: DaemonCommandExecutor | undefined,
+     options: RequestHarnessOptions = {},
+   ): {
+-    readonly daemon: WorkspaceDaemon;
++    readonly daemon: DaemonProcessCoordinator;
+     readonly harness: RequestHarness;
+     readonly lease: NonNullable<ReturnType<DaemonRegistry["acquireStartup"]>>;
+   } {
+@@ -1839,14 +1906,13 @@ class RequestHarness {
+         ? new ExecutorNavigationWorker(executor ?? new ImmediateExecutor())
+         : undefined);
+     const daemonPolicy = DaemonPolicy.currentSystem();
+-    const daemon = new WorkspaceDaemon({
++    const daemon = new DaemonProcessCoordinator({
+       identity: harness.identity,
+       instanceId: harness.instanceId,
+       processToken: harness.processToken,
+       symnavVersion: "test",
+       memoryCapBytes: 1024,
+       policy: daemonPolicy,
+-      dependencies: createDefaultDependencies(harness.identity.stateDirectory, daemonPolicy),
+       registry: harness.registry,
+       transport: harness.transport satisfies DaemonRequestServer,
+       ...(navigationWorker === undefined ? {} : { navigationWorker }),
+@@ -2027,7 +2093,10 @@ class RequestHarness {
+   }
+ 
+   private commandName(argv: readonly string[]): DaemonCommandName {
+-    return new InvocationWorkspaceSelector().select(argv, this.workspaceRoot).commandName;
++    const commandName = argv.find((argument): argument is DaemonCommandName =>
++      DAEMON_COMMAND_NAMES.includes(argument as DaemonCommandName),
++    );
++    return commandName ?? "version";
+   }
+ 
+   status(requestId: string): Promise<DaemonExecutionStatusResponse> {
+@@ -2128,8 +2197,8 @@ interface RequestHarnessOptions {
+   readonly resourceCheckIntervalMs?: number;
+   readonly residentMemoryBytes?: () => number;
+   readonly startupHeartbeatIntervalMs?: number;
+-  readonly completionSpoolLimits?: WorkspaceDaemonOptions["completionSpoolLimits"];
+-  readonly completionSpoolStorage?: WorkspaceDaemonOptions["completionSpoolStorage"];
++  readonly completionSpoolLimits?: DaemonProcessCoordinatorOptions["completionSpoolLimits"];
++  readonly completionSpoolStorage?: DaemonProcessCoordinatorOptions["completionSpoolStorage"];
+   readonly operationTraceRetentionMs?: number;
+   readonly maximumRetainedOperationTraces?: number;
+ }

@@ -1,0 +1,25 @@
+# Brief 50 — recombine-angles-50
+
+You are one of many agents running tonight on the same problem. Read, in order:
+1. ~/projects/rich-review-v2/philosophy.md
+2. ~/projects/rich-review-v2/playbook.md sections 1, 2, 3, 6, 7 (the rest is inspiration; read it if useful)
+
+Your output folder: ~/projects/rich-review-v2/experiments/50-recombine-angles-50/  (create it)
+Input bundles: ~/projects/rich-review-v2/inputs/pr-148/
+Worktrees: ~/projects/rich-review-v2/worktrees/pr-148-head, ~/projects/rich-review-v2/worktrees/pr-148-base (read-only except build output)
+Earlier experiments: ~/projects/rich-review-v2/experiments/ (you may read them or ignore them; say which)
+
+## Subjects
+pr-148
+
+## Assigned angle
+Combine these without flattening the pyramid: - Role framing: A reader reconstructing decisions, then checking what source adds or corrects; no correctness verdict on symnav and no page leaderboard.; - Box lenses: Code ownership versus object/process lifetime; validation/failure boundaries; the implementation and stimulus that a test actually observes.; - Opening style: Consequential corrections and concrete descent surprises first; the complete comparison follows in one table.; - Shape: Markdown critique with 40 page rows, sealed page-only notes, browser captures and pinned source witnesses.; - Navigation: Linear table order with direct page links and nonlinear jumps to shared receipts; no score or completion gate.; - Trust posture: Distinguish recorded reason, code consequence, missing record context and my own missed implication. Preserve uncertainty where a route was sampled.; - Persona: One sequential agent reader. This is not an independent human recall study; later pages share concepts learned from earlier pages.; - Representations used: Comparison table, rendered browser text, two retained zoom-canvas screenshots, original page diagrams/simulations, raw patches and source context.; - Importance rule: Changed failure outcomes, validation timing, authority and test observation boundaries before cosmetic differences. “No new material decision found” is allowed.; - Inputs used (beyond bundle): philosophy.md and the required playbook sections; earlier pages and README entry/kind/subject metadata; pinned git history from the read-only stack-head worktree; repository AGENTS instructions and the pinned daemon-policy migration plan. No previous critique body was read; no external web research was used.; - Tech: Markdown/JSON; Playwright on a temporary loopback server for page reading; Python and git for pinned extraction and artifact checks. Symnav was not built, tested or edited.; - Built on earlier experiment(s): Read 01–37 and 40 as critique subjects, including 32 starter and both 33 openings. No earlier critique conclusions or implementation were reused. The full list is in manifest.json and comparisons.json. + - Role framing: Editor asking what a reader can understand, predict, and reconsider.; - Box lenses: Package versus process; implementation versus instance; stored versus returned object; completion gates; propositions and their evidence.; - Opening style: Main diagnosis, then a complete missing/repeated/promising comparison.; - Shape: Written critique, one ledger row per finished experiment, and bounded inspection receipts. No page or leaderboard.; - Navigation: Linear findings or direct links to a finding, experiment, source check, or captured route, with return links.; - Trust posture: Distinguish source correction, recall miss, omission, parent/child surprise, producer-reported execution, and editorial inference. Separate disclosure, reason, and unresolved constraint.; - Persona: A technically capable morning reader. This critic is primed by overlapping explanations and earlier critiques; it is not a fresh-human study.; - Representations used: Markdown prose and comparison tables; rendered text, selected screenshots, and source excerpts as evidence.; - Importance rule: Consequences for understanding and human choice. Test premises and rationale receive the same attention as architectural moves; inventory size is not a quality measure.; - Inputs used (beyond bundle): Philosophy and playbook; all included READMEs and primary artifacts; selected methods, narration, provenance records, and earlier critique witnesses; historical git objects from the assigned stack worktree. No external research.; - Tech: Markdown, Python, git read operations, and isolated offline Playwright inspection. The delivered critique has no runtime dependency.; - Built on earlier experiment(s): **Read all finished experiments 01–46.** They are the critique subjects. Findings from 38/39/41–46 are attributed; 40's synthesis is examined as reuse and reconciliation. No predecessor page implementation was copied into a new page.
+
+## Kind
+page
+
+## Constraints
+Hard rules in playbook section 1 apply. Technology is your choice. No deadline, no size target. Deep and ugly beats shallow and polished. If your approach turns bad halfway, write it up and start another in the same folder.
+
+## When done
+README.md per playbook section 7. Then stop.
