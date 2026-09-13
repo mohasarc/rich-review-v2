@@ -99,3 +99,12 @@ BUILD OK stack-head
 - 2026-09-13 03:20:30 +03: COMMIT OK 11-chess-coach: [main 84da804] Add experiment 11 chess-coach
 - 2026-09-13 03:20:30 +03: START 13-owner-persona attempt 1 via codex, pid 68580
 - 2026-09-13 03:21:00 +03: FINISH 02-unconstrained-b via codex, exit 0, README present
+- 2026-09-13 03:21:00 +03: COMMIT OK 02-unconstrained-b: [main cb3f778] Add experiment 02 unconstrained-b
+- 2026-09-13 03:21:00 +03: START 14-outsider-persona attempt 1 via claude-opus, pid 69371
+- 2026-09-13 03:21:10 +03: README MISSING 14-outsider-persona after worker exit 1
+- 2026-09-13 03:21:10 +03: REQUEUE 14-outsider-persona after attempt 1: worker exited 1 without README
+- 2026-09-13 03:21:10 +03: START 14-outsider-persona attempt 2 via claude-opus, pid 69430
+- 2026-09-13 03:21:20 +03: README MISSING 14-outsider-persona after worker exit 1
+- 2026-09-13 03:21:20 +03: REQUEUE 14-outsider-persona after attempt 2: worker exited 1 without README
+- 2026-09-13 03:21:20 +03: START 14-outsider-persona attempt 3 via codex, pid 69478
+- 2026-09-13 03:21:30 +03: FINISH 10-tour-guide via codex, exit 0, README present
