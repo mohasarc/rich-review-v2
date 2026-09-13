@@ -203,3 +203,6 @@ BUILD OK stack-head
 - 2026-09-13 05:02:19 +03: REQUEUE 28-blast-radius-tool after attempt 2: worker exited 1 without README
 - 2026-09-13 05:02:19 +03: START 28-blast-radius-tool attempt 3 via codex, pid 30784
 - 2026-09-13 05:10:49 +03: FINISH 26-physical-analogy via codex, exit 0, README present
+- 2026-09-13 05:10:49 +03: COMMIT OK 26-physical-analogy: [main fcc5296] Add experiment 26 physical-analogy
+- 2026-09-13 05:10:49 +03: START 29-refusal attempt 1 via codex, pid 33905
+- 2026-09-13 05:14:10 +03: FINISH 24-question-driven-nav via codex, exit 0, README present

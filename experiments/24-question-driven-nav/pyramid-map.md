@@ -1,0 +1,19 @@
+# What a deeper question is allowed to add
+
+The overview is a complete top layer, not only its opening sentence. Every item below is visible there before a reader opens a branch. Source pages show the same facts at line precision.
+
+| Overview answer | Decisions visible before descent | Mechanism question | Evidence question |
+| --- | --- | --- | --- |
+| 01 Who owns forgetting? | D1 core owns language-independent lifetime; TypeScript keeps query semantics and keys. One service creates one scope. D2 composition differs from the spec's shared-base wording; reason absent. | ownership: before/after source-package boxes, moved clear responsibility, same instance ownership and import direction | e-ownership: spec, old Maps/clear list, new import and composed handles |
+| 02 What stays shared? | D3 six isolated namespaces, five symbol/promise caches and one position/location cache. D4 exact identity including empty/undefined, Map.has, shared reference discovery, rebuilt public/node projections. | sharing: six named value spaces, discovery branches, location-to-node projection | e-sharing: declarations, factory lookup, identity assertions, retained sharing test |
+| 03 When does a turn end? | D5 begin after successful refresh including unchanged files; failure preserves these entries, not global rollback. D9 synchronous clears retain usable handles; no phase guard, cancellation, timer, per-key invalidation, or disposal API. | turn: refresh sequence and illustrative same-key outcomes | e-turn: matching base/head order, scope clear loop, failed and unchanged-refresh assertions |
+| 04 When is release finished? | D6 sync clear then await projects, backend pending/rejection follows; old project completion detached. New queries can refill. The broad spec-parity reconciliation is unrecorded. | release: before/after awaited boundary and pending/resolved/rejected frames | e-release: two await sites, existing project release context, controlled rejection test, spec wording |
+| 05 Does a failed answer get reused? | D7 preserve async rejection and synchronous-throw distinction. Held old promises remain alive but settlement cannot replace a new entry because there is no callback. | failures: return versus throw, separate old promise and new cache entry | e-failures: insertion order, Promise.resolve argument evaluation, retry/rejection and late-settlement assertions |
+| 06 What changes for callers? | D1/D6 new core export, new service Promise return; backend signature already Promise. D8 files-only input reason absent. D9 limited API reason absent. | surface: exact before/after signature table and handle versus scope methods | e-surface: full new core file, export, changed service input and backend call sites |
+| 07 What do tests tell us? | D10 ten additions, five previous service cases unchanged, focused 15-test result; coverage includes identity, boundaries, failure, projection, release/rebuild, settlement. Controlled release substitute versus mutable fixture. No other production delta or weakened assertions found; no full-parity claim. | tests: questions-to-cases map and evidence limits | e-tests: commits, new assertions, controlled setup, retained rebuild assertions, full diff and observed commands |
+
+“Stated” means a reason appears in the supplied PR, commit context, or architecture spec. It does not mean the page endorses the choice. “Unexplained” is scoped to the inspected material, not a claim about every conversation the author has ever had.
+
+The diagram's numbered lifetime frames and shortened six-cache marks are explicitly illustrative. Source-package diagrams are exact about ownership and dependency direction; they are not process topology.
+
+The raw full-file links contain surrounding source context, as evidence necessarily does. The explanation itself stays on the seven overview answers; it does not introduce an extra issue under an evidence link.
