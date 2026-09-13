@@ -232,3 +232,6 @@ BUILD OK stack-head
 - 2026-09-13 05:36:12 +03: COMMIT OK 22-game-any: [main 49bdd85] Add experiment 22 game-any
 - 2026-09-13 05:36:12 +03: START 33-pair-one-variable attempt 1 via codex, pid 41533
 - 2026-09-13 05:40:23 +03: FINISH 29-refusal via codex, exit 0, README present
+- 2026-09-13 05:40:23 +03: COMMIT OK 29-refusal: [main 25820e8] Add experiment 29 refusal
+- 2026-09-13 05:40:23 +03: START 34-inverted-for-experts attempt 1 via claude-opus, pid 42757
+- 2026-09-13 05:40:33 +03: FINISH 30-adjacent-pair via codex, exit 0, README present
