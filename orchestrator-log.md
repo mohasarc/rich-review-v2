@@ -127,3 +127,12 @@ BUILD OK stack-head
 - 2026-09-13 03:44:12 +03: START 17-executable-before-after attempt 1 via codex, pid 76213
 - 2026-09-13 03:44:22 +03: MONITOR OK supervisor=1153, finished=12, running=5, queued=25, dirty-worktrees=0, missing-readmes=0, free-disk=33.0GiB
 - 2026-09-13 03:54:42 +03: FINISH 12-detective via codex, exit 0, README present
+- 2026-09-13 03:54:43 +03: COMMIT OK 12-detective: [main 0fdc8f6] Add experiment 12 detective
+- 2026-09-13 03:54:43 +03: START 18-negative-space attempt 1 via claude-opus, pid 79263
+- 2026-09-13 03:54:53 +03: README MISSING 18-negative-space after worker exit 1
+- 2026-09-13 03:54:53 +03: REQUEUE 18-negative-space after attempt 1: worker exited 1 without README
+- 2026-09-13 03:54:53 +03: START 18-negative-space attempt 2 via claude-opus, pid 79331
+- 2026-09-13 03:55:03 +03: README MISSING 18-negative-space after worker exit 1
+- 2026-09-13 03:55:03 +03: REQUEUE 18-negative-space after attempt 2: worker exited 1 without README
+- 2026-09-13 03:55:03 +03: START 18-negative-space attempt 3 via codex, pid 79380
+- 2026-09-13 03:57:23 +03: FINISH 15-message-choreography-sim via codex, exit 0, README present
