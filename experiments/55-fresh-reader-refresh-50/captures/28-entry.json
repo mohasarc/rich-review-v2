@@ -1,0 +1,1660 @@
+{
+  "route": {
+    "id": "28",
+    "folder": "28-blast-radius-tool",
+    "file": "index.html"
+  },
+  "state": "entry",
+  "url": "http://127.0.0.1:8755/experiments/28-blast-radius-tool/index.html",
+  "time_utc": "2026-09-13T05:33:03.421Z",
+  "title": "One policy, many consumers · PR 131",
+  "text": "Skip to decisions\nRICH REVIEW / FIELD NOTE 28\nPR 131 / SYMNAV / HOW THIS WAS MEASURED ↗\n\nBLAST RADIUS FROM REAL SYMBOL REFERENCES\n\nOne policy.\nMany places to feel it.\n\nPR #131 makes daemon consumers take their thresholds from the existing policy snapshot. The ownership boundary changes; the mechanisms still live in the CLI package.\n\n60\nchanged files\n15\ndecisions to understand\n40\nsymnav refs queries · base + head\n\nb3a6c4fa5d → b100221db4\n\n01 / THE SHAPE\nSimplified ownership picture. Arrows show configuration, not a call graph.\n\nBEFORE · PART 07\n\npackages/daemon\nComplete policy snapshot\nAlready crosses process & worker boundaries\n↓\napps/cli · mechanisms\noptional numbers\nlocal defaults\nOutput · resources · lifecycle · diagnostics · transport\n\nAFTER · PART 08 / THIS PR\n\npackages/daemon\nThe same policy owner\nIts definitions and defaults are unchanged in this PR\n↓\nrequired slices\napps/cli · composition + mechanisms\nOutput\nResources\nStartup\nShutdown\nDiagnostics\nTransport\nDelivery\nWHERE THEY RUN\nAll three still in apps/cli\nCaller process\ncomposition · transport · capture\n⇢\nDaemon process\nspool · resources · lifecycle · logs\n⇢\nWorker thread\ncapture · chunk validation · heap samples\n\nNew required policy input Existing snapshot transfer. Test-only adapters translate legacy knobs outside these runtime boxes.\n\n02 / FOLLOW THE REFERENCES\n\nStart with the widest reach.\n\nProxy, not runtime impact. Radius counts distinct external production files returned by symnav refs for manually chosen consumer symbols. Imports and types count; declaration files are excluded. No transitive expansion. Known missing references and the exact rule ↓\n\nSmall counts still carry decisions.\nWhich error escapes ↗\nChanged test inputs ↗\nDeleted assertions ↗\nTest casts & expectations ↗\n\nReach is mostly stable. 8 of 9 nonzero production footprints contain the same base/head files. This refactor changes how existing consumers get their thresholds.\n\nRank by\nBase ∪ head files\nHead files\nBase files\nReference kinds\nAll source references\nUsage references only\nDECISION / REASON / DEFAULTS\nPROD.\nFILES\nTEST\nFILES\n01Keep startup coordination separate from healthy warm-up\nSTATEDStartup\n\nSupply registry grace, heartbeat, authorization polling, readiness polling and old-process termination through policy. Remove the unused startup-timeout member and test knob; progressing warm-up remains unbounded.\n\n15 s grace · 100 ms heartbeat · 10 ms authorization · 20 ms observation · 5 min previous-process termination\nBASE 5 → HEAD 5 · OPEN MECHANISM ↗\n5\nbase ∪ head\n22\n02Keep distinct stop, idle and acknowledgement clocks\nSTATEDShutdown\n\nRequire shutdown policy for idle lifetime, controller stop, signal waits and drain acknowledgements. Preserve the half-window bound on forced-stop reserve and the fast acknowledgement poll.\n\n30 min idle · 5 s stop · ≤500 ms force reserve · 500 ms per signal · 250 ms acknowledgement grace / 5 ms poll\nBASE 4 → HEAD 4 · OPEN MECHANISM ↗\n4\nbase ∪ head\n7\n03Policy owns both diagnostic storage limits\nSTATEDDiagnostics\n\nLogger rotation, backup count and queue capacity use diagnostics policy. Disconnected operation traces use its retention and capacity, keeping an effective minimum of one trace; completion retention is a separate mechanism.\n\n10 MiB log · 4 backups · 1,024 queued events · 5 min / 1,024 disconnected traces (minimum 1)\nBASE 3 → HEAD 3 · OPEN MECHANISM ↗\n3\nbase ∪ head\n1\n04Carry chunk and frame caps through each validator\nSTATEDTransport\n\nTransport, binary codec, file reader and both worker-message endpoints use supplied caps. JSON and execution-control limits stay separate; the worker host decodes the snapshot to recover its chunk cap.\n\n8 MiB JSON · 256 KiB execution control · 64 KiB raw chunk\nBASE 3 → HEAD 3 · OPEN MECHANISM ↗\n3\nbase ∪ head\n3\n05One output slice governs capture and retention\nSTATEDOutput\n\nRemove local inline, record, per-result and aggregate limits. Pass the same output slice into command capture and completion spooling, including disk decoding.\n\n64 KiB per chunk · 256 KiB inline · 256 MiB per result · 512 MiB aggregate spool\nBASE 3 → HEAD 3 · OPEN MECHANISM ↗\n3\nbase ∪ head\n4\n06Choose a response deadline by composition purpose\nSTATEDTransport\n\nStatus aggregation explicitly selects status-observer (100 ms); ordinary lifecycle and execution-status requests retain 250 ms. Admission still has 5 s, and accepted completion has no time deadline.\n\n100 ms observer · 250 ms ordinary · 5 s admission · no accepted-completion deadline\nBASE 3 → HEAD 3 · OPEN MECHANISM ↗\n3\nbase ∪ head\n4\n07Use snapshot memory values without a second derivation\nSTATEDResources\n\nDelete the CLI resource-policy class and memory-cap input. The snapshot now supplies RSS thresholds, reported hard cap, worker heap limit, supervision and heap-sampling cadence, and the replacement circuit.\n\n250 ms supervision · 25 ms heap sampling · 2 replacements per 10 min; next pressure event drains\nBASE 2 → HEAD 1 · OPEN MECHANISM ↗\n2\nbase ∪ head\n5\n08Count startup retries for explicit child failure\nSTATEDStartup\n\nReplace the fixed second launch with a loop bounded by childFailureRetryLimit. Only child-exit or lost-warm-up errors consume it; tests add zero- and two-retry policies.\n\nDefault 1 retry; tests exercise 0 and 2\nBASE 1 → HEAD 1 · OPEN MECHANISM ↗\n1\nbase ∪ head\n1\n09Give execute reattachment and result fetch separate budgets\nSTATEDTransport\n\nReplace the fixed reattachment wrapper and fetch boolean with independent numeric counters. Every execute attempt owns a fresh fetch counter; fetch failure still goes directly to failure handling.\n\nDefault: 1 reattachment · 1 fetch resume per execution attempt\nBASE 1 → HEAD 1 · OPEN MECHANISM ↗\n1\nbase ∪ head\n8\n10Move legacy test knobs into seven test-only adapters\nSTATEDTests\n\nTests import adapter subclasses or a resource adapter that builds validated policy. Runtime constructors require policy; test clocks, storage, process and worker seams still exist.\n\nBASE 0 → HEAD 0 · OPEN MECHANISM ↗\n0\nbase ∪ head\n26\n11Let a later completion failure become the reported error\nUNEXPLAINEDTransport\n\nThe new reattachment loop propagates the current completion failure when its budget is exhausted. A failure to obtain the reattachment receipt still preserves the preceding error. This is not called out in the PR.\n\nBASE 0 → HEAD 0 · OPEN MECHANISM ↗\n0\nbase ∪ head\n0\n12Adjust small test policies and their storage paths\nUNEXPLAINEDTests\n\nValid policies require positive chunks ≤ inline ≤ result ≤ aggregate. Tests replace inline=0 and rescale chunk/inline values; adapters clamp inline, create output directories, and accept a legacy memoryCapBytes value that they do not project.\n\nBASE 0 → HEAD 0 · OPEN MECHANISM ↗\n0\nbase ∪ head\n17\n\nCounts overlap between decisions. They cannot be added together. A file being referenced does not mean its behavior changes. Ties use decision ID, never a correctness score.\n\nOutside the reach of refs\n\nThese decisions have no meaningful symbol-reference measure. Their summaries remain part of the top layer.\n\n—Remove the CLI resource-derivation test block\nUNEXPLAINEDTests\n\nThe deleted block covers five memory sizes, constraint selection and the 250 ms constant. Central policy tests already cover related derivation/default cases; the exact old 256 MiB table row is absent there.\n\nAssertion coverage is not a referenced symbol. No numeric radius is assigned.\n—\nno metric\n—\n—Use policy-based expectations and cast new fixtures\nUNEXPLAINEDTests\n\nSpool/e2e expectations now read policy defaults instead of retired constants. Three added policy-consumer cases cast through unknown to constructor parameter types, so those fixtures bypass normal assignability checks.\n\nA type-checking or test-oracle choice has no stable symbol-ref footprint.\n—\nno metric\n—\n—Enforce retirement with a production-source string scan\nSTATEDTests\n\nExtend the package meta-test to reject old constant names, optional threshold seams and local policy reconstruction identifiers. This encodes a source boundary through strings; it does not trace semantic data flow.\n\nString-based source rules are invisible to symbol references.\n—\nno metric\n—\n03 / LOOK INSIDE\n← Return to list\nSTATED\nRANK 01 / STARTUP\nKeep startup coordination separate from healthy warm-up\n\nSupply registry grace, heartbeat, authorization polling, readiness polling and old-process termination through policy. Remove the unused startup-timeout member and test knob; progressing warm-up remains unbounded.\n\nMechanism\nReferences\nEvidence\n\nREASON · STATED\n\nThe policy record gives coordination a recovery grace and deliberately gives healthy startup no project-size deadline.\n\nplans/005/daemon-policy.md · Startup rows and intentional absences Read source ↗\n\nTHE RELATIONSHIP\n\nCaller · coordinator\n↓\nRegistry · ownership grace\n↓\nDaemon · authorize + heartbeat\n↓\nReadiness · no project-size deadline\n\nSimplified concept sequence; boxes may be alternatives or parallel owners, not chronological execution steps.\n\nBEFORE\n\nRegistry uses a 15 s constant; coordinator carries an unused startupTimeoutMs field.\n\nHeartbeat and authorization waits are local numbers.\n\nAFTER\n\nCoordination grace belongs to startup policy.\n\nHeartbeat, polling and previous-instance termination receive distinct policy values; no healthy warm-up timer is introduced.\n\nRecorded defaults\n15 s grace · 100 ms heartbeat · 10 ms authorization · 20 ms observation · 5 min previous-process termination\nTrace the observed reach →\nRead the source →\nNext decision →\n\n04 / THE MEASUREMENT IS PART OF THE EXPLANATION\n\nA reproducible count, with a visible blind spot.\nWhat is counted\nManually map every changed file to decisions and choose symbols that expose those decisions.\nRun symnav refs TARGET --all --full-lines --json at both pinned revisions.\nUnion files across a decision’s seeds. Exclude all its seed declaration files and generated output; classify tests and fixtures separately.\nRank by distinct production files. The default unions base and head paths, avoiding double counts and retaining the reach of deleted symbols.\n\nSwitching to “Usage” excludes import, export and type references. It still counts the backend’s static usage category, not executed calls. Adapter symbols only exist in head. “0” means no observed external files; “—” means this choice cannot be measured this way.\n\nFAILED PROBE · PRESERVED\n\nThe policy-field query misses consumers.\n\nA real refs query for DaemonPolicyValues::output returned only two references: a package test and the policy constructor. It missed known apps/cli consumers, including policy.values.output in CliProgramExecutor. Consumer symbols are used for this experiment instead. Cross-project/type-projection coverage is incomplete; the underlying cause has not been isolated.\n\nOpen the raw 2-reference result ↗ · Symbol overview ↗\n\nConsumer seeds avoid depending on that particular field query. Their counts are still an observed footprint, not proof of completeness. A method seed can have zero external references because the work happens inside its declaring file. A class seed includes consumers of unchanged parts of the class.\n\nReproduce or change the seed choices\n\nAuthored decisions and seed manifest · Collection script · Computed report · Experiment notes\n\nBackend diagnostic retained: skipped unrecognised statement syntax at packages/testing/fixtures/extraction-diagnostics-cases/src/unsupported-statement.ts:5 (MissingDeclaration)\n\nDIFF SHA256 eea6ebcc821ca61531513fea6a45c699703547c15daa7b4a38eb0f8c3583688b MANIFEST SHA256 391b99bbbb64e50eca44e412256cc3c8bf5a049bc6735e263bbbfbde3dda6eef\n\nEvidence scope\n\nPR body and six commit messages; complete diff; both worktrees; policy and architecture records; existing package policy tests. No implementing-agent transcript supplied.\n\nPR body + commit messages · Policy record · Architecture contract\n\nReasons marked “stated” have a source in those inputs. “Unexplained” means no reason was found there. Describing an implication of the code does not establish author intent.\n\nAll 60 changed files are assigned to decisions\nExact seed selection\nEXPERIMENT 28 / BLAST-RADIUS-TOOL\nBack to the shape ↑",
+  "headings": [
+    {
+      "tag": "H1",
+      "id": "title",
+      "text": "One policy.\nMany places to feel it."
+    },
+    {
+      "tag": "H2",
+      "id": "",
+      "text": "Start with the widest reach."
+    },
+    {
+      "tag": "H3",
+      "id": "",
+      "text": "Outside the reach of refs"
+    },
+    {
+      "tag": "H2",
+      "id": "",
+      "text": "Keep startup coordination separate from healthy warm-up"
+    },
+    {
+      "tag": "H2",
+      "id": "",
+      "text": "A reproducible count, with a visible blind spot."
+    },
+    {
+      "tag": "H3",
+      "id": "",
+      "text": "What is counted"
+    },
+    {
+      "tag": "H3",
+      "id": "",
+      "text": "The policy-field query misses consumers."
+    },
+    {
+      "tag": "H3",
+      "id": "",
+      "text": "Reproduce or change the seed choices"
+    },
+    {
+      "tag": "H3",
+      "id": "",
+      "text": "Evidence scope"
+    }
+  ],
+  "controls": [
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "Skip to decisions",
+      "href": "#decisions",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "RICH REVIEW / FIELD NOTE 28",
+      "href": "#top",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "HOW THIS WAS MEASURED ↗",
+      "href": "#method",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "Output",
+      "href": "#decision-output",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "Resources",
+      "href": "#decision-resources",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "Startup",
+      "href": "#decision-startup",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "Shutdown",
+      "href": "#decision-shutdown",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "Diagnostics",
+      "href": "#decision-diagnostics",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "Transport",
+      "href": "#decision-purpose",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "Delivery",
+      "href": "#decision-delivery",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "Test-only adapters",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "Known missing references and the exact rule ↓",
+      "href": "#method",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "Which error escapes ↗",
+      "href": "#decision-error-provenance",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "Changed test inputs ↗",
+      "href": "#decision-test-shape",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "Deleted assertions ↗",
+      "href": "#decision-removed-tests",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "Test casts & expectations ↗",
+      "href": "#decision-test-contract",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "SELECT",
+      "id": "revision",
+      "role": null,
+      "text": "Base ∪ head files\nHead files\nBase files",
+      "href": null,
+      "type": "select-one",
+      "data": {},
+      "options": [
+        {
+          "value": "union",
+          "text": "Base ∪ head files"
+        },
+        {
+          "value": "head",
+          "text": "Head files"
+        },
+        {
+          "value": "base",
+          "text": "Base files"
+        }
+      ]
+    },
+    {
+      "tag": "SELECT",
+      "id": "kinds",
+      "role": null,
+      "text": "All source references\nUsage references only",
+      "href": null,
+      "type": "select-one",
+      "data": {},
+      "options": [
+        {
+          "value": "all",
+          "text": "All source references"
+        },
+        {
+          "value": "usage",
+          "text": "Usage references only"
+        }
+      ]
+    },
+    {
+      "tag": "BUTTON",
+      "id": "row-startup",
+      "role": null,
+      "text": "01Keep startup coordination separate from healthy warm-up\nSTATEDStartup\n\nSupply registry grace, heartbeat, authorization polling, readiness polling and old-process termination through policy. Remove the unused startup-ti",
+      "href": null,
+      "type": "submit",
+      "data": {
+        "decision": "startup"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "row-shutdown",
+      "role": null,
+      "text": "02Keep distinct stop, idle and acknowledgement clocks\nSTATEDShutdown\n\nRequire shutdown policy for idle lifetime, controller stop, signal waits and drain acknowledgements. Preserve the half-window bound on forced-stop res",
+      "href": null,
+      "type": "submit",
+      "data": {
+        "decision": "shutdown"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "row-diagnostics",
+      "role": null,
+      "text": "03Policy owns both diagnostic storage limits\nSTATEDDiagnostics\n\nLogger rotation, backup count and queue capacity use diagnostics policy. Disconnected operation traces use its retention and capacity, keeping an effective ",
+      "href": null,
+      "type": "submit",
+      "data": {
+        "decision": "diagnostics"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "row-framing",
+      "role": null,
+      "text": "04Carry chunk and frame caps through each validator\nSTATEDTransport\n\nTransport, binary codec, file reader and both worker-message endpoints use supplied caps. JSON and execution-control limits stay separate; the worker h",
+      "href": null,
+      "type": "submit",
+      "data": {
+        "decision": "framing"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "row-output",
+      "role": null,
+      "text": "05One output slice governs capture and retention\nSTATEDOutput\n\nRemove local inline, record, per-result and aggregate limits. Pass the same output slice into command capture and completion spooling, including disk decodin",
+      "href": null,
+      "type": "submit",
+      "data": {
+        "decision": "output"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "row-purpose",
+      "role": null,
+      "text": "06Choose a response deadline by composition purpose\nSTATEDTransport\n\nStatus aggregation explicitly selects status-observer (100 ms); ordinary lifecycle and execution-status requests retain 250 ms. Admission still has 5 s",
+      "href": null,
+      "type": "submit",
+      "data": {
+        "decision": "purpose"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "row-resources",
+      "role": null,
+      "text": "07Use snapshot memory values without a second derivation\nSTATEDResources\n\nDelete the CLI resource-policy class and memory-cap input. The snapshot now supplies RSS thresholds, reported hard cap, worker heap limit, supervi",
+      "href": null,
+      "type": "submit",
+      "data": {
+        "decision": "resources"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "row-child-retry",
+      "role": null,
+      "text": "08Count startup retries for explicit child failure\nSTATEDStartup\n\nReplace the fixed second launch with a loop bounded by childFailureRetryLimit. Only child-exit or lost-warm-up errors consume it; tests add zero- and two-",
+      "href": null,
+      "type": "submit",
+      "data": {
+        "decision": "child-retry"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "row-delivery",
+      "role": null,
+      "text": "09Give execute reattachment and result fetch separate budgets\nSTATEDTransport\n\nReplace the fixed reattachment wrapper and fetch boolean with independent numeric counters. Every execute attempt owns a fresh fetch counter;",
+      "href": null,
+      "type": "submit",
+      "data": {
+        "decision": "delivery"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "row-adapters",
+      "role": null,
+      "text": "10Move legacy test knobs into seven test-only adapters\nSTATEDTests\n\nTests import adapter subclasses or a resource adapter that builds validated policy. Runtime constructors require policy; test clocks, storage, process a",
+      "href": null,
+      "type": "submit",
+      "data": {
+        "decision": "adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "row-error-provenance",
+      "role": null,
+      "text": "11Let a later completion failure become the reported error\nUNEXPLAINEDTransport\n\nThe new reattachment loop propagates the current completion failure when its budget is exhausted. A failure to obtain the reattachment rece",
+      "href": null,
+      "type": "submit",
+      "data": {
+        "decision": "error-provenance"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "row-test-shape",
+      "role": null,
+      "text": "12Adjust small test policies and their storage paths\nUNEXPLAINEDTests\n\nValid policies require positive chunks ≤ inline ≤ result ≤ aggregate. Tests replace inline=0 and rescale chunk/inline values; adapters clamp inline, ",
+      "href": null,
+      "type": "submit",
+      "data": {
+        "decision": "test-shape"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "row-removed-tests",
+      "role": null,
+      "text": "—Remove the CLI resource-derivation test block\nUNEXPLAINEDTests\n\nThe deleted block covers five memory sizes, constraint selection and the 250 ms constant. Central policy tests already cover related derivation/default cas",
+      "href": null,
+      "type": "submit",
+      "data": {
+        "decision": "removed-tests"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "row-test-contract",
+      "role": null,
+      "text": "—Use policy-based expectations and cast new fixtures\nUNEXPLAINEDTests\n\nSpool/e2e expectations now read policy defaults instead of retired constants. Three added policy-consumer cases cast through unknown to constructor p",
+      "href": null,
+      "type": "submit",
+      "data": {
+        "decision": "test-contract"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "row-guardrail",
+      "role": null,
+      "text": "—Enforce retirement with a production-source string scan\nSTATEDTests\n\nExtend the package meta-test to reject old constant names, optional threshold seams and local policy reconstruction identifiers. This encodes a source",
+      "href": null,
+      "type": "submit",
+      "data": {
+        "decision": "guardrail"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "return-link",
+      "role": null,
+      "text": "← Return to list",
+      "href": "#row-startup",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "BUTTON",
+      "id": "tab-mechanism",
+      "role": "tab",
+      "text": "Mechanism",
+      "href": null,
+      "type": "submit",
+      "data": {
+        "tab": "mechanism"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "tab-references",
+      "role": "tab",
+      "text": "References",
+      "href": null,
+      "type": "submit",
+      "data": {
+        "tab": "references"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "tab-evidence",
+      "role": "tab",
+      "text": "Evidence",
+      "href": null,
+      "type": "submit",
+      "data": {
+        "tab": "evidence"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "Read source ↗",
+      "href": "data/intent/daemon-policy.md",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "role": null,
+      "text": "Trace the observed reach →",
+      "href": null,
+      "type": "submit",
+      "data": {
+        "tab": "references"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "role": null,
+      "text": "Read the source →",
+      "href": null,
+      "type": "submit",
+      "data": {
+        "tab": "evidence"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "role": null,
+      "text": "Next decision →",
+      "href": null,
+      "type": "submit",
+      "data": {
+        "decision": "shutdown"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "Open the raw 2-reference result ↗",
+      "href": "data/probes/output-refs-valid.json",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "Symbol overview ↗",
+      "href": "data/probes/policy-overview.json",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "Authored decisions and seed manifest",
+      "href": "decisions.json",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "Collection script",
+      "href": "blast_radius.py",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "Computed report",
+      "href": "data/report.json",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "Experiment notes",
+      "href": "README.md",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "PR body + commit messages",
+      "href": "data/intent/pr.json",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "Policy record",
+      "href": "data/intent/daemon-policy.md",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "Architecture contract",
+      "href": "data/intent/daemon-architecture-functional-spec.md",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "coverage-summary",
+      "role": null,
+      "text": "All 60 changed files are assigned to decisions",
+      "href": null,
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-output",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-test-shape",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-output",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-output",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-startup",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-purpose",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-output",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-test-shape",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-test-contract",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-output",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-startup",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-startup",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-shutdown",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-startup",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-shutdown",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-resources",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-startup",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-diagnostics",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-shutdown",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-shutdown",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-diagnostics",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-test-contract",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-diagnostics",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-framing",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-resources",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-framing",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-framing",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-framing",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-shutdown",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-startup",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-startup",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-resources",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-removed-tests",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-test-contract",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-resources",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-framing",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-framing",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-startup",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-child-retry",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-startup",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-child-retry",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-delivery",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-purpose",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-framing",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-purpose",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-delivery",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-error-provenance",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-test-shape",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-resources",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-shutdown",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-diagnostics",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-resources",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-diagnostics",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-test-contract",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-resources",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-diagnostics",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-shutdown",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-startup",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-shutdown",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-startup",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-startup",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-child-retry",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-framing",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-purpose",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-delivery",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-test-shape",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-resources",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-resources",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-shutdown",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-diagnostics",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-adapters",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-test-shape",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": "#decision-guardrail",
+      "type": "",
+      "data": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "role": null,
+      "text": "Exact seed selection",
+      "href": null,
+      "data": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": null,
+      "data": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": null,
+      "data": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": null,
+      "data": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": null,
+      "data": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": null,
+      "data": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": null,
+      "data": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": null,
+      "data": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": null,
+      "data": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": null,
+      "data": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": null,
+      "data": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": null,
+      "data": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": null,
+      "data": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": null,
+      "data": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": null,
+      "data": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "role": null,
+      "text": "",
+      "href": null,
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "role": null,
+      "text": "Back to the shape ↑",
+      "href": "#top",
+      "type": "",
+      "data": {}
+    }
+  ],
+  "excludedPreBlocks": 1,
+  "entry_sha256": "86249609b99b505f2e0c0c2b6d45ab17abaa696512dd78ae730213a569f81712"
+}
