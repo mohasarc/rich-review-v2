@@ -235,3 +235,15 @@ BUILD OK stack-head
 - 2026-09-13 05:40:23 +03: COMMIT OK 29-refusal: [main 25820e8] Add experiment 29 refusal
 - 2026-09-13 05:40:23 +03: START 34-inverted-for-experts attempt 1 via claude-opus, pid 42757
 - 2026-09-13 05:40:33 +03: FINISH 30-adjacent-pair via codex, exit 0, README present
+- 2026-09-13 05:40:33 +03: COMMIT OK 30-adjacent-pair: [main 1a7db16] Add experiment 30 adjacent-pair
+- 2026-09-13 05:40:33 +03: Generated brief 45-critique-refresh-30: recurring brief 38 after 30 completions
+- 2026-09-13 05:40:33 +03: Generated brief 46-fresh-reader-refresh-30: recurring brief 39 after 30 completions
+- 2026-09-13 05:40:33 +03: README MISSING 34-inverted-for-experts after worker exit 1
+- 2026-09-13 05:40:33 +03: REQUEUE 34-inverted-for-experts after attempt 1: worker exited 1 without README
+- 2026-09-13 05:40:33 +03: START 34-inverted-for-experts attempt 2 via claude-opus, pid 42825
+- 2026-09-13 05:40:33 +03: START 35-future-self attempt 1 via codex, pid 42826
+- 2026-09-13 05:40:43 +03: README MISSING 34-inverted-for-experts after worker exit 1
+- 2026-09-13 05:40:43 +03: REQUEUE 34-inverted-for-experts after attempt 2: worker exited 1 without README
+- 2026-09-13 05:40:43 +03: START 34-inverted-for-experts attempt 3 via codex, pid 43396
+- 2026-09-13 05:45:20 +03: MONITOR OK supervisor=1153, finished=30, running=5, queued=11, dirty-worktrees=0, missing-readmes=0, free-disk=32.5GiB
+- 2026-09-13 05:59:04 +03: FINISH 31-method-runbook via codex, exit 0, README present
