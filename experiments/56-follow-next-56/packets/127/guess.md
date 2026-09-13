@@ -1,0 +1,24 @@
+<!-- system -->
+You are an experienced software engineer reviewing a code change in a codebase you have never seen. You cannot open files, browse, or run code; everything available to you is in the messages. Answer every question with your best concrete prediction. Reply with JSON only, in the format requested.
+
+<!-- user -->
+symnav is a TypeScript code-navigation tool: a CLI plus a background daemon that answers questions such as definitions, references, callers and callees for a workspace. Its TypeScript backend caches semantic query results. The change under review is PR #127, "Scope semantic caches to one turn", layer 4 of a 26-PR daemon refactor stack (6 files, +391/-67).
+
+You have not seen any explanation of this change. Predict from what you would expect of such code.
+
+Questions:
+Q1. Within one turn (no refresh or release in between), a caller asks the TypeScript backend for the callers of symbol X, and then for the references to X. How many times does the underlying reference search run in total?
+Q2. In the normal TypeScript backend (its own default project graph, no test doubles), semantic projects have loaded and a caller runs `await backend.releaseTransientResources()`. When does the project cleanup work itself run relative to that call, and does the caller's await now finish later than before this PR by roughly the time cleanup takes?
+Q3. A workspace has two configured TypeScript projects, A then B, plus the inferred project; all are loaded. During `backend.releaseTransientResources()`, project A's cleanup throws. After this PR, what does the awaiting caller observe, and do project B and the inferred project get cleaned up?
+Q4. Same failure as the previous question, but before this PR. What does the caller awaiting `backend.releaseTransientResources()` observe?
+Q5. In one turn, `findDefinitions(X)` returns a promise that later rejects. The caller asks `findDefinitions(X)` again in the same turn. Does the definition search run again, and what does the caller receive?
+Q6. After the failed release in question 3 (after this PR), a caller asks `findDefinitions(Y)` for a symbol whose definitions were cached before release started. Is that earlier cached entry reused?
+Q7. symnav's daemon runs this backend inside a navigation worker thread and asks the worker to release transient resources when shedding memory. If the question-3 failure happens there, what does the daemon observe from the worker before this PR, and after it?
+
+For each question give:
+- "prediction": your concrete answer (at most 80 words)
+- "basis": "page" if words on the page support it, otherwise "inference"
+- "quote": if basis is "page", the exact words from the page you relied on (at most 30 words); otherwise ""
+- "confidence": 0-100
+
+Reply with only this JSON: {"answers":[{"id":"Q1","prediction":"...","basis":"page","quote":"...","confidence":80}]} with one entry per question.

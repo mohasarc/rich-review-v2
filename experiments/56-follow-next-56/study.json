@@ -1,0 +1,156 @@
+{
+  "version": 1,
+  "readers_per_condition": { "guess": 3, "original": 6, "promoted": 6 },
+  "model": "claude-opus-5",
+  "arms": {
+    "127": {
+      "subject": "pr-127 · Scope semantic caches to one turn",
+      "page": "experiments/26-physical-analogy (copied to pages/127-original; variant pages/127-promoted)",
+      "top_definition": "masthead + opening section (#top) + whole-change section through its stop line 'You have the complete shape.'",
+      "context": "symnav is a TypeScript code-navigation tool: a CLI plus a background daemon that answers questions such as definitions, references, callers and callees for a workspace. Its TypeScript backend caches semantic query results. The change under review is PR #127, \"Scope semantic caches to one turn\", layer 4 of a 26-PR daemon refactor stack (6 files, +391/-67).",
+      "questions": [
+        {
+          "id": "Q1",
+          "category": "partition",
+          "role": "target",
+          "text": "Within one turn (no refresh or release in between), a caller asks the TypeScript backend for the callers of symbol X, and then for the references to X. How many times does the underlying reference search run in total?",
+          "key": "Once. Callers and references share one cached reference-location search per symbol within a turn.",
+          "full": "Says one search (shared/reused between callers and references).",
+          "partial": "Says the search is shared or reused but gives an ambiguous count, or hedges between one and two while favouring shared work.",
+          "incorrect": "Says two or more searches, or that callers and references cannot share work.",
+          "receipts": ["truth/127/probe-head.json T1_callersThenReferences: referenceSearchesAfterReferences = 1 (base identical)"]
+        },
+        {
+          "id": "Q2",
+          "category": "default",
+          "role": "target",
+          "text": "In the normal TypeScript backend (its own default project graph, no test doubles), semantic projects have loaded and a caller runs `await backend.releaseTransientResources()`. When does the project cleanup work itself run relative to that call, and does the caller's await now finish later than before this PR by roughly the time cleanup takes?",
+          "key": "The concrete project cleanup is synchronous: it runs during the call, before the call returns, in both revisions. The await settles within a few microtasks either way (head about two microtasks later), not later by the cleanup's duration. A pending wait needs an asynchronous project release, such as a test double.",
+          "full": "Cleanup runs synchronously during the call (or: concrete cleanup is synchronous) AND the await does not finish meaningfully later / no cleanup-length wait in this default setup.",
+          "partial": "States only one of the two parts correctly without contradicting the other (e.g. says there is no meaningful extra wait but does not place cleanup inside the call), or says 'only if cleanup is asynchronous' without committing for the default backend.",
+          "incorrect": "Says the await now waits for cleanup to finish and therefore completes later by the cleanup time, or that cleanup runs after the call returns.",
+          "receipts": ["truth/127/probe-head.json T2_defaultGraphReleaseTiming: concreteCleanupRanBeforeCallReturned = true, callerPromise.firstSettledMicrotask = 3, beforeMacrotask = fulfilled", "truth/127/probe-base.json T2: firstSettledMicrotask = 1"]
+        },
+        {
+          "id": "Q3",
+          "category": "error boundary",
+          "role": "target",
+          "text": "A workspace has two configured TypeScript projects, A then B, plus the inferred project; all are loaded. During `backend.releaseTransientResources()`, project A's cleanup throws. After this PR, what does the awaiting caller observe, and do project B and the inferred project get cleaned up?",
+          "key": "The caller's await rejects with A's error. B and the inferred project are not released: the graph releases projects in order and stops at the failure.",
+          "full": "Await rejects with A's error AND B and inferred are not cleaned up.",
+          "partial": "Exactly one of the two parts correct (the other wrong or missing).",
+          "incorrect": "Both parts wrong or missing (e.g. await resolves, or all projects still clean up).",
+          "receipts": ["truth/127/probe-head.json T3_firstConfiguredCleanupThrows: releaseCallsInOrder stops at configured[1]:a/lib.ts; callerOutcome rejected with that error"]
+        },
+        {
+          "id": "Q4",
+          "category": "error boundary",
+          "role": "control-top",
+          "text": "Same failure as the previous question, but before this PR. What does the caller awaiting `backend.releaseTransientResources()` observe?",
+          "key": "The await fulfills normally; the project error is not delivered to the caller (the dropped graph promise rejects unobserved, as an unhandled rejection).",
+          "full": "Await resolves/fulfills normally; error not delivered to the caller.",
+          "partial": "Says the error is lost or unobserved but is unclear whether the await resolves, or says resolves while also suggesting the caller may see the error.",
+          "incorrect": "Says the await rejects with the error or throws to the caller.",
+          "receipts": ["truth/127/probe-base.json T3: callerOutcome fulfilled; unhandledRejectionsDuringScenario contains the error"]
+        },
+        {
+          "id": "Q5",
+          "category": "error boundary",
+          "role": "control-top",
+          "text": "In one turn, `findDefinitions(X)` returns a promise that later rejects. The caller asks `findDefinitions(X)` again in the same turn. Does the definition search run again, and what does the caller receive?",
+          "key": "No second search. The caller receives the same cached, rejected promise.",
+          "full": "No rerun AND same (rejected) promise/failure returned.",
+          "partial": "No rerun but unclear what is returned, or same failure returned but unclear about rerun.",
+          "incorrect": "Says the search runs again / retries.",
+          "receipts": ["truth/127/probe-head.json T4_failureShapes.rejectedDefinition: samePromiseOnRepeat = true, definitionSearches = 1"]
+        },
+        {
+          "id": "Q6",
+          "category": "error boundary",
+          "role": "control-implied",
+          "text": "After the failed release in question 3 (after this PR), a caller asks `findDefinitions(Y)` for a symbol whose definitions were cached before release started. Is that earlier cached entry reused?",
+          "key": "No. All six caches were cleared synchronously before project cleanup began, and a failed release does not restore them; a fresh search runs.",
+          "full": "Not reused (cleared before cleanup; not restored).",
+          "partial": "Not reused, but reasoning contradicts clear-first order (e.g. 'cleared after cleanup completes').",
+          "incorrect": "Says the earlier entry is reused or restored.",
+          "receipts": ["truth/127/probe-head.json T3: oldEntryVisibleAfterCall = false, oldEntryVisibleAfterSettle = false"]
+        },
+        {
+          "id": "Q7",
+          "category": "error boundary",
+          "role": "calibration-absent",
+          "text": "symnav's daemon runs this backend inside a navigation worker thread and asks the worker to release transient resources when shedding memory. If the question-3 failure happens there, what does the daemon observe from the worker before this PR, and after it?",
+          "key": "Before: the worker reports the release as successful (a heap report), then the worker thread exits with an error shortly after (the unobserved rejection). After: the worker reports a resource failure for that release and stays alive; a later release succeeds.",
+          "full": "Before: success reported and worker thread dies/crashes; After: failure reported and worker survives.",
+          "partial": "Gets one revision right, or both directions of error visibility right without the worker-death consequence.",
+          "incorrect": "Neither revision right, or says 'cannot tell' only.",
+          "receipts": ["truth/127/daemon-worker-base.json: release-resolved heap at 376 ms, worker-exited cause error at 390 ms", "truth/127/daemon-worker-head.json: release-rejected resource failure, still alive after 1500 ms, second release resolved heap"]
+        }
+      ]
+    },
+    "148": {
+      "subject": "pr-148 · Own daemon mechanisms behind DaemonClient",
+      "page": "experiments/23-zoom-canvas (copied to pages/148-original; variant pages/148-promoted)",
+      "top_definition": "root view of the zoom canvas at 1440x1000: toolbar, headline, root sketch, six room covers with their outline strings and stated intents, tour bar",
+      "context": "symnav is a TypeScript code-navigation tool: a CLI plus a background daemon process that executes navigation commands for a workspace. The change under review is PR #148, \"Own daemon mechanisms behind DaemonClient\", layer 25 of a 26-PR daemon refactor stack (153 files, +14,624/-815).",
+      "questions": [
+        {
+          "id": "Q1",
+          "category": "default",
+          "role": "target",
+          "text": "A host constructs the new `DaemonClient` and leaves out its optional `policy` option. Which startup, transport and output limits does the client then use, and where do they come from? Does construction fail?",
+          "key": "Construction does not fail. The private runtime uses `DaemonPolicy.currentSystem()` (the daemon package's current system policy).",
+          "full": "Names currentSystem() / the daemon package's current system policy as the source AND no construction failure.",
+          "partial": "Says a built-in default policy from the daemon package is used without naming currentSystem, and no failure.",
+          "incorrect": "Says construction fails, the host must supply limits, limits are absent/unbounded, or names another source.",
+          "receipts": ["truth/148/probe-head.json P1_omittedPolicy: omittedValuesEqualCurrentSystem = true, constructorThrew = false"]
+        },
+        {
+          "id": "Q2",
+          "category": "error boundary",
+          "role": "target",
+          "text": "Suppose the client's Node-backed runtime module fails to load. The host constructs one `DaemonClient`, then calls `execute()` twice. Does the constructor throw? What do the two calls observe, and does the second call try to load the runtime again?",
+          "key": "The constructor does not throw. Both calls reject with the same retained load error (the same error object); loading is not retried.",
+          "full": "Constructor does not throw AND both calls reject with the load error AND no retry.",
+          "partial": "Two of the three parts correct.",
+          "incorrect": "One or none correct.",
+          "receipts": ["truth/148/probe-head.json P2_runtimeLoadFailure: constructorError null; both calls rejected ERR_MODULE_NOT_FOUND; secondCallSameErrorObject = true"]
+        },
+        {
+          "id": "Q3",
+          "category": "credential partition",
+          "role": "target",
+          "text": "For each daemon request kind below, which of these must match before the daemon acts on the request: protocol version, instance id, process token? (a) ping (b) stop (c) execute (d) result-fetch (e) terminate",
+          "key": "(a) ping: protocol + instance, no token. (b) stop: protocol + instance, no token. (c) execute: protocol + instance + token. (d) result-fetch: protocol + instance + token. (e) terminate: instance + token, no protocol version.",
+          "full": "All five rows exactly right.",
+          "partial": "Three or four rows exactly right.",
+          "incorrect": "Two or fewer rows exactly right.",
+          "row_scoring": true,
+          "receipts": ["packages/daemon/src/transport/protocol.ts:389-406 (pr-148 head): ping/stop carry protocolVersion+instanceId only; identify/terminate/kill carry instanceId+processToken", "packages/daemon/src/process/process-coordinator.ts:353-377, 417-425", "truth/148/vitest-process-coordinator-requests.txt: 'keeps ping and stop authenticated only by protocol and instance', 'validates result-fetch protocol and instance before its token', 'authenticates termination requests' all pass"]
+        },
+        {
+          "id": "Q4",
+          "category": "error boundary",
+          "role": "control-top",
+          "text": "The daemon has accepted an `execute` request, then the connection closes before the result arrives. Does `DaemonClient.execute` rerun the command locally?",
+          "key": "No. Accepted or uncertain work is not replayed; the client returns a controlled warm failure (exit code 1). Only retry-safe failures before acceptance fall back to one local run.",
+          "full": "No local rerun.",
+          "partial": "Hedged: says it depends, leaning to no rerun.",
+          "incorrect": "Says it reruns locally.",
+          "receipts": ["truth/148/vitest-daemon-client.txt: 'does not replay uncertain warm failure' cases pass (closed/accepted)"]
+        },
+        {
+          "id": "Q5",
+          "category": "ownership",
+          "role": "control-top",
+          "text": "After this PR, does the shipped symnav CLI send its commands through the new `DaemonClient`?",
+          "key": "No. The active CLI still uses its app-local (frozen) mechanisms; the package client is staged, not adopted.",
+          "full": "No; CLI still on its own/local mechanisms.",
+          "partial": "Hedged toward no.",
+          "incorrect": "Says yes.",
+          "receipts": ["pr-148 head: `git grep -n 'DaemonClient\\b' -- apps/cli/src` has no match; the only matches for 'DaemonClient' are the CLI's own DaemonClientResultCapture"]
+        }
+      ]
+    }
+  }
+}
