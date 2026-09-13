@@ -302,3 +302,42 @@ BUILD OK stack-head
 - 2026-09-13 06:35:45 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log
 - 2026-09-13 06:40:47 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log
 - 2026-09-13 06:41:08 +03: FINISH 38-critique via codex, exit 0, README present
+- 2026-09-13 06:41:10 +03: COMMIT OK 38-critique: [main 08b5d55] Add experiment 38 critique
+- 2026-09-13 06:41:10 +03: START 43-critique-refresh-20 attempt 1 via codex, pid 62398
+- 2026-09-13 06:45:50 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log
+- 2026-09-13 06:45:50 +03: MONITOR OK supervisor=1153, finished=38, running=5, queued=3, dirty-worktrees=0, missing-readmes=0, free-disk=30.5GiB
+- 2026-09-13 06:50:41 +03: FINISH 41-critique-refresh-10 via codex, exit 0, README present
+- 2026-09-13 06:50:41 +03: COMMIT FAILED 41-critique-refresh-10: On branch main
+Changes not staged for commit:
+  (use "git add/rm <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   index.html
+	modified:   orchestrator-log.md
+	deleted:    queue/39-fresh-reader-check.md
+	deleted:    queue/40-best-of-synthesis.md
+	modified:   supervisor-state.json
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	experiments/39-fresh-reader-check/
+	experiments/40-best-of-synthesis/
+	experiments/41-critique-refresh-10/
+	experiments/42-fresh-reader-refresh-10/
+	experiments/43-critique-refresh-20/
+	queue/44-fresh-reader-refresh-20.md
+	queue/45-critique-refresh-30.md
+	queue/46-fresh-reader-refresh-30.md
+	queue/done/41-critique-refresh-10.md
+	queue/running/
+
+no changes added to commit (use "git add" and/or "git commit -a")
+- 2026-09-13 06:50:41 +03: START 44-fresh-reader-refresh-20 attempt 1 via claude-opus, pid 65883
+- 2026-09-13 06:50:51 +03: README MISSING 44-fresh-reader-refresh-20 after worker exit 1
+- 2026-09-13 06:50:51 +03: REQUEUE 44-fresh-reader-refresh-20 after attempt 1: worker exited 1 without README
+- 2026-09-13 06:50:51 +03: START 44-fresh-reader-refresh-20 attempt 2 via claude-opus, pid 65974
+- 2026-09-13 06:50:52 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log
+- 2026-09-13 06:51:01 +03: README MISSING 44-fresh-reader-refresh-20 after worker exit 1
+- 2026-09-13 06:51:01 +03: REQUEUE 44-fresh-reader-refresh-20 after attempt 2: worker exited 1 without README
+- 2026-09-13 06:51:01 +03: START 44-fresh-reader-refresh-20 attempt 3 via codex, pid 66246
+- 2026-09-13 06:55:54 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log
+- 2026-09-13 06:56:41 +03: FINISH 40-best-of-synthesis via codex, exit 0, README present

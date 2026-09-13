@@ -1,0 +1,1071 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="PR 127 explained through ownership, a recorded request, and the difference between clearing caches and completing release.">
+  <title>Six caches. One reset. A new wait. · PR 127</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+  <script src="recordings.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#opening">Skip to the change</a>
+<header class="masthead">
+  <a class="brand" href="#opening"><span class="brand-mark" aria-hidden="true">≋</span> rich-review <b>40</b></a>
+  <nav aria-label="Reading routes"><a href="#decisions">Whole change</a><a href="#request">One request</a><a href="#boundaries">The boundary</a><a href="#evidence">Sources</a><a href="#credits">Credits</a></nav>
+  <span class="edition">SYMNAV / 127</span>
+</header>
+<main>
+<section class="opening" id="opening" aria-labelledby="title">
+  <div class="eyebrow">PR 127 · layer 4 of 26 · 6 files · +391 / −67</div>
+  <div class="hero-heading"><h1 id="title">Six caches share a reset.<br><em>Release gains a wait.</em></h1><p class="hero-note">A synthesis of 13 earlier experiments.<br><a href="#credits">Every contribution is credited ↓</a></p></div>
+  <p class="lede">Core takes over clearing. TypeScript keeps the queries and chooses when a turn begins. The backend now waits for project cleanup to finish or fail.</p>
+  <figure class="opening-observation">
+    <figcaption><span class="eyebrow">Start with one concrete moment</span><strong>The caches are empty. Is release finished?</strong></figcaption>
+    <div class="observation-state"><span>Both revisions</span><div class="little-rack" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div><b>0 cache entries</b><small>Project cleanup is held open.</small></div>
+    <a class="opening-answer before" href="#boundaries" data-exit><small>BEFORE · backend release</small><strong>Fulfilled <span aria-hidden="true">↘</span></strong><span>The graph promise is detached.</span></a>
+    <a class="opening-answer after" href="#boundaries" data-exit><small>AFTER · backend release</small><strong>Pending <span aria-hidden="true">↘</span></strong><span>The new await chain keeps it connected.</span></a>
+    <p class="caption">Recorded execution with a controlled cleanup gate, from <a href="#credit-17">17</a>. These are selected states, with no time scale or production scheduling claim. Motivating opening adapted from <a href="#credit-33">33</a>.</p>
+  </figure>
+</section>
+
+<section class="overview" id="whole-change" aria-labelledby="whole-title">
+  <div class="section-title"><div><span class="eyebrow">01 / the complete overview</span><h2 id="whole-title">Two boundaries to carry with you.</h2></div><a href="#decisions">Then the twelve choices ↓</a></div>
+  <div id="owners" class="ownership-pair" tabindex="-1">
+    <figure class="ownership before"><figcaption><span>BEFORE</span><code>a1e325a5</code></figcaption>
+      <div class="package"><div class="package-label">@symnav/backend-typescript</div>
+        <a href="#e-backend-before" class="unit" data-exit><b>TypeScriptBackend</b><span>Refresh / release</span></a>
+        <div class="edge">↓ calls</div>
+        <div class="service"><a href="#request" data-exit><b>Semantic query service</b><span>Algorithms · keys · file list · projections</span></a>
+          <a class="old-responsibility" href="#e-before-clearing" data-exit><b>Six Maps + manual clearing list</b><span>definitions · target · references · callers · callees · positions</span></a>
+        </div>
+        <div class="edge">↓ starts cleanup · does not await graph promise</div>
+        <a href="#e-graph" class="unit" data-exit><b>Project graph</b><span>Existing project-resource cleanup</span></a>
+      </div>
+      <div class="package core-empty"><div class="package-label">@symnav/core</div><span>No generic turn-cache scope yet.</span></div>
+    </figure>
+    <figure class="ownership after"><figcaption><span>AFTER</span><code>64919bcb</code></figcaption>
+      <div class="package"><div class="package-label">@symnav/backend-typescript</div>
+        <a href="#api" class="unit" data-exit><b>TypeScriptBackend</b><span>Refresh / <strong>await</strong> release</span></a>
+        <div class="edge">↓ calls · awaits service release</div>
+        <div class="service"><a href="#request" data-exit><b>Semantic query service</b><span>Same algorithms · keys · file list · projections</span></a><div class="two-ports"><a href="#api" data-exit>Owns scope + six handles ↓</a><a href="#boundaries" data-exit>Awaits project graph ↓</a></div></div>
+        <div class="edge">↓ awaits existing cleanup</div>
+        <a href="#e-graph" class="unit" data-exit><b>Project graph</b><span>Same project-resource cleanup</span></a>
+      </div>
+      <div class="boundary-label">Clearing implementation moves across the existing package boundary</div>
+      <div class="package new-responsibility"><div class="package-label">@symnav/core · new module</div><a href="#e-scope" data-exit><b>TurnScopedCacheScope</b><span>Register handles · clear every Map synchronously</span></a></div>
+    </figure>
+  </div>
+  <div class="instance-line"><span>At runtime, in the same process</span><b>one service</b><span>owns →</span><b>one scope</b><span>owns →</span><b>six isolated Maps</b></div>
+  <p class="caption">Simplified package ownership: selected units and calls. Core supplies a class; it is not a global cache or another process. The service still decides when to invoke it. Ownership distinction from <a href="#credit-01">01</a>; separate lookup/lifecycle exits and native navigation from <a href="#credit-32">32</a>.</p>
+
+  <div class="section-title decisions-title" id="decisions"><div><span class="eyebrow">Same visibility for architecture, API, and test choices</span><h2>Twelve decisions. Reasons kept separate.</h2></div></div>
+  <p class="reading-key"><span class="reason stated">stated</span> A reason exists in the PR or plan. <span class="reason unexplained">unexplained</span> No separate reason found in the PR, six commit messages, or inspected architecture plan. A disclosed change can still lack a reason.</p>
+  <div class="decisions"><article class="decision" id="D01">
+        <div class="decision-meta"><span>D01</span><span class="reason stated">stated</span></div>
+        <h3><a href="#owners" data-exit>Move the clearing job into core <span aria-hidden="true">↘</span></a></h3>
+        <p>TypeScript keeps algorithms, keys, projections, and its file list. Core implements and exports the scope and handle type. Each service owns its own scope instance; the existing package dependency and process boundary stay put.</p><p class="rationale">The architecture spec assigns shareable cache lifetime to core and semantic query bodies to TypeScript.</p>
+        <a class="source-link" href="#e-plan-owner" data-exit>Reason &amp; evidence ↗</a></article>
+<article class="decision" id="D02">
+        <div class="decision-meta"><span>D02</span><span class="reason stated">stated</span></div>
+        <h3><a href="#request" data-exit>Keep six independent stores <span aria-hidden="true">↘</span></a></h3>
+        <p>One scope coordinates six separate Maps. Five store promises by symbol identity; the position store keeps location arrays by file and offset. Callers and references still share reference discovery.</p><p class="rationale">The PR chooses six handles because the existing key and value spaces are independent.</p>
+        <a class="source-link" href="#e-pr-reasons" data-exit>Reason &amp; evidence ↗</a></article>
+<article class="decision" id="D03">
+        <div class="decision-meta"><span>D03</span><span class="reason unexplained">unexplained</span></div>
+        <h3><a href="#api" data-exit>Compose a local scope; place it under core/backend <span aria-hidden="true">↘</span></a></h3>
+        <p>The service constructs a concrete scope in a field, rather than receiving or inheriting one. The new class lives in core/src/backend. The plan describes shared bases that backends extend.</p><p class="rationale">The chosen form is disclosed. No separate reason for composition or this directory placement was found.</p>
+        <a class="source-link" href="#e-plan-owner" data-exit>Reason &amp; evidence ↗</a></article>
+<article class="decision" id="D04">
+        <div class="decision-meta"><span>D04</span><span class="reason stated">stated</span></div>
+        <h3><a href="#identity" data-exit>Preserve entries, distinguish their projections <span aria-hidden="true">↘</span></a></h3>
+        <p>Cache hits return the exact value, including empty results. Four direct service query methods reuse promises. Reference results and node arrays are rebuilt; backend async wrappers need not reuse the cache&#x27;s promise. Miss observers still count the underlying searches.</p><p class="rationale">The PR explicitly preserves all six algorithms, keys, and promise/value identities. The original rationale for reprojection is not supplied.</p>
+        <a class="source-link" href="#e-pr-context" data-exit>Reason &amp; evidence ↗</a></article>
+<article class="decision" id="D05">
+        <div class="decision-meta"><span>D05</span><span class="reason stated">stated</span></div>
+        <h3><a href="#lookup" data-exit>Treat undefined as a present entry <span aria-hidden="true">↘</span></a></h3>
+        <p>The generic handle uses Map.has before Map.get. Its factory can return undefined once and still get a cache hit. The six TypeScript stores already hold truthy promises or arrays; this is a broader generic contract.</p><p class="rationale">The PR names undefined as a valid cached value.</p>
+        <a class="source-link" href="#e-pr-reasons" data-exit>Reason &amp; evidence ↗</a></article>
+<article class="decision" id="D06">
+        <div class="decision-meta"><span>D06</span><span class="reason stated">stated</span></div>
+        <h3><a href="#lookup" data-exit>Keep rejected promises; retry synchronous throws <span aria-hidden="true">↘</span></a></h3>
+        <p>A returned promise is stored even if it rejects. A factory throw inserts nothing. Clearing cancels neither an old promise nor its result; later settlement cannot overwrite a new entry because the scope installs no settlement callback.</p><p class="rationale">Preserving existing query failure behavior and value identity is the PR&#x27;s stated constraint, not a new retry policy.</p>
+        <a class="source-link" href="#e-pr-context" data-exit>Reason &amp; evidence ↗</a></article>
+<article class="decision" id="D07">
+        <div class="decision-meta"><span>D07</span><span class="reason stated">stated</span></div>
+        <h3><a href="#boundaries" data-exit>Begin the next turn after refresh succeeds <span aria-hidden="true">↘</span></a></h3>
+        <p>Both revisions clear after source, applicable project, and workspace-state refresh succeeds—even with unchanged files. Failure skips the file-list handoff and clear. A command returning is not a clearing signal. This is a cache guarantee, not rollback of all earlier refresh effects.</p><p class="rationale">The PR says failed refresh must preserve the current successful turn.</p>
+        <a class="source-link" href="#e-pr-reasons" data-exit>Reason &amp; evidence ↗</a></article>
+<article class="decision" id="D08">
+        <div class="decision-meta"><span>D08</span><span class="reason stated">stated</span></div>
+        <h3><a href="#boundaries" data-exit>Empty entries before starting project cleanup <span aria-hidden="true">↘</span></a></h3>
+        <p>Clearing remains synchronous and comes first in both revisions. The unchanged graph releases projects in order and can stop on rejection; concrete TypeScript project cleanup is synchronous, even though its graph returns a promise.</p><p class="rationale">Old cached semantics must be unavailable while project release is pending or rejecting, according to the PR.</p>
+        <a class="source-link" href="#e-pr-reasons" data-exit>Reason &amp; evidence ↗</a></article>
+<article class="decision" id="D09">
+        <div class="decision-meta"><span>D09</span><span class="reason unexplained">unexplained</span></div>
+        <h3><a href="#intent" data-exit>Extend the backend&#x27;s completion and error boundary <span aria-hidden="true">↘</span></a></h3>
+        <p>The new service and backend await graph cleanup. A held graph leaves backend release pending; rejection reaches that caller. The PR explicitly declares this barrier. How this change fits the plan&#x27;s unchanged timing/failure promise is unrecorded.</p><p class="rationale">The stated clear-first reason does not separately reconcile the changed completion/error contract with the broader parity requirement.</p>
+        <a class="source-link" href="#e-pr-surface" data-exit>Reason &amp; evidence ↗</a></article>
+<article class="decision" id="D10">
+        <div class="decision-meta"><span>D10</span><span class="reason unexplained">unexplained</span></div>
+        <h3><a href="#api" data-exit>Pass files across the exported service API <span aria-hidden="true">↘</span></a></h3>
+        <p>beginTurn(snapshot) becomes beginTurn(readonly files). The backend passes snapshot.files; the service retains that same array by reference through release. Service release changes void → Promise&lt;void&gt;; the backend&#x27;s promise signature stays the same.</p><p class="rationale">The PR lists the narrowed input but gives no reason for it. The release signature belongs to the separately declared awaited barrier.</p>
+        <a class="source-link" href="#e-pr-surface" data-exit>Reason &amp; evidence ↗</a></article>
+<article class="decision" id="D11">
+        <div class="decision-meta"><span>D11</span><span class="reason unexplained">unexplained</span></div>
+        <h3><a href="#tickets" data-exit>Clear values while keeping handles usable <span aria-hidden="true">↘</span></a></h3>
+        <p>The public handle exposes getOrCreate only. Both scope lifecycle methods perform the same whole-scope clear. There is no timer, turn token, closed state, cancellation, per-key invalidation, or unregister API. Handles can fill before beginTurn, after repeated release, and during pending cleanup.</p><p class="rationale">The implementation and tests establish this reusable lifecycle. No separate rationale for these exact limits was found.</p>
+        <a class="source-link" href="#e-scope" data-exit>Reason &amp; evidence ↗</a></article>
+<article class="decision" id="D12">
+        <div class="decision-meta"><span>D12</span><span class="reason stated">stated</span></div>
+        <h3><a href="#evidence-map" data-exit>Add ten tests and retain all five existing cases <span aria-hidden="true">↘</span></a></h3>
+        <p>Four new core cases and six new service cases pin identity, projection, failures, reset, and awaited rejection. The five old service cases and assertions are retained byte for byte. The new delayed-release case uses a rejecting graph double; it adds no delayed-success or daemon-level case.</p><p class="rationale">The PR and commit subjects describe characterization and locking identity, error, and clearing contracts.</p>
+        <a class="source-link" href="#e-pr-tests" data-exit>Reason &amp; evidence ↗</a></article></div>
+  <aside class="overview-limits"><b>Evidence scope, before you go deeper.</b> The request and boundary panels replay earlier executions of these exact revisions. The request's semantic outputs match for its tiny fixture. Cleanup delay/rejection and refresh failure use controlled inputs; concrete TypeScript cleanup is synchronous. This synthesis checks source and recording provenance, reads tests, and does not rerun symnav or claim full CLI/daemon parity.</aside>
+  <div class="stop-line"><b>The complete overview ends here.</b><span>The mechanisms below unpack these same choices.</span></div>
+  <nav class="question-exits" id="questions" aria-label="Choose a question">
+    <a href="#request" data-exit><span>How do six stores share work?</span><b>Follow one request →</b></a>
+    <a href="#boundaries" data-exit><span>What does release now wait for?</span><b>Hold cleanup open →</b></a>
+    <a href="#tickets" data-exit><span>Can a cleared promise still finish?</span><b>Follow the caller's ticket →</b></a>
+  </nav>
+  <p class="credit-line">Question exits and return paths adapted from <a href="#credit-24">24</a>.</p>
+  <details class="record-table" id="depth-index"><summary>Compare decisions at the same depth</summary><p>One row is a decision. One column is a depth. Move across to inspect the same choice, or down to keep the depth fixed. On a link, arrow keys move between crossings. This compact addressing matrix adapts <a href="#credit-37">37's reading loom</a>.</p><div class="table-scroll"><table class="depth-matrix"><thead><tr><th>Decision</th><th>Overview</th><th>Mechanism</th><th>Evidence</th></tr></thead><tbody><tr><th scope="row">D01 · Move the clearing job into core</th><td><a href="#D01" data-exit data-crossing="0,0">Overview</a></td><td><a href="#owners" data-exit data-crossing="0,1">Mechanism</a></td><td><a href="#e-construction" data-exit data-crossing="0,2">Evidence</a></td></tr><tr><th scope="row">D02 · Keep six independent stores</th><td><a href="#D02" data-exit data-crossing="1,0">Overview</a></td><td><a href="#request" data-exit data-crossing="1,1">Mechanism</a></td><td><a href="#e-construction" data-exit data-crossing="1,2">Evidence</a></td></tr><tr><th scope="row">D03 · Compose a local scope; place it under core/backend</th><td><a href="#D03" data-exit data-crossing="2,0">Overview</a></td><td><a href="#api" data-exit data-crossing="2,1">Mechanism</a></td><td><a href="#e-scope" data-exit data-crossing="2,2">Evidence</a></td></tr><tr><th scope="row">D04 · Preserve entries, distinguish their projections</th><td><a href="#D04" data-exit data-crossing="3,0">Overview</a></td><td><a href="#identity" data-exit data-crossing="3,1">Mechanism</a></td><td><a href="#e-projections" data-exit data-crossing="3,2">Evidence</a></td></tr><tr><th scope="row">D05 · Treat undefined as a present entry</th><td><a href="#D05" data-exit data-crossing="4,0">Overview</a></td><td><a href="#lookup" data-exit data-crossing="4,1">Mechanism</a></td><td><a href="#e-scope" data-exit data-crossing="4,2">Evidence</a></td></tr><tr><th scope="row">D06 · Keep rejected promises; retry synchronous throws</th><td><a href="#D06" data-exit data-crossing="5,0">Overview</a></td><td><a href="#lookup" data-exit data-crossing="5,1">Mechanism</a></td><td><a href="#e-reference-discovery" data-exit data-crossing="5,2">Evidence</a></td></tr><tr><th scope="row">D07 · Begin the next turn after refresh succeeds</th><td><a href="#D07" data-exit data-crossing="6,0">Overview</a></td><td><a href="#boundaries" data-exit data-crossing="6,1">Mechanism</a></td><td><a href="#e-backend-after" data-exit data-crossing="6,2">Evidence</a></td></tr><tr><th scope="row">D08 · Empty entries before starting project cleanup</th><td><a href="#D08" data-exit data-crossing="7,0">Overview</a></td><td><a href="#boundaries" data-exit data-crossing="7,1">Mechanism</a></td><td><a href="#e-release-after" data-exit data-crossing="7,2">Evidence</a></td></tr><tr><th scope="row">D09 · Extend the backend&#x27;s completion and error boundary</th><td><a href="#D09" data-exit data-crossing="8,0">Overview</a></td><td><a href="#intent" data-exit data-crossing="8,1">Mechanism</a></td><td><a href="#e-backend-after" data-exit data-crossing="8,2">Evidence</a></td></tr><tr><th scope="row">D10 · Pass files across the exported service API</th><td><a href="#D10" data-exit data-crossing="9,0">Overview</a></td><td><a href="#api" data-exit data-crossing="9,1">Mechanism</a></td><td><a href="#e-construction" data-exit data-crossing="9,2">Evidence</a></td></tr><tr><th scope="row">D11 · Clear values while keeping handles usable</th><td><a href="#D11" data-exit data-crossing="10,0">Overview</a></td><td><a href="#tickets" data-exit data-crossing="10,1">Mechanism</a></td><td><a href="#e-scope" data-exit data-crossing="10,2">Evidence</a></td></tr><tr><th scope="row">D12 · Add ten tests and retain all five existing cases</th><td><a href="#D12" data-exit data-crossing="11,0">Overview</a></td><td><a href="#evidence-map" data-exit data-crossing="11,1">Mechanism</a></td><td><a href="#e-release-test" data-exit data-crossing="11,2">Evidence</a></td></tr></tbody></table></div></details>
+</section>
+
+<section class="chapter" id="request" aria-labelledby="request-title" data-parents="D02 D04">
+  <div class="section-title"><div><span class="eyebrow">02 / one recorded request · D02 / D04</span><h2 id="request-title">Five questions. Six stores. Shared work.</h2></div><a href="#D02" class="backlink">↑ Whole change</a></div>
+  <div class="request-intro"><div class="fixture-path"><span class="eyebrow">context src/app.ts:target</span><div><b>caller</b><span>→</span><b class="selected">target</b><span>→</span><b>helper</b></div><details><summary>Read the three-function fixture</summary><pre><code>export function helper(): void {}
+export function target(): void { helper(); }
+export function caller(): void { target(); }
+</code></pre></details></div><p>These saved frames execute the backend's calls in <code>context</code> order. Target identity is supplied directly; CLI parsing, target selection, Git history, result building, rendering, and transport are omitted. <a href="#e-context" data-exit>Call order ↗</a></p></div>
+  <div class="replay-controls js-only"><div class="step-picker" aria-label="Recorded request steps"><button type="button" data-request-step="0" aria-pressed="false"><span>01</span>Arrive</button><button type="button" data-request-step="1" aria-pressed="false"><span>02</span>Refresh</button><button type="button" data-request-step="2" aria-pressed="false"><span>03</span>Target</button><button type="button" data-request-step="3" aria-pressed="false"><span>04</span>Definitions</button><button type="button" data-request-step="4" aria-pressed="false"><span>05</span>Callers</button><button type="button" data-request-step="5" aria-pressed="false"><span>06</span>Callees</button><button type="button" data-request-step="6" aria-pressed="true"><span>07</span>References</button><button type="button" data-request-step="7" aria-pressed="false"><span>08</span>Return</button></div></div>
+  <div class="request-narration" id="request-narration" aria-live="polite"><b>References reuse the discovery already done for callers.</b><span>One reference search has answered two questions in both revisions.</span></div>
+  <div class="replay-pair" id="request-panels"></div>
+  <div class="transport-controls js-only"><button type="button" id="request-prev">← Previous</button><span id="request-position">7 / 8</span><button type="button" id="request-next">Next →</button></div>
+  <p class="caption">Exact cache entries and observer counters from <a href="#credit-10">10-tour-guide</a>. P = promise; V = location array. Labels identify objects within each run, not equality across processes. The drawing compresses internal calls. Click a cache to inspect its meaning, entries, and source.</p>
+  <details class="record-table"><summary>Read all eight recorded stops as a table</summary><p>Both revisions have the same values in this table. Store order: definitions, call target, references, callers, callees, positions. Counters are cumulative.</p><div class="table-scroll"><table><thead><tr><th>Stop</th><th>Entries in the six stores</th><th>Definition / reference / position searches</th></tr></thead><tbody><tr><th scope="row">1. Arrive</th><td>0 · 0 · 0 · 0 · 0 · 0</td><td>0 / 0 / 0</td></tr><tr><th scope="row">2. Refresh</th><td>0 · 0 · 0 · 0 · 0 · 0</td><td>0 / 0 / 0</td></tr><tr><th scope="row">3. Target</th><td>1 · 1 · 0 · 0 · 0 · 0</td><td>1 / 0 / 0</td></tr><tr><th scope="row">4. Definitions</th><td>1 · 1 · 0 · 0 · 0 · 0</td><td>1 / 0 / 0</td></tr><tr><th scope="row">5. Callers</th><td>1 · 1 · 1 · 1 · 0 · 0</td><td>1 / 1 / 0</td></tr><tr><th scope="row">6. Callees</th><td>1 · 1 · 1 · 1 · 1 · 1</td><td>1 / 1 / 1</td></tr><tr><th scope="row">7. References</th><td>1 · 1 · 1 · 1 · 1 · 1</td><td>1 / 1 / 1</td></tr><tr><th scope="row">8. Return</th><td>1 · 1 · 1 · 1 · 1 · 1</td><td>1 / 1 / 1</td></tr></tbody></table></div></details>
+  <p class="evidence-links"><a href="evidence/request-original.json">Original recording ↗</a><a href="evidence/10-capture.mjs.txt">Original capture code ↗</a><a href="#identity" data-exit>Which returned objects are shared? →</a></p>
+
+  <div class="subsection" id="identity" data-parents="D02 D04"><div class="section-title"><h3>Shared locations can produce fresh outputs.</h3><a href="#D04">↑ D04</a></div>
+    <div class="projection-diagram"><div><b>Reference-location promise</b><span>cached once per identity</span></div><span aria-hidden="true">↠</span><div><b>Callers</b><span>own cached edge promise</span><hr><b>References</b><span>new public projection each access</span></div><div><b>Position-location array</b><span>cached by file + offset, including empty arrays</span></div><span aria-hidden="true">→</span><div><b>Current syntax nodes</b><span>looked up again; new outer array each access</span></div></div>
+    <div class="table-scroll"><table class="cache-table"><thead><tr><th>Independent store</th><th>Key</th><th>What is retained / produced</th></tr></thead><tbody><tr id="cache-definitionsByIdentity"><th scope="row">Definitions<small>definitionsByIdentity</small></th><td>Symbol identity</td><td>Promise of definition overview nodes<p>findDefinitions returns the stored promise; call-target resolution can reuse this work.</p><a class="source-link" href="#e-projections" data-exit>Source ↗</a></td></tr>
+<tr id="cache-callTargetsByIdentity"><th scope="row">Call target<small>callTargetsByIdentity</small></th><td>Symbol identity</td><td>Promise of target resolution<p>A separate answer to whether the call target is resolved, ambiguous, or absent.</p><a class="source-link" href="#e-projections" data-exit>Source ↗</a></td></tr>
+<tr id="cache-referencesByIdentity"><th scope="row">Reference locations<small>referencesByIdentity</small></th><td>Symbol identity</td><td>Promise of reference locations<p>Shared discovery for callers and references. Public references are projected on each access.</p><a class="source-link" href="#e-reference-discovery" data-exit>Source ↗</a></td></tr>
+<tr id="cache-callersByIdentity"><th scope="row">Caller edges<small>callersByIdentity</small></th><td>Symbol identity</td><td>Promise of incoming call edges<p>Reuses reference discovery, then caches its own caller-edge projection.</p><a class="source-link" href="#e-projections" data-exit>Source ↗</a></td></tr>
+<tr id="cache-calleesByIdentity"><th scope="row">Callee edges<small>calleesByIdentity</small></th><td>Symbol identity</td><td>Promise of outgoing call edges<p>Its own cached promise. Callee lookup uses position definitions to resolve outgoing calls.</p><a class="source-link" href="#e-construction" data-exit>Source ↗</a></td></tr>
+<tr id="cache-definitionsByPosition"><th scope="row">Position definitions<small>definitionsByPosition</small></th><td>Relative path + source offset</td><td>Array of semantic node locations<p>Includes empty arrays. Each access builds a new array of current syntax nodes from the stored locations.</p><a class="source-link" href="#e-positions" data-exit>Source ↗</a></td></tr></tbody></table></div>
+    <div class="subsection contact" id="contact" data-parents="D04 D07 D08 D11"><div class="section-title"><h3>See reuse as a relation between reads.</h3><a href="#D04">↑ D04</a></div>
+      <p>In a filled square, the row's read and the column's read refer to the <b>same object</b>. The left matrix looks inside the cache; the right looks at what the service returns. Both matrices use the same eight observations.</p>
+      <div class="contact-controls js-only"><label for="contact-channel">Store / operation<select id="contact-channel"><option value="R">References</option><option value="P">Position definitions</option><option value="D">Definitions</option><option value="T">Call target</option><option value="C">Callers</option><option value="E">Callees</option></select></label><label for="contact-version">Recorded revision<select id="contact-version"><option value="head">Head · 64919bcb</option><option value="base">Base · a1e325a5</option></select></label><span><i class="same-key" aria-hidden="true"></i> same object <i class="different-key" aria-hidden="true"></i> different objects</span></div>
+      <div class="contact-pair" id="contact-panels"></div>
+      <p class="contact-observation" id="contact-observation" aria-live="polite">References reuse a cached location promise while every public service return is fresh.</p>
+      <p class="caption"><b>A1/A2:</b> first read/repeat after success. <b>F1/F2:</b> reads after a failed refresh. <b>B1/B2:</b> reads after the next successful refresh. <b>R1/R2:</b> reads after release starts, with project cleanup held open. Spacing is observation order, not time. The large A/F block means failed refresh kept the old entry; B and R occupy fresh blocks.</p>
+      <p class="caption">Original measurements and representation from <a href="#credit-36">36</a>: actual backend/service classes on a separate one-file fixture containing <code>target(); missing();</code>, with injected state-refresh failure and a deferred project-graph substitute. Equality is within one build. Both revisions have the same identity patterns here; these matrices cannot show the changed cleanup completion boundary.</p>
+      <details class="record-table"><summary>Read the underlying object IDs</summary><p>Head IDs below; matching labels within this run identify the same object. IDs across independent runs do not mean shared memory. Base records are in the original data.</p><div class="table-scroll"><table><thead><tr><th>Store / lens</th><th>A1</th><th>A2</th><th>F1</th><th>F2</th><th>B1</th><th>B2</th><th>R1</th><th>R2</th></tr></thead><tbody><tr><th scope="row">Definitions · cached</th><td><code>object-1</code></td><td><code>object-1</code></td><td><code>object-1</code></td><td><code>object-1</code></td><td><code>object-17</code></td><td><code>object-17</code></td><td><code>object-28</code></td><td><code>object-28</code></td></tr><tr><th scope="row">Definitions · returned</th><td><code>object-1</code></td><td><code>object-1</code></td><td><code>object-1</code></td><td><code>object-1</code></td><td><code>object-17</code></td><td><code>object-17</code></td><td><code>object-28</code></td><td><code>object-28</code></td></tr><tr><th scope="row">Reference locations · cached</th><td><code>object-2</code></td><td><code>object-2</code></td><td><code>object-2</code></td><td><code>object-2</code></td><td><code>object-18</code></td><td><code>object-18</code></td><td><code>object-29</code></td><td><code>object-29</code></td></tr><tr><th scope="row">Reference locations · returned</th><td><code>object-7</code></td><td><code>object-11</code></td><td><code>object-13</code></td><td><code>object-15</code></td><td><code>object-23</code></td><td><code>object-26</code></td><td><code>object-34</code></td><td><code>object-37</code></td></tr><tr><th scope="row">Call target · cached</th><td><code>object-3</code></td><td><code>object-3</code></td><td><code>object-3</code></td><td><code>object-3</code></td><td><code>object-19</code></td><td><code>object-19</code></td><td><code>object-30</code></td><td><code>object-30</code></td></tr><tr><th scope="row">Call target · returned</th><td><code>object-3</code></td><td><code>object-3</code></td><td><code>object-3</code></td><td><code>object-3</code></td><td><code>object-19</code></td><td><code>object-19</code></td><td><code>object-30</code></td><td><code>object-30</code></td></tr><tr><th scope="row">Callers · cached</th><td><code>object-4</code></td><td><code>object-4</code></td><td><code>object-4</code></td><td><code>object-4</code></td><td><code>object-20</code></td><td><code>object-20</code></td><td><code>object-31</code></td><td><code>object-31</code></td></tr><tr><th scope="row">Callers · returned</th><td><code>object-4</code></td><td><code>object-4</code></td><td><code>object-4</code></td><td><code>object-4</code></td><td><code>object-20</code></td><td><code>object-20</code></td><td><code>object-31</code></td><td><code>object-31</code></td></tr><tr><th scope="row">Callees · cached</th><td><code>object-5</code></td><td><code>object-5</code></td><td><code>object-5</code></td><td><code>object-5</code></td><td><code>object-21</code></td><td><code>object-21</code></td><td><code>object-32</code></td><td><code>object-32</code></td></tr><tr><th scope="row">Callees · returned</th><td><code>object-5</code></td><td><code>object-5</code></td><td><code>object-5</code></td><td><code>object-5</code></td><td><code>object-21</code></td><td><code>object-21</code></td><td><code>object-32</code></td><td><code>object-32</code></td></tr><tr><th scope="row">Position definitions · cached</th><td><code>object-6</code></td><td><code>object-6</code></td><td><code>object-6</code></td><td><code>object-6</code></td><td><code>object-22</code></td><td><code>object-22</code></td><td><code>object-33</code></td><td><code>object-33</code></td></tr><tr><th scope="row">Position definitions · returned</th><td><code>object-8</code></td><td><code>object-12</code></td><td><code>object-14</code></td><td><code>object-16</code></td><td><code>object-24</code></td><td><code>object-27</code></td><td><code>object-35</code></td><td><code>object-38</code></td></tr></tbody></table></div></details>
+      <p class="evidence-links"><a href="evidence/contact-original.json">Original observations ↗</a><a href="evidence/36-capture.mjs.txt">Capture code ↗</a></p>
+    </div>
+  </div>
+</section>
+
+<section class="chapter" id="boundaries" aria-labelledby="boundary-title" data-parents="D07 D08 D09 D11">
+  <div class="section-title"><div><span class="eyebrow">03 / the lifetime boundary · D07 / D08 / D09 / D11</span><h2 id="boundary-title">Cleared now. Finished later.</h2></div><a href="#D09" class="backlink">↑ Whole change</a></div>
+  <div class="lifetime-paths"><div><b>Refresh · same order</b><span>Source → projects if workspace → await state</span><strong>Success → files handed over + all caches cleared</strong><span>Earlier failure → current cache entries + file list retained</span></div><div><b>Release · changed completion boundary</b><span>Both: synchronously clear the six stores</span><strong>Before: start graph → backend may finish</strong><strong class="teal-text">After: await graph → await service → backend settles</strong></div></div>
+  <div class="lab-header"><div><span class="eyebrow">Recorded executions / controlled inputs</span><h3>Choose which boundary to inspect.</h3></div><label class="js-only" for="scenario">Recorded case<select id="scenario"><option value="release-reject">Cleanup stays pending, then rejects</option><option value="release-hold">Cleanup stays pending, then succeeds</option><option value="refresh">Refresh succeeds with unchanged files</option><option value="failed-refresh">Changed-file refresh fails</option></select></label></div>
+  <p id="lab-method" class="method-note">A gate holds the graph's promise before real project cleanup. Rejecting the gate prevents that cleanup from running. Both real backend/service implementations are unchanged. This is a controlled contract probe.</p>
+  <details class="fixture-detail"><summary>Inspect this separate two-file fixture</summary><pre><code>// src/lib.ts
+export function target(value: number): number { return value + 1; }
+
+// src/app.ts
+import { target } from "./lib.js";
+export function caller(): number {
+  return target(1) + target(2);
+}</code></pre><p>Experiment 17's calls fixture, with two repeated accesses per query. It is separate from the three-function request above. Seven entries can occupy six stores: the two call positions have separate keys.</p></details>
+  <div class="step-picker lab-steps js-only" id="lab-steps" aria-label="Recorded boundary checkpoints"></div>
+  <div class="replay-pair" id="lab-panels"></div>
+  <p class="observation" id="lab-observation" aria-live="polite">Both sets of cache entries are gone. The base backend has fulfilled; the head backend remains pending with the held graph.</p>
+  <div class="transport-controls js-only"><button type="button" id="lab-prev">← Previous</button><span id="lab-position">4 / 6</span><button type="button" id="lab-next">Next →</button></div>
+  <p class="caption">Replays exact saved states from <a href="#credit-17">17-executable-before-after</a>. Selecting a checkpoint does not pause a running backend. Each case starts a separate run. New queries between clearing and settlement can refill the handles; the frame after settlement is therefore not necessarily empty.</p>
+  <div class="two-notes"><p><b>The graph already supported asynchronous release.</b> It visits configured projects sequentially, then the inferred project. Rejection can stop later cleanup. The concrete TypeScript project method is synchronous. <a href="#e-graph" data-exit>Graph ↗</a> <a href="#e-project" data-exit>Project ↗</a></p><p><b>The recording observes the detached base promise.</b> Its rejection handler keeps the probe running; it does not join that promise to the backend return. No daemon concurrency or whole-command scheduling is inferred. <a href="evidence/17-runner.mjs.txt">Capture implementation ↗</a></p></div>
+  <details class="record-table"><summary>Read every checkpoint in the four boundary recordings</summary><div class="table-scroll"><table><thead><tr><th>Case / checkpoint</th><th>Entries: base / head</th><th>Backend: base / head</th><th>Graph: base / head</th></tr></thead><tbody><tr><th scope="row">refresh<small>Refresh succeeds · turn 1 begins</small></th><td>0 / 0</td><td>not called / not called</td><td>not called / not called</td></tr><tr><th scope="row">refresh<small>Ask every query 2 times inside one turn</small></th><td>7 / 7</td><td>not called / not called</td><td>not called / not called</td></tr><tr><th scope="row">refresh<small>Refresh succeeds · all six caches are empty</small></th><td>0 / 0</td><td>not called / not called</td><td>not called / not called</td></tr><tr><th scope="row">refresh<small>Same source, fresh query entries in turn 2</small></th><td>7 / 7</td><td>not called / not called</td><td>not called / not called</td></tr><tr><th scope="row">failed-refresh<small>Refresh succeeds · turn 1 begins</small></th><td>0 / 0</td><td>not called / not called</td><td>not called / not called</td></tr><tr><th scope="row">failed-refresh<small>Ask every query 2 times inside one turn</small></th><td>7 / 7</td><td>not called / not called</td><td>not called / not called</td></tr><tr><th scope="row">failed-refresh<small>Refresh rejects · current cache entries remain</small></th><td>7 / 7</td><td>not called / not called</td><td>not called / not called</td></tr><tr><th scope="row">failed-refresh<small>Query the preserved successful turn</small></th><td>7 / 7</td><td>not called / not called</td><td>not called / not called</td></tr><tr><th scope="row">release-hold<small>Refresh succeeds · turn 1 begins</small></th><td>0 / 0</td><td>not called / not called</td><td>not called / not called</td></tr><tr><th scope="row">release-hold<small>Ask every query 2 times inside one turn</small></th><td>7 / 7</td><td>not called / not called</td><td>not called / not called</td></tr><tr><th scope="row">release-hold<small>Release called · cache clearing has already happened</small></th><td>0 / 0</td><td>pending / pending</td><td>pending / pending</td></tr><tr><th scope="row">release-hold<small>Project release is held open</small></th><td>0 / 0</td><td>fulfilled / pending</td><td>pending / pending</td></tr><tr><th scope="row">release-hold<small>A later access creates fresh entries</small></th><td>7 / 7</td><td>fulfilled / pending</td><td>pending / pending</td></tr><tr><th scope="row">release-hold<small>Finish project release · observe the backend promise</small></th><td>7 / 7</td><td>fulfilled / fulfilled</td><td>fulfilled / fulfilled</td></tr><tr><th scope="row">release-reject<small>Refresh succeeds · turn 1 begins</small></th><td>0 / 0</td><td>not called / not called</td><td>not called / not called</td></tr><tr><th scope="row">release-reject<small>Ask every query 2 times inside one turn</small></th><td>7 / 7</td><td>not called / not called</td><td>not called / not called</td></tr><tr><th scope="row">release-reject<small>Release called · cache clearing has already happened</small></th><td>0 / 0</td><td>pending / pending</td><td>pending / pending</td></tr><tr><th scope="row">release-reject<small>Project release is held open</small></th><td>0 / 0</td><td>fulfilled / pending</td><td>pending / pending</td></tr><tr><th scope="row">release-reject<small>A later access creates fresh entries</small></th><td>7 / 7</td><td>fulfilled / pending</td><td>pending / pending</td></tr><tr><th scope="row">release-reject<small>Reject project release · observe the backend promise</small></th><td>7 / 7</td><td>fulfilled / rejected</td><td>rejected / rejected</td></tr></tbody></table></div></details>
+  <p class="evidence-links"><a href="evidence/lifecycle-original.json">Original selected recordings + provenance ↗</a><a href="#e-release-test" data-exit>The submitted test ↗</a><a href="#intent" data-exit>Where is this explained in the intent? →</a></p>
+</section>
+
+<section class="chapter" id="intent" aria-labelledby="intent-title" data-parents="D01 D03 D09">
+  <div class="section-title"><div><span class="eyebrow">04 / the reason boundary · D01 / D03 / D09</span><h2 id="intent-title">Disclosed is different from explained.</h2></div><a href="#D09">↑ Whole change</a></div>
+  <div class="intent-grid"><div class="intent-cell"><span class="eyebrow">The plan</span><h3>Move reusable lifetime to core.</h3><p>Preserve timing and every failure path; shared concepts are described as bases the backend extends.</p><a href="#e-plan-owner" data-exit>Ownership ↗</a> <a href="#e-plan-parity" data-exit>Parity wording ↗</a></div><div class="intent-cell"><span class="eyebrow">The PR</span><h3>Show an awaited backend barrier.</h3><p>The after diagram and public surface explicitly disclose the awaited release and the composed scope. The clear-first ordering has a stated reason.</p><a href="#e-pr-surface" data-exit>Declared barrier ↗</a> <a href="#e-pr-reasons" data-exit>Recorded reasons ↗</a></div><div class="intent-cell"><span class="eyebrow">The implementation</span><h3>Connect project failure to the caller.</h3><p>Service awaits graph; backend awaits service. The existing graph's outcome now reaches backend release.</p><a href="#e-release-after" data-exit>Service ↗</a> <a href="#e-backend-after" data-exit>Backend ↗</a></div></div>
+  <div class="open-reason"><span class="reason unexplained">unexplained</span><p><b>No separate reconciliation was found.</b> Clearing old entries first explains their availability during cleanup. It does not separately explain changing the backend's completion and failure contract under the plan's parity promise. The reason for the composed form is also unrecorded.</p></div>
+  <p class="caption">Intent trace adapted from <a href="#credit-09">09</a>, with reason granularity retained from <a href="#credit-31">31</a>. The plan concerns the whole stack; a PR body may be retrospective. This comparison does not infer authorization, a defect, or an end-user outcome.</p>
+</section>
+
+<section class="chapter" id="lookup" aria-labelledby="lookup-title" data-parents="D04 D05 D06">
+  <div class="section-title"><div><span class="eyebrow">05 / inside one handle · D04 / D05 / D06</span><h2 id="lookup-title">The factory's return is the cache entry.</h2></div><a href="#D06">↑ Whole change</a></div>
+  <div class="lookup-branches"><div><span class="eyebrow">Key present · Map.has</span><h3>Return the stored value.</h3><div class="path-chip">Value → same value</div><div class="path-chip">Undefined → still a hit</div><div class="path-chip">Rejected promise → same rejection</div><p>The factory stays idle. No wrapping, copying, or promise settlement hook is added.</p></div><div><span class="eyebrow">Key absent</span><h3>Call factory → store exact return.</h3><div class="path-chip">Returns P → insert P now</div><div class="path-chip">Throws → insertion is never reached</div><p>A thrown factory runs again on the next lookup. In reference discovery, the function runs before <code>Promise.resolve</code> receives its argument.</p></div></div>
+  <div class="code-caption"><pre><code>if (this.values.has(key)) return this.values.get(key) as Value;
+const value = createValue();
+this.values.set(key, value);
+return value;</code></pre><p>Exact source from the new core handle, lines 15–18. <a href="#e-scope" data-exit>All 46 lines ↗</a></p></div>
+  <p class="caption">This preserves the TypeScript caches' returned-value and failure behavior. Undefined matters to the new generic contract; the existing TypeScript caches store promises or arrays. <a href="#e-core-values-test" data-exit>Undefined test ↗</a> <a href="#e-reference-discovery" data-exit>Synchronous discovery ↗</a></p>
+
+  <div class="subsection" id="tickets" data-parents="D06 D11"><div class="section-title"><h3>An empty drawer cannot take back your ticket.</h3><a href="#D11">↑ Whole change</a></div>
+    <p class="caption">Lossy claim-ticket analogy, adapted from <a href="#credit-26">26</a>. A ticket stands for a promise object, not a job in a queue. No mail delivery, cancellation, or timing is modeled.</p>
+    <div class="ticket-triptych"><figure><figcaption>1 / Lookup returns P</figcaption><div class="drawer">cache key <b>P</b></div><div class="holder">caller holds <b>P</b></div></figure><figure><figcaption>2 / Clear; then ask again</figcaption><div class="drawer new">cache key <b>Q</b></div><div class="holder">caller still holds <b>P</b></div></figure><figure><figcaption>3 / Old promise settles</figcaption><div class="drawer new">cache key <b>Q</b></div><div class="holder">caller receives <b>P's result</b></div></figure></div>
+    <p>The same handle remains registered throughout. No closed flag prevents refill, including while project release is pending. An old promise can finish without inserting anything into the newly cleared Map. <a href="#e-late-test" data-exit>Late-settlement test ↗</a> <a href="#e-core-clear-test" data-exit>Repeated release ↗</a></p>
+  </div>
+</section>
+
+<section class="chapter" id="api" aria-labelledby="api-title" data-parents="D01 D03 D09 D10 D11">
+  <div class="section-title"><div><span class="eyebrow">06 / caller-facing contracts · D01 / D03 / D09 / D10 / D11</span><h2 id="api-title">Same signature can mean a different wait.</h2></div><a href="#D10">↑ Whole change</a></div>
+  <div class="table-scroll"><table class="contracts"><thead><tr><th>Public surface</th><th>Before</th><th>After</th><th>Caller consequence</th></tr></thead><tbody>
+    <tr><th scope="row">Core scope + handle</th><td>Absent</td><td><code>TurnScopedCacheScope</code><br><code>TurnScopedCache&lt;K, V&gt;</code></td><td>Available through core's root export; each service constructs its own scope.<br><a href="#e-export" data-exit>Export ↗</a></td></tr>
+    <tr><th scope="row">Handle lookup</th><td>Private Map access in the service</td><td><code>getOrCreate(key, factory): V</code></td><td>Exact value on hit; factory on miss. Public handle exposes no clear/delete operation.<br><a href="#e-scope" data-exit>Interface ↗</a></td></tr>
+    <tr><th scope="row">Scope lifecycle</th><td>Private six-Map clear list</td><td><code>createCache&lt;K, V&gt;()</code><br><code>beginTurn(): void</code><br><code>releaseTransientResources(): void</code></td><td>Create retains a handle. Both lifecycle calls synchronously clear all values; handles remain usable. No unregister or phase gate.<br><a href="#e-scope" data-exit>Implementation ↗</a></td></tr>
+    <tr><th scope="row">Service beginTurn</th><td><code>(snapshot: WorkspaceSnapshot): void</code></td><td><code>(files: readonly WorkspaceFile[]): void</code></td><td>Direct callers pass files. Service assigns the array before clearing; release retains it. Narrowing rationale is unexplained.<br><a href="#e-begin-before" data-exit>Before ↗</a> <a href="#e-construction" data-exit>After ↗</a></td></tr>
+    <tr><th scope="row">Service release</th><td><code>(): void</code></td><td><code>(): Promise&lt;void&gt;</code></td><td>Now waits for project release; its rejection propagates after caches were already cleared.<br><a href="#e-release-after" data-exit>Source ↗</a></td></tr>
+    <tr class="changed-contract"><th scope="row">Backend release</th><td><code>(): Promise&lt;void&gt;</code></td><td><code>(): Promise&lt;void&gt;</code></td><td><b>Signature unchanged. Completion/error contract expanded.</b> The promise now awaits the service, including project cleanup.<br><a href="#e-backend-before" data-exit>Before ↗</a> <a href="#e-backend-after" data-exit>After ↗</a></td></tr>
+  </tbody></table></div>
+  <p class="caption">Caller-contract lens from <a href="#credit-20">20</a>, condensed to the relevant new and changed surfaces. Source placement is <code>core/src/backend</code>; neither that exact directory choice nor composition over a shared base has a separate located reason. <a href="#e-plan-owner" data-exit>Plan wording ↗</a></p>
+</section>
+
+<section class="chapter" id="evidence-map" aria-labelledby="test-title" data-parents="D12">
+  <div class="section-title"><div><span class="eyebrow">07 / what was pinned · D12</span><h2 id="test-title">Ten additions. Five retained cases.</h2></div><a href="#D12">↑ Whole change</a></div>
+  <div class="test-counts"><div><b>+4</b><span>core cases</span></div><div><b>+6</b><span>service cases</span></div><div><b>5</b><span>old service cases retained</span></div><div><b>0</b><span>deleted or weakened assertions in this diff</span></div></div>
+  <div class="table-scroll"><table><thead><tr><th>Evidence group</th><th>What it pins</th><th>Limit of that evidence</th></tr></thead><tbody>
+    <tr><th scope="row">4 added core cases</th><td>Exact values, undefined, isolated handles; both clears and reuse; rejection/throw; old settlement.</td><td>Generic factories, not a TypeScript engine. <a href="#e-core-values-test" data-exit>Tests ↗</a></td></tr>
+    <tr><th scope="row">4 added service cases</th><td>Four direct query promises; empty positions/fresh arrays; async failures and synchronous retries.</td><td>In-memory TypeScript and narrow workspace substitutes. <a href="#e-identity-test" data-exit>Identity ↗</a> <a href="#e-failure-tests" data-exit>Failures ↗</a></td></tr>
+    <tr><th scope="row">1 added refresh case</th><td>Failed state refresh keeps a definition result and search count.</td><td>Injected state failure; no project graph. <a href="#e-refresh-test" data-exit>Test ↗</a></td></tr>
+    <tr><th scope="row">1 added release case</th><td>Immediate clear, refill while pending, backend still pending, then rejects; later cleanup is not reached.</td><td>Controlled rejecting graph. No new delayed-success or daemon-level case. <a href="#e-release-test" data-exit>Test ↗</a></td></tr>
+    <tr><th scope="row">5 retained service cases</th><td>Shared discovery, reuse across turns, repeated call positions, diamond traversal, real fixture release/rebuild.</td><td>The entire old test-and-helper tail is byte-identical. This audit reads source; it does not execute tests. <a href="evidence/test-audit.json">Audit ↗</a></td></tr>
+  </tbody></table></div>
+  <p class="caption">No performance, full-CLI parity, or exhaustive six-store integration claim follows from these cases. The PR's first commit characterizes identities; later commits specify core lifecycle and awaited release before adoption. <a href="#e-commits" data-exit>Commit record ↗</a></p>
+
+  <details class="coverage" id="coverage"><summary>Account for all six files and all 15 diff hunks</summary><p>Every added and removed line belongs to a hunk assigned to the visible decisions. Imports and substitutions follow the behavior they support. This applies the coverage loop from <a href="#credit-31">31</a>; assignments are authored, not automatic semantic judgments.</p><div class="table-scroll"><table><thead><tr><th>Hunk</th><th>File / coordinates</th><th>Delta</th><th>Overview decisions</th></tr></thead><tbody><tr><th scope="row">H01</th><td><code>typescript-backend/typescript-backend.ts</code><small> -80,12 +80,12 </small></td><td>+2 / −2</td><td><a href="#D07">D07</a> · <a href="#D09">D09</a> · <a href="#D10">D10</a></td></tr><tr><th scope="row">H02</th><td><code>typescript-backend/typescript-semantic-query-service.test.ts</code><small> -2,7 +2,8 </small></td><td>+2 / −1</td><td><a href="#D12">D12</a></td></tr><tr><th scope="row">H03</th><td><code>typescript-backend/typescript-semantic-query-service.test.ts</code><small> -14,6 +15,9 </small></td><td>+3 / −0</td><td><a href="#D12">D12</a></td></tr><tr><th scope="row">H04</th><td><code>typescript-backend/typescript-semantic-query-service.test.ts</code><small> -22,6 +26,196 </small></td><td>+190 / −0</td><td><a href="#D04">D04</a> · <a href="#D06">D06</a> · <a href="#D07">D07</a> · <a href="#D08">D08</a> · <a href="#D09">D09</a> · <a href="#D11">D11</a> · <a href="#D12">D12</a></td></tr><tr><th scope="row">H05</th><td><code>typescript-backend/typescript-semantic-query-service.ts</code><small> -1,12 +1,13 </small></td><td>+2 / −1</td><td><a href="#D01">D01</a> · <a href="#D10">D10</a></td></tr><tr><th scope="row">H06</th><td><code>typescript-backend/typescript-semantic-query-service.ts</code><small> -26,19 +27,32 </small></td><td>+20 / −7</td><td><a href="#D01">D01</a> · <a href="#D02">D02</a> · <a href="#D03">D03</a> · <a href="#D04">D04</a> · <a href="#D10">D10</a> · <a href="#D11">D11</a></td></tr><tr><th scope="row">H07</th><td><code>typescript-backend/typescript-semantic-query-service.ts</code><small> -46,23 +60,21 </small></td><td>+10 / −12</td><td><a href="#D04">D04</a> · <a href="#D07">D07</a> · <a href="#D10">D10</a></td></tr><tr><th scope="row">H08</th><td><code>typescript-backend/typescript-semantic-query-service.ts</code><small> -90,41 +102,33 </small></td><td>+16 / −24</td><td><a href="#D04">D04</a> · <a href="#D08">D08</a> · <a href="#D09">D09</a></td></tr><tr><th scope="row">H09</th><td><code>typescript-backend/typescript-semantic-query-service.ts</code><small> -132,10 +136,9 </small></td><td>+2 / −3</td><td><a href="#D04">D04</a></td></tr><tr><th scope="row">H10</th><td><code>typescript-backend/typescript-semantic-query-service.ts</code><small> -149,8 +152,7 </small></td><td>+1 / −2</td><td><a href="#D04">D04</a></td></tr><tr><th scope="row">H11</th><td><code>typescript-backend/typescript-semantic-query-service.ts</code><small> -162,12 +164,10 </small></td><td>+4 / −6</td><td><a href="#D04">D04</a> · <a href="#D06">D06</a></td></tr><tr><th scope="row">H12</th><td><code>typescript-backend/typescript-semantic-query-service.ts</code><small> -216,15 +216,6 </small></td><td>+0 / −9</td><td><a href="#D01">D01</a> · <a href="#D08">D08</a></td></tr><tr><th scope="row">H13</th><td><code>backend/turn-scoped-cache-scope.test.ts</code><small> -0,0 +1,92 </small></td><td>+92 / −0</td><td><a href="#D05">D05</a> · <a href="#D06">D06</a> · <a href="#D11">D11</a> · <a href="#D12">D12</a></td></tr><tr><th scope="row">H14</th><td><code>backend/turn-scoped-cache-scope.ts</code><small> -0,0 +1,46 </small></td><td>+46 / −0</td><td><a href="#D01">D01</a> · <a href="#D03">D03</a> · <a href="#D05">D05</a> · <a href="#D06">D06</a> · <a href="#D11">D11</a></td></tr><tr><th scope="row">H15</th><td><code>index.ts</code><small> -149,6 +149,7 </small></td><td>+1 / −0</td><td><a href="#D01">D01</a></td></tr></tbody></table></div><p><a href="evidence/coverage.json">Complete changed-line assignments ↗</a> · <a href="evidence/diff.patch">Exact six-file patch ↗</a> · <a href="evidence/pyramid-map.json">Overview-to-detail map ↗</a></p></details>
+</section>
+
+<section class="chapter" id="teachback" aria-labelledby="teachback-title">
+  <div class="section-title"><div><span class="eyebrow">08 / predict before revealing</span><h2 id="teachback-title">Could you explain the boundary now?</h2></div><a href="#decisions">↑ Whole change</a></div>
+  <div class="teachback-grid"><details><summary><span>01</span>Callers already found the references. How many extra reference searches does the later references question need?</summary><p><b>Zero in the recorded request.</b> Both questions reuse the internal reference-location promise. Public reference results can still be freshly projected. <a href="#request" data-exit>Return to the recording ↗</a></p></details><details><summary><span>02</span>A promise rejects. Does asking again necessarily retry its factory?</summary><p><b>No.</b> A returned promise is retained even after rejection. A synchronous throw before returning inserts nothing and is retried. <a href="#lookup" data-exit>See the two paths ↗</a></p></details><details><summary><span>03</span>The caches are empty and a caller still holds an old promise. Must cleanup have finished?</summary><p><b>No.</b> Both revisions clear before project cleanup settles, and clearing does not cancel a held promise. Only the head backend waits for the graph outcome. <a href="#boundaries" data-exit>See the held boundary ↗</a></p></details></div>
+  <p class="credit-line">Predict-then-reveal pattern from <a href="#credit-04">04-textbook-chapter</a>. These are reading prompts; no answer, score, verdict, or comment is collected.</p>
+</section>
+
+<section class="chapter" id="evidence" aria-labelledby="evidence-title">
+  <div class="section-title"><div><span class="eyebrow">09 / check the same facts</span><h2 id="evidence-title">Source evidence, here on the page.</h2></div><a href="#decisions">↑ Whole change</a></div>
+  <p>Exact local excerpts at base <code>a1e325a5</code> and head <code>64919bcb</code>. Source exits open their excerpt and remember where you came from. Without JavaScript, open the disclosure and use its decision backlink.</p>
+  <div class="evidence-list"><details class="source" id="e-plan-owner"><summary><span>Plan: language-independent lifetime belongs to core</span><small>head · L53–64</small></summary>
+        <div class="source-inner"><p class="source-path">plans/005/daemon-architecture-functional-spec.md<br><code>64919bcbcf7fcc8202779b78c5f069b24662bb18</code></p>
+        <pre tabindex="0" aria-label="Plan: language-independent lifetime belongs to core"><code><span id="L-plan-owner-53"><i aria-hidden="true">53</i>### A language backend holds only language-specific logic</span>
+<span id="L-plan-owner-54"><i aria-hidden="true">54</i></span>
+<span id="L-plan-owner-55"><i aria-hidden="true">55</i>A concept that another language could share lives in core as a base the backend extends. The backend supplies only what depends on the language&#x27;s toolchain.</span>
+<span id="L-plan-owner-56"><i aria-hidden="true">56</i></span>
+<span id="L-plan-owner-57"><i aria-hidden="true">57</i>```text</span>
+<span id="L-plan-owner-58"><i aria-hidden="true">58</i>Shared in core: file revision tracking, prepared-file index, declarations-by-identity,</span>
+<span id="L-plan-owner-59"><i aria-hidden="true">59</i>transactional index publication, project-membership graph with input invalidation,</span>
+<span id="L-plan-owner-60"><i aria-hidden="true">60</i>turn-scoped query cache lifecycle.</span>
+<span id="L-plan-owner-61"><i aria-hidden="true">61</i>TypeScript-only: extraction from TypeScript syntax trees, tsconfig parsing (extends,</span>
+<span id="L-plan-owner-62"><i aria-hidden="true">62</i>references, path aliases, include/exclude), program and language-service creation,</span>
+<span id="L-plan-owner-63"><i aria-hidden="true">63</i>semantic query bodies.</span>
+<span id="L-plan-owner-64"><i aria-hidden="true">64</i>```</span></code></pre>
+        <div class="source-footer"><a href="evidence/source-head-plan.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#D01">↑ D01</a><a href="#D03">↑ D03</a></div></div></details>
+<details class="source" id="e-plan-parity"><summary><span>Plan: retain timing and failure behavior</span><small>head · L17–28</small></summary>
+        <div class="source-inner"><p class="source-path">plans/005/daemon-architecture-functional-spec.md<br><code>64919bcbcf7fcc8202779b78c5f069b24662bb18</code></p>
+        <pre tabindex="0" aria-label="Plan: retain timing and failure behavior"><code><span id="L-plan-parity-17"><i aria-hidden="true">17</i>### Behavior is unchanged</span>
+<span id="L-plan-parity-18"><i aria-hidden="true">18</i></span>
+<span id="L-plan-parity-19"><i aria-hidden="true">19</i>This is a refactor. Every command, daemon lifecycle action, diagnostic record, telemetry event, and failure path behaves as it does today.</span>
+<span id="L-plan-parity-20"><i aria-hidden="true">20</i></span>
+<span id="L-plan-parity-21"><i aria-hidden="true">21</i>```text</span>
+<span id="L-plan-parity-22"><i aria-hidden="true">22</i>Given the same workspace, arguments, environment, and daemon state, output bytes,</span>
+<span id="L-plan-parity-23"><i aria-hidden="true">23</i>exit code, execution mode, and lifecycle outcome are identical before and after.</span>
+<span id="L-plan-parity-24"><i aria-hidden="true">24</i>```</span>
+<span id="L-plan-parity-25"><i aria-hidden="true">25</i></span>
+<span id="L-plan-parity-26"><i aria-hidden="true">26</i>Correct: a restructuring change passes the existing e2e parity and daemon suites without touching a single expectation. Incorrect: a restructuring change &quot;fixes&quot; a queue, eviction, timeout, or path while moving code.</span>
+<span id="L-plan-parity-27"><i aria-hidden="true">27</i></span>
+<span id="L-plan-parity-28"><i aria-hidden="true">28</i>There is no &quot;it was obviously a bug&quot; override. Behavior defects found during restructuring are recorded in `daemon-follow-ups-functional-spec.md` and changed separately.</span></code></pre>
+        <div class="source-footer"><a href="evidence/source-head-plan.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#D09">↑ D09</a></div></div></details>
+<details class="source" id="e-pr-context"><summary><span>PR: preservation is the declared intent</span><small>bundle · L1–3</small></summary>
+        <div class="source-inner"><p class="source-path">inputs/pr-127/pr.json · body<br><code>64919bcbcf7fcc8202779b78c5f069b24662bb18</code></p>
+        <pre tabindex="0" aria-label="PR: preservation is the declared intent"><code><span id="L-pr-context-1"><i aria-hidden="true">1</i>## Context</span>
+<span id="L-pr-context-2"><i aria-hidden="true">2</i></span>
+<span id="L-pr-context-3"><i aria-hidden="true">3</i>The [daemon architecture spec](https://github.com/mohasarc/symnav/blob/main/plans/005/daemon-architecture-functional-spec.md) assigns turn-scoped semantic-cache lifetime to core. Building on #126, this layer moves only cache lifetime out of TypeScript while preserving all six algorithms, key spaces, promise/value identities, and failure behavior.</span></code></pre>
+        <div class="source-footer"><a href="evidence/body.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#D04">↑ D04</a><a href="#D06">↑ D06</a></div></div></details>
+<details class="source" id="e-pr-reasons"><summary><span>PR: four recorded reasons</span><small>bundle · L76–81</small></summary>
+        <div class="source-inner"><p class="source-path">inputs/pr-127/pr.json · body<br><code>64919bcbcf7fcc8202779b78c5f069b24662bb18</code></p>
+        <pre tabindex="0" aria-label="PR: four recorded reasons"><code><span id="L-pr-reasons-76"><i aria-hidden="true">76</i>## Decisions</span>
+<span id="L-pr-reasons-77"><i aria-hidden="true">77</i></span>
+<span id="L-pr-reasons-78"><i aria-hidden="true">78</i>- Chose one scope with six handles over one shared map, because the existing queries have independent key and value spaces.</span>
+<span id="L-pr-reasons-79"><i aria-hidden="true">79</i>- Chose `Map.has` before `Map.get` over truthiness checks, because `undefined` is a valid cached value.</span>
+<span id="L-pr-reasons-80"><i aria-hidden="true">80</i>- Chose synchronous cache clearing before project release over clearing after the await, because released semantics must be unavailable while release is pending or rejecting.</span>
+<span id="L-pr-reasons-81"><i aria-hidden="true">81</i>- Chose to begin the next turn only after refresh succeeds over clearing at refresh entry, because failed refresh must preserve the current successful turn.</span></code></pre>
+        <div class="source-footer"><a href="evidence/body.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#D02">↑ D02</a><a href="#D05">↑ D05</a><a href="#D07">↑ D07</a><a href="#D08">↑ D08</a></div></div></details>
+<details class="source" id="e-pr-surface"><summary><span>PR: the awaited barrier is explicitly declared</span><small>bundle · L18–38</small></summary>
+        <div class="source-inner"><p class="source-path">inputs/pr-127/pr.json · body<br><code>64919bcbcf7fcc8202779b78c5f069b24662bb18</code></p>
+        <pre tabindex="0" aria-label="PR: the awaited barrier is explicitly declared"><code><span id="L-pr-surface-18"><i aria-hidden="true">18</i>After — core owns cache lifetime and the backend is the release barrier:</span>
+<span id="L-pr-surface-19"><i aria-hidden="true">19</i></span>
+<span id="L-pr-surface-20"><i aria-hidden="true">20</i>```mermaid</span>
+<span id="L-pr-surface-21"><i aria-hidden="true">21</i>flowchart LR</span>
+<span id="L-pr-surface-22"><i aria-hidden="true">22</i>    Backend[&quot;TypeScriptBackend&lt;br/&gt;awaited release boundary&quot;] --&gt;|calls refresh/release| Service[&quot;TypeScriptSemanticQueryService&lt;br/&gt;query algorithms&quot;]</span>
+<span id="L-pr-surface-23"><i aria-hidden="true">23</i>    Service --&gt;|owns| Scope[&quot;TurnScopedCacheScope&lt;br/&gt;synchronous lifecycle&quot;]</span>
+<span id="L-pr-surface-24"><i aria-hidden="true">24</i>    Scope --&gt;|owns| Handles[&quot;six isolated typed handles&quot;]</span>
+<span id="L-pr-surface-25"><i aria-hidden="true">25</i>    Service --&gt;|awaits release| Graph[&quot;TypeScriptProjectGraph&quot;]</span>
+<span id="L-pr-surface-26"><i aria-hidden="true">26</i>    style Backend fill:#fff2cc,stroke:#bf9000</span>
+<span id="L-pr-surface-27"><i aria-hidden="true">27</i>    style Service fill:#fff2cc,stroke:#bf9000</span>
+<span id="L-pr-surface-28"><i aria-hidden="true">28</i>    style Scope fill:#ddffdd,stroke:#008800</span>
+<span id="L-pr-surface-29"><i aria-hidden="true">29</i>    style Handles fill:#ddffdd,stroke:#008800</span>
+<span id="L-pr-surface-30"><i aria-hidden="true">30</i>```</span>
+<span id="L-pr-surface-31"><i aria-hidden="true">31</i></span>
+<span id="L-pr-surface-32"><i aria-hidden="true">32</i>Legend: green = added ownership; red = removed ownership; yellow = changed responsibility.</span>
+<span id="L-pr-surface-33"><i aria-hidden="true">33</i></span>
+<span id="L-pr-surface-34"><i aria-hidden="true">34</i>## Where it lives</span>
+<span id="L-pr-surface-35"><i aria-hidden="true">35</i></span>
+<span id="L-pr-surface-36"><i aria-hidden="true">36</i>```text</span>
+<span id="L-pr-surface-37"><i aria-hidden="true">37</i>.</span>
+<span id="L-pr-surface-38"><i aria-hidden="true">38</i>└── packages/</span></code></pre>
+        <div class="source-footer"><a href="evidence/body.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#D09">↑ D09</a><a href="#D10">↑ D10</a></div></div></details>
+<details class="source" id="e-pr-api"><summary><span>PR: the new and changed public signatures</span><small>bundle · L50–74</small></summary>
+        <div class="source-inner"><p class="source-path">inputs/pr-127/pr.json · body<br><code>64919bcbcf7fcc8202779b78c5f069b24662bb18</code></p>
+        <pre tabindex="0" aria-label="PR: the new and changed public signatures"><code><span id="L-pr-api-50"><i aria-hidden="true">50</i>## Public surface</span>
+<span id="L-pr-api-51"><i aria-hidden="true">51</i></span>
+<span id="L-pr-api-52"><i aria-hidden="true">52</i>Added to `@symnav/core`:</span>
+<span id="L-pr-api-53"><i aria-hidden="true">53</i></span>
+<span id="L-pr-api-54"><i aria-hidden="true">54</i>```ts</span>
+<span id="L-pr-api-55"><i aria-hidden="true">55</i>export interface TurnScopedCache&lt;Key, Value&gt; {</span>
+<span id="L-pr-api-56"><i aria-hidden="true">56</i>  getOrCreate(key: Key, createValue: () =&gt; Value): Value;</span>
+<span id="L-pr-api-57"><i aria-hidden="true">57</i>}</span>
+<span id="L-pr-api-58"><i aria-hidden="true">58</i></span>
+<span id="L-pr-api-59"><i aria-hidden="true">59</i>export class TurnScopedCacheScope {</span>
+<span id="L-pr-api-60"><i aria-hidden="true">60</i>  createCache&lt;Key, Value&gt;(): TurnScopedCache&lt;Key, Value&gt;;</span>
+<span id="L-pr-api-61"><i aria-hidden="true">61</i>  beginTurn(): void;</span>
+<span id="L-pr-api-62"><i aria-hidden="true">62</i>  releaseTransientResources(): void;</span>
+<span id="L-pr-api-63"><i aria-hidden="true">63</i>}</span>
+<span id="L-pr-api-64"><i aria-hidden="true">64</i>```</span>
+<span id="L-pr-api-65"><i aria-hidden="true">65</i></span>
+<span id="L-pr-api-66"><i aria-hidden="true">66</i>Changed on exported `TypeScriptSemanticQueryService`:</span>
+<span id="L-pr-api-67"><i aria-hidden="true">67</i></span>
+<span id="L-pr-api-68"><i aria-hidden="true">68</i>```ts</span>
+<span id="L-pr-api-69"><i aria-hidden="true">69</i>// before: beginTurn(snapshot: WorkspaceSnapshot): void</span>
+<span id="L-pr-api-70"><i aria-hidden="true">70</i>beginTurn(files: readonly WorkspaceFile[]): void;</span>
+<span id="L-pr-api-71"><i aria-hidden="true">71</i></span>
+<span id="L-pr-api-72"><i aria-hidden="true">72</i>// before: releaseTransientResources(): void</span>
+<span id="L-pr-api-73"><i aria-hidden="true">73</i>releaseTransientResources(): Promise&lt;void&gt;;</span>
+<span id="L-pr-api-74"><i aria-hidden="true">74</i>```</span></code></pre>
+        <div class="source-footer"><a href="evidence/body.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#decisions">↑ Decisions</a></div></div></details>
+<details class="source" id="e-pr-tests"><summary><span>PR: tests characterize identities, errors, and clearing</span><small>bundle · L40–48</small></summary>
+        <div class="source-inner"><p class="source-path">inputs/pr-127/pr.json · body<br><code>64919bcbcf7fcc8202779b78c5f069b24662bb18</code></p>
+        <pre tabindex="0" aria-label="PR: tests characterize identities, errors, and clearing"><code><span id="L-pr-tests-40"><i aria-hidden="true">40</i>    │   ├── ** index.ts</span>
+<span id="L-pr-tests-41"><i aria-hidden="true">41</i>    │   └── backend/</span>
+<span id="L-pr-tests-42"><i aria-hidden="true">42</i>    │       ├── ++ turn-scoped-cache-scope.ts       # owns generic cache lifetime</span>
+<span id="L-pr-tests-43"><i aria-hidden="true">43</i>    │       └── ++ turn-scoped-cache-scope.test.ts  # locks identity, error, and clearing contracts</span>
+<span id="L-pr-tests-44"><i aria-hidden="true">44</i>    └── backend-typescript/src/typescript-backend/</span>
+<span id="L-pr-tests-45"><i aria-hidden="true">45</i>        ├── ** typescript-semantic-query-service.ts       # adopts six isolated cache handles</span>
+<span id="L-pr-tests-46"><i aria-hidden="true">46</i>        ├── ** typescript-semantic-query-service.test.ts  # characterizes TypeScript cache behavior</span>
+<span id="L-pr-tests-47"><i aria-hidden="true">47</i>        └── ** typescript-backend.ts                      # owns successful-turn and release barriers</span>
+<span id="L-pr-tests-48"><i aria-hidden="true">48</i>```</span></code></pre>
+        <div class="source-footer"><a href="evidence/body.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#D12">↑ D12</a></div></div></details>
+<details class="source" id="e-commits"><summary><span>Six commit subjects; every body is empty</span><small>bundle · L1–18</small></summary>
+        <div class="source-inner"><p class="source-path">inputs/pr-127/pr.json · commits<br><code>64919bcbcf7fcc8202779b78c5f069b24662bb18</code></p>
+        <pre tabindex="0" aria-label="Six commit subjects; every body is empty"><code><span id="L-commits-1"><i aria-hidden="true">1</i>44de06c631863ac27d78545d7cb9570b2ce19165</span>
+<span id="L-commits-2"><i aria-hidden="true">2</i>Characterize TypeScript semantic cache identities</span>
+<span id="L-commits-3"><i aria-hidden="true">3</i>Body: (empty)</span>
+<span id="L-commits-4"><i aria-hidden="true">4</i>67df0279bdf4d40bdfa05f813ab56475a9ffbf9c</span>
+<span id="L-commits-5"><i aria-hidden="true">5</i>Define turn-scoped cache handles</span>
+<span id="L-commits-6"><i aria-hidden="true">6</i>Body: (empty)</span>
+<span id="L-commits-7"><i aria-hidden="true">7</i>f515f73e93ae678f75189d02f184829e4ab895a9</span>
+<span id="L-commits-8"><i aria-hidden="true">8</i>Specify turn-scoped cache lifecycle</span>
+<span id="L-commits-9"><i aria-hidden="true">9</i>Body: (empty)</span>
+<span id="L-commits-10"><i aria-hidden="true">10</i>471a46653a6f381e4a6c7960a4f1094e2217fe3e</span>
+<span id="L-commits-11"><i aria-hidden="true">11</i>Implement turn-scoped cache lifecycle</span>
+<span id="L-commits-12"><i aria-hidden="true">12</i>Body: (empty)</span>
+<span id="L-commits-13"><i aria-hidden="true">13</i>9e656518954d8e6b81966d768badce82738d4efc</span>
+<span id="L-commits-14"><i aria-hidden="true">14</i>Specify awaited semantic resource release</span>
+<span id="L-commits-15"><i aria-hidden="true">15</i>Body: (empty)</span>
+<span id="L-commits-16"><i aria-hidden="true">16</i>64919bcbcf7fcc8202779b78c5f069b24662bb18</span>
+<span id="L-commits-17"><i aria-hidden="true">17</i>Adopt turn-scoped TypeScript query caches</span>
+<span id="L-commits-18"><i aria-hidden="true">18</i>Body: (empty)</span></code></pre>
+        <div class="source-footer"><a href="evidence/commits.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#D12">↑ D12</a></div></div></details>
+<details class="source" id="e-scope"><summary><span>The entire new core cache implementation</span><small>head · L1–46</small></summary>
+        <div class="source-inner"><p class="source-path">packages/core/src/backend/turn-scoped-cache-scope.ts<br><code>64919bcbcf7fcc8202779b78c5f069b24662bb18</code></p>
+        <pre tabindex="0" aria-label="The entire new core cache implementation"><code><span id="L-scope-1"><i aria-hidden="true">1</i>export interface TurnScopedCache&lt;Key, Value&gt; {</span>
+<span id="L-scope-2"><i aria-hidden="true">2</i>  getOrCreate(key: Key, createValue: () =&gt; Value): Value;</span>
+<span id="L-scope-3"><i aria-hidden="true">3</i>}</span>
+<span id="L-scope-4"><i aria-hidden="true">4</i></span>
+<span id="L-scope-5"><i aria-hidden="true">5</i>interface ClearableTurnScopedCache {</span>
+<span id="L-scope-6"><i aria-hidden="true">6</i>  clear(): void;</span>
+<span id="L-scope-7"><i aria-hidden="true">7</i>}</span>
+<span id="L-scope-8"><i aria-hidden="true">8</i></span>
+<span id="L-scope-9"><i aria-hidden="true">9</i>class TurnScopedCacheHandle&lt;Key, Value&gt;</span>
+<span id="L-scope-10"><i aria-hidden="true">10</i>  implements TurnScopedCache&lt;Key, Value&gt;, ClearableTurnScopedCache</span>
+<span id="L-scope-11"><i aria-hidden="true">11</i>{</span>
+<span id="L-scope-12"><i aria-hidden="true">12</i>  private readonly values = new Map&lt;Key, Value&gt;();</span>
+<span id="L-scope-13"><i aria-hidden="true">13</i></span>
+<span id="L-scope-14"><i aria-hidden="true">14</i>  getOrCreate(key: Key, createValue: () =&gt; Value): Value {</span>
+<span id="L-scope-15"><i aria-hidden="true">15</i>    if (this.values.has(key)) return this.values.get(key) as Value;</span>
+<span id="L-scope-16"><i aria-hidden="true">16</i>    const value = createValue();</span>
+<span id="L-scope-17"><i aria-hidden="true">17</i>    this.values.set(key, value);</span>
+<span id="L-scope-18"><i aria-hidden="true">18</i>    return value;</span>
+<span id="L-scope-19"><i aria-hidden="true">19</i>  }</span>
+<span id="L-scope-20"><i aria-hidden="true">20</i></span>
+<span id="L-scope-21"><i aria-hidden="true">21</i>  clear(): void {</span>
+<span id="L-scope-22"><i aria-hidden="true">22</i>    this.values.clear();</span>
+<span id="L-scope-23"><i aria-hidden="true">23</i>  }</span>
+<span id="L-scope-24"><i aria-hidden="true">24</i>}</span>
+<span id="L-scope-25"><i aria-hidden="true">25</i></span>
+<span id="L-scope-26"><i aria-hidden="true">26</i>export class TurnScopedCacheScope {</span>
+<span id="L-scope-27"><i aria-hidden="true">27</i>  private readonly caches: ClearableTurnScopedCache[] = [];</span>
+<span id="L-scope-28"><i aria-hidden="true">28</i></span>
+<span id="L-scope-29"><i aria-hidden="true">29</i>  createCache&lt;Key, Value&gt;(): TurnScopedCache&lt;Key, Value&gt; {</span>
+<span id="L-scope-30"><i aria-hidden="true">30</i>    const cache = new TurnScopedCacheHandle&lt;Key, Value&gt;();</span>
+<span id="L-scope-31"><i aria-hidden="true">31</i>    this.caches.push(cache);</span>
+<span id="L-scope-32"><i aria-hidden="true">32</i>    return cache;</span>
+<span id="L-scope-33"><i aria-hidden="true">33</i>  }</span>
+<span id="L-scope-34"><i aria-hidden="true">34</i></span>
+<span id="L-scope-35"><i aria-hidden="true">35</i>  beginTurn(): void {</span>
+<span id="L-scope-36"><i aria-hidden="true">36</i>    this.clear();</span>
+<span id="L-scope-37"><i aria-hidden="true">37</i>  }</span>
+<span id="L-scope-38"><i aria-hidden="true">38</i></span>
+<span id="L-scope-39"><i aria-hidden="true">39</i>  releaseTransientResources(): void {</span>
+<span id="L-scope-40"><i aria-hidden="true">40</i>    this.clear();</span>
+<span id="L-scope-41"><i aria-hidden="true">41</i>  }</span>
+<span id="L-scope-42"><i aria-hidden="true">42</i></span>
+<span id="L-scope-43"><i aria-hidden="true">43</i>  private clear(): void {</span>
+<span id="L-scope-44"><i aria-hidden="true">44</i>    for (const cache of this.caches) cache.clear();</span>
+<span id="L-scope-45"><i aria-hidden="true">45</i>  }</span>
+<span id="L-scope-46"><i aria-hidden="true">46</i>}</span></code></pre>
+        <div class="source-footer"><a href="evidence/source-head-scope.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#D03">↑ D03</a><a href="#D05">↑ D05</a><a href="#D06">↑ D06</a><a href="#D11">↑ D11</a></div></div></details>
+<details class="source" id="e-construction"><summary><span>Service constructs one scope, six handles, and accepts files</span><small>head · L29–66</small></summary>
+        <div class="source-inner"><p class="source-path">packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts<br><code>64919bcbcf7fcc8202779b78c5f069b24662bb18</code></p>
+        <pre tabindex="0" aria-label="Service constructs one scope, six handles, and accepts files"><code><span id="L-construction-29"><i aria-hidden="true">29</i>export class TypeScriptSemanticQueryService implements PositionDefinitionResolver {</span>
+<span id="L-construction-30"><i aria-hidden="true">30</i>  private files: readonly WorkspaceFile[] = [];</span>
+<span id="L-construction-31"><i aria-hidden="true">31</i>  private readonly cacheScope = new TurnScopedCacheScope();</span>
+<span id="L-construction-32"><i aria-hidden="true">32</i>  private readonly definitionsByIdentity = this.cacheScope.createCache&lt;</span>
+<span id="L-construction-33"><i aria-hidden="true">33</i>    string,</span>
+<span id="L-construction-34"><i aria-hidden="true">34</i>    Promise&lt;readonly SymbolOverviewNode[]&gt;</span>
+<span id="L-construction-35"><i aria-hidden="true">35</i>  &gt;();</span>
+<span id="L-construction-36"><i aria-hidden="true">36</i>  private readonly referencesByIdentity = this.cacheScope.createCache&lt;</span>
+<span id="L-construction-37"><i aria-hidden="true">37</i>    string,</span>
+<span id="L-construction-38"><i aria-hidden="true">38</i>    Promise&lt;readonly SemanticReferenceLocation[]&gt;</span>
+<span id="L-construction-39"><i aria-hidden="true">39</i>  &gt;();</span>
+<span id="L-construction-40"><i aria-hidden="true">40</i>  private readonly callTargetsByIdentity = this.cacheScope.createCache&lt;</span>
+<span id="L-construction-41"><i aria-hidden="true">41</i>    string,</span>
+<span id="L-construction-42"><i aria-hidden="true">42</i>    Promise&lt;CallTargetResolution&gt;</span>
+<span id="L-construction-43"><i aria-hidden="true">43</i>  &gt;();</span>
+<span id="L-construction-44"><i aria-hidden="true">44</i>  private readonly callersByIdentity = this.cacheScope.createCache&lt;</span>
+<span id="L-construction-45"><i aria-hidden="true">45</i>    string,</span>
+<span id="L-construction-46"><i aria-hidden="true">46</i>    Promise&lt;readonly CallEdge[]&gt;</span>
+<span id="L-construction-47"><i aria-hidden="true">47</i>  &gt;();</span>
+<span id="L-construction-48"><i aria-hidden="true">48</i>  private readonly calleesByIdentity = this.cacheScope.createCache&lt;</span>
+<span id="L-construction-49"><i aria-hidden="true">49</i>    string,</span>
+<span id="L-construction-50"><i aria-hidden="true">50</i>    Promise&lt;readonly CallEdge[]&gt;</span>
+<span id="L-construction-51"><i aria-hidden="true">51</i>  &gt;();</span>
+<span id="L-construction-52"><i aria-hidden="true">52</i>  private readonly definitionsByPosition = this.cacheScope.createCache&lt;</span>
+<span id="L-construction-53"><i aria-hidden="true">53</i>    string,</span>
+<span id="L-construction-54"><i aria-hidden="true">54</i>    readonly SemanticNodeLocation[]</span>
+<span id="L-construction-55"><i aria-hidden="true">55</i>  &gt;();</span>
+<span id="L-construction-56"><i aria-hidden="true">56</i></span>
+<span id="L-construction-57"><i aria-hidden="true">57</i>  constructor(</span>
+<span id="L-construction-58"><i aria-hidden="true">58</i>    private readonly projects: TypeScriptProjectGraph | undefined,</span>
+<span id="L-construction-59"><i aria-hidden="true">59</i>    private readonly workspaceState: TypeScriptWorkspaceState,</span>
+<span id="L-construction-60"><i aria-hidden="true">60</i>    private readonly observer?: TypeScriptSemanticQueryObserver,</span>
+<span id="L-construction-61"><i aria-hidden="true">61</i>  ) {}</span>
+<span id="L-construction-62"><i aria-hidden="true">62</i></span>
+<span id="L-construction-63"><i aria-hidden="true">63</i>  beginTurn(files: readonly WorkspaceFile[]): void {</span>
+<span id="L-construction-64"><i aria-hidden="true">64</i>    this.files = files;</span>
+<span id="L-construction-65"><i aria-hidden="true">65</i>    this.cacheScope.beginTurn();</span>
+<span id="L-construction-66"><i aria-hidden="true">66</i>  }</span></code></pre>
+        <div class="source-footer"><a href="evidence/source-head-service.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#D01">↑ D01</a><a href="#D02">↑ D02</a><a href="#D03">↑ D03</a><a href="#D10">↑ D10</a></div></div></details>
+<details class="source" id="e-before-maps"><summary><span>Before: six Maps and snapshot input</span><small>base · L29–52</small></summary>
+        <div class="source-inner"><p class="source-path">packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts<br><code>a1e325a5ff979bdfa25babc5554621c8c0f20497</code></p>
+        <pre tabindex="0" aria-label="Before: six Maps and snapshot input"><code><span id="L-before-maps-29"><i aria-hidden="true">29</i>  private files: WorkspaceSnapshot[&quot;files&quot;] = [];</span>
+<span id="L-before-maps-30"><i aria-hidden="true">30</i>  private readonly definitionsByIdentity = new Map&lt;</span>
+<span id="L-before-maps-31"><i aria-hidden="true">31</i>    string,</span>
+<span id="L-before-maps-32"><i aria-hidden="true">32</i>    Promise&lt;readonly SymbolOverviewNode[]&gt;</span>
+<span id="L-before-maps-33"><i aria-hidden="true">33</i>  &gt;();</span>
+<span id="L-before-maps-34"><i aria-hidden="true">34</i>  private readonly referencesByIdentity = new Map&lt;</span>
+<span id="L-before-maps-35"><i aria-hidden="true">35</i>    string,</span>
+<span id="L-before-maps-36"><i aria-hidden="true">36</i>    Promise&lt;readonly SemanticReferenceLocation[]&gt;</span>
+<span id="L-before-maps-37"><i aria-hidden="true">37</i>  &gt;();</span>
+<span id="L-before-maps-38"><i aria-hidden="true">38</i>  private readonly callTargetsByIdentity = new Map&lt;string, Promise&lt;CallTargetResolution&gt;&gt;();</span>
+<span id="L-before-maps-39"><i aria-hidden="true">39</i>  private readonly callersByIdentity = new Map&lt;string, Promise&lt;readonly CallEdge[]&gt;&gt;();</span>
+<span id="L-before-maps-40"><i aria-hidden="true">40</i>  private readonly calleesByIdentity = new Map&lt;string, Promise&lt;readonly CallEdge[]&gt;&gt;();</span>
+<span id="L-before-maps-41"><i aria-hidden="true">41</i>  private readonly definitionsByPosition = new Map&lt;string, readonly SemanticNodeLocation[]&gt;();</span>
+<span id="L-before-maps-42"><i aria-hidden="true">42</i></span>
+<span id="L-before-maps-43"><i aria-hidden="true">43</i>  constructor(</span>
+<span id="L-before-maps-44"><i aria-hidden="true">44</i>    private readonly projects: TypeScriptProjectGraph | undefined,</span>
+<span id="L-before-maps-45"><i aria-hidden="true">45</i>    private readonly workspaceState: TypeScriptWorkspaceState,</span>
+<span id="L-before-maps-46"><i aria-hidden="true">46</i>    private readonly observer?: TypeScriptSemanticQueryObserver,</span>
+<span id="L-before-maps-47"><i aria-hidden="true">47</i>  ) {}</span>
+<span id="L-before-maps-48"><i aria-hidden="true">48</i></span>
+<span id="L-before-maps-49"><i aria-hidden="true">49</i>  beginTurn(snapshot: WorkspaceSnapshot): void {</span>
+<span id="L-before-maps-50"><i aria-hidden="true">50</i>    this.files = snapshot.files;</span>
+<span id="L-before-maps-51"><i aria-hidden="true">51</i>    this.clearQueryCaches();</span>
+<span id="L-before-maps-52"><i aria-hidden="true">52</i>  }</span></code></pre>
+        <div class="source-footer"><a href="evidence/source-base-service.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#decisions">↑ Decisions</a></div></div></details>
+<details class="source" id="e-before-clearing"><summary><span>Before: six manual clearing calls</span><small>base · L219–226</small></summary>
+        <div class="source-inner"><p class="source-path">packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts<br><code>a1e325a5ff979bdfa25babc5554621c8c0f20497</code></p>
+        <pre tabindex="0" aria-label="Before: six manual clearing calls"><code><span id="L-before-clearing-219"><i aria-hidden="true">219</i>  private clearQueryCaches(): void {</span>
+<span id="L-before-clearing-220"><i aria-hidden="true">220</i>    this.definitionsByIdentity.clear();</span>
+<span id="L-before-clearing-221"><i aria-hidden="true">221</i>    this.referencesByIdentity.clear();</span>
+<span id="L-before-clearing-222"><i aria-hidden="true">222</i>    this.callTargetsByIdentity.clear();</span>
+<span id="L-before-clearing-223"><i aria-hidden="true">223</i>    this.callersByIdentity.clear();</span>
+<span id="L-before-clearing-224"><i aria-hidden="true">224</i>    this.calleesByIdentity.clear();</span>
+<span id="L-before-clearing-225"><i aria-hidden="true">225</i>    this.definitionsByPosition.clear();</span>
+<span id="L-before-clearing-226"><i aria-hidden="true">226</i>  }</span></code></pre>
+        <div class="source-footer"><a href="evidence/source-base-service.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#decisions">↑ Decisions</a></div></div></details>
+<details class="source" id="e-begin-before"><summary><span>Before: beginTurn receives a snapshot</span><small>base · L49–52</small></summary>
+        <div class="source-inner"><p class="source-path">packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts<br><code>a1e325a5ff979bdfa25babc5554621c8c0f20497</code></p>
+        <pre tabindex="0" aria-label="Before: beginTurn receives a snapshot"><code><span id="L-begin-before-49"><i aria-hidden="true">49</i>  beginTurn(snapshot: WorkspaceSnapshot): void {</span>
+<span id="L-begin-before-50"><i aria-hidden="true">50</i>    this.files = snapshot.files;</span>
+<span id="L-begin-before-51"><i aria-hidden="true">51</i>    this.clearQueryCaches();</span>
+<span id="L-begin-before-52"><i aria-hidden="true">52</i>  }</span></code></pre>
+        <div class="source-footer"><a href="evidence/source-base-service.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#D10">↑ D10</a></div></div></details>
+<details class="source" id="e-export"><summary><span>Core&#x27;s package root exports the scope and handle interface</span><small>head · L148–153</small></summary>
+        <div class="source-inner"><p class="source-path">packages/core/src/index.ts<br><code>64919bcbcf7fcc8202779b78c5f069b24662bb18</code></p>
+        <pre tabindex="0" aria-label="Core&#x27;s package root exports the scope and handle interface"><code><span id="L-export-148"><i aria-hidden="true">148</i>export {</span>
+<span id="L-export-149"><i aria-hidden="true">149</i>  RevisionedBackendPreparation,</span>
+<span id="L-export-150"><i aria-hidden="true">150</i>  RevisionedBackendState,</span>
+<span id="L-export-151"><i aria-hidden="true">151</i>} from &quot;./backend/revisioned-backend-state.js&quot;;</span>
+<span id="L-export-152"><i aria-hidden="true">152</i>export { TurnScopedCacheScope, type TurnScopedCache } from &quot;./backend/turn-scoped-cache-scope.js&quot;;</span>
+<span id="L-export-153"><i aria-hidden="true">153</i>export { BackendRouter } from &quot;./backend/backend-router.js&quot;;</span></code></pre>
+        <div class="source-footer"><a href="evidence/source-head-export.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#D01">↑ D01</a></div></div></details>
+<details class="source" id="e-service-export"><summary><span>The semantic service is already a public export</span><small>head · L10–16</small></summary>
+        <div class="source-inner"><p class="source-path">packages/backend-typescript/src/index.ts<br><code>64919bcbcf7fcc8202779b78c5f069b24662bb18</code></p>
+        <pre tabindex="0" aria-label="The semantic service is already a public export"><code><span id="L-service-export-10"><i aria-hidden="true">10</i>  type TypeScriptFileExtractor,</span>
+<span id="L-service-export-11"><i aria-hidden="true">11</i>} from &quot;./typescript-backend/typescript-workspace-state.js&quot;;</span>
+<span id="L-service-export-12"><i aria-hidden="true">12</i>export type { TypeScriptSemanticQueryObserver } from &quot;./typescript-backend/typescript-semantic-query-observer.js&quot;;</span>
+<span id="L-service-export-13"><i aria-hidden="true">13</i>export {</span>
+<span id="L-service-export-14"><i aria-hidden="true">14</i>  TypeScriptSemanticQueryService,</span>
+<span id="L-service-export-15"><i aria-hidden="true">15</i>  type SemanticReferenceLocation,</span>
+<span id="L-service-export-16"><i aria-hidden="true">16</i>} from &quot;./typescript-backend/typescript-semantic-query-service.js&quot;;</span></code></pre>
+        <div class="source-footer"><a href="evidence/source-head-service-export.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#decisions">↑ Decisions</a></div></div></details>
+<details class="source" id="e-backend-before"><summary><span>Before: successful refresh, unjoined cleanup</span><small>base · L79–89</small></summary>
+        <div class="source-inner"><p class="source-path">packages/backend-typescript/src/typescript-backend/typescript-backend.ts<br><code>a1e325a5ff979bdfa25babc5554621c8c0f20497</code></p>
+        <pre tabindex="0" aria-label="Before: successful refresh, unjoined cleanup"><code><span id="L-backend-before-79"><i aria-hidden="true">79</i>  async refresh(request: BackendRefreshRequest): Promise&lt;BackendRefreshSummary&gt; {</span>
+<span id="L-backend-before-80"><i aria-hidden="true">80</i>    this.sourceCache?.refresh(request.snapshot);</span>
+<span id="L-backend-before-81"><i aria-hidden="true">81</i>    if (request.coverage === &quot;workspace&quot;) await this.projectGraph?.refresh(request.snapshot);</span>
+<span id="L-backend-before-82"><i aria-hidden="true">82</i>    const summary = await this.state.refresh(request.snapshot.files, request.coverage);</span>
+<span id="L-backend-before-83"><i aria-hidden="true">83</i>    this.semanticQueries.beginTurn(request.snapshot);</span>
+<span id="L-backend-before-84"><i aria-hidden="true">84</i>    return summary;</span>
+<span id="L-backend-before-85"><i aria-hidden="true">85</i>  }</span>
+<span id="L-backend-before-86"><i aria-hidden="true">86</i></span>
+<span id="L-backend-before-87"><i aria-hidden="true">87</i>  async releaseTransientResources(): Promise&lt;void&gt; {</span>
+<span id="L-backend-before-88"><i aria-hidden="true">88</i>    this.semanticQueries.releaseTransientResources();</span>
+<span id="L-backend-before-89"><i aria-hidden="true">89</i>  }</span></code></pre>
+        <div class="source-footer"><a href="evidence/source-base-backend.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#D07">↑ D07</a><a href="#D09">↑ D09</a></div></div></details>
+<details class="source" id="e-backend-after"><summary><span>After: same turn placement, new await</span><small>head · L79–89</small></summary>
+        <div class="source-inner"><p class="source-path">packages/backend-typescript/src/typescript-backend/typescript-backend.ts<br><code>64919bcbcf7fcc8202779b78c5f069b24662bb18</code></p>
+        <pre tabindex="0" aria-label="After: same turn placement, new await"><code><span id="L-backend-after-79"><i aria-hidden="true">79</i>  async refresh(request: BackendRefreshRequest): Promise&lt;BackendRefreshSummary&gt; {</span>
+<span id="L-backend-after-80"><i aria-hidden="true">80</i>    this.sourceCache?.refresh(request.snapshot);</span>
+<span id="L-backend-after-81"><i aria-hidden="true">81</i>    if (request.coverage === &quot;workspace&quot;) await this.projectGraph?.refresh(request.snapshot);</span>
+<span id="L-backend-after-82"><i aria-hidden="true">82</i>    const summary = await this.state.refresh(request.snapshot.files, request.coverage);</span>
+<span id="L-backend-after-83"><i aria-hidden="true">83</i>    this.semanticQueries.beginTurn(request.snapshot.files);</span>
+<span id="L-backend-after-84"><i aria-hidden="true">84</i>    return summary;</span>
+<span id="L-backend-after-85"><i aria-hidden="true">85</i>  }</span>
+<span id="L-backend-after-86"><i aria-hidden="true">86</i></span>
+<span id="L-backend-after-87"><i aria-hidden="true">87</i>  async releaseTransientResources(): Promise&lt;void&gt; {</span>
+<span id="L-backend-after-88"><i aria-hidden="true">88</i>    await this.semanticQueries.releaseTransientResources();</span>
+<span id="L-backend-after-89"><i aria-hidden="true">89</i>  }</span></code></pre>
+        <div class="source-footer"><a href="evidence/source-head-backend.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#D07">↑ D07</a><a href="#D09">↑ D09</a><a href="#D10">↑ D10</a></div></div></details>
+<details class="source" id="e-release-before"><summary><span>Before: clear, start graph release, return void</span><small>base · L125–128</small></summary>
+        <div class="source-inner"><p class="source-path">packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts<br><code>a1e325a5ff979bdfa25babc5554621c8c0f20497</code></p>
+        <pre tabindex="0" aria-label="Before: clear, start graph release, return void"><code><span id="L-release-before-125"><i aria-hidden="true">125</i>  releaseTransientResources(): void {</span>
+<span id="L-release-before-126"><i aria-hidden="true">126</i>    this.clearQueryCaches();</span>
+<span id="L-release-before-127"><i aria-hidden="true">127</i>    this.projects?.releaseTransientResources();</span>
+<span id="L-release-before-128"><i aria-hidden="true">128</i>  }</span></code></pre>
+        <div class="source-footer"><a href="evidence/source-base-service.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#D08">↑ D08</a><a href="#D09">↑ D09</a></div></div></details>
+<details class="source" id="e-release-after"><summary><span>After: clear, then await graph release</span><small>head · L129–132</small></summary>
+        <div class="source-inner"><p class="source-path">packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts<br><code>64919bcbcf7fcc8202779b78c5f069b24662bb18</code></p>
+        <pre tabindex="0" aria-label="After: clear, then await graph release"><code><span id="L-release-after-129"><i aria-hidden="true">129</i>  async releaseTransientResources(): Promise&lt;void&gt; {</span>
+<span id="L-release-after-130"><i aria-hidden="true">130</i>    this.cacheScope.releaseTransientResources();</span>
+<span id="L-release-after-131"><i aria-hidden="true">131</i>    await this.projects?.releaseTransientResources();</span>
+<span id="L-release-after-132"><i aria-hidden="true">132</i>  }</span></code></pre>
+        <div class="source-footer"><a href="evidence/source-head-service.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#D08">↑ D08</a><a href="#D09">↑ D09</a></div></div></details>
+<details class="source" id="e-graph"><summary><span>Existing graph: sequential asynchronous release</span><small>head · L144–152</small></summary>
+        <div class="source-inner"><p class="source-path">packages/core/src/workspace/project-graph.ts<br><code>64919bcbcf7fcc8202779b78c5f069b24662bb18</code></p>
+        <pre tabindex="0" aria-label="Existing graph: sequential asynchronous release"><code><span id="L-graph-144"><i aria-hidden="true">144</i>  async releaseTransientResources(): Promise&lt;void&gt; {</span>
+<span id="L-graph-145"><i aria-hidden="true">145</i>    if (!this.state) return;</span>
+<span id="L-graph-146"><i aria-hidden="true">146</i>    for (const project of this.state.configuredProjects) {</span>
+<span id="L-graph-147"><i aria-hidden="true">147</i>      const release = project.releaseTransientResources();</span>
+<span id="L-graph-148"><i aria-hidden="true">148</i>      if (release) await release;</span>
+<span id="L-graph-149"><i aria-hidden="true">149</i>    }</span>
+<span id="L-graph-150"><i aria-hidden="true">150</i>    const inferredRelease = this.state.inferredProject.releaseTransientResources();</span>
+<span id="L-graph-151"><i aria-hidden="true">151</i>    if (inferredRelease) await inferredRelease;</span>
+<span id="L-graph-152"><i aria-hidden="true">152</i>  }</span></code></pre>
+        <div class="source-footer"><a href="evidence/source-head-graph.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#D08">↑ D08</a></div></div></details>
+<details class="source" id="e-project"><summary><span>Existing concrete TypeScript cleanup is synchronous</span><small>head · L78–85</small></summary>
+        <div class="source-inner"><p class="source-path">packages/backend-typescript/src/typescript-backend/typescript-project-graph.ts<br><code>64919bcbcf7fcc8202779b78c5f069b24662bb18</code></p>
+        <pre tabindex="0" aria-label="Existing concrete TypeScript cleanup is synchronous"><code><span id="L-project-78"><i aria-hidden="true">78</i>  releaseTransientResources(): void {</span>
+<span id="L-project-79"><i aria-hidden="true">79</i>    if (!this.loaded) return;</span>
+<span id="L-project-80"><i aria-hidden="true">80</i>    this.project.getLanguageService().compilerObject.cleanupSemanticCache();</span>
+<span id="L-project-81"><i aria-hidden="true">81</i>    this.observer?.semanticCacheReleased?.();</span>
+<span id="L-project-82"><i aria-hidden="true">82</i>    this.project = this.createProject();</span>
+<span id="L-project-83"><i aria-hidden="true">83</i>    this.loaded = false;</span>
+<span id="L-project-84"><i aria-hidden="true">84</i>  }</span>
+<span id="L-project-85"><i aria-hidden="true">85</i></span></code></pre>
+        <div class="source-footer"><a href="evidence/source-head-project.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#D08">↑ D08</a></div></div></details>
+<details class="source" id="e-projections"><summary><span>Direct cached promises and a fresh reference projection</span><small>head · L68–114</small></summary>
+        <div class="source-inner"><p class="source-path">packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts<br><code>64919bcbcf7fcc8202779b78c5f069b24662bb18</code></p>
+        <pre tabindex="0" aria-label="Direct cached promises and a fresh reference projection"><code><span id="L-projections-68"><i aria-hidden="true">68</i>  findDefinitions(identity: SymbolIdentity): Promise&lt;readonly SymbolOverviewNode[]&gt; {</span>
+<span id="L-projections-69"><i aria-hidden="true">69</i>    const key = formatSymbolIdentity(identity);</span>
+<span id="L-projections-70"><i aria-hidden="true">70</i>    return this.definitionsByIdentity.getOrCreate(key, () =&gt; {</span>
+<span id="L-projections-71"><i aria-hidden="true">71</i>      this.observer?.definitionSearch?.(identity);</span>
+<span id="L-projections-72"><i aria-hidden="true">72</i>      return findDefinitions({</span>
+<span id="L-projections-73"><i aria-hidden="true">73</i>        workspaceState: this.workspaceState,</span>
+<span id="L-projections-74"><i aria-hidden="true">74</i>        files: this.files,</span>
+<span id="L-projections-75"><i aria-hidden="true">75</i>        identity,</span>
+<span id="L-projections-76"><i aria-hidden="true">76</i>      });</span>
+<span id="L-projections-77"><i aria-hidden="true">77</i>    });</span>
+<span id="L-projections-78"><i aria-hidden="true">78</i>  }</span>
+<span id="L-projections-79"><i aria-hidden="true">79</i></span>
+<span id="L-projections-80"><i aria-hidden="true">80</i>  async findReferences(identity: SymbolIdentity): Promise&lt;readonly SymbolReference[]&gt; {</span>
+<span id="L-projections-81"><i aria-hidden="true">81</i>    const locations = await this.referenceLocations(identity);</span>
+<span id="L-projections-82"><i aria-hidden="true">82</i>    return locations.flatMap((location) =&gt; {</span>
+<span id="L-projections-83"><i aria-hidden="true">83</i>      if (location.isDefinition) return [];</span>
+<span id="L-projections-84"><i aria-hidden="true">84</i>      const node = this.workspaceState.nodeAt(location.relativePath, location.start);</span>
+<span id="L-projections-85"><i aria-hidden="true">85</i>      if (!node) return [];</span>
+<span id="L-projections-86"><i aria-hidden="true">86</i>      const sourceFile = node.getSourceFile();</span>
+<span id="L-projections-87"><i aria-hidden="true">87</i>      const { line, character } = sourceFile.compilerNode.getLineAndCharacterOfPosition(</span>
+<span id="L-projections-88"><i aria-hidden="true">88</i>        location.start,</span>
+<span id="L-projections-89"><i aria-hidden="true">89</i>      );</span>
+<span id="L-projections-90"><i aria-hidden="true">90</i>      return [</span>
+<span id="L-projections-91"><i aria-hidden="true">91</i>        {</span>
+<span id="L-projections-92"><i aria-hidden="true">92</i>          file: location.relativePath,</span>
+<span id="L-projections-93"><i aria-hidden="true">93</i>          line: line + 1,</span>
+<span id="L-projections-94"><i aria-hidden="true">94</i>          previewSource: TypeScriptSemanticQueryService.lineText(sourceFile, line),</span>
+<span id="L-projections-95"><i aria-hidden="true">95</i>          matchStart: character,</span>
+<span id="L-projections-96"><i aria-hidden="true">96</i>          matchEnd: character + location.length,</span>
+<span id="L-projections-97"><i aria-hidden="true">97</i>          kind: classifyReferenceKind(node),</span>
+<span id="L-projections-98"><i aria-hidden="true">98</i>        },</span>
+<span id="L-projections-99"><i aria-hidden="true">99</i>      ];</span>
+<span id="L-projections-100"><i aria-hidden="true">100</i>    });</span>
+<span id="L-projections-101"><i aria-hidden="true">101</i>  }</span>
+<span id="L-projections-102"><i aria-hidden="true">102</i></span>
+<span id="L-projections-103"><i aria-hidden="true">103</i>  findCallTarget(identity: SymbolIdentity): Promise&lt;CallTargetResolution&gt; {</span>
+<span id="L-projections-104"><i aria-hidden="true">104</i>    const key = formatSymbolIdentity(identity);</span>
+<span id="L-projections-105"><i aria-hidden="true">105</i>    return this.callTargetsByIdentity.getOrCreate(key, () =&gt; this.resolveCallTarget(identity));</span>
+<span id="L-projections-106"><i aria-hidden="true">106</i>  }</span>
+<span id="L-projections-107"><i aria-hidden="true">107</i></span>
+<span id="L-projections-108"><i aria-hidden="true">108</i>  findCallers(identity: SymbolIdentity): Promise&lt;readonly CallEdge[]&gt; {</span>
+<span id="L-projections-109"><i aria-hidden="true">109</i>    const key = formatSymbolIdentity(identity);</span>
+<span id="L-projections-110"><i aria-hidden="true">110</i>    return this.callersByIdentity.getOrCreate(key, () =&gt;</span>
+<span id="L-projections-111"><i aria-hidden="true">111</i>      this.referenceLocations(identity).then((locations) =&gt;</span>
+<span id="L-projections-112"><i aria-hidden="true">112</i>        new CallerFinder(this.workspaceState).find(locations),</span>
+<span id="L-projections-113"><i aria-hidden="true">113</i>      ),</span>
+<span id="L-projections-114"><i aria-hidden="true">114</i>    );</span></code></pre>
+        <div class="source-footer"><a href="evidence/source-head-service.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#D02">↑ D02</a><a href="#D04">↑ D04</a></div></div></details>
+<details class="source" id="e-positions"><summary><span>Position cache stores locations, then rehydrates nodes</span><small>head · L134–161</small></summary>
+        <div class="source-inner"><p class="source-path">packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts<br><code>64919bcbcf7fcc8202779b78c5f069b24662bb18</code></p>
+        <pre tabindex="0" aria-label="Position cache stores locations, then rehydrates nodes"><code><span id="L-positions-134"><i aria-hidden="true">134</i>  definitionNodesOf(node: Node): readonly Node[] {</span>
+<span id="L-positions-135"><i aria-hidden="true">135</i>    if (!Node.isIdentifier(node) &amp;&amp; !Node.isPrivateIdentifier(node)) return [];</span>
+<span id="L-positions-136"><i aria-hidden="true">136</i>    const relativePath = this.workspaceState.relativePathOf(node.getSourceFile());</span>
+<span id="L-positions-137"><i aria-hidden="true">137</i>    if (!relativePath) return [];</span>
+<span id="L-positions-138"><i aria-hidden="true">138</i>    const key = `${relativePath}:${node.getStart()}`;</span>
+<span id="L-positions-139"><i aria-hidden="true">139</i>    const locations = this.definitionsByPosition.getOrCreate(key, () =&gt; {</span>
+<span id="L-positions-140"><i aria-hidden="true">140</i>      this.observer?.callTargetResolution?.(relativePath, node.getStart());</span>
+<span id="L-positions-141"><i aria-hidden="true">141</i>      return node.getDefinitionNodes().flatMap((definition) =&gt; {</span>
+<span id="L-positions-142"><i aria-hidden="true">142</i>        const definitionRelativePath = this.workspaceState.relativePathOf(</span>
+<span id="L-positions-143"><i aria-hidden="true">143</i>          definition.getSourceFile(),</span>
+<span id="L-positions-144"><i aria-hidden="true">144</i>        );</span>
+<span id="L-positions-145"><i aria-hidden="true">145</i>        return definitionRelativePath</span>
+<span id="L-positions-146"><i aria-hidden="true">146</i>          ? [</span>
+<span id="L-positions-147"><i aria-hidden="true">147</i>              {</span>
+<span id="L-positions-148"><i aria-hidden="true">148</i>                relativePath: definitionRelativePath,</span>
+<span id="L-positions-149"><i aria-hidden="true">149</i>                start: definition.getStart(),</span>
+<span id="L-positions-150"><i aria-hidden="true">150</i>                kind: definition.getKind(),</span>
+<span id="L-positions-151"><i aria-hidden="true">151</i>              },</span>
+<span id="L-positions-152"><i aria-hidden="true">152</i>            ]</span>
+<span id="L-positions-153"><i aria-hidden="true">153</i>          : [];</span>
+<span id="L-positions-154"><i aria-hidden="true">154</i>      });</span>
+<span id="L-positions-155"><i aria-hidden="true">155</i>    });</span>
+<span id="L-positions-156"><i aria-hidden="true">156</i>    return locations.flatMap((location) =&gt; {</span>
+<span id="L-positions-157"><i aria-hidden="true">157</i>      const sourceFile = this.projects?.sourceFileFor(location.relativePath);</span>
+<span id="L-positions-158"><i aria-hidden="true">158</i>      const definition = this.nodeAtSemanticLocation(location, sourceFile);</span>
+<span id="L-positions-159"><i aria-hidden="true">159</i>      return definition ? [definition] : [];</span>
+<span id="L-positions-160"><i aria-hidden="true">160</i>    });</span>
+<span id="L-positions-161"><i aria-hidden="true">161</i>  }</span></code></pre>
+        <div class="source-footer"><a href="evidence/source-head-service.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#D04">↑ D04</a></div></div></details>
+<details class="source" id="e-reference-discovery"><summary><span>Discovery runs before Promise.resolve receives its argument</span><small>head · L163–177</small></summary>
+        <div class="source-inner"><p class="source-path">packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts<br><code>64919bcbcf7fcc8202779b78c5f069b24662bb18</code></p>
+        <pre tabindex="0" aria-label="Discovery runs before Promise.resolve receives its argument"><code><span id="L-reference-discovery-163"><i aria-hidden="true">163</i>  private referenceLocations(</span>
+<span id="L-reference-discovery-164"><i aria-hidden="true">164</i>    identity: SymbolIdentity,</span>
+<span id="L-reference-discovery-165"><i aria-hidden="true">165</i>  ): Promise&lt;readonly SemanticReferenceLocation[]&gt; {</span>
+<span id="L-reference-discovery-166"><i aria-hidden="true">166</i>    const key = formatSymbolIdentity(identity);</span>
+<span id="L-reference-discovery-167"><i aria-hidden="true">167</i>    return this.referencesByIdentity.getOrCreate(key, () =&gt; {</span>
+<span id="L-reference-discovery-168"><i aria-hidden="true">168</i>      this.observer?.referenceSearch?.(identity);</span>
+<span id="L-reference-discovery-169"><i aria-hidden="true">169</i>      return Promise.resolve(this.findReferenceLocations(identity));</span>
+<span id="L-reference-discovery-170"><i aria-hidden="true">170</i>    });</span>
+<span id="L-reference-discovery-171"><i aria-hidden="true">171</i>  }</span>
+<span id="L-reference-discovery-172"><i aria-hidden="true">172</i></span>
+<span id="L-reference-discovery-173"><i aria-hidden="true">173</i>  private findReferenceLocations(identity: SymbolIdentity): readonly SemanticReferenceLocation[] {</span>
+<span id="L-reference-discovery-174"><i aria-hidden="true">174</i>    const declarationNodes = this.workspaceState</span>
+<span id="L-reference-discovery-175"><i aria-hidden="true">175</i>      .locateSemanticCopies(identity)</span>
+<span id="L-reference-discovery-176"><i aria-hidden="true">176</i>      .map((located) =&gt; located.node);</span>
+<span id="L-reference-discovery-177"><i aria-hidden="true">177</i>    if (declarationNodes.length === 0) throw new SymbolNotFoundError(identity);</span></code></pre>
+        <div class="source-footer"><a href="evidence/source-head-service.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#D06">↑ D06</a></div></div></details>
+<details class="source" id="e-identity-test"><summary><span>Added tests: direct promises and fresh node arrays</span><small>head · L29–93</small></summary>
+        <div class="source-inner"><p class="source-path">packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts<br><code>64919bcbcf7fcc8202779b78c5f069b24662bb18</code></p>
+        <pre tabindex="0" aria-label="Added tests: direct promises and fresh node arrays"><code><span id="L-identity-test-29"><i aria-hidden="true">29</i>  it(&quot;shares each identity query promise independently within one turn&quot;, async () =&gt; {</span>
+<span id="L-identity-test-30"><i aria-hidden="true">30</i>    const fileSystem = new InMemoryFileSystem({</span>
+<span id="L-identity-test-31"><i aria-hidden="true">31</i>      &quot;/repo/src/app.ts&quot;: [</span>
+<span id="L-identity-test-32"><i aria-hidden="true">32</i>        &quot;export function target(): void {}&quot;,</span>
+<span id="L-identity-test-33"><i aria-hidden="true">33</i>        &quot;export function caller(): void { target(); }&quot;,</span>
+<span id="L-identity-test-34"><i aria-hidden="true">34</i>        &quot;&quot;,</span>
+<span id="L-identity-test-35"><i aria-hidden="true">35</i>      ].join(&quot;\n&quot;),</span>
+<span id="L-identity-test-36"><i aria-hidden="true">36</i>    });</span>
+<span id="L-identity-test-37"><i aria-hidden="true">37</i>    const files = workspaceFiles(fileSystem, &quot;src/app.ts&quot;);</span>
+<span id="L-identity-test-38"><i aria-hidden="true">38</i>    const snapshot: WorkspaceSnapshot = { root: &quot;/repo&quot;, files };</span>
+<span id="L-identity-test-39"><i aria-hidden="true">39</i>    const state = new TypeScriptWorkspaceState(fileSystem);</span>
+<span id="L-identity-test-40"><i aria-hidden="true">40</i>    await state.refresh(files);</span>
+<span id="L-identity-test-41"><i aria-hidden="true">41</i>    const queries = new TypeScriptSemanticQueryService(undefined, state);</span>
+<span id="L-identity-test-42"><i aria-hidden="true">42</i>    const target = identity(&quot;src/app.ts&quot;, &quot;target&quot;);</span>
+<span id="L-identity-test-43"><i aria-hidden="true">43</i>    const caller = identity(&quot;src/app.ts&quot;, &quot;caller&quot;);</span>
+<span id="L-identity-test-44"><i aria-hidden="true">44</i>    queries.beginTurn(snapshot.files);</span>
+<span id="L-identity-test-45"><i aria-hidden="true">45</i></span>
+<span id="L-identity-test-46"><i aria-hidden="true">46</i>    const definitions = queries.findDefinitions(target);</span>
+<span id="L-identity-test-47"><i aria-hidden="true">47</i>    const callTarget = queries.findCallTarget(target);</span>
+<span id="L-identity-test-48"><i aria-hidden="true">48</i>    const callers = queries.findCallers(target);</span>
+<span id="L-identity-test-49"><i aria-hidden="true">49</i>    const callees = queries.findCallees(caller);</span>
+<span id="L-identity-test-50"><i aria-hidden="true">50</i></span>
+<span id="L-identity-test-51"><i aria-hidden="true">51</i>    expect(queries.findDefinitions(target)).toBe(definitions);</span>
+<span id="L-identity-test-52"><i aria-hidden="true">52</i>    expect(queries.findCallTarget(target)).toBe(callTarget);</span>
+<span id="L-identity-test-53"><i aria-hidden="true">53</i>    expect(queries.findCallers(target)).toBe(callers);</span>
+<span id="L-identity-test-54"><i aria-hidden="true">54</i>    expect(queries.findCallees(caller)).toBe(callees);</span>
+<span id="L-identity-test-55"><i aria-hidden="true">55</i>    await expect(definitions).resolves.toHaveLength(1);</span>
+<span id="L-identity-test-56"><i aria-hidden="true">56</i>    await expect(callTarget).resolves.toMatchObject({ outcome: &quot;resolved&quot; });</span>
+<span id="L-identity-test-57"><i aria-hidden="true">57</i>    await expect(callers).resolves.toHaveLength(1);</span>
+<span id="L-identity-test-58"><i aria-hidden="true">58</i>    await expect(callees).resolves.toHaveLength(1);</span>
+<span id="L-identity-test-59"><i aria-hidden="true">59</i>  });</span>
+<span id="L-identity-test-60"><i aria-hidden="true">60</i></span>
+<span id="L-identity-test-61"><i aria-hidden="true">61</i>  it(&quot;caches empty position results while rehydrating nodes for every access&quot;, async () =&gt; {</span>
+<span id="L-identity-test-62"><i aria-hidden="true">62</i>    const fileSystem = new InMemoryFileSystem({</span>
+<span id="L-identity-test-63"><i aria-hidden="true">63</i>      &quot;/repo/src/app.ts&quot;: [</span>
+<span id="L-identity-test-64"><i aria-hidden="true">64</i>        &quot;export function target(): void {}&quot;,</span>
+<span id="L-identity-test-65"><i aria-hidden="true">65</i>        &quot;export function caller(): void { target(); missing(); }&quot;,</span>
+<span id="L-identity-test-66"><i aria-hidden="true">66</i>        &quot;&quot;,</span>
+<span id="L-identity-test-67"><i aria-hidden="true">67</i>      ].join(&quot;\n&quot;),</span>
+<span id="L-identity-test-68"><i aria-hidden="true">68</i>    });</span>
+<span id="L-identity-test-69"><i aria-hidden="true">69</i>    const files = workspaceFiles(fileSystem, &quot;src/app.ts&quot;);</span>
+<span id="L-identity-test-70"><i aria-hidden="true">70</i>    const state = new TypeScriptWorkspaceState(fileSystem);</span>
+<span id="L-identity-test-71"><i aria-hidden="true">71</i>    await state.refresh(files);</span>
+<span id="L-identity-test-72"><i aria-hidden="true">72</i>    const resolvedPositions: number[] = [];</span>
+<span id="L-identity-test-73"><i aria-hidden="true">73</i>    const queries = new TypeScriptSemanticQueryService(undefined, state, {</span>
+<span id="L-identity-test-74"><i aria-hidden="true">74</i>      callTargetResolution: (_relativePath, start) =&gt; resolvedPositions.push(start),</span>
+<span id="L-identity-test-75"><i aria-hidden="true">75</i>    });</span>
+<span id="L-identity-test-76"><i aria-hidden="true">76</i>    queries.beginTurn(files);</span>
+<span id="L-identity-test-77"><i aria-hidden="true">77</i>    const sourceFile = state.sourceFile(&quot;src/app.ts&quot;);</span>
+<span id="L-identity-test-78"><i aria-hidden="true">78</i>    const identifiers = sourceFile?.getDescendantsOfKind(SyntaxKind.Identifier) ?? [];</span>
+<span id="L-identity-test-79"><i aria-hidden="true">79</i>    const targetCall = [...identifiers].reverse().find((node) =&gt; node.getText() === &quot;target&quot;);</span>
+<span id="L-identity-test-80"><i aria-hidden="true">80</i>    const missingCall = [...identifiers].reverse().find((node) =&gt; node.getText() === &quot;missing&quot;);</span>
+<span id="L-identity-test-81"><i aria-hidden="true">81</i>    if (!targetCall || !missingCall) throw new Error(&quot;expected call identifiers&quot;);</span>
+<span id="L-identity-test-82"><i aria-hidden="true">82</i></span>
+<span id="L-identity-test-83"><i aria-hidden="true">83</i>    const firstDefinitions = queries.definitionNodesOf(targetCall);</span>
+<span id="L-identity-test-84"><i aria-hidden="true">84</i>    const secondDefinitions = queries.definitionNodesOf(targetCall);</span>
+<span id="L-identity-test-85"><i aria-hidden="true">85</i>    const firstMissing = queries.definitionNodesOf(missingCall);</span>
+<span id="L-identity-test-86"><i aria-hidden="true">86</i>    const secondMissing = queries.definitionNodesOf(missingCall);</span>
+<span id="L-identity-test-87"><i aria-hidden="true">87</i></span>
+<span id="L-identity-test-88"><i aria-hidden="true">88</i>    expect(firstDefinitions).not.toBe(secondDefinitions);</span>
+<span id="L-identity-test-89"><i aria-hidden="true">89</i>    expect(firstDefinitions[0]).toBe(secondDefinitions[0]);</span>
+<span id="L-identity-test-90"><i aria-hidden="true">90</i>    expect(firstMissing).toEqual([]);</span>
+<span id="L-identity-test-91"><i aria-hidden="true">91</i>    expect(secondMissing).toEqual([]);</span>
+<span id="L-identity-test-92"><i aria-hidden="true">92</i>    expect(resolvedPositions).toEqual([targetCall.getStart(), missingCall.getStart()]);</span>
+<span id="L-identity-test-93"><i aria-hidden="true">93</i>  });</span></code></pre>
+        <div class="source-footer"><a href="evidence/source-head-service-test.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#D04">↑ D04</a><a href="#D12">↑ D12</a></div></div></details>
+<details class="source" id="e-failure-tests"><summary><span>Added tests: cached rejection versus retried throw</span><small>head · L95–133</small></summary>
+        <div class="source-inner"><p class="source-path">packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts<br><code>64919bcbcf7fcc8202779b78c5f069b24662bb18</code></p>
+        <pre tabindex="0" aria-label="Added tests: cached rejection versus retried throw"><code><span id="L-failure-tests-95"><i aria-hidden="true">95</i>  it(&quot;retains asynchronous definition and callee failures for the turn&quot;, async () =&gt; {</span>
+<span id="L-failure-tests-96"><i aria-hidden="true">96</i>    const failure = new Error(&quot;semantic failure&quot;);</span>
+<span id="L-failure-tests-97"><i aria-hidden="true">97</i>    const ensureFiles = vi.fn(() =&gt; Promise.reject(failure));</span>
+<span id="L-failure-tests-98"><i aria-hidden="true">98</i>    const state = { ensureFiles } as unknown as TypeScriptWorkspaceState;</span>
+<span id="L-failure-tests-99"><i aria-hidden="true">99</i>    const queries = new TypeScriptSemanticQueryService(undefined, state);</span>
+<span id="L-failure-tests-100"><i aria-hidden="true">100</i>    const target = identity(&quot;src/app.ts&quot;, &quot;target&quot;);</span>
+<span id="L-failure-tests-101"><i aria-hidden="true">101</i>    queries.beginTurn([]);</span>
+<span id="L-failure-tests-102"><i aria-hidden="true">102</i></span>
+<span id="L-failure-tests-103"><i aria-hidden="true">103</i>    const definitions = queries.findDefinitions(target);</span>
+<span id="L-failure-tests-104"><i aria-hidden="true">104</i>    const callees = queries.findCallees(target);</span>
+<span id="L-failure-tests-105"><i aria-hidden="true">105</i></span>
+<span id="L-failure-tests-106"><i aria-hidden="true">106</i>    expect(queries.findDefinitions(target)).toBe(definitions);</span>
+<span id="L-failure-tests-107"><i aria-hidden="true">107</i>    expect(queries.findCallees(target)).toBe(callees);</span>
+<span id="L-failure-tests-108"><i aria-hidden="true">108</i>    await expect(definitions).rejects.toBe(failure);</span>
+<span id="L-failure-tests-109"><i aria-hidden="true">109</i>    await expect(callees).rejects.toBe(failure);</span>
+<span id="L-failure-tests-110"><i aria-hidden="true">110</i>    expect(ensureFiles).toHaveBeenCalledTimes(2);</span>
+<span id="L-failure-tests-111"><i aria-hidden="true">111</i>  });</span>
+<span id="L-failure-tests-112"><i aria-hidden="true">112</i></span>
+<span id="L-failure-tests-113"><i aria-hidden="true">113</i>  it(&quot;retries synchronous reference discovery failures&quot;, async () =&gt; {</span>
+<span id="L-failure-tests-114"><i aria-hidden="true">114</i>    const failure = new Error(&quot;reference failure&quot;);</span>
+<span id="L-failure-tests-115"><i aria-hidden="true">115</i>    const locateSemanticCopies = vi.fn(() =&gt; {</span>
+<span id="L-failure-tests-116"><i aria-hidden="true">116</i>      throw failure;</span>
+<span id="L-failure-tests-117"><i aria-hidden="true">117</i>    });</span>
+<span id="L-failure-tests-118"><i aria-hidden="true">118</i>    const state = { locateSemanticCopies } as unknown as TypeScriptWorkspaceState;</span>
+<span id="L-failure-tests-119"><i aria-hidden="true">119</i>    let referenceSearches = 0;</span>
+<span id="L-failure-tests-120"><i aria-hidden="true">120</i>    const queries = new TypeScriptSemanticQueryService(undefined, state, {</span>
+<span id="L-failure-tests-121"><i aria-hidden="true">121</i>      referenceSearch: () =&gt; {</span>
+<span id="L-failure-tests-122"><i aria-hidden="true">122</i>        referenceSearches += 1;</span>
+<span id="L-failure-tests-123"><i aria-hidden="true">123</i>      },</span>
+<span id="L-failure-tests-124"><i aria-hidden="true">124</i>    });</span>
+<span id="L-failure-tests-125"><i aria-hidden="true">125</i>    const target = identity(&quot;src/app.ts&quot;, &quot;target&quot;);</span>
+<span id="L-failure-tests-126"><i aria-hidden="true">126</i>    queries.beginTurn([]);</span>
+<span id="L-failure-tests-127"><i aria-hidden="true">127</i></span>
+<span id="L-failure-tests-128"><i aria-hidden="true">128</i>    await expect(queries.findReferences(target)).rejects.toBe(failure);</span>
+<span id="L-failure-tests-129"><i aria-hidden="true">129</i>    await expect(queries.findReferences(target)).rejects.toBe(failure);</span>
+<span id="L-failure-tests-130"><i aria-hidden="true">130</i></span>
+<span id="L-failure-tests-131"><i aria-hidden="true">131</i>    expect(locateSemanticCopies).toHaveBeenCalledTimes(2);</span>
+<span id="L-failure-tests-132"><i aria-hidden="true">132</i>    expect(referenceSearches).toBe(2);</span>
+<span id="L-failure-tests-133"><i aria-hidden="true">133</i>  });</span></code></pre>
+        <div class="source-footer"><a href="evidence/source-head-service-test.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#D06">↑ D06</a><a href="#D12">↑ D12</a></div></div></details>
+<details class="source" id="e-refresh-test"><summary><span>Added test: refresh failure keeps the cached result</span><small>head · L135–162</small></summary>
+        <div class="source-inner"><p class="source-path">packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts<br><code>64919bcbcf7fcc8202779b78c5f069b24662bb18</code></p>
+        <pre tabindex="0" aria-label="Added test: refresh failure keeps the cached result"><code><span id="L-refresh-test-135"><i aria-hidden="true">135</i>  it(&quot;preserves the current turn when backend refresh fails&quot;, async () =&gt; {</span>
+<span id="L-refresh-test-136"><i aria-hidden="true">136</i>    const failure = new Error(&quot;refresh failure&quot;);</span>
+<span id="L-refresh-test-137"><i aria-hidden="true">137</i>    let refreshFails = false;</span>
+<span id="L-refresh-test-138"><i aria-hidden="true">138</i>    const state = {</span>
+<span id="L-refresh-test-139"><i aria-hidden="true">139</i>      refresh: vi.fn(() =&gt; {</span>
+<span id="L-refresh-test-140"><i aria-hidden="true">140</i>        if (refreshFails) return Promise.reject(failure);</span>
+<span id="L-refresh-test-141"><i aria-hidden="true">141</i>        return Promise.resolve({ added: 0, changed: 0, removed: 0, unchanged: 0 });</span>
+<span id="L-refresh-test-142"><i aria-hidden="true">142</i>      }),</span>
+<span id="L-refresh-test-143"><i aria-hidden="true">143</i>      ensureFiles: vi.fn(() =&gt; Promise.resolve()),</span>
+<span id="L-refresh-test-144"><i aria-hidden="true">144</i>      locate: vi.fn(() =&gt; []),</span>
+<span id="L-refresh-test-145"><i aria-hidden="true">145</i>    } as unknown as TypeScriptWorkspaceState;</span>
+<span id="L-refresh-test-146"><i aria-hidden="true">146</i>    let definitionSearches = 0;</span>
+<span id="L-refresh-test-147"><i aria-hidden="true">147</i>    const backend = new TypeScriptBackend(new InMemoryFileSystem({}), state, undefined, {</span>
+<span id="L-refresh-test-148"><i aria-hidden="true">148</i>      definitionSearch: () =&gt; {</span>
+<span id="L-refresh-test-149"><i aria-hidden="true">149</i>        definitionSearches += 1;</span>
+<span id="L-refresh-test-150"><i aria-hidden="true">150</i>      },</span>
+<span id="L-refresh-test-151"><i aria-hidden="true">151</i>    });</span>
+<span id="L-refresh-test-152"><i aria-hidden="true">152</i>    const snapshot: WorkspaceSnapshot = { root: &quot;/repo&quot;, files: [] };</span>
+<span id="L-refresh-test-153"><i aria-hidden="true">153</i>    const target = identity(&quot;src/app.ts&quot;, &quot;target&quot;);</span>
+<span id="L-refresh-test-154"><i aria-hidden="true">154</i>    await backend.refresh({ snapshot, coverage: &quot;workspace&quot; });</span>
+<span id="L-refresh-test-155"><i aria-hidden="true">155</i>    const definitions = await backend.findDefinitions([], target);</span>
+<span id="L-refresh-test-156"><i aria-hidden="true">156</i>    refreshFails = true;</span>
+<span id="L-refresh-test-157"><i aria-hidden="true">157</i></span>
+<span id="L-refresh-test-158"><i aria-hidden="true">158</i>    await expect(backend.refresh({ snapshot, coverage: &quot;workspace&quot; })).rejects.toBe(failure);</span>
+<span id="L-refresh-test-159"><i aria-hidden="true">159</i></span>
+<span id="L-refresh-test-160"><i aria-hidden="true">160</i>    await expect(backend.findDefinitions([], target)).resolves.toBe(definitions);</span>
+<span id="L-refresh-test-161"><i aria-hidden="true">161</i>    expect(definitionSearches).toBe(1);</span>
+<span id="L-refresh-test-162"><i aria-hidden="true">162</i>  });</span></code></pre>
+        <div class="source-footer"><a href="evidence/source-head-service-test.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#D07">↑ D07</a><a href="#D12">↑ D12</a></div></div></details>
+<details class="source" id="e-release-test"><summary><span>Added test: refill while release is pending, then reject</span><small>head · L164–217</small></summary>
+        <div class="source-inner"><p class="source-path">packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts<br><code>64919bcbcf7fcc8202779b78c5f069b24662bb18</code></p>
+        <pre tabindex="0" aria-label="Added test: refill while release is pending, then reject"><code><span id="L-release-test-164"><i aria-hidden="true">164</i>  it(&quot;clears caches before awaiting project release and rejects at the backend boundary&quot;, async () =&gt; {</span>
+<span id="L-release-test-165"><i aria-hidden="true">165</i>    const releaseFailure = new Error(&quot;project release failed&quot;);</span>
+<span id="L-release-test-166"><i aria-hidden="true">166</i>    let rejectProjectRelease: ((reason: unknown) =&gt; void) | undefined;</span>
+<span id="L-release-test-167"><i aria-hidden="true">167</i>    const projectRelease = new Promise&lt;void&gt;((_resolve, reject) =&gt; {</span>
+<span id="L-release-test-168"><i aria-hidden="true">168</i>      rejectProjectRelease = reject;</span>
+<span id="L-release-test-169"><i aria-hidden="true">169</i>    });</span>
+<span id="L-release-test-170"><i aria-hidden="true">170</i>    void projectRelease.catch(() =&gt; undefined);</span>
+<span id="L-release-test-171"><i aria-hidden="true">171</i>    const firstProjectRelease = vi.fn(() =&gt; projectRelease);</span>
+<span id="L-release-test-172"><i aria-hidden="true">172</i>    const laterProjectRelease = vi.fn();</span>
+<span id="L-release-test-173"><i aria-hidden="true">173</i>    const projectGraph = {</span>
+<span id="L-release-test-174"><i aria-hidden="true">174</i>      releaseTransientResources: vi.fn(async () =&gt; {</span>
+<span id="L-release-test-175"><i aria-hidden="true">175</i>        await firstProjectRelease();</span>
+<span id="L-release-test-176"><i aria-hidden="true">176</i>        laterProjectRelease();</span>
+<span id="L-release-test-177"><i aria-hidden="true">177</i>      }),</span>
+<span id="L-release-test-178"><i aria-hidden="true">178</i>    } as unknown as TypeScriptProjectGraph;</span>
+<span id="L-release-test-179"><i aria-hidden="true">179</i>    const state = {</span>
+<span id="L-release-test-180"><i aria-hidden="true">180</i>      refresh: vi.fn(() =&gt; Promise.resolve({ added: 0, changed: 0, removed: 0, unchanged: 0 })),</span>
+<span id="L-release-test-181"><i aria-hidden="true">181</i>      ensureFiles: vi.fn(() =&gt; Promise.resolve()),</span>
+<span id="L-release-test-182"><i aria-hidden="true">182</i>      locate: vi.fn(() =&gt; []),</span>
+<span id="L-release-test-183"><i aria-hidden="true">183</i>    } as unknown as TypeScriptWorkspaceState;</span>
+<span id="L-release-test-184"><i aria-hidden="true">184</i>    let definitionSearches = 0;</span>
+<span id="L-release-test-185"><i aria-hidden="true">185</i>    const backend = new TypeScriptBackend(new InMemoryFileSystem({}), state, projectGraph, {</span>
+<span id="L-release-test-186"><i aria-hidden="true">186</i>      definitionSearch: () =&gt; {</span>
+<span id="L-release-test-187"><i aria-hidden="true">187</i>        definitionSearches += 1;</span>
+<span id="L-release-test-188"><i aria-hidden="true">188</i>      },</span>
+<span id="L-release-test-189"><i aria-hidden="true">189</i>    });</span>
+<span id="L-release-test-190"><i aria-hidden="true">190</i>    const snapshot: WorkspaceSnapshot = { root: &quot;/repo&quot;, files: [] };</span>
+<span id="L-release-test-191"><i aria-hidden="true">191</i>    const target = identity(&quot;src/app.ts&quot;, &quot;target&quot;);</span>
+<span id="L-release-test-192"><i aria-hidden="true">192</i>    await backend.refresh({ snapshot, coverage: &quot;selection&quot; });</span>
+<span id="L-release-test-193"><i aria-hidden="true">193</i>    const beforeRelease = await backend.findDefinitions([], target);</span>
+<span id="L-release-test-194"><i aria-hidden="true">194</i></span>
+<span id="L-release-test-195"><i aria-hidden="true">195</i>    const release = backend.releaseTransientResources();</span>
+<span id="L-release-test-196"><i aria-hidden="true">196</i>    let releaseSettled = false;</span>
+<span id="L-release-test-197"><i aria-hidden="true">197</i>    void release.then(</span>
+<span id="L-release-test-198"><i aria-hidden="true">198</i>      () =&gt; {</span>
+<span id="L-release-test-199"><i aria-hidden="true">199</i>        releaseSettled = true;</span>
+<span id="L-release-test-200"><i aria-hidden="true">200</i>      },</span>
+<span id="L-release-test-201"><i aria-hidden="true">201</i>      () =&gt; {</span>
+<span id="L-release-test-202"><i aria-hidden="true">202</i>        releaseSettled = true;</span>
+<span id="L-release-test-203"><i aria-hidden="true">203</i>      },</span>
+<span id="L-release-test-204"><i aria-hidden="true">204</i>    );</span>
+<span id="L-release-test-205"><i aria-hidden="true">205</i>    const afterRelease = await backend.findDefinitions([], target);</span>
+<span id="L-release-test-206"><i aria-hidden="true">206</i></span>
+<span id="L-release-test-207"><i aria-hidden="true">207</i>    expect(afterRelease).not.toBe(beforeRelease);</span>
+<span id="L-release-test-208"><i aria-hidden="true">208</i>    expect(definitionSearches).toBe(2);</span>
+<span id="L-release-test-209"><i aria-hidden="true">209</i>    expect(projectGraph.releaseTransientResources).toHaveBeenCalledOnce();</span>
+<span id="L-release-test-210"><i aria-hidden="true">210</i>    await Promise.resolve();</span>
+<span id="L-release-test-211"><i aria-hidden="true">211</i>    expect(releaseSettled).toBe(false);</span>
+<span id="L-release-test-212"><i aria-hidden="true">212</i></span>
+<span id="L-release-test-213"><i aria-hidden="true">213</i>    rejectProjectRelease?.(releaseFailure);</span>
+<span id="L-release-test-214"><i aria-hidden="true">214</i>    await expect(release).rejects.toBe(releaseFailure);</span>
+<span id="L-release-test-215"><i aria-hidden="true">215</i>    expect(firstProjectRelease).toHaveBeenCalledOnce();</span>
+<span id="L-release-test-216"><i aria-hidden="true">216</i>    expect(laterProjectRelease).not.toHaveBeenCalled();</span>
+<span id="L-release-test-217"><i aria-hidden="true">217</i>  });</span></code></pre>
+        <div class="source-footer"><a href="evidence/source-head-service-test.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#D11">↑ D11</a><a href="#D12">↑ D12</a></div></div></details>
+<details class="source" id="e-core-values-test"><summary><span>Added core test: undefined is present; handles are isolated</span><small>head · L6–25</small></summary>
+        <div class="source-inner"><p class="source-path">packages/core/src/backend/turn-scoped-cache-scope.test.ts<br><code>64919bcbcf7fcc8202779b78c5f069b24662bb18</code></p>
+        <pre tabindex="0" aria-label="Added core test: undefined is present; handles are isolated"><code><span id="L-core-values-test-6"><i aria-hidden="true">6</i>  it(&quot;returns each exact factory value once per key and handle&quot;, () =&gt; {</span>
+<span id="L-core-values-test-7"><i aria-hidden="true">7</i>    const scope = new TurnScopedCacheScope();</span>
+<span id="L-core-values-test-8"><i aria-hidden="true">8</i>    const first = scope.createCache&lt;string, readonly string[] | undefined&gt;();</span>
+<span id="L-core-values-test-9"><i aria-hidden="true">9</i>    const second = scope.createCache&lt;string, readonly string[] | undefined&gt;();</span>
+<span id="L-core-values-test-10"><i aria-hidden="true">10</i>    const firstValue: readonly string[] = [];</span>
+<span id="L-core-values-test-11"><i aria-hidden="true">11</i>    const secondValue: readonly string[] = [];</span>
+<span id="L-core-values-test-12"><i aria-hidden="true">12</i>    const firstFactory = vi.fn(() =&gt; firstValue);</span>
+<span id="L-core-values-test-13"><i aria-hidden="true">13</i>    const undefinedFactory = vi.fn(() =&gt; undefined);</span>
+<span id="L-core-values-test-14"><i aria-hidden="true">14</i>    const secondFactory = vi.fn(() =&gt; secondValue);</span>
+<span id="L-core-values-test-15"><i aria-hidden="true">15</i></span>
+<span id="L-core-values-test-16"><i aria-hidden="true">16</i>    expect(first.getOrCreate(&quot;value&quot;, firstFactory)).toBe(firstValue);</span>
+<span id="L-core-values-test-17"><i aria-hidden="true">17</i>    expect(first.getOrCreate(&quot;value&quot;, firstFactory)).toBe(firstValue);</span>
+<span id="L-core-values-test-18"><i aria-hidden="true">18</i>    expect(first.getOrCreate(&quot;undefined&quot;, undefinedFactory)).toBeUndefined();</span>
+<span id="L-core-values-test-19"><i aria-hidden="true">19</i>    expect(first.getOrCreate(&quot;undefined&quot;, undefinedFactory)).toBeUndefined();</span>
+<span id="L-core-values-test-20"><i aria-hidden="true">20</i>    expect(second.getOrCreate(&quot;value&quot;, secondFactory)).toBe(secondValue);</span>
+<span id="L-core-values-test-21"><i aria-hidden="true">21</i></span>
+<span id="L-core-values-test-22"><i aria-hidden="true">22</i>    expect(firstFactory).toHaveBeenCalledOnce();</span>
+<span id="L-core-values-test-23"><i aria-hidden="true">23</i>    expect(undefinedFactory).toHaveBeenCalledOnce();</span>
+<span id="L-core-values-test-24"><i aria-hidden="true">24</i>    expect(secondFactory).toHaveBeenCalledOnce();</span>
+<span id="L-core-values-test-25"><i aria-hidden="true">25</i>  });</span></code></pre>
+        <div class="source-footer"><a href="evidence/source-head-scope-test.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#D05">↑ D05</a></div></div></details>
+<details class="source" id="e-core-clear-test"><summary><span>Added core test: both boundaries and repeated release</span><small>head · L27–50</small></summary>
+        <div class="source-inner"><p class="source-path">packages/core/src/backend/turn-scoped-cache-scope.test.ts<br><code>64919bcbcf7fcc8202779b78c5f069b24662bb18</code></p>
+        <pre tabindex="0" aria-label="Added core test: both boundaries and repeated release"><code><span id="L-core-clear-test-27"><i aria-hidden="true">27</i>  it(&quot;clears every handle at turn and release boundaries&quot;, () =&gt; {</span>
+<span id="L-core-clear-test-28"><i aria-hidden="true">28</i>    const scope = new TurnScopedCacheScope();</span>
+<span id="L-core-clear-test-29"><i aria-hidden="true">29</i>    const first = scope.createCache&lt;string, object&gt;();</span>
+<span id="L-core-clear-test-30"><i aria-hidden="true">30</i>    const second = scope.createCache&lt;string, object&gt;();</span>
+<span id="L-core-clear-test-31"><i aria-hidden="true">31</i>    const firstFactory = vi.fn(() =&gt; ({}));</span>
+<span id="L-core-clear-test-32"><i aria-hidden="true">32</i>    const secondFactory = vi.fn(() =&gt; ({}));</span>
+<span id="L-core-clear-test-33"><i aria-hidden="true">33</i>    const initialFirst = first.getOrCreate(&quot;shared&quot;, firstFactory);</span>
+<span id="L-core-clear-test-34"><i aria-hidden="true">34</i>    const initialSecond = second.getOrCreate(&quot;shared&quot;, secondFactory);</span>
+<span id="L-core-clear-test-35"><i aria-hidden="true">35</i></span>
+<span id="L-core-clear-test-36"><i aria-hidden="true">36</i>    scope.beginTurn();</span>
+<span id="L-core-clear-test-37"><i aria-hidden="true">37</i></span>
+<span id="L-core-clear-test-38"><i aria-hidden="true">38</i>    expect(first.getOrCreate(&quot;shared&quot;, firstFactory)).not.toBe(initialFirst);</span>
+<span id="L-core-clear-test-39"><i aria-hidden="true">39</i>    expect(second.getOrCreate(&quot;shared&quot;, secondFactory)).not.toBe(initialSecond);</span>
+<span id="L-core-clear-test-40"><i aria-hidden="true">40</i></span>
+<span id="L-core-clear-test-41"><i aria-hidden="true">41</i>    const nextFirst = first.getOrCreate(&quot;shared&quot;, firstFactory);</span>
+<span id="L-core-clear-test-42"><i aria-hidden="true">42</i>    const nextSecond = second.getOrCreate(&quot;shared&quot;, secondFactory);</span>
+<span id="L-core-clear-test-43"><i aria-hidden="true">43</i>    scope.releaseTransientResources();</span>
+<span id="L-core-clear-test-44"><i aria-hidden="true">44</i>    scope.releaseTransientResources();</span>
+<span id="L-core-clear-test-45"><i aria-hidden="true">45</i></span>
+<span id="L-core-clear-test-46"><i aria-hidden="true">46</i>    expect(first.getOrCreate(&quot;shared&quot;, firstFactory)).not.toBe(nextFirst);</span>
+<span id="L-core-clear-test-47"><i aria-hidden="true">47</i>    expect(second.getOrCreate(&quot;shared&quot;, secondFactory)).not.toBe(nextSecond);</span>
+<span id="L-core-clear-test-48"><i aria-hidden="true">48</i>    expect(firstFactory).toHaveBeenCalledTimes(3);</span>
+<span id="L-core-clear-test-49"><i aria-hidden="true">49</i>    expect(secondFactory).toHaveBeenCalledTimes(3);</span>
+<span id="L-core-clear-test-50"><i aria-hidden="true">50</i>  });</span></code></pre>
+        <div class="source-footer"><a href="evidence/source-head-scope-test.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#D11">↑ D11</a><a href="#D12">↑ D12</a></div></div></details>
+<details class="source" id="e-late-test"><summary><span>Added core test: an old promise cannot replace the new entry</span><small>head · L75–91</small></summary>
+        <div class="source-inner"><p class="source-path">packages/core/src/backend/turn-scoped-cache-scope.test.ts<br><code>64919bcbcf7fcc8202779b78c5f069b24662bb18</code></p>
+        <pre tabindex="0" aria-label="Added core test: an old promise cannot replace the new entry"><code><span id="L-late-test-75"><i aria-hidden="true">75</i>  it(&quot;does not let an old promise settlement replace a new turn entry&quot;, async () =&gt; {</span>
+<span id="L-late-test-76"><i aria-hidden="true">76</i>    const scope = new TurnScopedCacheScope();</span>
+<span id="L-late-test-77"><i aria-hidden="true">77</i>    const cache = scope.createCache&lt;string, Promise&lt;string&gt;&gt;();</span>
+<span id="L-late-test-78"><i aria-hidden="true">78</i>    let settleOld: ((value: string) =&gt; void) | undefined;</span>
+<span id="L-late-test-79"><i aria-hidden="true">79</i>    const oldPromise = new Promise&lt;string&gt;((resolve) =&gt; {</span>
+<span id="L-late-test-80"><i aria-hidden="true">80</i>      settleOld = resolve;</span>
+<span id="L-late-test-81"><i aria-hidden="true">81</i>    });</span>
+<span id="L-late-test-82"><i aria-hidden="true">82</i>    const newPromise = Promise.resolve(&quot;new&quot;);</span>
+<span id="L-late-test-83"><i aria-hidden="true">83</i>    expect(cache.getOrCreate(&quot;key&quot;, () =&gt; oldPromise)).toBe(oldPromise);</span>
+<span id="L-late-test-84"><i aria-hidden="true">84</i></span>
+<span id="L-late-test-85"><i aria-hidden="true">85</i>    scope.beginTurn();</span>
+<span id="L-late-test-86"><i aria-hidden="true">86</i>    expect(cache.getOrCreate(&quot;key&quot;, () =&gt; newPromise)).toBe(newPromise);</span>
+<span id="L-late-test-87"><i aria-hidden="true">87</i>    settleOld?.(&quot;old&quot;);</span>
+<span id="L-late-test-88"><i aria-hidden="true">88</i></span>
+<span id="L-late-test-89"><i aria-hidden="true">89</i>    await expect(oldPromise).resolves.toBe(&quot;old&quot;);</span>
+<span id="L-late-test-90"><i aria-hidden="true">90</i>    await expect(cache.getOrCreate(&quot;key&quot;, () =&gt; Promise.resolve(&quot;other&quot;))).resolves.toBe(&quot;new&quot;);</span>
+<span id="L-late-test-91"><i aria-hidden="true">91</i>  });</span></code></pre>
+        <div class="source-footer"><a href="evidence/source-head-scope-test.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#D06">↑ D06</a></div></div></details>
+<details class="source" id="e-context"><summary><span>Context asks the five semantic questions in this order</span><small>head · L45–62</small></summary>
+        <div class="source-inner"><p class="source-path">apps/cli/src/commands/context/context-command.ts<br><code>64919bcbcf7fcc8202779b78c5f069b24662bb18</code></p>
+        <pre tabindex="0" aria-label="Context asks the five semantic questions in this order"><code><span id="L-context-45"><i aria-hidden="true">45</i>      workspace: ctx.workspace,</span>
+<span id="L-context-46"><i aria-hidden="true">46</i>      router: ctx.router,</span>
+<span id="L-context-47"><i aria-hidden="true">47</i>      cwd: ctx.cwd,</span>
+<span id="L-context-48"><i aria-hidden="true">48</i>      rawTarget: ctx.args.target,</span>
+<span id="L-context-49"><i aria-hidden="true">49</i>      line: ctx.args.line,</span>
+<span id="L-context-50"><i aria-hidden="true">50</i>      regex: ctx.args.regex,</span>
+<span id="L-context-51"><i aria-hidden="true">51</i>    });</span>
+<span id="L-context-52"><i aria-hidden="true">52</i>    const identity = resolved.identity;</span>
+<span id="L-context-53"><i aria-hidden="true">53</i>    const backend = resolved.backend;</span>
+<span id="L-context-54"><i aria-hidden="true">54</i>    const accepted = resolved.files;</span>
+<span id="L-context-55"><i aria-hidden="true">55</i>    const target = await resolveCallTarget(backend, accepted, identity);</span>
+<span id="L-context-56"><i aria-hidden="true">56</i></span>
+<span id="L-context-57"><i aria-hidden="true">57</i>    const definitions = await backend.findDefinitions(accepted, identity);</span>
+<span id="L-context-58"><i aria-hidden="true">58</i>    const callers = await backend.findCallers(accepted, target.identity);</span>
+<span id="L-context-59"><i aria-hidden="true">59</i>    const callees = await backend.findCallees(accepted, target.identity);</span>
+<span id="L-context-60"><i aria-hidden="true">60</i>    const references = await backend.findReferences(accepted, identity);</span>
+<span id="L-context-61"><i aria-hidden="true">61</i>    const history = await ctx.git.recentHistory({</span>
+<span id="L-context-62"><i aria-hidden="true">62</i>      workspaceRoot: ctx.workspace.root,</span></code></pre>
+        <div class="source-footer"><a href="evidence/source-head-context.txt">Full captured file ↗</a>
+        <button class="return" type="button" data-return>↩ Return to where I was</button>
+        <a href="#decisions">↑ Decisions</a></div></div></details></div>
+  <p class="evidence-links"><a href="evidence/source-manifest.json">Source hashes ↗</a><a href="evidence/pr.json">PR body + commits ↗</a><a href="evidence/pyramid-map.json">Parent map ↗</a><a href="README.md">Method + limits ↗</a></p>
+</section>
+
+<section class="chapter credits" id="credits" aria-labelledby="credits-title">
+  <div class="section-title"><div><span class="eyebrow">10 / synthesis, with its sources visible</span><h2 id="credits-title">One useful element from every finished pr-127 experiment.</h2></div></div>
+  <p>Read 13 finished pr-127 experiments: their READMEs and teaching pages, plus the relevant recording, source, or method files. “Best” is an editorial choice for this composition, not a measured ranking. Census captured 2026-09-13 03:43 UTC. <a href="evidence/review-census.json">Scope and unfinished experiments ↗</a></p>
+  <div class="table-scroll"><table class="credit-table"><thead><tr><th>Predecessor</th><th>Element carried into this page</th><th>What this synthesis left out</th></tr></thead><tbody><tr id="credit-01"><th scope="row"><a href="../01-unconstrained-a/index.html">01-unconstrained-a ↗</a></th><td><a href="#owners">Package owner versus instance owner ↓</a><p>The same service owns an instance; the clearing implementation changes package. Reworked the ownership diptych; kept this distinction explicit.</p></td><td>A second whole-stack subject and the duplicated decision sheet.</td></tr><tr id="credit-04"><th scope="row"><a href="../04-textbook-chapter/index.html">04-textbook-chapter ↗</a></th><td><a href="#teachback">Predict, then reveal ↓</a><p>Three short teach-back questions make reuse and completion something the reader can predict. Adapted the exercise pattern.</p></td><td>The main/#126/#127 detour and daemon fault narrative; the supplied base/head is this page&#x27;s comparison.</td></tr><tr id="credit-09"><th scope="row"><a href="../09-diff-of-intent/index.html">09-diff-of-intent ↗</a></th><td><a href="#intent">Plan → PR → implementation ↓</a><p>Keep the plan horizon, the declared barrier, and the missing reconciliation separate. Adapted the paired intent trace.</p></td><td>Using a stated clearing-order reason as the rationale for changed completion behavior.</td></tr><tr id="credit-10"><th scope="row"><a href="../10-tour-guide/index.html">10-tour-guide ↗</a></th><td><a href="#request">One natural request fills all six caches ↓</a><p>Reused the exact saved context-order request frames and fixture; rebuilt the interface around them. Original capture script is bundled.</p></td><td>Autoplay and a second set of host-action controls.</td></tr><tr id="credit-17"><th scope="row"><a href="../17-executable-before-after/index.html">17-executable-before-after ↗</a></th><td><a href="#boundaries">Hold cleanup open in both revisions ↓</a><p>Reused four exact calls-fixture recordings, with code hashes and controlled inputs. The page replays them; it does not rerun symnav.</p></td><td>A live server, source editor, 18 fixture combinations, and benchmark-like timing emphasis.</td></tr><tr id="credit-20"><th scope="row"><a href="../20-contract-table/index.html">20-contract-table ↗</a></th><td><a href="#api">A signature can stay while its contract changes ↓</a><p>Condensed the caller&#x27;s input/output/error/side-effect view to the public surfaces changed here.</p></td><td>The exhaustive list of unchanged utility methods and the unrelated #131 subject.</td></tr><tr id="credit-24"><th scope="row"><a href="../24-question-driven-nav/index.html">24-question-driven-nav ↗</a></th><td><a href="#questions">Choose the next question and return ↓</a><p>Used meaningful question exits plus remembered return position; the continuous document remains the primary route.</p></td><td>A router that hides the rest of the document and repeated evidence pages.</td></tr><tr id="credit-26"><th scope="row"><a href="../26-physical-analogy/index.html">26-physical-analogy ↗</a></th><td><a href="#tickets">A caller can keep a ticket outside the drawer ↓</a><p>Adapted the claim-ticket metaphor to show that cache eviction leaves an already-returned promise alive.</p></td><td>Postal decoration and a full second release simulation.</td></tr><tr id="credit-31"><th scope="row"><a href="../31-method-runbook/index.html">31-method-runbook ↗</a></th><td><a href="#coverage">Account for the entire delta before rendering ↓</a><p>Applied the extract → rank → render coverage loop. Built a fresh 15-hunk assignment and parent map against this synthesis&#x27;s decisions.</p></td><td>A separate method website and a numeric importance score.</td></tr><tr id="credit-32"><th scope="row"><a href="../32-kit/index.html">32-kit ↗</a></th><td><a href="#evidence">Evidence exits that still work without JavaScript ↓</a><p>Reimplemented the native anchor/disclosure and exact return-link pattern. Static overview, contracts, and source remain readable offline.</p></td><td>Copying the whole component kit for a single page; its author guide is unnecessary here.</td></tr><tr id="credit-33"><th scope="row"><a href="../33-pair-one-variable/index.html">33-pair-one-variable ↗</a></th><td><a href="#opening">Open on unfinished cleanup, not a new stale-cache story ↓</a><p>Adapted Opening B&#x27;s motivating boundary and grounded this opening in #17&#x27;s recorded held-release state.</p></td><td>A second complete opening variant and any suggestion that this PR first introduced turn clearing.</td></tr><tr id="credit-36"><th scope="row"><a href="../36-be-weird-a/index.html">36-be-weird-a ↗</a></th><td><a href="#contact">A matrix makes reuse visible ↓</a><p>Reused the original eight-observation identity records. Two compact matrices compare a stored object with the service return; selecting a store reveals projection without losing reuse.</p></td><td>The 48-by-48 all-store sheet, whose empty space overwhelms this page.</td></tr><tr id="credit-37"><th scope="row"><a href="../37-be-weird-b/index.html">37-be-weird-b ↗</a></th><td><a href="#depth-index">Keep depth fixed while changing decisions ↓</a><p>Adapted decision × depth addressing to a native link matrix. Read down one depth column, or across one decision; arrow keys move between its crossings.</p></td><td>A new full-page router and four duplicated views of every decision.</td></tr></tbody></table></div>
+  <p class="caption">The UI and prose are newly composed; recordings come from 10, 17, and 36. Original capture scripts, IDs, timestamps, controlled seams, and provenance are bundled. The lifetime model was checked against the complete supplied patch and pinned source rather than accepted from a predecessor's headline. In particular, the PR does declare an awaited barrier; the missing piece is its separate rationale under the plan's parity wording.</p>
+</section>
+</main>
+<footer class="footer"><span>40 / best-of-synthesis · read-only teaching page</span><a href="#opening">Return to the opening ↑</a><a href="README.md">Experiment README ↗</a></footer>
+<button class="return-float js-only" type="button" id="return-float" hidden>↩ Return to where I was</button>
+<dialog id="cache-dialog" aria-labelledby="cache-dialog-title"><div class="dialog-heading"><div><span class="eyebrow" id="cache-dialog-side">Recorded cache</span><h2 id="cache-dialog-title">Cache</h2></div><button type="button" id="close-cache" aria-label="Close cache detail">×</button></div><div id="cache-dialog-body"></div></dialog>
+<noscript><div class="noscript-note">Interactive panels require JavaScript. The complete overview, all recorded-stop tables, mechanisms, contracts, and source disclosures remain readable.</div></noscript>
+</body>
+</html>

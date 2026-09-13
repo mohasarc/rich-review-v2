@@ -1,0 +1,128 @@
+"""Authored decisions and provenance. Rendering does not discover or score decisions."""
+
+BASE = "a1e325a5ff979bdfa25babc5554621c8c0f20497"
+HEAD = "64919bcbcf7fcc8202779b78c5f069b24662bb18"
+
+DECISIONS = [
+    dict(id="D01", title="Move the clearing job into core", status="stated", target="owners",
+         fact="TypeScript keeps algorithms, keys, projections, and its file list. Core implements and exports the scope and handle type. Each service owns its own scope instance; the existing package dependency and process boundary stay put.",
+         reason="The architecture spec assigns shareable cache lifetime to core and semantic query bodies to TypeScript.", sources=["plan-owner", "construction", "export"]),
+    dict(id="D02", title="Keep six independent stores", status="stated", target="request",
+         fact="One scope coordinates six separate Maps. Five store promises by symbol identity; the position store keeps location arrays by file and offset. Callers and references still share reference discovery.",
+         reason="The PR chooses six handles because the existing key and value spaces are independent.", sources=["pr-reasons", "construction", "projections"]),
+    dict(id="D03", title="Compose a local scope; place it under core/backend", status="unexplained", target="api",
+         fact="The service constructs a concrete scope in a field, rather than receiving or inheriting one. The new class lives in core/src/backend. The plan describes shared bases that backends extend.",
+         reason="The chosen form is disclosed. No separate reason for composition or this directory placement was found.", sources=["plan-owner", "construction", "scope"]),
+    dict(id="D04", title="Preserve entries, distinguish their projections", status="stated", target="identity",
+         fact="Cache hits return the exact value, including empty results. Four direct service query methods reuse promises. Reference results and node arrays are rebuilt; backend async wrappers need not reuse the cache's promise. Miss observers still count the underlying searches.",
+         reason="The PR explicitly preserves all six algorithms, keys, and promise/value identities. The original rationale for reprojection is not supplied.", sources=["pr-context", "projections", "positions", "identity-test"]),
+    dict(id="D05", title="Treat undefined as a present entry", status="stated", target="lookup",
+         fact="The generic handle uses Map.has before Map.get. Its factory can return undefined once and still get a cache hit. The six TypeScript stores already hold truthy promises or arrays; this is a broader generic contract.",
+         reason="The PR names undefined as a valid cached value.", sources=["pr-reasons", "scope", "core-values-test"]),
+    dict(id="D06", title="Keep rejected promises; retry synchronous throws", status="stated", target="lookup",
+         fact="A returned promise is stored even if it rejects. A factory throw inserts nothing. Clearing cancels neither an old promise nor its result; later settlement cannot overwrite a new entry because the scope installs no settlement callback.",
+         reason="Preserving existing query failure behavior and value identity is the PR's stated constraint, not a new retry policy.", sources=["pr-context", "scope", "reference-discovery", "failure-tests", "late-test"]),
+    dict(id="D07", title="Begin the next turn after refresh succeeds", status="stated", target="boundaries",
+         fact="Both revisions clear after source, applicable project, and workspace-state refresh succeeds—even with unchanged files. Failure skips the file-list handoff and clear. A command returning is not a clearing signal. This is a cache guarantee, not rollback of all earlier refresh effects.",
+         reason="The PR says failed refresh must preserve the current successful turn.", sources=["pr-reasons", "backend-before", "backend-after", "refresh-test"]),
+    dict(id="D08", title="Empty entries before starting project cleanup", status="stated", target="boundaries",
+         fact="Clearing remains synchronous and comes first in both revisions. The unchanged graph releases projects in order and can stop on rejection; concrete TypeScript project cleanup is synchronous, even though its graph returns a promise.",
+         reason="Old cached semantics must be unavailable while project release is pending or rejecting, according to the PR.", sources=["pr-reasons", "release-before", "release-after", "graph", "project"]),
+    dict(id="D09", title="Extend the backend's completion and error boundary", status="unexplained", target="intent",
+         fact="The new service and backend await graph cleanup. A held graph leaves backend release pending; rejection reaches that caller. The PR explicitly declares this barrier. How this change fits the plan's unchanged timing/failure promise is unrecorded.",
+         reason="The stated clear-first reason does not separately reconcile the changed completion/error contract with the broader parity requirement.", sources=["pr-surface", "backend-before", "backend-after", "release-before", "release-after", "plan-parity"]),
+    dict(id="D10", title="Pass files across the exported service API", status="unexplained", target="api",
+         fact="beginTurn(snapshot) becomes beginTurn(readonly files). The backend passes snapshot.files; the service retains that same array by reference through release. Service release changes void → Promise<void>; the backend's promise signature stays the same.",
+         reason="The PR lists the narrowed input but gives no reason for it. The release signature belongs to the separately declared awaited barrier.", sources=["pr-surface", "begin-before", "construction", "backend-after"]),
+    dict(id="D11", title="Clear values while keeping handles usable", status="unexplained", target="tickets",
+         fact="The public handle exposes getOrCreate only. Both scope lifecycle methods perform the same whole-scope clear. There is no timer, turn token, closed state, cancellation, per-key invalidation, or unregister API. Handles can fill before beginTurn, after repeated release, and during pending cleanup.",
+         reason="The implementation and tests establish this reusable lifecycle. No separate rationale for these exact limits was found.", sources=["scope", "core-clear-test", "release-test"]),
+    dict(id="D12", title="Add ten tests and retain all five existing cases", status="stated", target="evidence-map",
+         fact="Four new core cases and six new service cases pin identity, projection, failures, reset, and awaited rejection. The five old service cases and assertions are retained byte for byte. The new delayed-release case uses a rejecting graph double; it adds no delayed-success or daemon-level case.",
+         reason="The PR and commit subjects describe characterization and locking identity, error, and clearing contracts.", sources=["pr-tests", "commits", "identity-test", "failure-tests", "refresh-test", "release-test", "core-clear-test"]),
+]
+
+PATHS = {
+    "backend": "packages/backend-typescript/src/typescript-backend/typescript-backend.ts",
+    "service": "packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts",
+    "service-test": "packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts",
+    "scope": "packages/core/src/backend/turn-scoped-cache-scope.ts",
+    "scope-test": "packages/core/src/backend/turn-scoped-cache-scope.test.ts",
+    "export": "packages/core/src/index.ts",
+    "service-export": "packages/backend-typescript/src/index.ts",
+    "plan": "plans/005/daemon-architecture-functional-spec.md",
+    "graph": "packages/core/src/workspace/project-graph.ts",
+    "project": "packages/backend-typescript/src/typescript-backend/typescript-project-graph.ts",
+    "context": "apps/cli/src/commands/context/context-command.ts",
+}
+
+# id, snapshot, inclusive start/end, display explanation
+EXCERPTS = [
+    ("plan-owner", "head:plan", 53, 64, "Plan: language-independent lifetime belongs to core"),
+    ("plan-parity", "head:plan", 17, 28, "Plan: retain timing and failure behavior"),
+    ("pr-context", "body", 1, 3, "PR: preservation is the declared intent"),
+    ("pr-reasons", "body", 76, 81, "PR: four recorded reasons"),
+    ("pr-surface", "body", 18, 38, "PR: the awaited barrier is explicitly declared"),
+    ("pr-api", "body", 50, 74, "PR: the new and changed public signatures"),
+    ("pr-tests", "body", 40, 48, "PR: tests characterize identities, errors, and clearing"),
+    ("commits", "commits", 1, 18, "Six commit subjects; every body is empty"),
+    ("scope", "head:scope", 1, 46, "The entire new core cache implementation"),
+    ("construction", "head:service", 29, 66, "Service constructs one scope, six handles, and accepts files"),
+    ("before-maps", "base:service", 29, 52, "Before: six Maps and snapshot input"),
+    ("before-clearing", "base:service", 219, 226, "Before: six manual clearing calls"),
+    ("begin-before", "base:service", 49, 52, "Before: beginTurn receives a snapshot"),
+    ("export", "head:export", 148, 153, "Core's package root exports the scope and handle interface"),
+    ("service-export", "head:service-export", 10, 16, "The semantic service is already a public export"),
+    ("backend-before", "base:backend", 79, 89, "Before: successful refresh, unjoined cleanup"),
+    ("backend-after", "head:backend", 79, 89, "After: same turn placement, new await"),
+    ("release-before", "base:service", 125, 128, "Before: clear, start graph release, return void"),
+    ("release-after", "head:service", 129, 132, "After: clear, then await graph release"),
+    ("graph", "head:graph", 144, 152, "Existing graph: sequential asynchronous release"),
+    ("project", "head:project", 78, 85, "Existing concrete TypeScript cleanup is synchronous"),
+    ("projections", "head:service", 68, 114, "Direct cached promises and a fresh reference projection"),
+    ("positions", "head:service", 134, 161, "Position cache stores locations, then rehydrates nodes"),
+    ("reference-discovery", "head:service", 163, 177, "Discovery runs before Promise.resolve receives its argument"),
+    ("identity-test", "head:service-test", 29, 93, "Added tests: direct promises and fresh node arrays"),
+    ("failure-tests", "head:service-test", 95, 133, "Added tests: cached rejection versus retried throw"),
+    ("refresh-test", "head:service-test", 135, 162, "Added test: refresh failure keeps the cached result"),
+    ("release-test", "head:service-test", 164, 217, "Added test: refill while release is pending, then reject"),
+    ("core-values-test", "head:scope-test", 6, 25, "Added core test: undefined is present; handles are isolated"),
+    ("core-clear-test", "head:scope-test", 27, 50, "Added core test: both boundaries and repeated release"),
+    ("late-test", "head:scope-test", 75, 91, "Added core test: an old promise cannot replace the new entry"),
+    ("context", "head:context", 45, 62, "Context asks the five semantic questions in this order"),
+]
+
+CREDITS = [
+    ("01-unconstrained-a", "Package owner versus instance owner", "owners", "The same service owns an instance; the clearing implementation changes package. Reworked the ownership diptych; kept this distinction explicit.", "A second whole-stack subject and the duplicated decision sheet."),
+    ("04-textbook-chapter", "Predict, then reveal", "teachback", "Three short teach-back questions make reuse and completion something the reader can predict. Adapted the exercise pattern.", "The main/#126/#127 detour and daemon fault narrative; the supplied base/head is this page's comparison."),
+    ("09-diff-of-intent", "Plan → PR → implementation", "intent", "Keep the plan horizon, the declared barrier, and the missing reconciliation separate. Adapted the paired intent trace.", "Using a stated clearing-order reason as the rationale for changed completion behavior."),
+    ("10-tour-guide", "One natural request fills all six caches", "request", "Reused the exact saved context-order request frames and fixture; rebuilt the interface around them. Original capture script is bundled.", "Autoplay and a second set of host-action controls."),
+    ("17-executable-before-after", "Hold cleanup open in both revisions", "boundaries", "Reused four exact calls-fixture recordings, with code hashes and controlled inputs. The page replays them; it does not rerun symnav.", "A live server, source editor, 18 fixture combinations, and benchmark-like timing emphasis."),
+    ("20-contract-table", "A signature can stay while its contract changes", "api", "Condensed the caller's input/output/error/side-effect view to the public surfaces changed here.", "The exhaustive list of unchanged utility methods and the unrelated #131 subject."),
+    ("24-question-driven-nav", "Choose the next question and return", "questions", "Used meaningful question exits plus remembered return position; the continuous document remains the primary route.", "A router that hides the rest of the document and repeated evidence pages."),
+    ("26-physical-analogy", "A caller can keep a ticket outside the drawer", "tickets", "Adapted the claim-ticket metaphor to show that cache eviction leaves an already-returned promise alive.", "Postal decoration and a full second release simulation."),
+    ("31-method-runbook", "Account for the entire delta before rendering", "coverage", "Applied the extract → rank → render coverage loop. Built a fresh 15-hunk assignment and parent map against this synthesis's decisions.", "A separate method website and a numeric importance score."),
+    ("32-kit", "Evidence exits that still work without JavaScript", "evidence", "Reimplemented the native anchor/disclosure and exact return-link pattern. Static overview, contracts, and source remain readable offline.", "Copying the whole component kit for a single page; its author guide is unnecessary here."),
+    ("33-pair-one-variable", "Open on unfinished cleanup, not a new stale-cache story", "opening", "Adapted Opening B's motivating boundary and grounded this opening in #17's recorded held-release state.", "A second complete opening variant and any suggestion that this PR first introduced turn clearing."),
+    ("36-be-weird-a", "A matrix makes reuse visible", "contact", "Reused the original eight-observation identity records. Two compact matrices compare a stored object with the service return; selecting a store reveals projection without losing reuse.", "The 48-by-48 all-store sheet, whose empty space overwhelms this page."),
+    ("37-be-weird-b", "Keep depth fixed while changing decisions", "depth-index", "Adapted decision × depth addressing to a native link matrix. Read down one depth column, or across one decision; arrow keys move between its crossings.", "A new full-page router and four duplicated views of every decision."),
+]
+
+CACHE_INFO = [
+    ("definitionsByIdentity", "Definitions", "Symbol identity", "Promise of definition overview nodes", "findDefinitions returns the stored promise; call-target resolution can reuse this work.", "projections"),
+    ("callTargetsByIdentity", "Call target", "Symbol identity", "Promise of target resolution", "A separate answer to whether the call target is resolved, ambiguous, or absent.", "projections"),
+    ("referencesByIdentity", "Reference locations", "Symbol identity", "Promise of reference locations", "Shared discovery for callers and references. Public references are projected on each access.", "reference-discovery"),
+    ("callersByIdentity", "Caller edges", "Symbol identity", "Promise of incoming call edges", "Reuses reference discovery, then caches its own caller-edge projection.", "projections"),
+    ("calleesByIdentity", "Callee edges", "Symbol identity", "Promise of outgoing call edges", "Its own cached promise. Callee lookup uses position definitions to resolve outgoing calls.", "construction"),
+    ("definitionsByPosition", "Position definitions", "Relative path + source offset", "Array of semantic node locations", "Includes empty arrays. Each access builds a new array of current syntax nodes from the stored locations.", "positions"),
+]
+
+# Each whole hunk is assigned, including mechanical imports/type substitutions.
+HUNK_DECISIONS = [
+    ["D07", "D09", "D10"], ["D12"], ["D12"],
+    ["D04", "D06", "D07", "D08", "D09", "D11", "D12"],
+    ["D01", "D10"], ["D01", "D02", "D03", "D04", "D10", "D11"],
+    ["D04", "D07", "D10"], ["D04", "D08", "D09"],
+    ["D04"], ["D04"], ["D04", "D06"], ["D01", "D08"],
+    ["D05", "D06", "D11", "D12"], ["D01", "D03", "D05", "D06", "D11"], ["D01"],
+]
