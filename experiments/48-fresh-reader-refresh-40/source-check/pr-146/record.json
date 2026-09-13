@@ -1,0 +1,114 @@
+{
+  "body": "## Context\n\nImplements Phase 23 of the daemon architecture plan. This stack layer follows worker-generation PR #145 and isolates completion delivery before accepted-execution extraction. Exact local CI parity passed 2,409 tests with eight expected skips; focused delivery, process, real Unix-socket, and mutation checks preserve protocol and lifecycle behavior.\n\n## Shape\n\nBefore \u2014 `WorkspaceDaemon` coordinates completion delivery directly:\n\n```mermaid\nflowchart LR\n    Process[\"WorkspaceDaemon<br/>&lt;&lt;process and delivery owner&gt;&gt;\"] -->|uses| Ledger[\"AcceptedRequestLedger<br/>&lt;&lt;request state&gt;&gt;\"]\n    Process -->|uses| Spool[\"DaemonCompletionSpoolStore<br/>&lt;&lt;completion bytes&gt;&gt;\"]\n    Process -->|uses| Observer[\"DaemonOperationObserver<br/>&lt;&lt;delivery traces&gt;&gt;\"]\n\n    classDef removed fill:#ffebe9,stroke:#cf222e,color:#24292f\n    class Process removed\n```\n\nAfter \u2014 one session coordinates delivery over the existing data owners:\n\n```mermaid\nflowchart LR\n    Process[\"WorkspaceDaemon<br/>&lt;&lt;process shell&gt;&gt;\"] -->|uses| Session[\"DaemonDeliverySession<br/>&lt;&lt;delivery coordinator&gt;&gt;\"]\n    Session -->|uses| Ledger[\"AcceptedRequestLedger<br/>&lt;&lt;request state&gt;&gt;\"]\n    Session -->|uses| Spool[\"DaemonCompletionSpoolStore<br/>&lt;&lt;completion bytes&gt;&gt;\"]\n    Session -->|uses| Observer[\"DaemonOperationObserver<br/>&lt;&lt;delivery traces&gt;&gt;\"]\n\n    classDef added fill:#dafbe1,stroke:#1a7f37,color:#24292f\n    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n    class Session added\n    class Process changed\n```\n\nLegend: green = added; red = removed; yellow = changed; unfilled = pre-existing and unchanged.\n\n## Where it lives\n\n```text\n.\n\u2514\u2500\u2500 apps/cli/src/daemon/\n    \u251c\u2500\u2500 ++ daemon-delivery-session.ts       # owns delivery coordination over injected state owners\n    \u251c\u2500\u2500 ++ daemon-delivery-session.test.ts  # locks transfer, retention, barrier, and cleanup behavior\n    \u251c\u2500\u2500 ** workspace-daemon.ts               # composes the session and delegates delivery behavior\n    \u2514\u2500\u2500 ** workspace-daemon-requests.test.ts # preserves process-level delivery and shutdown ordering\n```\n\nLegend: `++` added, `**` changed, `~~` moved, `--` removed.\n\n## Public surface\n\nAdded:\n\n```ts\nexport interface DaemonDiagnosticRecorder {\n  record(event: DaemonDiagnosticEvent): void;\n}\nexport interface DaemonCompletionWriter {\n  append(record: DaemonSequencedOutputRecord): Promise<void>;\n  finish(exitCode: number): Promise<CompletionSpoolManifest>;\n  dispose(): Promise<void>;\n}\nexport interface DaemonDeliverySnapshot {\n  readonly spoolBytes: number;\n  readonly hasUnacknowledgedCompletions: boolean;\n}\nexport interface DaemonDeliveryAttachment {\n  readonly requestId: string;\n  readonly acceptedAt: number;\n  readonly queuePosition: number;\n}\nexport interface AcceptedExecutionJournal {\n  readonly hasUnacknowledgedCompletions: boolean;\n  entryFor(requestId: string): AcceptedRequestEntry | undefined;\n  subscribe(requestId: string, subscriber: AcceptedRequestSubscriber): () => void;\n  invalidateCompletion(requestId: string, code: DaemonExecutionFailureCode, completedAt: number): void;\n  acknowledge(requestId: string): void;\n  terminateDelivery(requestId: string): boolean;\n  isDeliveryTerminated(requestId: string): boolean;\n}\nexport type AuthenticatedDaemonResultFetchRequest = DaemonResultFetchRequest;\nexport type AuthenticatedDaemonResultAcknowledgement = DaemonResultAcknowledgement;\nexport type DaemonResultAcknowledged = Extract<DaemonResponse, { readonly kind: \"result-acknowledged\" }>;\nexport interface DaemonDeliverySessionOptions {\n  readonly coordinates: Pick<DaemonIdentityCoordinates, \"instanceId\" | \"processToken\">;\n  readonly journal: AcceptedExecutionJournal;\n  readonly spoolStore: DaemonCompletionSpoolStore;\n  readonly observer: DaemonOperationObserver;\n  readonly diagnostics: DaemonDiagnosticRecorder;\n  readonly clock: DaemonClock;\n  readonly policy: Pick<DaemonPolicyValues, \"delivery\" | \"diagnostics\" | \"shutdown\">;\n}\nexport class DaemonDeliverySession {\n  constructor(options: DaemonDeliverySessionOptions);\n  get snapshot(): DaemonDeliverySnapshot;\n  beginAcceptedTrace(requestId: string, command: DaemonCommandName, queuePosition: number, workerGeneration: number): DaemonOperationTrace;\n  createCompletion(requestId: string): Promise<DaemonCompletionWriter>;\n  attach(attachment: DaemonDeliveryAttachment, send: DaemonServerSend): Promise<void>;\n  fetch(request: AuthenticatedDaemonResultFetchRequest, send: DaemonServerSend): Promise<void>;\n  acknowledge(request: AuthenticatedDaemonResultAcknowledgement): Promise<DaemonResultAcknowledged>;\n  trackedCompletion(requestId: string): Promise<void> | undefined;\n  waitForCompletionAcknowledgements(): Promise<void>;\n  completeRetainedTraces(): void;\n  cleanupInstance(): Promise<void>;\n}\n```\n\n## Decisions\n\n- Chose one injected delivery session over process-shell delivery fields, because attachment, transfer, acknowledgement, and trace lifecycles form one coordination boundary.\n- Chose narrow ledger and spool ports over moving their data into the session, because accepted-request state and completion bytes already have authoritative owners.\n- Chose the latest per-request delivery promise over aggregating duplicate attachments, because queue completion must wait for the current stream without creating another request registry.\n- Chose retention-fenced trace handles over raw observer handles, because evicted or expired traces must ignore late diagnostics.\n- Chose physical cleanup before logical acknowledgement over conditional journal acknowledgement, because cleanup failure remains diagnostic and must not withhold protocol success.\n\n## Look here\n\n- `apps/cli/src/daemon/daemon-delivery-session.ts:189`\n- `apps/cli/src/daemon/daemon-delivery-session.ts:256`\n- `apps/cli/src/daemon/daemon-delivery-session.ts:281`\n",
+  "commits": [
+    {
+      "sha": "143416954ae9f84744ff4fdd01a20c165565b6cd",
+      "subject": "Define daemon delivery session contracts",
+      "body": ""
+    },
+    {
+      "sha": "1063d7c8e484bbf324f0f737302277c889ea3eb9",
+      "subject": "Specify delivery completion writers",
+      "body": ""
+    },
+    {
+      "sha": "42eae47804148337d3665a091376512d9d1d9648",
+      "subject": "Own delivery completion writers",
+      "body": ""
+    },
+    {
+      "sha": "a23b07b580897722873813bf537405d6db744254",
+      "subject": "Specify delivery attachment streams",
+      "body": ""
+    },
+    {
+      "sha": "d742199e8824e9a79ddcc738ae00c2228e36df7d",
+      "subject": "Own delivery attachment streams",
+      "body": ""
+    },
+    {
+      "sha": "4a968bc6fc159542326b7c0d8537b369bb7bdc73",
+      "subject": "Specify tracked completion delivery barriers",
+      "body": ""
+    },
+    {
+      "sha": "b763ccb530980cec0775423b3a08688f05110682",
+      "subject": "Expose tracked completion delivery barriers",
+      "body": ""
+    },
+    {
+      "sha": "3f7266e9db96f3e352237f5fafea06d144135b05",
+      "subject": "Specify resumable completion fetches",
+      "body": ""
+    },
+    {
+      "sha": "1eda8a944988c0baf87479d1fe5bcb5c4ccce8b1",
+      "subject": "Resume retained completion fetches",
+      "body": ""
+    },
+    {
+      "sha": "6eb44f1698d2433d0a57f70b245cbf1bee63b511",
+      "subject": "Specify completion acknowledgements",
+      "body": ""
+    },
+    {
+      "sha": "7e30e44a35c2361093a5ae82b98515cff41b494c",
+      "subject": "Own completion acknowledgements",
+      "body": ""
+    },
+    {
+      "sha": "ac20aaf1334561a3098dd503e29c8de870c8f962",
+      "subject": "Specify retained delivery traces",
+      "body": ""
+    },
+    {
+      "sha": "3a7454a4fac712e38da8915c293f4431de4627aa",
+      "subject": "Retain disconnected delivery traces",
+      "body": ""
+    },
+    {
+      "sha": "b99655a927db9456d60df8a9928a15f6c4f02b36",
+      "subject": "Specify delivery acknowledgement waiting",
+      "body": ""
+    },
+    {
+      "sha": "0ee9ce520faa3ae080992c99f110b075472d2890",
+      "subject": "Wait for delivery acknowledgements",
+      "body": ""
+    },
+    {
+      "sha": "1daa7a24a7455671387b32aedf959f9922103fd1",
+      "subject": "Specify delivery instance cleanup",
+      "body": ""
+    },
+    {
+      "sha": "ed915bc450a598a51272c001e4703ccd9515c5c1",
+      "subject": "Clean delivery instance spools",
+      "body": ""
+    },
+    {
+      "sha": "9e5280154e8b1817176559308115d8d60daa6850",
+      "subject": "Fence expired delivery traces",
+      "body": ""
+    },
+    {
+      "sha": "51893d8aef0c4ef7a17a9e539b4fee4bff91e81a",
+      "subject": "Delegate daemon delivery ownership",
+      "body": ""
+    },
+    {
+      "sha": "c0157a46a69d100a8718bf243870e84f2cde6222",
+      "subject": "Lock latest delivery process barriers",
+      "body": ""
+    },
+    {
+      "sha": "f79ba36278c77c41ca887aa4efc24fd0781e4cec",
+      "subject": "Lock worker-before-spool shutdown ordering",
+      "body": ""
+    }
+  ],
+  "number": 146,
+  "title": "Own daemon completion delivery in one session",
+  "base": "agent/daemon-architecture-refactor-part-22",
+  "head": "agent/daemon-architecture-refactor-part-23"
+}
