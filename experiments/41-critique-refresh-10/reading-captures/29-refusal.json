@@ -1,0 +1,643 @@
+{
+  "name": "29-refusal",
+  "title": "PR 148 · Four review units",
+  "url": "file:///Users/moyaseen/projects/rich-review-v2/experiments/29-refusal/index.html",
+  "errors": [],
+  "visible": "Skip to the four cuts\nREFUSAL / 29\nFour cuts\nSplit order\nSource ledger\nsymnav · PR 148\n\nOWN DAEMON MECHANISMS BEHIND DAEMONCLIENT · 153 FILES · +14,624 / −815 · 45 COMMITS\n\nOne destination.\nFour review units.\n\nI would split this PR. It changes who owns time, who owns process authority, where the implementation and its tests live, and what a host must know.\n\nThe shared goal is a daemon package. Each cut asks a different design question, and the first two already affect the shipped CLI. The new client is staged for a later consumer switch.\n\nProposed decomposition These are explanatory review boundaries, not four verified cherry-picks. No branch has been changed.\nThe boundary at this PR’s head\nSimplified ownership map · runtime calls are grouped\nAPPS/CLI · STILL SHIPPED\nCLI dispatcher\n→\nLocal daemon mechanisms\n01 clock\n02 authority\n38 files frozen after these edits\n03 · copy and organize ↓\nActive CLI adoption is outside this PR\nPACKAGES/DAEMON · NEW MECHANISM HOME\n04\nDaemonClient\nexecute · control\n→\nPrivate mechanism owners\nrouting · process · registry · delivery · workers …\nprocess-entry / worker-entry\n→ package mechanisms → injected host executor\n\nThe new package also retains its existing contracts and policy. This page follows the four boundaries changed by #148.\n\nTHE COMPLETE DECISION MAP\n\nTake the four cuts. Keep their costs attached.\n\nEach line opens the same decision at greater depth. Stated means a reason or explicit preservation requirement was found. Unexplained means the inspected material gives no reason. A rationale for relocation does not establish equivalence of the tests it replaces.\n\nCUT 01\nChanges the live CLI graph\nOwn time\n↗\n\nGive daemon mechanisms their own wall and monotonic time inputs. Preserve the old idle event boundaries, and record the two lifetime changes for later.\n\nA1\nDaemon wall and monotonic clocks replace telemetry and scattered time callbacks.\nSTATED\nA2\nIdle still starts at construction and resets at acceptance; readiness and completion resets are deferred.\nSTATED\nCUT 02\nChanges the live CLI graph\nOwn process authority\n↗\n\nCentralize startup ownership checks and make the process coordinator validate its coordinates. Rename and narrow its composition ports; retain request authentication order.\n\nB1\nThe registry owns startup equality, with narrow credentials and full observed-owner checks.\nSTATED\nB2\nThe process coordinator validates and adopts launch coordinates before composing its internals.\nUNEXPLAINED\nB3\nWorkspaceDaemon becomes DaemonProcessCoordinator; narrow ports replace generic dependency options.\nSTATED\nB4\nRequest authentication order is characterized and retained, including the identity/termination exceptions.\nSTATED\nCUT 03\nAdds a second implementation graph\nStage a package\n↗\n\nCopy mechanisms into their package and give them executable entries. Keep the shipped CLI on frozen copies. Move tests with ownership, including the changed and removed checks.\n\nC1\nStage package mechanisms while the live CLI keeps 38 frozen local files; the hash normalizes CRLF.\nSTATED\nC2\nOrganize private mechanism owners and expose package-relative process and worker executables.\nSTATED\nC3\n37 mechanism tests move to the package and use package-independent executor fixtures.\nSTATED\nC4\nA new raw-clock guard narrows to lifecycle/ during staging; the PR base had no such guard.\nUNEXPLAINED\nC5\nThe mocked CLI entry test is deleted; built package entries gain execution and platform-specific cleanup tests.\nSTATED\nC6\nThe temporary policy-testing export, its import restriction and two lint tests are retired together.\nUNEXPLAINED\nC7\nPackage test files run serially; the fixture environment adds tsx and local test helpers.\nUNEXPLAINED\nC8\nCLI worker timing and mismatch-initialization assertions are removed; direct executor version rejection is restored.\nUNEXPLAINED\nCUT 04\nAdds an API; CLI adoption is deferred\nGive hosts a client\n↗\n\nHide routing, startup, control and warm result capture behind a portable execute/control surface. Preserve route effects and replay boundaries; accept the host’s executor and readiness probe.\n\nD1\nA Node-free public facade loads a Node runtime at construction; only execute/control cross the new host boundary.\nSTATED\nD2\nOrdered lazy guards stop later observations: disabled → record → starting → version → responsiveness.\nSTATED\nD3\nAbsent/dead/incompatible routes trigger independent startup; local attempts get a fresh executor and keep their chosen mode.\nSTATED\nD4\nWarm failures retry locally only when transport marks them safe; uncertain/accepted failures return controlled output.\nSTATED\nD5\nThe client owns warm output capture in the OS temp directory, failure bytes and malformed-output cleanup.\nSTATED\nD6\nControl has typed start/status/stop results, a separate status timeout, disabled-start short circuit and propagated errors.\nSTATED\nD7\nThe host supplies readiness command/argv through startup, preserving the queued executor probe.\nSTATED\nMechanisms and evidence below\n\nThe decision map above is the stopping point. Continue into any cut, or read in order.\n\n01\n\nCHANGES THE LIVE CLI GRAPH\n\nWho supplies a timestamp?\n\nGive daemon mechanisms their own wall and monotonic time inputs. Preserve the old idle event boundaries, and record the two lifetime changes for later.\n\n↑ Four cuts\nDAEMON OWNED\nDaemonClock\nwallNowMs() · monotonicNowMs()\n→\nWall time\nIdle deadlines · startup grace\nregistry timestamps · resource windows\n→\nMonotonic time\nQueue starts · elapsed process activity\nworker initialization · output duration\nThe idle interval still belongs to acceptance\nIllustrative timeline · interval shortened to 10 units\n0\nconstruct\ndeadline = 10\n5\naccept navigation\ndeadline = 15\n15\ndeadline passes\nactive work continues\n18\nqueue idle\nshutdown can trigger\nNo fresh interval at 18. Construction also starts counting before readiness. Both alternate resets are recorded for later.\nA1\nDaemon wall and monotonic clocks replace telemetry and scattered time callbacks.\nSTATED\nA2\nIdle still starts at construction and resets at acceptance; readiness and completion resets are deferred.\nSTATED\nWhy this cut holds\n\nYou can keep the existing registry comparisons and still route time through DaemonClock.\n\nNext: Own process authority →\n02\n\nCHANGES THE LIVE CLI GRAPH\n\nWho may act on this instance?\n\nCentralize startup ownership checks and make the process coordinator validate its coordinates. Rename and narrow its composition ports; retain request authentication order.\n\n↑ Four cuts\nPROCESS ENTRY\nParsed launch coordinates\nworkspace · state · instance · token · endpoint\n→\nCOORDINATOR CONSTRUCTOR\nValidate → adopt → compose\nworker · lifetime · sessions · callbacks\nOne comparison owner, several claims\nGrouped fields; the exact predicate is in B1.\nRegistry operation\tidentity + instance\tprocess token\tkind + PID\ttimes + revision\nFind owner for instance\tcompare\t—\t—\t—\nFind owner for record credentials\tcompare\tcompare\t—\t—\nAuthenticate daemon process\tcompare\tcompare\tcompare\t—\nReplace observed owner\tcompare\tcompare\tcompare\tcompare\n\nA heartbeat renewal can keep credentials while changing the full observed snapshot. The registry owns both kinds of comparison.\n\nB1\nThe registry owns startup equality, with narrow credentials and full observed-owner checks.\nSTATED\nB2\nThe process coordinator validates and adopts launch coordinates before composing its internals.\nUNEXPLAINED\nB3\nWorkspaceDaemon becomes DaemonProcessCoordinator; narrow ports replace generic dependency options.\nSTATED\nB4\nRequest authentication order is characterized and retained, including the identity/termination exceptions.\nSTATED\nWhy this cut holds\n\nYou can centralize ownership while the implementation continues to live entirely in apps/cli.\n\nNext: Stage a package →\n03\n\nADDS A SECOND IMPLEMENTATION GRAPH\n\nWhere is the runnable implementation?\n\nCopy mechanisms into their package and give them executable entries. Keep the shipped CLI on frozen copies. Move tests with ownership, including the changed and removed checks.\n\n↑ Four cuts\nSHIPPED CLI\n38 frozen production files\nPath + normalized text hash\nEnd-to-end CLI tests remain with the CLI.\n37 mechanism tests\n→\nchange their target\nDAEMON PACKAGE\nPrivate mechanism owners\nRelocated unit tests + built entry tests\nGeneric executor fixtures replace CLI coupling.\nA frozen source graph and a behavior-tested graph answer different questions.\n\nThe hash pins the active copy after cuts 01 and 02. It is not a comparison between implementations. The narrower clock scan, removed worker assertions, replaced entry test, retired import gate and serial scheduling are all part of this cut.\n\ndelivery\ndiagnostics\nexecution\nlifecycle\nprocess\nregistry\nresources\ntransport\nworker\nC1\nStage package mechanisms while the live CLI keeps 38 frozen local files; the hash normalizes CRLF.\nSTATED\nC2\nOrganize private mechanism owners and expose package-relative process and worker executables.\nSTATED\nC3\n37 mechanism tests move to the package and use package-independent executor fixtures.\nSTATED\nC4\nA new raw-clock guard narrows to lifecycle/ during staging; the PR base had no such guard.\nUNEXPLAINED\nC5\nThe mocked CLI entry test is deleted; built package entries gain execution and platform-specific cleanup tests.\nSTATED\nC6\nThe temporary policy-testing export, its import restriction and two lint tests are retired together.\nUNEXPLAINED\nC7\nPackage test files run serially; the fixture environment adds tsx and local test helpers.\nUNEXPLAINED\nC8\nCLI worker timing and mismatch-initialization assertions are removed; direct executor version rejection is restored.\nUNEXPLAINED\nWhy this cut holds\n\nBuilt package process/worker entries can be exercised without exposing DaemonClient or switching the CLI.\n\nNext: Give hosts a client →\n04\n\nADDS AN API; CLI ADOPTION IS DEFERRED\n\nWhat must a host know?\n\nHide routing, startup, control and warm result capture behind a portable execute/control surface. Preserve route effects and replay boundaries; accept the host’s executor and readiness probe.\n\n↑ Four cuts\nHOST\nWorkspace + argv\nstate path · version · enabled\nexecutor factory + module URL\nreadiness command/argv · optional policy\nexecute / control\n→\nmode + output / report ←\n@SYMNAV/DAEMON\nDaemonClient\nPortable declarations\n↓ dynamic import on construction\nNode runtime → routing / lifecycle / capture\nStop at the first decision\nIllustrative trace of source branches; no daemon is run.\nStarting situation\nDaemon disabled\nNo record\nRegistry read fails\nRecord is starting, even with an old version\nReady record has an old version\nCompatible, ready daemon\nCompatible, busy daemon\nPong reports starting\nPong has an old version\nDaemon does not respond\nObservation throws\nObserver reports starting\nObserver reports exited\nIncompatible or corrupt observation\nEnabled\nRecord\nNot starting\nVersion\nResponsive\nSELECTED ROUTE\nwarm\n\nExecute on the compatible daemon. No local executor is created.\n\nRecord read attempts\n1\nObservation calls\n1\nCompare-removal attempts\n0\nIndependent startup triggers\n0\nLocal executor factories\n0\n\nCounts describe routing and direct client calls only; work inside the independent startup trigger is omitted. The guard order and output/replay decisions are expanded in D2–D5.\n\nD1\nA Node-free public facade loads a Node runtime at construction; only execute/control cross the new host boundary.\nSTATED\nD2\nOrdered lazy guards stop later observations: disabled → record → starting → version → responsiveness.\nSTATED\nD3\nAbsent/dead/incompatible routes trigger independent startup; local attempts get a fresh executor and keep their chosen mode.\nSTATED\nD4\nWarm failures retry locally only when transport marks them safe; uncertain/accepted failures return controlled output.\nSTATED\nD5\nThe client owns warm output capture in the OS temp directory, failure bytes and malformed-output cleanup.\nSTATED\nD6\nControl has typed start/status/stop results, a separate status timeout, disabled-start short circuit and propagated errors.\nSTATED\nD7\nThe host supplies readiness command/argv through startup, preserving the queued executor probe.\nSTATED\nWhy this cut holds\n\nThe portable host API can be discussed after package relocation has a stable, independently inspectable boundary.\n\nSee the proposed split order →\n\nSUGGESTED REVIEW SEQUENCE\n\nSeparate the questions; keep the dependencies.\n01 · time\n02 · authority\n→\n03 · package staging\ntests and enforcement travel with it\n→\n04 · host client\nrouting, capture and control together\n\nProposed order, based on the implementation as staged. Clock and authority commits interleave. Moving them to separate branches would require hunk-level editing and fresh validation.\n\n01\n\nRoute daemon timing through DaemonClock\n\n02\n\nCentralize startup authority and process coordinates\n\n03\n\nStage package mechanisms, executable entries and test ownership\n\n04\n\nExpose DaemonClient with routing, output and lifecycle ownership\n\nWhere the existing 45 commits land\nColor follows the proposed unit; sequence stays original.\n01\nA\nSpecify daemon lifetime clock ownership\n02\nA\nGive daemon lifetime its wall clock\n03\nB\nSpecify registry startup ownership authority\n04\nB\nCentralize registry startup ownership checks\n05\nB\nRename workspace daemon as process coordinator\n06\nB\nSpecify process request authentication order\n07\nB\nSpecify validated process coordinate adoption\n08\nB\nAdopt validated process coordinates\n09\nA\nSpecify daemon clock source ownership\n10\nA\nRoute daemon timing through its clock\n11\nB\nCharacterize process callback composition\n12\nB\nSpecify canonical startup ownership authority\n13\nB\nCentralize all startup ownership decisions\n14\nB\nSpecify narrow startup ownership coordinates\n15\nC\nStage daemon mechanism compatibility copies\n16\nC\nOrganize daemon mechanisms by ownership\n17\nC\nAdd daemon package executable entries\n18\nC\nProve built daemon entry resolution\n19\nC\nRetire flat daemon staging copies\n20\nC\nRelocate daemon mechanism ownership tests\n21\nC\nRetire app-owned daemon mechanism tests\n22\nC\nKeep executor fixture package-independent\n23\nC\nConform daemon staging tests to lint rules\n24\nC\nSpecify exhaustive daemon entry exports\n25\nC\nProve built daemon process entry execution\n26\nC\nRestore CLI executor version rejection oracle\n27\nD\nSpecify ordered daemon routing decisions\n28\nD\nOwn ordered daemon routing decisions\n29\nD\nDefine daemon client host contracts\n30\nD\nSpecify daemon client execution ownership\n31\nD\nRoute execution through DaemonClient\n32\nD\nSpecify daemon client lifecycle control\n33\nD\nOwn daemon lifecycle composition in DaemonClient\n34\nD\nSpecify host-owned daemon readiness probe\n35\nD\nRoute host readiness probes through startup\n36\nD\nCompose warm result capture in DaemonClient\n37\nD\nExpose the Node-free DaemonClient facade\n38\nD\nLock the public DaemonClient boundary\n39\nD\nRepresent disabled daemon routing\n40\nD\nComplete daemon client routing characterization\n41\nD\nSpecify missing warm output handling\n42\nD\nLock daemon control overload return types\n43\nC\nSpecify portable daemon compatibility hashing\n44\nC\nNormalize daemon compatibility source line endings\n45\nC\nSpecify Windows process entry cleanup ownership\n\nThe final three commits return to package-test concerns: portable hashes and Windows cleanup. This is why chronology alone does not make a clean split.\n\nWhy stop at four?\n\nTime and authority can change independently inside the existing CLI. Package staging can then be exercised through built entries without a client. Routing, output ownership and lifecycle control stay together because they form the new host contract. The test moves and removed checks stay attached to staging, where their meaning changes.\n\nThe future readiness/completion lifetime changes remain recorded deferrals inside cut 01. They are not implementations delivered by this PR. The production consumer switch remains outside this subject.\n\nInspect all 153 changed paths, 37 moved tests and the pinned evidence →\n\nExperiment 29 · Read-only explanation. Source inspection, not a correctness verdict.\n\nREADME · Brief · Evidence · Back to top ↑",
+  "allAuthored": "Skip to the four cutsREFUSAL / 29Four cutsSplit orderSource ledgersymnav · PR 148Own daemon mechanisms behind DaemonClient · 153 files · +14,624 / −815 · 45 commitsOne destination.Four review units.I would split this PR. It changes who owns time, who owns process authority, where the implementation and its tests live, and what a host must know.The shared goal is a daemon package. Each cut asks a different design question, and the first two already affect the shipped CLI. The new client is staged for a later consumer switch.Proposed decomposition These are explanatory review boundaries, not four verified cherry-picks. No branch has been changed.\nThe boundary at this PR’s headSimplified ownership map · runtime calls are groupedAPPS/CLI · STILL SHIPPEDCLI dispatcher→Local daemon mechanisms01 clock02 authority38 files frozen after these edits03 · copy and organize ↓Active CLI adoption is outside this PRPACKAGES/DAEMON · NEW MECHANISM HOME04DaemonClientexecute · control→Private mechanism ownersrouting · process · registry · delivery · workers …process-entry / worker-entry→ package mechanisms → injected host executorThe new package also retains its existing contracts and policy. This page follows the four boundaries changed by #148.\nThe complete decision mapTake the four cuts. Keep their costs attached.Each line opens the same decision at greater depth. Stated means a reason or explicit preservation requirement was found. Unexplained means the inspected material gives no reason. A rationale for relocation does not establish equivalence of the tests it replaces.CUT 01 Changes the live CLI graphOwn time ↗Give daemon mechanisms their own wall and monotonic time inputs. Preserve the old idle event boundaries, and record the two lifetime changes for later.A1Daemon wall and monotonic clocks replace telemetry and scattered time callbacks.statedA2Idle still starts at construction and resets at acceptance; readiness and completion resets are deferred.statedCUT 02 Changes the live CLI graphOwn process authority ↗Centralize startup ownership checks and make the process coordinator validate its coordinates. Rename and narrow its composition ports; retain request authentication order.B1The registry owns startup equality, with narrow credentials and full observed-owner checks.statedB2The process coordinator validates and adopts launch coordinates before composing its internals.unexplainedB3WorkspaceDaemon becomes DaemonProcessCoordinator; narrow ports replace generic dependency options.statedB4Request authentication order is characterized and retained, including the identity/termination exceptions.statedCUT 03 Adds a second implementation graphStage a package ↗Copy mechanisms into their package and give them executable entries. Keep the shipped CLI on frozen copies. Move tests with ownership, including the changed and removed checks.C1Stage package mechanisms while the live CLI keeps 38 frozen local files; the hash normalizes CRLF.statedC2Organize private mechanism owners and expose package-relative process and worker executables.statedC337 mechanism tests move to the package and use package-independent executor fixtures.statedC4A new raw-clock guard narrows to lifecycle/ during staging; the PR base had no such guard.unexplainedC5The mocked CLI entry test is deleted; built package entries gain execution and platform-specific cleanup tests.statedC6The temporary policy-testing export, its import restriction and two lint tests are retired together.unexplainedC7Package test files run serially; the fixture environment adds tsx and local test helpers.unexplainedC8CLI worker timing and mismatch-initialization assertions are removed; direct executor version rejection is restored.unexplainedCUT 04 Adds an API; CLI adoption is deferredGive hosts a client ↗Hide routing, startup, control and warm result capture behind a portable execute/control surface. Preserve route effects and replay boundaries; accept the host’s executor and readiness probe.D1A Node-free public facade loads a Node runtime at construction; only execute/control cross the new host boundary.statedD2Ordered lazy guards stop later observations: disabled → record → starting → version → responsiveness.statedD3Absent/dead/incompatible routes trigger independent startup; local attempts get a fresh executor and keep their chosen mode.statedD4Warm failures retry locally only when transport marks them safe; uncertain/accepted failures return controlled output.statedD5The client owns warm output capture in the OS temp directory, failure bytes and malformed-output cleanup.statedD6Control has typed start/status/stop results, a separate status timeout, disabled-start short circuit and propagated errors.statedD7The host supplies readiness command/argv through startup, preserving the queued executor probe.stated\nMechanisms and evidence belowThe decision map above is the stopping point. Continue into any cut, or read in order.\n01Changes the live CLI graphWho supplies a timestamp?Give daemon mechanisms their own wall and monotonic time inputs. Preserve the old idle event boundaries, and record the two lifetime changes for later.↑ Four cutsDAEMON OWNEDDaemonClockwallNowMs() · monotonicNowMs()→Wall timeIdle deadlines · startup graceregistry timestamps · resource windows→Monotonic timeQueue starts · elapsed process activityworker initialization · output duration\nThe idle interval still belongs to acceptanceIllustrative timeline · interval shortened to 10 units0constructdeadline = 105accept navigationdeadline = 1515deadline passesactive work continues18queue idleshutdown can triggerNo fresh interval at 18. Construction also starts counting before readiness. Both alternate resets are recorded for later.A1Daemon wall and monotonic clocks replace telemetry and scattered time callbacks.stated\n Reason · stated. The architecture spec assigns both clock sources to the daemon; behavior is to be preserved.The coordinator now requires a DaemonClock and passes it into lifetime, ledger, queue and resource owners. Worker timing uses its own NodeDaemonClock. Wall time still drives absolute timestamps, grace periods and idle deadlines; elapsed queue and worker measurements use monotonic time. The queue’s standalone default changes from Date.now to monotonicNowMs; the process already supplied monotonic time before this PR. The record observer’s unused time parameter disappears.head · daemon-architecture-functional-spec.md:235 head · daemon-clock.ts:3 head · process-coordinator.ts:84 base · workspace-request-queue.ts:35 head · request-queue.ts:36↑ Back to this cut’s overviewA2Idle still starts at construction and resets at acceptance; readiness and completion resets are deferred.stated\n Reason · stated. The PR explicitly preserves acceptance-based idle timing; the follow-up spec records two separate future changes.Construction schedules a deadline. Navigation acceptance moves it forward. Queue completion clears the active flag and can trigger immediate idle shutdown if that deadline has already passed. Readiness does not start a fresh interval. This PR changes the clock interface, while keeping those event boundaries.base · daemon-lifetime.ts:11 head · daemon-lifetime.ts:11 head · daemon-follow-ups-functional-spec.md:175 head · daemon-architecture-functional-spec.md:17↑ Back to this cut’s overviewWhy this cut holdsYou can keep the existing registry comparisons and still route time through DaemonClock.Next: Own process authority →02Changes the live CLI graphWho may act on this instance?Centralize startup ownership checks and make the process coordinator validate its coordinates. Rename and narrow its composition ports; retain request authentication order.↑ Four cutsPROCESS ENTRYParsed launch coordinatesworkspace · state · instance · token · endpoint→COORDINATOR CONSTRUCTORValidate → adopt → composeworker · lifetime · sessions · callbacksOne comparison owner, several claimsGrouped fields; the exact predicate is in B1.Registry operationidentity + instanceprocess tokenkind + PIDtimes + revisionFind owner for instancecompare———Find owner for record credentialscomparecompare——Authenticate daemon processcomparecomparecompare—Replace observed ownercomparecomparecomparecompareA heartbeat renewal can keep credentials while changing the full observed snapshot. The registry owns both kinds of comparison.B1The registry owns startup equality, with narrow credentials and full observed-owner checks.stated\n Reason · stated. The architecture spec calls for one owner of lock-ownership checks; this change centralizes the comparisons there.Controller and startup coordinator call registry operations instead of comparing fields themselves. One predicate always compares identity and instance, then compares only the optional coordinates a caller supplied. Credential lookup omits heartbeat and revision. Replacing or removing an observed owner supplies that full snapshot, so a renewal is distinguishable from the owner previously observed. A single predicate does not mean every caller demands the same strength of match.head · daemon-architecture-functional-spec.md:100 head · registry.ts:842 head · registry.ts:443 head · registry.ts:945↑ Back to this cut’s overviewB2The process coordinator validates and adopts launch coordinates before composing its internals.unexplained\n Reason · unexplained. The commits specify and implement this boundary, but give no reason for moving validation into construction or adding the workspace-root comparison.Validation used to live in the CLI entry and compare four derived values. The coordinator now checks workspace root, workspace key, state key, identity key and endpoint, then uses the supplied endpoint. Invalid coordinates fail before this constructor creates a worker or lifetime timer. The entry constructs the coordinator before installing the termination observer.base · daemon-entry.ts:18 head · process-coordinator.ts:541 head · process-coordinator.ts:84 head · process-entry.ts:11↑ Back to this cut’s overviewB3WorkspaceDaemon becomes DaemonProcessCoordinator; narrow ports replace generic dependency options.stated\n Reason · stated. The architecture spec splits the old WorkspaceDaemon into explicit owners; the rename makes the remaining process responsibility visible.Accepted execution, delivery, worker generations and activity projection already existed in the base. This PR names their composer. Options become coordinates, productVersion, server and workspaceExists; a required clock replaces the optional clock/now pair. A construction test characterizes the cyclic callbacks without invoking routing during construction. These ports remain private mechanisms, not the host API.base · workspace-daemon.ts:39 head · process-coordinator.ts:43 head · process-coordinator-construction.test.ts:101↑ Back to this cut’s overviewB4Request authentication order is characterized and retained, including the identity/termination exceptions.stated\n Reason · stated. The spec requires unchanged failure paths; a commit named “Specify process request authentication order” adds characterization.Identify and terminate/kill dispatch before the ordinary protocol/instance check and authenticate in their own handlers. Ping follows the ordinary check. Execute enters admission; status/fetch/ack also require the process token. This is a preserved branching boundary, not a new uniform authentication gate.head · process-coordinator.ts:353 head · daemon-architecture-functional-spec.md:17↑ Back to this cut’s overviewWhy this cut holdsYou can centralize ownership while the implementation continues to live entirely in apps/cli.Next: Stage a package →03Adds a second implementation graphWhere is the runnable implementation?Copy mechanisms into their package and give them executable entries. Keep the shipped CLI on frozen copies. Move tests with ownership, including the changed and removed checks.↑ Four cutsSHIPPED CLI38 frozen production filesPath + normalized text hashEnd-to-end CLI tests remain with the CLI.37 mechanism tests→change their targetDAEMON PACKAGEPrivate mechanism ownersRelocated unit tests + built entry testsGeneric executor fixtures replace CLI coupling.A frozen source graph and a behavior-tested graph answer different questions.The hash pins the active copy after cuts 01 and 02. It is not a comparison between implementations. The narrower clock scan, removed worker assertions, replaced entry test, retired import gate and serial scheduling are all part of this cut.deliverydiagnosticsexecutionlifecycleprocessregistryresourcestransportworkerC1Stage package mechanisms while the live CLI keeps 38 frozen local files; the hash normalizes CRLF.stated\n Reason · stated. The PR separates mechanism ownership from the active host switch so they can be reviewed independently.The frozen inventory excludes the CLI dispatcher and two invocation-classification files. It hashes sorted file paths plus source text, normalizing CRLF to LF. The expected digest freezes the post-cleanup CLI graph, not the PR base. It neither compares the package copy with the CLI copy nor measures behavior. CRLF normalization is explicitly specified in a later commit; other whitespace remains significant.head · daemon-compatibility-copy.test.ts:8 head · daemon-command-dispatcher.ts:19↑ Back to this cut’s overviewC2Organize private mechanism owners and expose package-relative process and worker executables.stated\n Reason · stated. The architecture spec assigns daemon mechanisms and executable entries to a package with no internal production dependencies.Copied mechanisms are grouped under delivery, diagnostics, execution, lifecycle, process, registry, resources, transport and worker. The package export map permits the root plus process-entry and worker-entry. Entries run for side effects and expose no named API. The launcher and worker resolve their own built package entries. The worker still receives an absolute executor module URL supplied by its host; it does not import the CLI as a package dependency.head · daemon-architecture-functional-spec.md:30 head · package.json:8 head · process-launcher.ts:156 head · navigation-worker.ts:95 head · built-entry-artifacts.test.ts:14↑ Back to this cut’s overviewC337 mechanism tests move to the package and use package-independent executor fixtures.stated\n Reason · stated. The spec permits mechanism tests to move with their owner; commits explicitly make the executor fixture package-independent.The generic worker fixture exercises ordered bytes and exit codes without loading the built CLI. Test imports and helper paths follow the new mechanism directories. The evidence ledger inventories all 37 renames. That number describes relocation, not assertion preservation; the removed CLI-specific checks are a separate decision in C8.head · navigation-worker.test.ts:369 head · daemon-architecture-functional-spec.md:30↑ Back to this cut’s overviewC4A new raw-clock guard narrows to lifecycle/ during staging; the PR base had no such guard.unexplained\n Reason · unexplained. No reason was found for the narrower scan; the test’s descriptive name still refers to daemon mechanisms.The guard is introduced early in this PR. Before staging (commit 4a0b2806), its nonrecursive readdirSync scans apps/cli/src/daemon. At the head the same directory-relative operation scans packages/daemon/src/lifecycle. Other new package mechanism directories fall outside this particular guard. The PR base has only the two source-clock tests and no directory scan. This is narrowing within the PR’s history, not deletion of a base guarantee; no claim is made about violations in unscanned files.pre-staging · daemon-clock.test.ts:36 head · daemon-clock.test.ts:36↑ Back to this cut’s overviewC5The mocked CLI entry test is deleted; built package entries gain execution and platform-specific cleanup tests.stated\n Reason · stated. Commits explicitly specify built entry resolution, execution and Windows cleanup ownership. Staging is intended to establish runnable package entries.The deleted test inspected configured state path, executor URL, worker limit and shared logger/termination observer through mocks. New tests launch built package artifacts, inspect readiness and injected executor events, and exercise startup failures. The final Windows test expects the exited process’s record to remain until the harness removes it; POSIX expects termination-observer cleanup and a diagnostic. These observations replace a test setup, not an assertion-for-assertion equivalence proof; that equivalence was not explained.base · daemon-entry.test.ts:102 head · built-process-entry.test.ts:217 head · built-entry-artifacts.test.ts:14↑ Back to this cut’s overviewC6The temporary policy-testing export, its import restriction and two lint tests are retired together.unexplained\n Reason · unexplained. The changes are visible in the relocation commit; no rationale was found for the exact enforcement tradeoff.Policy test helpers move into test-owned locations. The manifest no longer exports @symnav/daemon/policy-testing. ESLint loses the special production-import prohibition for that subpath and the allow/deny tests are deleted. The exact export-map test is updated to process/worker entries. This is a removed enforcement path coupled to a removed public subpath.head · package.json:8 base · eslint.config.mjs:94 base · lint-rule.test.ts:118↑ Back to this cut’s overviewC7Package test files run serially; the fixture environment adds tsx and local test helpers.unexplained\n Reason · unexplained. No scheduling or dependency rationale was found in the PR body, commit bodies or inspected specs.The new package Vitest config sets fileParallelism to false. The package gains tsx as a development dependency and the lockfile follows it. Generic executor fixtures, canonical-path and output helpers keep package tests independent of CLI production modules. The choice to localize those helpers follows the package boundary; the reason for serial scheduling and the specific dev dependency is absent.head · vitest.config.ts:1 head · daemon-architecture-functional-spec.md:30↑ Back to this cut’s overviewC8CLI worker timing and mismatch-initialization assertions are removed; direct executor version rejection is restored.unexplained\n Reason · unexplained. Package independence is stated, but the exact choice of removed assertions and replacement boundary is not separately explained.The moved worker readiness test drops discovery/indexing and freshness/navigation/render/output duration assertions when it adopts the generic fixture. The worker-level test that classified a CLI version mismatch as initialization failure is deleted. A new direct CLI executor test asserts that an incompatible product version throws. These test different boundaries: a worker wrapping executor startup versus the executor rejecting a version. They are not evidence of identical coverage.base · daemon-navigation-worker.test.ts:369 base · daemon-navigation-worker.test.ts:386 head · navigation-worker.test.ts:369 head · daemon-executor.test.ts:32↑ Back to this cut’s overviewWhy this cut holdsBuilt package process/worker entries can be exercised without exposing DaemonClient or switching the CLI.Next: Give hosts a client →04Adds an API; CLI adoption is deferredWhat must a host know?Hide routing, startup, control and warm result capture behind a portable execute/control surface. Preserve route effects and replay boundaries; accept the host’s executor and readiness probe.↑ Four cutsHOSTWorkspace + argvstate path · version · enabledexecutor factory + module URLreadiness command/argv · optional policyexecute / control→mode + output / report ←@SYMNAV/DAEMONDaemonClientPortable declarations↓ dynamic import on constructionNode runtime → routing / lifecycle / capture\nStop at the first decisionIllustrative trace of source branches; no daemon is run.Starting situationDaemon disabledNo recordRegistry read failsRecord is starting, even with an old versionReady record has an old versionCompatible, ready daemonCompatible, busy daemonPong reports startingPong has an old versionDaemon does not respondObservation throwsObserver reports startingObserver reports exitedIncompatible or corrupt observationEnabledRecordNot startingVersionResponsiveSelected routewarmExecute on the compatible daemon. No local executor is created.Record read attempts1Observation calls1Compare-removal attempts0Independent startup triggers0Local executor factories0Counts describe routing and direct client calls only; work inside the independent startup trigger is omitted. The guard order and output/replay decisions are expanded in D2–D5.D1A Node-free public facade loads a Node runtime at construction; only execute/control cross the new host boundary.stated\n Reason · stated. The PR says host declarations must not acquire Node ambient dependencies.DaemonClient stores one promise for a dynamically imported runtime, started in its constructor. Methods await that promise. Public options and results use portable contracts; actual execution still uses Node internals. The host provides state path, product version, enabled flag, executor factory/module URL, readiness probe and optional policy; per-call input adds workspace, command name, argv, cwd and telemetry flag. Exact exports, class members, declarations without Node types and a deliberate Buffer leak are checked by source/type tests.head · daemon-client.ts:20 head · daemon-client-contracts.ts:10 head · host-contract.test.ts:880 head · daemon-architecture-functional-spec.md:207↑ Back to this cut’s overviewD2Ordered lazy guards stop later observations: disabled → record → starting → version → responsiveness.stated\n Reason · stated. The PR says the first routing decision must prevent every later side effect; the spec asks for readable ordered guard lists.Disabled execution exits before workspace identity and registry reads. The four policy guards then check presence, starting state, stored version and observed responsiveness. Context memoizes its record read and observation. Missing, starting or recovering state selects cold; dead or incompatible selects fallback; a compatible ready/busy response selects warm. Starting is checked before version, so a starting record never reaches version or socket observation.head · daemon-client-runtime.ts:139 head · daemon-routing-policy.ts:122 head · daemon-routing-policy.ts:43 head · daemon-routing-policy.ts:92↑ Back to this cut’s overviewD3Absent/dead/incompatible routes trigger independent startup; local attempts get a fresh executor and keep their chosen mode.stated\n Reason · stated. The architecture spec preserves warm/cold/fallback behavior; client characterization explicitly requires independent warmup and a new executor per local attempt.Absent cold routes and fallback routes trigger startup without awaiting it. Starting/recovering routes do not trigger it. Registry cleanup belongs to the exited-observation branch. A chosen local route does not turn warm mid-invocation. Each local attempt creates an executor, forwards argv/cwd/telemetry plus executionMode, and supplies a no-op resource sampler. Trigger failure is swallowed independently of the local result.head · daemon-client-runtime.ts:139 head · daemon-routing-policy.ts:92 head · daemon-client-runtime.ts:217↑ Back to this cut’s overviewD4Warm failures retry locally only when transport marks them safe; uncertain/accepted failures return controlled output.stated\n Reason · stated. The PR locates replay safety in the daemon client, alongside the existing acceptance-aware transport.A retry-safe DaemonTransportError permits one local fallback. Non-submission or certain authenticated pre-acceptance rejections can be safe. Submitted-but-unconfirmed, accepted and unknown failures are not blindly replayed. Failed completion maps to a package-owned stderr result with exit 1 and warm mode: workspace capacity, response capacity, or accepted request did not complete. Mode describes the selected execution path even when its result is a failure.head · daemon-client-runtime.ts:181 head · transport-error.ts:30 head · daemon-client-runtime.ts:56↑ Back to this cut’s overviewD5The client owns warm output capture in the OS temp directory, failure bytes and malformed-output cleanup.stated\n Reason · stated. The PR rejects host storage/output factories because transfer cleanup and replay safety belong to the daemon client.The routing transport creates a fresh DaemonClientResultCapture from output policy. The capture defaults to the OS temporary directory. Completion must have an integer exit code and an output object; malformed output is disposed when available before a controlled result is returned. Missing output yields a controlled warm failure without replay or registry mutation. Hosts receive an output object with records/dispose, rather than designing its storage.head · daemon-client-runtime.ts:91 head · client-result-capture.ts:56 head · daemon-client-runtime.ts:251 head · daemon-client-runtime.ts:181↑ Back to this cut’s overviewD6Control has typed start/status/stop results, a separate status timeout, disabled-start short circuit and propagated errors.stated\n Reason · stated. The spec assigns lifecycle reports to the client; commits characterize composition and lock action-specific return types.One runtime keeps its registry, startup coordinator, two transports and two controllers across calls. Status uses statusResponseTimeoutMs; start/stop use the ordinary lifecycle response timeout. Disabled only short-circuits start; status and stop still delegate. Mechanism errors reject to the host wrapper. Overloads retain each action’s result type rather than returning a union to every caller. The reason for two concrete controller instances is not separately explained beyond the characterized timeout distinction.head · daemon-client-runtime.ts:91 head · daemon-client-runtime.ts:173 head · daemon-client.ts:15 head · host-contract.test.ts:575↑ Back to this cut’s overviewD7The host supplies readiness command/argv through startup, preserving the queued executor probe.stated\n Reason · stated. The spec keeps syntax in the host and the daemon ignorant of navigation semantics; two commits specify and route a host-owned readiness probe.DaemonClientOptions requires the readiness probe and forwards it into startup composition. The package startup coordinator uses that command name and argv for its readiness execution request, with the version command retained as an internal default. This PR does not adopt the separately deferred control-plane readiness design.head · daemon-client-contracts.ts:10 head · startup-coordinator.ts:472 head · daemon-architecture-functional-spec.md:207↑ Back to this cut’s overviewWhy this cut holdsThe portable host API can be discussed after package relocation has a stable, independently inspectable boundary.See the proposed split order →\nSuggested review sequenceSeparate the questions; keep the dependencies.01 · time02 · authority→03 · package stagingtests and enforcement travel with it→04 · host clientrouting, capture and control togetherProposed order, based on the implementation as staged. Clock and authority commits interleave. Moving them to separate branches would require hunk-level editing and fresh validation.01Route daemon timing through DaemonClock02Centralize startup authority and process coordinates03Stage package mechanisms, executable entries and test ownership04Expose DaemonClient with routing, output and lifecycle ownershipWhere the existing 45 commits landColor follows the proposed unit; sequence stays original.01ASpecify daemon lifetime clock ownership02AGive daemon lifetime its wall clock03BSpecify registry startup ownership authority04BCentralize registry startup ownership checks05BRename workspace daemon as process coordinator06BSpecify process request authentication order07BSpecify validated process coordinate adoption08BAdopt validated process coordinates09ASpecify daemon clock source ownership10ARoute daemon timing through its clock11BCharacterize process callback composition12BSpecify canonical startup ownership authority13BCentralize all startup ownership decisions14BSpecify narrow startup ownership coordinates15CStage daemon mechanism compatibility copies16COrganize daemon mechanisms by ownership17CAdd daemon package executable entries18CProve built daemon entry resolution19CRetire flat daemon staging copies20CRelocate daemon mechanism ownership tests21CRetire app-owned daemon mechanism tests22CKeep executor fixture package-independent23CConform daemon staging tests to lint rules24CSpecify exhaustive daemon entry exports25CProve built daemon process entry execution26CRestore CLI executor version rejection oracle27DSpecify ordered daemon routing decisions28DOwn ordered daemon routing decisions29DDefine daemon client host contracts30DSpecify daemon client execution ownership31DRoute execution through DaemonClient32DSpecify daemon client lifecycle control33DOwn daemon lifecycle composition in DaemonClient34DSpecify host-owned daemon readiness probe35DRoute host readiness probes through startup36DCompose warm result capture in DaemonClient37DExpose the Node-free DaemonClient facade38DLock the public DaemonClient boundary39DRepresent disabled daemon routing40DComplete daemon client routing characterization41DSpecify missing warm output handling42DLock daemon control overload return types43CSpecify portable daemon compatibility hashing44CNormalize daemon compatibility source line endings45CSpecify Windows process entry cleanup ownershipThe final three commits return to package-test concerns: portable hashes and Windows cleanup. This is why chronology alone does not make a clean split.Why stop at four?Time and authority can change independently inside the existing CLI. Package staging can then be exercised through built entries without a client. Routing, output ownership and lifecycle control stay together because they form the new host contract. The test moves and removed checks stay attached to staging, where their meaning changes.The future readiness/completion lifetime changes remain recorded deferrals inside cut 01. They are not implementations delivered by this PR. The production consumer switch remains outside this subject.Inspect all 153 changed paths, 37 moved tests and the pinned evidence →\nExperiment 29 · Read-only explanation. Source inspection, not a correctness verdict.README · Brief · Evidence · Back to top ↑",
+  "headings": [
+    {
+      "id": "",
+      "text": "One destination.\nFour review units."
+    },
+    {
+      "id": "boundary-title",
+      "text": "The boundary at this PR’s head"
+    },
+    {
+      "id": "",
+      "text": "Take the four cuts. Keep their costs attached."
+    },
+    {
+      "id": "",
+      "text": "Own time\n↗"
+    },
+    {
+      "id": "",
+      "text": "Own process authority\n↗"
+    },
+    {
+      "id": "",
+      "text": "Stage a package\n↗"
+    },
+    {
+      "id": "",
+      "text": "Give hosts a client\n↗"
+    },
+    {
+      "id": "",
+      "text": "Who supplies a timestamp?"
+    },
+    {
+      "id": "",
+      "text": "The idle interval still belongs to acceptance"
+    },
+    {
+      "id": "",
+      "text": "Who may act on this instance?"
+    },
+    {
+      "id": "",
+      "text": "One comparison owner, several claims"
+    },
+    {
+      "id": "",
+      "text": "Where is the runnable implementation?"
+    },
+    {
+      "id": "",
+      "text": "What must a host know?"
+    },
+    {
+      "id": "",
+      "text": "Stop at the first decision"
+    },
+    {
+      "id": "",
+      "text": "Separate the questions; keep the dependencies."
+    },
+    {
+      "id": "",
+      "text": "Where the existing 45 commits land"
+    },
+    {
+      "id": "",
+      "text": "Why stop at four?"
+    },
+    {
+      "id": "source-title",
+      "text": ""
+    }
+  ],
+  "controls": [
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "A1\nDaemon wall and monotonic clocks replace telemetry and scattered time callbacks.\nSTATED",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "A2\nIdle still starts at construction and resets at acceptance; readiness and completion resets are deferred.\nSTATED",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "B1\nThe registry owns startup equality, with narrow credentials and full observed-owner checks.\nSTATED",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "B2\nThe process coordinator validates and adopts launch coordinates before composing its internals.\nUNEXPLAINED",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "B3\nWorkspaceDaemon becomes DaemonProcessCoordinator; narrow ports replace generic dependency options.\nSTATED",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "B4\nRequest authentication order is characterized and retained, including the identity/termination exceptions.\nSTATED",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "C1\nStage package mechanisms while the live CLI keeps 38 frozen local files; the hash normalizes CRLF.\nSTATED",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "C2\nOrganize private mechanism owners and expose package-relative process and worker executables.\nSTATED",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "C3\n37 mechanism tests move to the package and use package-independent executor fixtures.\nSTATED",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "C4\nA new raw-clock guard narrows to lifecycle/ during staging; the PR base had no such guard.\nUNEXPLAINED",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "C5\nThe mocked CLI entry test is deleted; built package entries gain execution and platform-specific cleanup tests.\nSTATED",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "C6\nThe temporary policy-testing export, its import restriction and two lint tests are retired together.\nUNEXPLAINED",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "C7\nPackage test files run serially; the fixture environment adds tsx and local test helpers.\nUNEXPLAINED",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "C8\nCLI worker timing and mismatch-initialization assertions are removed; direct executor version rejection is restored.\nUNEXPLAINED",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "SELECT",
+      "id": "route-case",
+      "text": "Daemon disabled\nNo record\nRegistry read fails\nRecord is starting, even with an old version\nReady record has an old version\nCompatible, ready daemon\nCompatible, busy daemon\nPong reports starting\nPong has an old version\nDaemon does not respond\nObservation throws\nObserver reports starting\nObserver reports exited\nIncompatible or corrupt observation",
+      "aria": null
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "D1\nA Node-free public facade loads a Node runtime at construction; only execute/control cross the new host boundary.\nSTATED",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "D2\nOrdered lazy guards stop later observations: disabled → record → starting → version → responsiveness.\nSTATED",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "D3\nAbsent/dead/incompatible routes trigger independent startup; local attempts get a fresh executor and keep their chosen mode.\nSTATED",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "D4\nWarm failures retry locally only when transport marks them safe; uncertain/accepted failures return controlled output.\nSTATED",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "D5\nThe client owns warm output capture in the OS temp directory, failure bytes and malformed-output cleanup.\nSTATED",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "D6\nControl has typed start/status/stop results, a separate status timeout, disabled-start short circuit and propagated errors.\nSTATED",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "SUMMARY",
+      "id": "",
+      "text": "D7\nThe host supplies readiness command/argv through startup, preserving the queued executor probe.\nSTATED",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "",
+      "aria": null
+    },
+    {
+      "tag": "BUTTON",
+      "id": "close-source",
+      "text": "Close ×",
+      "aria": "Close source evidence"
+    }
+  ],
+  "height": 9060
+}
