@@ -1,0 +1,1072 @@
+{
+  "title": "Where does this decision reach?",
+  "subject": "PR #131 · Route daemon thresholds through centralized policy",
+  "decisions": [
+    {
+      "id": "output",
+      "title": "One output slice governs capture and retention",
+      "summary": "Remove local inline, record, per-result and aggregate limits. Pass the same output slice into command capture and completion spooling, including disk decoding.",
+      "reason": {
+        "status": "stated",
+        "text": "Required slices prevent an omitted input from recreating a local default.",
+        "source": "PR body · Decisions",
+        "needle": ""
+      },
+      "before": [
+        "Capture and spool each supply fallback limits.",
+        "Disk decoding assumes a fixed 64 KiB record."
+      ],
+      "after": [
+        "Composition supplies output policy to both stores.",
+        "The record cap travels into stored-file decoding."
+      ],
+      "flow": [
+        "CLI / worker executor",
+        "OrderedCommandOutput · capture",
+        "CompletionSpool · retain",
+        "Client output · replay"
+      ],
+      "seeds": {
+        "base": [
+          "apps/cli/src/command-execution-result.ts::OrderedCommandOutput",
+          "apps/cli/src/daemon/completion-spool.ts::DaemonCompletionSpoolStore"
+        ],
+        "head": [
+          "apps/cli/src/command-execution-result.ts::OrderedCommandOutput",
+          "apps/cli/src/daemon/completion-spool.ts::DaemonCompletionSpoolStore"
+        ]
+      },
+      "evidence": [
+        {
+          "file": "apps/cli/src/command-execution-result.ts",
+          "needle": "constructor(options: OrderedCommandOutputOptions)",
+          "label": "Capture receives a required slice",
+          "side": "head",
+          "after": 14,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/src/daemon/completion-spool.ts",
+          "needle": "constructor(private readonly options: DaemonCompletionSpoolStoreOptions)",
+          "label": "Spool shares the policy values",
+          "side": "head",
+          "after": 14,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/src/command-execution-result.ts",
+          "needle": "static async *decodeFileRecords(",
+          "label": "Decoder receives the record cap",
+          "side": "head",
+          "after": 14,
+          "before": 2
+        }
+      ],
+      "changedFiles": [
+        "apps/cli/src/cli-program-executor.test.ts",
+        "apps/cli/src/cli-program-executor.ts",
+        "apps/cli/src/command-execution-result.ts",
+        "apps/cli/src/daemon/completion-spool.test.ts",
+        "apps/cli/src/daemon/completion-spool.ts"
+      ],
+      "numbers": "64 KiB per chunk · 256 KiB inline · 256 MiB per result · 512 MiB aggregate spool",
+      "box": "Output"
+    },
+    {
+      "id": "framing",
+      "title": "Carry chunk and frame caps through each validator",
+      "summary": "Transport, binary codec, file reader and both worker-message endpoints use supplied caps. JSON and execution-control limits stay separate; the worker host decodes the snapshot to recover its chunk cap.",
+      "reason": {
+        "status": "stated",
+        "text": "The PR explicitly includes framing and worker chunk validation in required output/resource consumption. The policy record distinguishes ordinary JSON from transfer control frames.",
+        "source": "PR body · Shape; plans/005/daemon-policy.md",
+        "needle": ""
+      },
+      "before": [
+        "Spool exports a 64 KiB chunk constant.",
+        "Transport and codec import local frame/chunk constants."
+      ],
+      "after": [
+        "Transport supplies chunk limits to encode/decode.",
+        "Worker sender and receiver validate against the snapshot."
+      ],
+      "flow": [
+        "Worker sender · chunk cap",
+        "Worker host · chunk cap",
+        "Daemon transport · control + raw caps",
+        "Client decoder · same categories"
+      ],
+      "seeds": {
+        "base": [
+          "apps/cli/src/daemon/daemon-result-chunk-codec.ts::DaemonResultChunkCodec",
+          "apps/cli/src/daemon/daemon-result-chunk-codec.ts::DaemonTransferFrameDecoder",
+          "apps/cli/src/daemon/daemon-navigation-worker-protocol.ts::DaemonNavigationWorkerProtocol::response"
+        ],
+        "head": [
+          "apps/cli/src/daemon/daemon-result-chunk-codec.ts::DaemonResultChunkCodec",
+          "apps/cli/src/daemon/daemon-result-chunk-codec.ts::DaemonTransferFrameDecoder",
+          "apps/cli/src/daemon/daemon-navigation-worker-protocol.ts::DaemonNavigationWorkerProtocol::response"
+        ]
+      },
+      "evidence": [
+        {
+          "file": "apps/cli/src/daemon/daemon-result-chunk-codec.ts",
+          "needle": "export class DaemonTransferFrameDecoder",
+          "label": "Binary capacity = control allowance + raw chunk allowance",
+          "side": "head",
+          "after": 30,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/src/daemon/daemon-navigation-worker.ts",
+          "needle": "this.maximumChunkRawBytes = DaemonPolicy.fromSerialized(",
+          "label": "Worker host reads the serialized cap",
+          "side": "head",
+          "after": 14,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/src/daemon/daemon-navigation-worker-entry.ts",
+          "needle": "const validated = DaemonNavigationWorkerProtocol.response(",
+          "label": "Worker sender supplies the cap",
+          "side": "head",
+          "after": 14,
+          "before": 2
+        }
+      ],
+      "changedFiles": [
+        "apps/cli/src/daemon/daemon-navigation-worker-entry.ts",
+        "apps/cli/src/daemon/daemon-navigation-worker-protocol.test.ts",
+        "apps/cli/src/daemon/daemon-navigation-worker-protocol.ts",
+        "apps/cli/src/daemon/daemon-navigation-worker.ts",
+        "apps/cli/src/daemon/daemon-result-chunk-codec.test.ts",
+        "apps/cli/src/daemon/daemon-result-chunk-codec.ts",
+        "apps/cli/src/daemon/local-daemon-transport.ts",
+        "apps/cli/test/helpers/local-daemon-transport.ts"
+      ],
+      "numbers": "8 MiB JSON · 256 KiB execution control · 64 KiB raw chunk",
+      "box": "Transport"
+    },
+    {
+      "id": "resources",
+      "title": "Use snapshot memory values without a second derivation",
+      "summary": "Delete the CLI resource-policy class and memory-cap input. The snapshot now supplies RSS thresholds, reported hard cap, worker heap limit, supervision and heap-sampling cadence, and the replacement circuit.",
+      "reason": {
+        "status": "stated",
+        "text": "All numeric limits have one owner; consumers must not reconstruct the policy.",
+        "source": "plans/005/daemon-architecture-functional-spec.md · Every threshold has one owner",
+        "needle": ""
+      },
+      "before": [
+        "DaemonResourcePolicy re-derives a CLI resource record.",
+        "WorkspaceDaemon can rebuild it from a memory cap."
+      ],
+      "after": [
+        "WorkspaceDaemon uses policy.values.resources directly.",
+        "Supervisor and worker sampling consume the recorded cadence and replacement limits."
+      ],
+      "flow": [
+        "DaemonPolicy · existing owner",
+        "WorkspaceDaemon · project resources",
+        "Supervisor · shed / replace / drain",
+        "Worker · heap cap + samples"
+      ],
+      "seeds": {
+        "base": [
+          "apps/cli/src/daemon/daemon-resource-monitor.ts::DaemonResourceSupervisor",
+          "apps/cli/src/daemon/daemon-resource-monitor.ts::DaemonResourcePolicy"
+        ],
+        "head": [
+          "apps/cli/src/daemon/daemon-resource-monitor.ts::DaemonResourceSupervisor"
+        ]
+      },
+      "evidence": [
+        {
+          "file": "apps/cli/src/daemon/daemon-resource-monitor.ts",
+          "needle": "export class DaemonResourcePolicy",
+          "label": "Removed CLI derivation",
+          "side": "base",
+          "after": 40,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/src/daemon/workspace-daemon.ts",
+          "needle": "const resourcePolicy = policy.values.resources;",
+          "label": "Use the provided resource values",
+          "side": "head",
+          "after": 25,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/src/daemon/daemon-resource-monitor.ts",
+          "needle": "const cutoff = this.now() - this.options.policy.replacementWindowMs;",
+          "label": "Replacement window and budget",
+          "side": "head",
+          "after": 14,
+          "before": 2
+        }
+      ],
+      "changedFiles": [
+        "apps/cli/src/daemon/daemon-entry.ts",
+        "apps/cli/src/daemon/daemon-navigation-worker-entry.ts",
+        "apps/cli/src/daemon/daemon-resource-monitor.test.ts",
+        "apps/cli/src/daemon/daemon-resource-monitor.ts",
+        "apps/cli/src/daemon/workspace-daemon.ts",
+        "apps/cli/test/benchmark/daemon-scale-benchmark-harness.ts",
+        "apps/cli/test/e2e/daemon/persistent-pressure.test.ts",
+        "apps/cli/test/helpers/workspace-daemon-persistent-pressure.ts",
+        "apps/cli/test/helpers/workspace-daemon.ts"
+      ],
+      "numbers": "250 ms supervision · 25 ms heap sampling · 2 replacements per 10 min; next pressure event drains",
+      "box": "Resources"
+    },
+    {
+      "id": "startup",
+      "title": "Keep startup coordination separate from healthy warm-up",
+      "summary": "Supply registry grace, heartbeat, authorization polling, readiness polling and old-process termination through policy. Remove the unused startup-timeout member and test knob; progressing warm-up remains unbounded.",
+      "reason": {
+        "status": "stated",
+        "text": "The policy record gives coordination a recovery grace and deliberately gives healthy startup no project-size deadline.",
+        "source": "plans/005/daemon-policy.md · Startup rows and intentional absences",
+        "needle": ""
+      },
+      "before": [
+        "Registry uses a 15 s constant; coordinator carries an unused startupTimeoutMs field.",
+        "Heartbeat and authorization waits are local numbers."
+      ],
+      "after": [
+        "Coordination grace belongs to startup policy.",
+        "Heartbeat, polling and previous-instance termination receive distinct policy values; no healthy warm-up timer is introduced."
+      ],
+      "flow": [
+        "Caller · coordinator",
+        "Registry · ownership grace",
+        "Daemon · authorize + heartbeat",
+        "Readiness · no project-size deadline"
+      ],
+      "seeds": {
+        "base": [
+          "apps/cli/src/daemon/daemon-registry.ts::DaemonRegistry",
+          "apps/cli/src/daemon/daemon-startup-coordinator.ts::DaemonStartupCoordinator::trigger"
+        ],
+        "head": [
+          "apps/cli/src/daemon/daemon-registry.ts::DaemonRegistry",
+          "apps/cli/src/daemon/daemon-startup-coordinator.ts::DaemonStartupCoordinator::trigger"
+        ]
+      },
+      "evidence": [
+        {
+          "file": "apps/cli/src/daemon/daemon-registry.ts",
+          "needle": "startupOwnerIsWithinGrace(",
+          "label": "Registry grace",
+          "side": "head",
+          "after": 14,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/src/daemon/daemon-startup-coordinator.ts",
+          "needle": "const policy = options.policy;",
+          "label": "Coordinator projection",
+          "side": "head",
+          "after": 14,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/src/daemon/workspace-daemon.ts",
+          "needle": "startupHeartbeat = setInterval(",
+          "label": "Daemon heartbeat",
+          "side": "head",
+          "after": 14,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/src/daemon/workspace-daemon.ts",
+          "needle": "private pause(): Promise<void>",
+          "label": "Authorization polling",
+          "side": "head",
+          "after": 14,
+          "before": 2
+        }
+      ],
+      "changedFiles": [
+        "apps/cli/src/commands/daemon/register-daemon-command.ts",
+        "apps/cli/src/daemon/daemon-command-dispatcher.integration.test.ts",
+        "apps/cli/src/daemon/daemon-command-dispatcher.ts",
+        "apps/cli/src/daemon/daemon-controller.ts",
+        "apps/cli/src/daemon/daemon-entry.ts",
+        "apps/cli/src/daemon/daemon-registry.test.ts",
+        "apps/cli/src/daemon/daemon-registry.ts",
+        "apps/cli/src/daemon/daemon-startup-coordinator.test.ts",
+        "apps/cli/src/daemon/daemon-startup-coordinator.ts",
+        "apps/cli/test/helpers/daemon-controller.ts",
+        "apps/cli/test/helpers/daemon-registry.ts",
+        "apps/cli/test/helpers/daemon-startup-coordinator.ts"
+      ],
+      "numbers": "15 s grace · 100 ms heartbeat · 10 ms authorization · 20 ms observation · 5 min previous-process termination",
+      "box": "Startup"
+    },
+    {
+      "id": "shutdown",
+      "title": "Keep distinct stop, idle and acknowledgement clocks",
+      "summary": "Require shutdown policy for idle lifetime, controller stop, signal waits and drain acknowledgements. Preserve the half-window bound on forced-stop reserve and the fast acknowledgement poll.",
+      "reason": {
+        "status": "stated",
+        "text": "The policy record assigns separate reasons to idle cleanup, bounded stop, signal exit and acknowledgement grace.",
+        "source": "plans/005/daemon-policy.md · Shutdown rows",
+        "needle": ""
+      },
+      "before": [
+        "Idle constant plus local stop, signal and acknowledgement numbers.",
+        "Force reserve is min(500 ms, half the stop window)."
+      ],
+      "after": [
+        "Each consumer receives its required shutdown values.",
+        "Force reserve keeps the same formula with the policy maximum."
+      ],
+      "flow": [
+        "User stop · controller deadline",
+        "SIGTERM / SIGKILL · signal waits",
+        "Daemon drain · acknowledgement grace",
+        "Idle lifetime · inactivity timer"
+      ],
+      "seeds": {
+        "base": [
+          "apps/cli/src/daemon/daemon-controller.ts::DaemonController::stop",
+          "apps/cli/src/daemon/daemon-process-launcher.ts::NodeDaemonProcessTerminator",
+          "apps/cli/src/daemon/daemon-lifetime.ts::DaemonLifetime"
+        ],
+        "head": [
+          "apps/cli/src/daemon/daemon-controller.ts::DaemonController::stop",
+          "apps/cli/src/daemon/daemon-process-launcher.ts::NodeDaemonProcessTerminator",
+          "apps/cli/src/daemon/daemon-lifetime.ts::DaemonLifetime"
+        ]
+      },
+      "evidence": [
+        {
+          "file": "apps/cli/src/daemon/daemon-controller.ts",
+          "needle": "const forceWaitMs = Math.min(",
+          "label": "Forced-stop reserve",
+          "side": "head",
+          "after": 14,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/src/daemon/daemon-process-launcher.ts",
+          "needle": "constructor(policy: DaemonPolicyValues[\"shutdown\"])",
+          "label": "Signal timeout projection",
+          "side": "head",
+          "after": 14,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/src/daemon/workspace-daemon.ts",
+          "needle": "private async waitForCompletionAcknowledgements()",
+          "label": "Drain acknowledgement window",
+          "side": "head",
+          "after": 14,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/src/daemon/daemon-lifetime.ts",
+          "needle": "policy: Pick<DaemonPolicyValues[\"shutdown\"], \"idleTimeoutMs\">",
+          "label": "Idle lifetime input",
+          "side": "head",
+          "after": 14,
+          "before": 2
+        }
+      ],
+      "changedFiles": [
+        "apps/cli/src/daemon/daemon-controller.test.ts",
+        "apps/cli/src/daemon/daemon-controller.ts",
+        "apps/cli/src/daemon/daemon-lifetime.test.ts",
+        "apps/cli/src/daemon/daemon-lifetime.ts",
+        "apps/cli/src/daemon/daemon-process-launcher.ts",
+        "apps/cli/src/daemon/workspace-daemon.ts",
+        "apps/cli/test/e2e/daemon/stop.test.ts",
+        "apps/cli/test/helpers/daemon-controller.ts",
+        "apps/cli/test/helpers/workspace-daemon.ts"
+      ],
+      "numbers": "30 min idle · 5 s stop · ≤500 ms force reserve · 500 ms per signal · 250 ms acknowledgement grace / 5 ms poll",
+      "box": "Shutdown"
+    },
+    {
+      "id": "diagnostics",
+      "title": "Policy owns both diagnostic storage limits",
+      "summary": "Logger rotation, backup count and queue capacity use diagnostics policy. Disconnected operation traces use its retention and capacity, keeping an effective minimum of one trace; completion retention is a separate mechanism.",
+      "reason": {
+        "status": "stated",
+        "text": "Log size/history and slow-storage queues are bounded; disconnected traces retain reconnect evidence independently of results.",
+        "source": "plans/005/daemon-policy.md · Diagnostics rows",
+        "needle": ""
+      },
+      "before": [
+        "Logger has constants and optional queue/rotation overrides.",
+        "WorkspaceDaemon carries optional trace retention knobs."
+      ],
+      "after": [
+        "A required diagnostics slice configures the logger.",
+        "WorkspaceDaemon reads trace limits from the same snapshot."
+      ],
+      "flow": [
+        "Events · bounded logger queue",
+        "Disk · rotate + retain backups",
+        "Disconnected traces · timer + capacity",
+        "Completion spool · separate retention"
+      ],
+      "seeds": {
+        "base": [
+          "apps/cli/src/daemon/daemon-logger.ts::DaemonLogger"
+        ],
+        "head": [
+          "apps/cli/src/daemon/daemon-logger.ts::DaemonLogger"
+        ]
+      },
+      "evidence": [
+        {
+          "file": "apps/cli/src/daemon/daemon-logger.ts",
+          "needle": "const policy = options.policy;",
+          "label": "Logger projection",
+          "side": "head",
+          "after": 14,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/src/daemon/daemon-logger.ts",
+          "needle": "private async rotate()",
+          "label": "Backup count now comes from policy",
+          "side": "head",
+          "after": 14,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/src/daemon/workspace-daemon.ts",
+          "needle": "const capacity = Math.max(1, this.policy.values.diagnostics.maximumDisconnectedTraces);",
+          "label": "Trace minimum remains one",
+          "side": "head",
+          "after": 14,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/src/daemon/workspace-daemon.ts",
+          "needle": "this.policy.values.diagnostics.disconnectedTraceRetentionMs,",
+          "label": "Trace expiry",
+          "side": "head",
+          "after": 14,
+          "before": 2
+        }
+      ],
+      "changedFiles": [
+        "apps/cli/src/daemon/daemon-entry.ts",
+        "apps/cli/src/daemon/daemon-logger.test.ts",
+        "apps/cli/src/daemon/daemon-logger.ts",
+        "apps/cli/src/daemon/workspace-daemon.ts",
+        "apps/cli/test/e2e/daemon/diagnostic-output.test.ts",
+        "apps/cli/test/e2e/daemon/status.test.ts",
+        "apps/cli/test/helpers/workspace-daemon.ts"
+      ],
+      "numbers": "10 MiB log · 4 backups · 1,024 queued events · 5 min / 1,024 disconnected traces (minimum 1)",
+      "box": "Diagnostics"
+    },
+    {
+      "id": "purpose",
+      "title": "Choose a response deadline by composition purpose",
+      "summary": "Status aggregation explicitly selects status-observer (100 ms); ordinary lifecycle and execution-status requests retain 250 ms. Admission still has 5 s, and accepted completion has no time deadline.",
+      "reason": {
+        "status": "stated",
+        "text": "Status observation and ordinary execution-status requests have distinct deadlines; request kind does not express who is observing.",
+        "source": "PR body · Decisions",
+        "needle": ""
+      },
+      "before": [
+        "Status action creates a transport with requestTimeoutMs: 100.",
+        "Other transports fall back to 250 ms."
+      ],
+      "after": [
+        "Status action selects responseTimeoutPurpose: status-observer.",
+        "Transport projects that purpose into a policy value; admission remains separate."
+      ],
+      "flow": [
+        "Status aggregation → observer purpose",
+        "100 ms response wait",
+        "Ordinary lifecycle / execution-status",
+        "250 ms response wait"
+      ],
+      "seeds": {
+        "base": [
+          "apps/cli/src/daemon/local-daemon-transport.ts::LocalDaemonTransport::request"
+        ],
+        "head": [
+          "apps/cli/src/daemon/local-daemon-transport.ts::LocalDaemonTransport::request"
+        ]
+      },
+      "evidence": [
+        {
+          "file": "apps/cli/src/commands/daemon/register-daemon-command.ts",
+          "needle": "responseTimeoutPurpose: \"status-observer\",",
+          "label": "The status composition selects purpose",
+          "side": "head",
+          "after": 14,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/src/daemon/local-daemon-transport.ts",
+          "needle": "this.requestTimeoutMs =",
+          "label": "Purpose-to-policy projection",
+          "side": "head",
+          "after": 12,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/src/daemon/local-daemon-transport-validation.test.ts",
+          "needle": "it(\"uses the ordinary timeout for execution-status exchanges\"",
+          "label": "Characterization uses an ordinary transport",
+          "side": "head",
+          "after": 28,
+          "before": 2
+        }
+      ],
+      "changedFiles": [
+        "apps/cli/src/commands/daemon/register-daemon-command.ts",
+        "apps/cli/src/daemon/local-daemon-transport-validation.test.ts",
+        "apps/cli/src/daemon/local-daemon-transport.ts",
+        "apps/cli/test/helpers/local-daemon-transport.ts"
+      ],
+      "numbers": "100 ms observer · 250 ms ordinary · 5 s admission · no accepted-completion deadline",
+      "box": "Transport"
+    },
+    {
+      "id": "delivery",
+      "title": "Give execute reattachment and result fetch separate budgets",
+      "summary": "Replace the fixed reattachment wrapper and fetch boolean with independent numeric counters. Every execute attempt owns a fresh fetch counter; fetch failure still goes directly to failure handling.",
+      "reason": {
+        "status": "stated",
+        "text": "Each reattached execute attempt has its own fetch-resume allowance.",
+        "source": "PR body · Decisions",
+        "needle": ""
+      },
+      "before": [
+        "One fixed reattachment wrapper.",
+        "One resumeStarted boolean inside each execute attempt."
+      ],
+      "after": [
+        "Outer loop counts accepted-execution reattachments.",
+        "Each executeOnce owns resumeCount; its fetch rejection calls fail."
+      ],
+      "flow": [
+        "Accepted execute · outer reattachment counter",
+        "Attempt A · its own fetch counter",
+        "Reattach same request identity",
+        "Attempt B · a fresh fetch counter"
+      ],
+      "seeds": {
+        "base": [
+          "apps/cli/src/daemon/local-daemon-transport.ts::LocalDaemonTransport::execute"
+        ],
+        "head": [
+          "apps/cli/src/daemon/local-daemon-transport.ts::LocalDaemonTransport::execute"
+        ]
+      },
+      "evidence": [
+        {
+          "file": "apps/cli/src/daemon/local-daemon-transport.ts",
+          "needle": "let reattachmentCount = 0;",
+          "label": "Reattachment loop",
+          "side": "head",
+          "after": 24,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/src/daemon/local-daemon-transport.ts",
+          "needle": "let resumeCount = 0;",
+          "label": "Fetch counter lives inside executeOnce",
+          "side": "head",
+          "after": 10,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/src/daemon/local-daemon-transport.ts",
+          "needle": "const resume = (): boolean => {",
+          "label": "Fetch guard and terminal rejection path",
+          "side": "head",
+          "after": 26,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/src/daemon/local-daemon-transport-execution.test.ts",
+          "needle": "it(\"gives the reattached execute attempt its own fetch resume\"",
+          "label": "Added scenario: 2 execute connections and 1 fetch",
+          "side": "head",
+          "after": 49,
+          "before": 2
+        }
+      ],
+      "changedFiles": [
+        "apps/cli/src/daemon/local-daemon-transport-execution.test.ts",
+        "apps/cli/src/daemon/local-daemon-transport.ts",
+        "apps/cli/test/helpers/local-daemon-transport.ts"
+      ],
+      "numbers": "Default: 1 reattachment · 1 fetch resume per execution attempt",
+      "box": "Transport"
+    },
+    {
+      "id": "child-retry",
+      "title": "Count startup retries for explicit child failure",
+      "summary": "Replace the fixed second launch with a loop bounded by childFailureRetryLimit. Only child-exit or lost-warm-up errors consume it; tests add zero- and two-retry policies.",
+      "reason": {
+        "status": "stated",
+        "text": "The default preserves one fresh launch after a failed child.",
+        "source": "plans/005/daemon-policy.md · startup.childFailureRetryLimit",
+        "needle": ""
+      },
+      "before": [
+        "Catch an eligible failure and call triggerAndWait once more."
+      ],
+      "after": [
+        "Count eligible failures, retry while policy allows, otherwise rethrow."
+      ],
+      "flow": [
+        "triggerAndWait",
+        "Child exit / warm-up lost",
+        "Compare failureCount to budget",
+        "Launch again or propagate error"
+      ],
+      "seeds": {
+        "base": [
+          "apps/cli/src/daemon/daemon-startup-coordinator.ts::DaemonStartupCoordinator::ensureRunning"
+        ],
+        "head": [
+          "apps/cli/src/daemon/daemon-startup-coordinator.ts::DaemonStartupCoordinator::ensureRunning"
+        ]
+      },
+      "evidence": [
+        {
+          "file": "apps/cli/src/daemon/daemon-startup-coordinator.ts",
+          "needle": "let failureCount = 0;",
+          "label": "Numeric startup retry loop",
+          "side": "head",
+          "after": 19,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/src/daemon/daemon-startup-coordinator.test.ts",
+          "needle": "it(\"does not retry a child failure when policy permits zero retries\"",
+          "label": "Zero retry scenario",
+          "side": "head",
+          "after": 16,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/src/daemon/daemon-startup-coordinator.test.ts",
+          "needle": "it(\"allows each child-failure retry granted by policy\"",
+          "label": "Two retry scenario",
+          "side": "head",
+          "after": 15,
+          "before": 2
+        }
+      ],
+      "changedFiles": [
+        "apps/cli/src/daemon/daemon-startup-coordinator.test.ts",
+        "apps/cli/src/daemon/daemon-startup-coordinator.ts",
+        "apps/cli/test/helpers/daemon-startup-coordinator.ts"
+      ],
+      "numbers": "Default 1 retry; tests exercise 0 and 2",
+      "box": "Startup"
+    },
+    {
+      "id": "adapters",
+      "title": "Move legacy test knobs into seven test-only adapters",
+      "summary": "Tests import adapter subclasses or a resource adapter that builds validated policy. Runtime constructors require policy; test clocks, storage, process and worker seams still exist.",
+      "reason": {
+        "status": "stated",
+        "text": "Tests need small thresholds without restoring runtime tuning seams.",
+        "source": "PR body · Decisions",
+        "needle": ""
+      },
+      "before": [
+        "Tests construct production mechanisms with optional numeric knobs."
+      ],
+      "after": [
+        "Test adapters translate old inputs through DaemonPolicyTestFactory.",
+        "Production constructors receive required policy; non-threshold seams remain."
+      ],
+      "flow": [
+        "Test fixture · old knobs",
+        "Test-only adapter · policy factory",
+        "Validated complete policy",
+        "Runtime consumer · required slice"
+      ],
+      "seeds": {
+        "base": [],
+        "head": [
+          "apps/cli/test/helpers/daemon-controller.ts::TestDaemonController",
+          "apps/cli/test/helpers/daemon-process-terminator.ts::TestNodeDaemonProcessTerminator",
+          "apps/cli/test/helpers/daemon-registry.ts::TestDaemonRegistry",
+          "apps/cli/test/helpers/daemon-resource-policy.ts::TestDaemonResourcePolicy",
+          "apps/cli/test/helpers/daemon-startup-coordinator.ts::TestDaemonStartupCoordinator",
+          "apps/cli/test/helpers/local-daemon-transport.ts::TestLocalDaemonTransport",
+          "apps/cli/test/helpers/workspace-daemon.ts::TestWorkspaceDaemon"
+        ]
+      },
+      "evidence": [
+        {
+          "file": "apps/cli/test/helpers/daemon-controller.ts",
+          "needle": "export class TestDaemonController",
+          "label": "A test-only controller wrapper",
+          "side": "head",
+          "after": 28,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/test/helpers/daemon-resource-policy.ts",
+          "needle": "export class TestDaemonResourcePolicy",
+          "label": "Resource compatibility delegates to the central owner",
+          "side": "head",
+          "after": 24,
+          "before": 2
+        }
+      ],
+      "changedFiles": [
+        "apps/cli/test/benchmark/daemon-scale-benchmark-harness.ts",
+        "apps/cli/test/e2e/daemon/diagnostic-output.test.ts",
+        "apps/cli/test/e2e/daemon/parity.test.ts",
+        "apps/cli/test/e2e/daemon/persistent-pressure.test.ts",
+        "apps/cli/test/e2e/daemon/state-isolation.test.ts",
+        "apps/cli/test/e2e/daemon/status.test.ts",
+        "apps/cli/test/e2e/daemon/stop.test.ts",
+        "apps/cli/test/helpers/daemon-accepted-caller.ts",
+        "apps/cli/test/helpers/daemon-controller.ts",
+        "apps/cli/test/helpers/daemon-live-silent.ts",
+        "apps/cli/test/helpers/daemon-malformed-activity.ts",
+        "apps/cli/test/helpers/daemon-process-terminator.ts",
+        "apps/cli/test/helpers/daemon-registry-cleaner.ts",
+        "apps/cli/test/helpers/daemon-registry.ts",
+        "apps/cli/test/helpers/daemon-resource-policy.ts",
+        "apps/cli/test/helpers/daemon-startup-caller-exit.ts",
+        "apps/cli/test/helpers/daemon-startup-coordinator.ts",
+        "apps/cli/test/helpers/daemon-startup-mutation-owner.ts",
+        "apps/cli/test/helpers/daemon-startup-publisher.ts",
+        "apps/cli/test/helpers/e2e-process-cleanup.ts",
+        "apps/cli/test/helpers/local-daemon-transport.ts",
+        "apps/cli/test/helpers/workspace-daemon-persistent-pressure.ts",
+        "apps/cli/test/helpers/workspace-daemon-stuck.ts",
+        "apps/cli/test/helpers/workspace-daemon.ts",
+        "apps/cli/src/daemon/daemon-command-dispatcher.integration.test.ts",
+        "apps/cli/src/daemon/daemon-controller.test.ts",
+        "apps/cli/src/daemon/daemon-startup-coordinator.test.ts",
+        "apps/cli/src/daemon/local-daemon-transport-execution.test.ts",
+        "apps/cli/src/daemon/local-daemon-transport-validation.test.ts",
+        "apps/cli/src/daemon/local-daemon-transport.test.ts",
+        "apps/cli/src/daemon/workspace-daemon-requests.test.ts",
+        "apps/cli/src/daemon/workspace-daemon.test.ts"
+      ],
+      "box": "Tests",
+      "baseline": "The seven adapter symbols are new in head; base has no corresponding adapter surface."
+    },
+    {
+      "id": "test-shape",
+      "title": "Adjust small test policies and their storage paths",
+      "summary": "Valid policies require positive chunks ≤ inline ≤ result ≤ aggregate. Tests replace inline=0 and rescale chunk/inline values; adapters clamp inline, create output directories, and accept a legacy memoryCapBytes value that they do not project.",
+      "reason": {
+        "status": "unexplained",
+        "text": "The general adapter strategy is stated. No separate reason is recorded for these particular input translations, directory creation or retained-but-unprojected memoryCapBytes.",
+        "source": "No reason found in the supplied PR body, commit messages, or policy/architecture records."
+      },
+      "before": [
+        "Fixtures can force immediate disk storage with inline=0.",
+        "Caller-provided small limits need not form a valid snapshot."
+      ],
+      "after": [
+        "Fixtures select ordered positive limits; some storage paths change.",
+        "Transport adapter raises inline to at least the chunk cap and creates its directory.",
+        "Workspace adapter remaps zero inline when a result cap exists; memoryCapBytes remains accepted without projection."
+      ],
+      "flow": [
+        "Legacy test inputs",
+        "Adapter transform / clamp",
+        "Policy validation",
+        "Potentially different inline / spill path"
+      ],
+      "seeds": {
+        "base": [],
+        "head": [
+          "apps/cli/test/helpers/local-daemon-transport.ts::TestLocalDaemonTransport",
+          "apps/cli/test/helpers/workspace-daemon.ts::TestWorkspaceDaemon"
+        ]
+      },
+      "evidence": [
+        {
+          "file": "apps/cli/test/helpers/local-daemon-transport.ts",
+          "needle": "inlineRawBytes: Math.max(",
+          "label": "Clamp and directory creation",
+          "side": "head",
+          "after": 22,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/test/helpers/workspace-daemon.ts",
+          "needle": "const aggregateBytes =",
+          "label": "Workspace output-limit translation",
+          "side": "head",
+          "after": 27,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/test/helpers/workspace-daemon.ts",
+          "needle": "readonly memoryCapBytes?: number;",
+          "label": "Legacy accepted memory-cap option; full adapter available in file evidence",
+          "side": "head",
+          "after": 14,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/src/daemon/completion-spool.test.ts",
+          "needle": "maximumChunkRawBytes: 6,",
+          "label": "Aggregate-cap fixture now keeps first six bytes inline",
+          "side": "head",
+          "after": 20,
+          "before": 2
+        }
+      ],
+      "changedFiles": [
+        "apps/cli/src/cli-program-executor.test.ts",
+        "apps/cli/src/daemon/completion-spool.test.ts",
+        "apps/cli/src/daemon/workspace-daemon-requests.test.ts",
+        "apps/cli/test/helpers/local-daemon-transport.ts",
+        "apps/cli/test/helpers/workspace-daemon.ts"
+      ],
+      "box": "Tests",
+      "attention": true,
+      "baseline": "These adapter symbols are new; their reach measures test consumers, not the storage behavior exercised."
+    },
+    {
+      "id": "removed-tests",
+      "title": "Remove the CLI resource-derivation test block",
+      "summary": "The deleted block covers five memory sizes, constraint selection and the 250 ms constant. Central policy tests already cover related derivation/default cases; the exact old 256 MiB table row is absent there.",
+      "reason": {
+        "status": "unexplained",
+        "text": "Removing the old owner is stated; no specific reason for deleting these assertions or selecting the replacement case set was found.",
+        "source": "No reason found in the supplied PR body, commit messages, or policy/architecture records."
+      },
+      "before": [
+        "CLI tests pin five memory inputs, two constraint choices and a constant."
+      ],
+      "after": [
+        "The local derivation block is removed.",
+        "Existing package tests pin default values, memory recipes and constraints; their input table includes 1 byte instead of the old 256 MiB case."
+      ],
+      "flow": [
+        "CLI derivation tests · removed",
+        "Central policy tests · already present",
+        "Supervisor behavior tests · remain",
+        "Cadence override test · added"
+      ],
+      "seeds": {
+        "base": [],
+        "head": []
+      },
+      "evidence": [
+        {
+          "file": "apps/cli/src/daemon/daemon-resource-monitor.test.ts",
+          "needle": "describe(\"DaemonResourcePolicy\"",
+          "label": "Deleted test block",
+          "side": "base",
+          "after": 69,
+          "before": 2
+        },
+        {
+          "file": "packages/daemon/src/daemon-policy.test.ts",
+          "needle": "[1, 256, 204, 179, 128],",
+          "label": "Existing central derivation table",
+          "side": "head",
+          "after": 23,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/src/daemon/daemon-resource-monitor.test.ts",
+          "needle": "it(\"uses the required resource-policy cadence and thresholds\"",
+          "label": "New consumer characterization",
+          "side": "head",
+          "after": 37,
+          "before": 2
+        }
+      ],
+      "changedFiles": [
+        "apps/cli/src/daemon/daemon-resource-monitor.test.ts"
+      ],
+      "box": "Tests",
+      "attention": true,
+      "unmeasured": "Assertion coverage is not a referenced symbol. No numeric radius is assigned."
+    },
+    {
+      "id": "test-contract",
+      "title": "Use policy-based expectations and cast new fixtures",
+      "summary": "Spool/e2e expectations now read policy defaults instead of retired constants. Three added policy-consumer cases cast through unknown to constructor parameter types, so those fixtures bypass normal assignability checks.",
+      "reason": {
+        "status": "unexplained",
+        "text": "No reason found for the casts in the added spool, logger and supervisor cases. Replacing retired constant imports follows the stated migration, but the effect on test independence is not discussed.",
+        "source": "No reason found in the supplied PR body, commit messages, or policy/architecture records."
+      },
+      "before": [
+        "Capacity assertions compare against production constants."
+      ],
+      "after": [
+        "Capacity assertions compare against the policy provider.",
+        "New override tests exercise runtime values using casts that bypass ordinary fixture type checking."
+      ],
+      "flow": [
+        "Policy provider",
+        "Fixture values and expected defaults",
+        "ConstructorParameters cast in 3 new cases",
+        "Runtime assertions"
+      ],
+      "seeds": {
+        "base": [],
+        "head": []
+      },
+      "evidence": [
+        {
+          "file": "apps/cli/src/daemon/completion-spool.test.ts",
+          "needle": "} as unknown as ConstructorParameters<",
+          "label": "Spool fixture cast",
+          "side": "head",
+          "after": 14,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/src/daemon/daemon-logger.test.ts",
+          "needle": "} as unknown as ConstructorParameters<typeof DaemonLogger>[3]);",
+          "label": "Logger fixture cast",
+          "side": "head",
+          "after": 14,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/src/daemon/daemon-resource-monitor.test.ts",
+          "needle": "} as unknown as ConstructorParameters<typeof DaemonResourceSupervisor>[0]);",
+          "label": "Supervisor fixture cast",
+          "side": "head",
+          "after": 14,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/test/e2e/daemon/diagnostic-output.test.ts",
+          "needle": "const DIAGNOSTIC_POLICY",
+          "label": "E2E expected values use the policy",
+          "side": "head",
+          "after": 10,
+          "before": 2
+        }
+      ],
+      "changedFiles": [
+        "apps/cli/src/daemon/completion-spool.test.ts",
+        "apps/cli/src/daemon/daemon-logger.test.ts",
+        "apps/cli/src/daemon/daemon-resource-monitor.test.ts",
+        "apps/cli/test/e2e/daemon/diagnostic-output.test.ts"
+      ],
+      "box": "Tests",
+      "attention": true,
+      "unmeasured": "A type-checking or test-oracle choice has no stable symbol-ref footprint."
+    },
+    {
+      "id": "guardrail",
+      "title": "Enforce retirement with a production-source string scan",
+      "summary": "Extend the package meta-test to reject old constant names, optional threshold seams and local policy reconstruction identifiers. This encodes a source boundary through strings; it does not trace semantic data flow.",
+      "reason": {
+        "status": "stated",
+        "text": "Required slices and test-only adapters must not restore local ownership or bypasses. The PR explicitly calls out the retired-default rejection test.",
+        "source": "PR body · Where it lives and Decisions",
+        "needle": ""
+      },
+      "before": [
+        "The meta-test rejects three optional/reconstructed DaemonPolicy forms."
+      ],
+      "after": [
+        "The same scan rejects the retired defaults and bypass names across app production source."
+      ],
+      "flow": [
+        "Production TypeScript source",
+        "Text scan · retired names",
+        "Boundary assertion",
+        "Test helpers excluded from scan"
+      ],
+      "seeds": {
+        "base": [],
+        "head": []
+      },
+      "evidence": [
+        {
+          "file": "meta-tests/src/daemon-package.test.ts",
+          "needle": "it(\"retires scattered operational defaults and policy bypasses\"",
+          "label": "Expanded boundary scan",
+          "side": "head",
+          "after": 54,
+          "before": 2
+        }
+      ],
+      "changedFiles": [
+        "meta-tests/src/daemon-package.test.ts"
+      ],
+      "box": "Tests",
+      "unmeasured": "String-based source rules are invisible to symbol references."
+    },
+    {
+      "id": "error-provenance",
+      "title": "Let a later completion failure become the reported error",
+      "summary": "The new reattachment loop propagates the current completion failure when its budget is exhausted. A failure to obtain the reattachment receipt still preserves the preceding error. This is not called out in the PR.",
+      "reason": {
+        "status": "unexplained",
+        "text": "The PR explains numeric retry budgets, but gives no reason for changing which completion error escapes the wrapper.",
+        "source": "No reason found in the supplied PR body, commit messages, or policy/architecture records."
+      },
+      "before": [
+        "The nested reattachment catch rethrows the original first error, including when the reattached completion rejects."
+      ],
+      "after": [
+        "Later completion rejection is handled by the next loop iteration.",
+        "Failed receipt acquisition still rethrows the error that initiated that reattachment."
+      ],
+      "flow": [
+        "Completion A fails",
+        "Reattachment receipt succeeds",
+        "Completion B fails at exhausted budget",
+        "Error B escapes (previously Error A)"
+      ],
+      "seeds": {
+        "base": [
+          "apps/cli/src/daemon/local-daemon-transport.ts::LocalDaemonTransport::completeWithOneReattachment"
+        ],
+        "head": [
+          "apps/cli/src/daemon/local-daemon-transport.ts::LocalDaemonTransport::completeWithReattachments"
+        ]
+      },
+      "evidence": [
+        {
+          "file": "apps/cli/src/daemon/local-daemon-transport.ts",
+          "needle": "private async completeWithOneReattachment(",
+          "label": "Previous error preservation",
+          "side": "base",
+          "after": 20,
+          "before": 2
+        },
+        {
+          "file": "apps/cli/src/daemon/local-daemon-transport.ts",
+          "needle": "private async completeWithReattachments(",
+          "label": "Current loop error provenance",
+          "side": "head",
+          "after": 32,
+          "before": 2
+        }
+      ],
+      "changedFiles": [
+        "apps/cli/src/daemon/local-daemon-transport.ts"
+      ],
+      "box": "Transport",
+      "attention": true
+    }
+  ],
+  "provenance": {
+    "earlierExperiments": "Ignored. No earlier experiment artifacts were read or reused.",
+    "sourceScope": "PR body and six commit messages; complete diff; both worktrees; policy and architecture records; existing package policy tests. No implementing-agent transcript supplied.",
+    "fieldProbe": "A real refs query for DaemonPolicyValues::output returned only two references: a package test and the policy constructor. It missed known apps/cli consumers, including policy.values.output in CliProgramExecutor. Consumer symbols are used for this experiment instead. Cross-project/type-projection coverage is incomplete; the underlying cause has not been isolated."
+  }
+}

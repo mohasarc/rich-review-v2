@@ -206,3 +206,14 @@ BUILD OK stack-head
 - 2026-09-13 05:10:49 +03: COMMIT OK 26-physical-analogy: [main fcc5296] Add experiment 26 physical-analogy
 - 2026-09-13 05:10:49 +03: START 29-refusal attempt 1 via codex, pid 33905
 - 2026-09-13 05:14:10 +03: FINISH 24-question-driven-nav via codex, exit 0, README present
+- 2026-09-13 05:14:10 +03: COMMIT OK 24-question-driven-nav: [main 4b2fe7c] Add experiment 24 question-driven-nav
+- 2026-09-13 05:14:10 +03: START 30-adjacent-pair attempt 1 via claude-opus, pid 35123
+- 2026-09-13 05:14:20 +03: README MISSING 30-adjacent-pair after worker exit 1
+- 2026-09-13 05:14:20 +03: REQUEUE 30-adjacent-pair after attempt 1: worker exited 1 without README
+- 2026-09-13 05:14:20 +03: START 30-adjacent-pair attempt 2 via claude-opus, pid 35184
+- 2026-09-13 05:14:30 +03: README MISSING 30-adjacent-pair after worker exit 1
+- 2026-09-13 05:14:30 +03: REQUEUE 30-adjacent-pair after attempt 2: worker exited 1 without README
+- 2026-09-13 05:14:30 +03: START 30-adjacent-pair attempt 3 via codex, pid 35454
+- 2026-09-13 05:15:05 +03: MONITOR OK supervisor=1153, finished=25, running=5, queued=14, dirty-worktrees=0, missing-readmes=0, free-disk=32.7GiB
+- 2026-09-13 05:30:13 +03: MONITOR OK supervisor=1153, finished=25, running=5, queued=14, dirty-worktrees=0, missing-readmes=0, free-disk=32.5GiB
+- 2026-09-13 05:32:21 +03: FINISH 28-blast-radius-tool via codex, exit 0, README present
