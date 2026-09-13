@@ -136,3 +136,6 @@ BUILD OK stack-head
 - 2026-09-13 03:55:03 +03: REQUEUE 18-negative-space after attempt 2: worker exited 1 without README
 - 2026-09-13 03:55:03 +03: START 18-negative-space attempt 3 via codex, pid 79380
 - 2026-09-13 03:57:23 +03: FINISH 15-message-choreography-sim via codex, exit 0, README present
+- 2026-09-13 03:57:23 +03: COMMIT OK 15-message-choreography-sim: [main 860ece6] Add experiment 15 message-choreography-sim
+- 2026-09-13 03:57:23 +03: START 19-type-level-only attempt 1 via codex, pid 80360
+- 2026-09-13 03:58:23 +03: FINISH 14-outsider-persona via codex, exit 0, README present
