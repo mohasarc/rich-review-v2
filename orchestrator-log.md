@@ -247,3 +247,13 @@ BUILD OK stack-head
 - 2026-09-13 05:40:43 +03: START 34-inverted-for-experts attempt 3 via codex, pid 43396
 - 2026-09-13 05:45:20 +03: MONITOR OK supervisor=1153, finished=30, running=5, queued=11, dirty-worktrees=0, missing-readmes=0, free-disk=32.5GiB
 - 2026-09-13 05:59:04 +03: FINISH 31-method-runbook via codex, exit 0, README present
+- 2026-09-13 05:59:04 +03: COMMIT OK 31-method-runbook: [main 8a68f19] Add experiment 31 method-runbook
+- 2026-09-13 05:59:04 +03: START 36-be-weird-a attempt 1 via claude-opus, pid 46073
+- 2026-09-13 05:59:14 +03: README MISSING 36-be-weird-a after worker exit 1
+- 2026-09-13 05:59:14 +03: REQUEUE 36-be-weird-a after attempt 1: worker exited 1 without README
+- 2026-09-13 05:59:14 +03: START 36-be-weird-a attempt 2 via claude-opus, pid 46127
+- 2026-09-13 05:59:24 +03: README MISSING 36-be-weird-a after worker exit 1
+- 2026-09-13 05:59:24 +03: REQUEUE 36-be-weird-a after attempt 2: worker exited 1 without README
+- 2026-09-13 05:59:24 +03: START 36-be-weird-a attempt 3 via codex, pid 46178
+- 2026-09-13 06:00:27 +03: MONITOR OK supervisor=1153, finished=31, running=5, queued=10, dirty-worktrees=0, missing-readmes=0, free-disk=32.4GiB
+- 2026-09-13 06:01:34 +03: FINISH 33-pair-one-variable via codex, exit 0, README present

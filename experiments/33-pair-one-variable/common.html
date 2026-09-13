@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="PR 127 explained through cache ownership, turn boundaries, and the decisions behind them.">
+  <title>PR 127 · Scope semantic caches to one turn</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+  <script defer src="review.js"></script>
+</head>
+<body>
+<a class="skip" href="#overview">Skip to the whole change</a>
+<header class="masthead">
+  <div class="masthead-inner">
+    <div class="brand"><strong>rich-review</strong><span>127 / daemon architecture · layer 4 of 26</span></div>
+    <nav aria-label="Reading paths">
+      <a href="#overview">Whole change</a><a href="#ownership">Owners</a><a href="#lifetime">Lifetime</a><a href="#tests">Evidence</a>
+      <a href="index.html">Opening A</a><a href="failure.html">Opening B</a>
+    </nav>
+  </div>
+</header>
+<main>
+  <div class="page-title"><h1>Scope semantic caches to one turn</h1><p>PR 127 · 6 files · +391 / −67</p></div>
+  <!-- OPENING_START -->
+  {{OPENING}}
+  <!-- OPENING_END -->
+
+  <section id="overview" class="chapter" aria-labelledby="overview-title">
+    <div class="chapter-head">
+      <div><p class="eyebrow">01 / The whole change</p><h2 id="overview-title">Six stores stay separate.<br>Their lifetime gets one owner.</h2></div>
+      <p>TypeScript still computes the answers. Core supplies the cache mechanism. The backend now waits for project release.</p>
+    </div>
+    <figure aria-label="Before and after package ownership of the semantic caches">
+      <div class="diptych">
+        <div>
+          <div class="diagram-label"><strong>BASE · before this layer</strong><span>a1e325a5</span></div>
+          <div class="package">
+            <div class="package-label">@symnav/backend-typescript</div>
+            <a class="node" href="#lifetime"><b>TypeScriptBackend</b><span>Refresh succeeds → begin turn<br>Release calls service; does not wait for graph</span></a>
+            <div class="service">
+              <a class="node" href="#ownership"><b>TypeScriptSemanticQueryService</b><span>Query algorithms + manual clearing</span></a>
+              <div class="mini-grid" aria-label="Six independent maps"><span>definitions</span><span>references</span><span>call targets</span><span>callers</span><span>callees</span><span>positions</span></div>
+              <div class="arrow">↑ six Maps inside the service</div>
+            </div>
+            <div class="arrow">clear entries → start project release</div>
+            <a class="node" href="#contracts"><b>TypeScriptProjectGraph</b><span>Project cleanup</span></a>
+          </div>
+          <div class="empty-core"><code>@symnav/core</code><br>No generic turn-cache unit yet.</div>
+        </div>
+        <div>
+          <div class="diagram-label"><strong>HEAD · after this layer</strong><span>64919bcb</span></div>
+          <div class="package">
+            <div class="package-label">@symnav/backend-typescript</div>
+            <a class="node" href="#lifetime"><b>TypeScriptBackend</b><span>Refresh succeeds → begin turn<br>Release awaits service → awaits graph</span></a>
+            <div class="service">
+              <a class="node" href="#ownership"><b>TypeScriptSemanticQueryService</b><span>Query algorithms + one scope instance</span></a>
+              <a href="#stores" class="mini-grid handles" aria-label="Explore the six typed cache handles"><span>definitions</span><span>references</span><span>call targets</span><span>callers</span><span>callees</span><span>positions</span></a>
+            </div>
+            <div class="arrow">clear through scope → await project release</div>
+            <a class="node" href="#contracts"><b>TypeScriptProjectGraph</b><span>Project cleanup</span></a>
+          </div>
+          <div class="boundary-arrow">↓ cache implementation moves across package boundary</div>
+          <div class="package core">
+            <div class="package-label">@symnav/core</div>
+            <a class="node" href="#ownership"><b>TurnScopedCacheScope</b><span>Creates handles · clears every registered handle</span></a>
+            <div class="arrow">owns six independent handle Maps</div>
+            <div class="mini-grid" aria-label="Maps still have separate key spaces"><span>definitions</span><span>references</span><span>call targets</span><span>callers</span><span>callees</span><span>positions</span></div>
+          </div>
+        </div>
+      </div>
+      <figcaption class="diagram-note">Boxes show package ownership of code, not separate processes. At runtime each query-service instance creates its own core scope. Blue identifies the moved responsibility; TypeScript’s algorithms and project cleanup stay in their package.</figcaption>
+    </figure>
+    <div class="overview-strip">
+      <a href="#lifetime"><b>TURN BOUNDARY · retained</b>Refresh succeeds → replace file list → empty caches.<br>Refresh fails → keep the current turn’s cache entries.</a>
+      <a href="#lifetime"><b>RELEASE BOUNDARY · expanded</b>Empty caches synchronously → await project release.<br>The backend now carries completion and rejection.</a>
+    </div>
+    <p class="scope-note">Here “turn” is the cache interval established by a successful backend refresh. Release can empty it sooner. The scope does not schedule commands or enforce admission. The delayed release illustrated on this page uses a fake graph; the concrete TypeScript project’s cleanup method is synchronous.</p>
+    <div class="decisions-label"><h3>Every decision to carry forward</h3><p><span class="status">Stated</span> reason found &nbsp; / &nbsp; <span class="status unexplained">Unexplained</span> no separate reason found</p></div>
+    <div id="decision-register">{{DECISIONS}}</div>
+    <div class="stop-point"><strong>This is the complete decision map.</strong><span>Continue for mechanisms and source. Each “Follow” link takes one thread deeper.</span></div>
+  </section>
+
+  <section id="ownership" class="chapter" aria-labelledby="ownership-title">
+    <div class="chapter-head">
+      <div><p class="eyebrow">02 / Ownership · D1–D2</p><h2 id="ownership-title">The service chooses the stores.<br>The scope clears them together.</h2></div>
+      <a class="back" href="#D1">↑ Back to D1</a>
+    </div>
+    <div class="owner-route" aria-label="Runtime ownership from service to scope to handles">
+      <div class="route-node"><b>One query service</b><span>Constructs one scope.<br>Supplies keys and query factories.</span></div>
+      <div class="arrow" aria-hidden="true">→</div>
+      <div class="route-node new"><b>One cache scope</b><span>Registers every created handle.<br>Owns both clearing entry points.</span></div>
+      <div class="arrow" aria-hidden="true">→</div>
+      <div class="route-node new"><b>Six cache handles</b><span>Each holds its own Map.<br>Each returns the factory’s exact value.</span></div>
+    </div>
+    <div class="reason-box"><span class="status">Stated · D1–D2</span><p>The spec places shareable lifecycle behavior in core and toolchain-specific query bodies in TypeScript. The PR chooses six handles over one shared map because the existing key and value spaces are independent.</p></div>
+    <div class="two-notes">
+      <p><b>Static boundary</b>TypeScript imports <code>TurnScopedCacheScope</code> from core. Core’s new cache file has no imports and knows nothing about TypeScript nodes or symbols.</p>
+      <p><b>Instance boundary</b>The service constructs the scope in a field initializer, then creates six handles. A second service constructs a different scope and different Maps.</p>
+    </div>
+    {{E_SPEC_OWNERSHIP}}
+    {{E_HANDLES}}
+    <div id="stores" class="subsection">
+      <div class="detail-head"><h3>The six compartments</h3><a class="back" href="#D2">↑ Back to D2</a></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Store</th><th>Key</th><th>Value held by the handle</th></tr></thead>
+        <tbody>
+          <tr><td>Definitions</td><td>Formatted symbol identity</td><td>Promise of definition overview nodes</td></tr>
+          <tr><td>Reference locations</td><td>Formatted symbol identity</td><td>Promise of source locations<small>Shared by reference projections and caller search.</small></td></tr>
+          <tr><td>Call target</td><td>Formatted symbol identity</td><td>Promise of target resolution</td></tr>
+          <tr><td>Callers</td><td>Formatted symbol identity</td><td>Promise of call edges</td></tr>
+          <tr><td>Callees</td><td>Formatted symbol identity</td><td>Promise of call edges</td></tr>
+          <tr><td>Definitions at a position</td><td><code>relativePath:start</code></td><td>Array of semantic node locations<small>Nodes are looked up again from these locations on each access.</small></td></tr>
+        </tbody>
+      </table></div>
+      <p class="compact-note">A matching string in two handles does not imply a shared entry. The old six Maps already had this isolation; the refactor retains it.</p>
+      {{E_BASE_HANDLES}}
+    </div>
+  </section>
+
+  <section id="lifetime" class="chapter" aria-labelledby="lifetime-title">
+    <div class="chapter-head"><div><p class="eyebrow">03 / Lifetime · D5–D7</p><h2 id="lifetime-title">Two moments can empty the stores.<br>Only one boundary now waits longer.</h2></div><a class="back" href="#D5">↑ Back to D5</a></div>
+    <h3>Successful refresh opens the next cache interval</h3>
+    <div class="sequence" aria-label="Refresh order, same in base and head">
+      <div><b>1 · SOURCE</b>Refresh cached source inputs.</div>
+      <div><b>2 · PROJECTS</b>Await graph refresh for workspace coverage.</div>
+      <div><b>3 · STATE</b>Await workspace-state refresh.</div>
+      <div><b>4 · CACHE TURN</b>Store the file list; clear all handles.</div>
+    </div>
+    <p class="compact-note">Any earlier failure skips step 4. The cache turn remains; this is a claim about the semantic cache boundary, not a claim that every earlier refresh side effect is rolled back. An unchanged successful refresh still reaches step 4.</p>
+    <div class="reason-box"><span class="status">Stated · D5</span><p>The PR keeps the existing position of <code>beginTurn</code> so failed refresh preserves the current successful turn. Its argument narrows from the snapshot to its files.</p></div>
+    {{E_HEAD_BACKEND}}
+    {{E_BASE_BACKEND}}
+
+    <div class="subsection">
+      <div class="detail-head"><h3>Release clears now and waits afterward</h3><a class="back" href="#D6">↑ Back to D6</a></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>At the backend’s release call</th><th>Base</th><th>Head</th></tr></thead>
+        <tbody>
+          <tr><td>Before project cleanup</td><td>Clear all six Maps synchronously.</td><td>Clear all six handles synchronously.</td></tr>
+          <tr><td>While project cleanup is pending</td><td>Backend’s release promise can finish.</td><td>Backend’s release promise stays pending.</td></tr>
+          <tr><td>If project cleanup rejects</td><td>That rejection is not carried by backend release.</td><td>Backend release rejects with that failure.</td></tr>
+          <tr><td>A query arrives after clearing</td><td>May populate a cleared Map.</td><td>May populate a cleared handle.</td></tr>
+        </tbody>
+      </table></div>
+      <div class="reason-box"><span class="status">Stated · D6</span><p>The PR’s reason for clearing before the await: previously cached semantics must already be unavailable while project cleanup is pending or rejecting. Clearing removes entries; it does not prohibit fresh queries.</p></div>
+
+      <div id="release-trace" class="trace js-only" aria-labelledby="trace-title">
+        <div class="detail-head"><h3 id="trace-title">Scrub the release boundary</h3><span class="small muted">Same events, both versions</span></div>
+        <p class="lossy">Illustrative trace, not execution of symnav. A fake delayed graph makes waiting visible. Six filled slots at the start are a schematic inventory, not measured cache contents.</p>
+        <div class="trace-toolbar"><span>Each frame is an event; spacing is not elapsed time.</span><label>Project cleanup <select id="release-outcome"><option value="reject">rejects</option><option value="resolve">succeeds</option></select></label></div>
+        <div id="trace-frame" class="trace-frame" aria-live="polite"></div>
+        <div class="trace-columns">
+          <div class="trace-side"><h4>BASE</h4><dl class="trace-status"><dt>Caller sees</dt><dd id="base-caller"></dd><dt>Project</dt><dd id="base-project"></dd><dt>Cache entries</dt><dd id="base-cache"></dd></dl><div id="base-slots" class="cache-slots" aria-label="Base cache slots"></div></div>
+          <div class="trace-side head"><h4>HEAD</h4><dl class="trace-status"><dt>Caller sees</dt><dd id="head-caller"></dd><dt>Project</dt><dd id="head-project"></dd><dt>Cache entries</dt><dd id="head-cache"></dd></dl><div id="head-slots" class="cache-slots" aria-label="Head cache slots"></div></div>
+        </div>
+        <p id="trace-caption" class="trace-caption"></p>
+        <div class="trace-progress"><button id="trace-prev" type="button">← Previous</button><input id="trace-step" type="range" min="0" max="4" value="0" aria-label="Release event"><button id="trace-next" type="button">Next →</button></div>
+        <p class="trace-safety">The production TypeScript project cleanup is synchronous. The new test uses delayed rejection to pin down the wider interface contract; the successful-delay branch here is a source-derived illustration, not an added PR test.</p>
+      </div>
+      <noscript><p>The static release table above contains the same facts as the optional trace.</p></noscript>
+      {{E_HEAD_RELEASE}}
+      {{E_BASE_RELEASE}}
+    </div>
+  </section>
+
+  <section id="values" class="chapter" aria-labelledby="values-title">
+    <div class="chapter-head"><div><p class="eyebrow">04 / Lookup · D3–D4</p><h2 id="values-title">A promise is the cached value.<br>The scope never waits for it.</h2></div><div><a class="back" href="#D3">↑ D3: values</a><br><a class="back" href="#D4">↑ D4: failures</a></div></div>
+    <div class="lookup">
+      <div class="lookup-path hit"><h4>Key is already present</h4><ol><li><code>Map.has(key)</code> is true.</li><li>Return <code>Map.get(key)</code> exactly.</li><li>Do not call the factory.</li></ol><p class="small muted">Applies to an empty array, an explicit <code>undefined</code>, or a promise that has rejected.</p></div>
+      <div class="lookup-path miss"><h4>Key is absent</h4><ol><li>Call the factory synchronously.</li><li>If it returns, insert that exact value.</li><li>If it throws, insertion is never reached.</li></ol><p class="small muted">A returned promise is inserted immediately. A thrown error leaves no entry, so the next lookup retries.</p></div>
+    </div>
+    <div class="reason-box"><span class="status">Stated · D3–D4</span><p>The PR explicitly preserves value/promise identity and failure behavior. Its reason for <code>Map.has</code> is that <code>undefined</code> can itself be a cached value.</p></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Factory behavior</th><th>Second access in the same cache interval</th><th>At a clearing boundary</th></tr></thead>
+      <tbody>
+        <tr><td>Returns a value or empty array</td><td>Same cached value object.</td><td>Entry removed. Next lookup runs the factory.</td></tr>
+        <tr><td>Returns undefined</td><td>Cached hit; no factory rerun.</td><td>Entry removed.</td></tr>
+        <tr><td>Returns a rejected promise</td><td>Same promise, same rejection.</td><td>Entry removed; old promise is not cancelled.</td></tr>
+        <tr><td>Throws synchronously</td><td>Factory runs again.</td><td>No failed entry was inserted.</td></tr>
+        <tr><td>Old promise settles after a new turn</td><td colspan="2">It can settle for its original holders. It cannot overwrite the new entry: the scope has no settlement callback that writes to the Map.</td></tr>
+      </tbody>
+    </table></div>
+    <p class="compact-note">The identity promise belongs to the cached query layer. Public <code>findReferences</code> awaits location data and constructs reference results again. Position definitions cache locations, then return a newly built node array on each access. These projections remain in TypeScript.</p>
+    {{E_CORE}}
+    {{E_PROJECTIONS}}
+    {{E_FAILURE_TESTS}}
+  </section>
+
+  <section id="contracts" class="chapter" aria-labelledby="contracts-title">
+    <div class="chapter-head"><div><p class="eyebrow">05 / Public and lifecycle boundaries · D7–D9</p><h2 id="contracts-title">The signatures expose the choices<br>the rationale leaves open.</h2></div><div><a class="back" href="#D7">↑ D7: release</a><br><a class="back" href="#D8">↑ D8: API</a><br><a class="back" href="#D9">↑ D9: handle lifetime</a></div></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Public surface</th><th>Base</th><th>Head</th></tr></thead>
+      <tbody>
+        <tr><td>Core scope / handle</td><td>Absent.</td><td><code>createCache&lt;K, V&gt;()</code> returns a typed handle.<br><code>getOrCreate(key, factory): V</code> is the handle’s exposed operation.<br><code>beginTurn(): void</code> and <code>releaseTransientResources(): void</code> clear all handles.</td></tr>
+        <tr><td>Service beginTurn</td><td><code>(snapshot: WorkspaceSnapshot): void</code></td><td><code>(files: readonly WorkspaceFile[]): void</code><small>The service retains the supplied array, then clears the scope.</small></td></tr>
+        <tr><td>Service release</td><td><code>(): void</code></td><td><code>(): Promise&lt;void&gt;</code><small>Clears before awaiting graph cleanup.</small></td></tr>
+        <tr><td>Backend release</td><td><code>(): Promise&lt;void&gt;</code><small>Finishes without waiting for graph cleanup.</small></td><td><code>(): Promise&lt;void&gt;</code><small>Waits for the service, including graph completion/rejection.</small></td></tr>
+      </tbody>
+    </table></div>
+    <div class="reason-box unexplained"><span class="status unexplained">Unexplained · D7</span><p>The awaited boundary is explicitly described in the PR. The missing explanation is why this lifetime-only layer includes a caller-visible completion/error change under the spec’s unchanged-behavior rule. No end-user outcome is inferred from the backend signature alone.</p></div>
+    <div class="reason-box unexplained"><span class="status unexplained">Unexplained · D8</span><p>The PR lists the exported API, but does not explain the exact handle/scope split or the narrower service input. Core ownership has a stated architectural reason; that does not supply a reason for every API detail.</p></div>
+    <div class="reason-box unexplained"><span class="status unexplained">Unexplained · D9</span><p>Both scope lifecycle methods only call <code>clear()</code>. Existing handles remain registered and usable. There is no closed state, unregister operation, or cancellation. The tests use handles before the first turn and again after repeated release; no distinct reason for this surface was found.</p></div>
+    {{E_EXPORT}}
+    {{E_SPEC_BEHAVIOR}}
+    {{E_GRAPH_RELEASE}}
+    {{E_TS_RELEASE}}
+    {{E_REUSABLE_TEST}}
+  </section>
+
+  <section id="tests" class="chapter" aria-labelledby="tests-title">
+    <div class="chapter-head"><div><p class="eyebrow">06 / Evidence boundaries · D10</p><h2 id="tests-title">What the added tests pin down</h2></div><a class="back" href="#D10">↑ Back to D10</a></div>
+    <p class="section-intro">Ten added cases characterize the decisions above. The five pre-existing service cases and their assertions remain. The table distinguishes what is exercised from the broader behavior described by the source.</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Test group</th><th>Behavior exercised</th><th>Boundary of that evidence</th></tr></thead>
+      <tbody>
+        <tr><td>4 new core cases</td><td>Exact value identity, undefined, isolated handles, turn/release clearing, repeated release, rejected promise retention, synchronous retry, late old settlement.</td><td>Generic cache handles. No TypeScript query engine.</td></tr>
+        <tr><td>4 new service cases</td><td>Four identity-query promises, empty position results with node rehydration, asynchronous definition/callee rejection, synchronous reference-discovery retry.</td><td>Direct service calls; a mixture of in-memory TypeScript and narrow state doubles.</td></tr>
+        <tr><td>1 new refresh case</td><td>A rejected state refresh keeps the prior definition result and avoids another search.</td><td>Mocked workspace state; no project graph in this case.</td></tr>
+        <tr><td>1 new release case</td><td>Cache clears before graph completion; a fresh query can refill it; backend release stays pending, then rejects with the project failure.</td><td>Fake graph with a delayed rejection. No new delayed-success release case.</td></tr>
+        <tr><td>5 retained service cases</td><td>Shared reference/caller search, within/across-turn reuse, position grouping, diamond traversal, and lazy rebuilding of released semantics.</td><td>Existing assertions are unchanged, including the successful release/rebuild case.</td></tr>
+      </tbody>
+    </table></div>
+    <div class="reason-box"><span class="status">Stated · D10</span><p>The commit “Characterize TypeScript semantic cache identities” and the PR’s preservation intent explain the added constraints. The diff adds tests; it does not delete or weaken existing assertions.</p></div>
+    {{E_IDENTITY_TESTS}}
+    {{E_POSITION_TESTS}}
+    {{E_REFRESH_TEST}}
+    {{E_RELEASE_TEST}}
+    <details class="evidence" id="e-test-delta"><summary>Source · test delta and focused run record</summary><div class="source-bottom"><p>The head has 4 core tests and 11 service tests. The base service file has 5. Its existing test bodies are unchanged; the only removed lines in that file are replaced import lines. <a href="evidence/diff.patch">Read the supplied diff</a>.</p><p>The two head suites were run during this experiment: 15 tests passed. <a href="test-run.txt">Read the captured output</a>. This is a focused execution record, not a full CI claim or a correctness verdict.</p></div></details>
+  </section>
+
+  <footer class="provenance" id="provenance">
+    <p><strong>Source boundary.</strong> This explanation compares <code>a1e325a5ff979bdfa25babc5554621c8c0f20497</code> with <code>64919bcbcf7fcc8202779b78c5f069b24662bb18</code>. Rationale was sought in the supplied PR body, its six commits, and the architecture spec. “Unexplained” means no separate reason was found there; it does not mean a choice was accidental or unmentioned.</p>
+    <div class="provenance-links"><a href="evidence/pr.json">PR body and commits</a><a href="evidence/diff.patch">Full diff</a><a href="evidence-manifest.json">Source hashes</a><a href="pair-contract.md">How the pair is controlled</a><a href="README.md">Experiment README</a><a href="#overview">↑ Whole change</a></div>
+  </footer>
+</main>
+</body>
+</html>
