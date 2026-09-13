@@ -1,0 +1,1946 @@
+{
+  "id": "02",
+  "experiment": "02-unconstrained-b",
+  "entry": "index.html",
+  "captured_utc": "2026-09-13T12:20:56.800Z",
+  "entry_sha256": "5410548f33537ed7bdac26a6f60aa4ee891cb2995f9d47a1192fd74c673d248f",
+  "errors": [],
+  "title": "PR 131 · where a limit gets its authority",
+  "url": "file:///Users/moyaseen/projects/rich-review-v2/experiments/02-unconstrained-b/index.html",
+  "text": "rich-review / 02\n01 · Whole change\n02 · Follow a limit\n03 · Evidence\n\nSYMNAV · PR 131 · DAEMON POLICY CONSUMERS\n\nA policy that now reaches\nits consumers.\n\nThe snapshot already existed. This change makes operational limits come from it: the CLI's local defaults and tuning inputs give way to required policy inputs. The mechanisms stay where they are.\n\n60 changed files\n7 policy sections · 39 fields\nDefaults retained\nBase b3a6c4f → head b100221\n\nTHE BOUNDARY THAT MOVED\n\nWho supplies the number?\nBefore\nAfter\npackages/daemon\nDaemonPolicy · already present in base\napps/cli\nComposition supplies policy inputs to the existing consumers\nTransport\n5 fields ↗\nrequired\npolicy input\nLocalDaemonTransport\nJSON / control-frame validation · response deadlines\nStartup\n6 fields ↗\nrequired\npolicy input\nRegistry · StartupCoordinator · WorkspaceDaemon\nOwnership · launch retries · heartbeat and polling\nShutdown\n8 fields ↗\nrequired\npolicy input\nController · Lifetime · ProcessTerminator · WorkspaceDaemon\nIdle timer · stop budget · exit polling · drain acknowledgements\nDelivery\n2 fields ↗\nrequired\npolicy input\nLocalDaemonTransport\nAccepted-execution reattachments · per-attempt fetch resume\nOutput\n4 fields ↗\nrequired\npolicy input\nCapture · Spool · Codec · TransferDecoder · WorkerProtocol\nWrite, retain, frame, validate and read the same chunk limit\nResources\n9 fields ↗\nrequired\npolicy input\nResourceSupervisor · WorkspaceDaemon · worker entry\nRSS thresholds · replacement circuit · worker heap and sampling\nDiagnostics\n5 fields ↗\nrequired\npolicy input\nDaemonLogger · WorkspaceDaemon\nRotation · queued events · disconnected traces\nSelect a section to follow its values.\nChanged: the supply path. The consumers remain in this package.\n\n required policy supply  retired local supply  snapshot bridge already present.\nApproximate map: groups consumers by the limits they share; lines show supply, not call order or individual imports.\n\nThe package boundary stays put. apps/cli already depended on @symnav/daemon. This PR connects app-owned mechanisms to that package's policy; it does not move those mechanisms into the package.\n\nTHE SAME SOURCE MAP IN RUNNING CODE\n\nTwo processes. A worker inside one.\n↑ Package view\n\nThese runtime boundaries already exist in base. The new reads follow the existing snapshot through them.\n\nCLI PROCESS\n\nCompose the snapshot\n\nDaemonPolicy.currentSystem()\n\nLifecycle + routing\ntransport · startup · shutdown\nLocal capture / received result\noutput · delivery\nserialized\nsnapshot\n→\nlaunch configuration\n\nDAEMON PROCESS\n\nReconstruct the same values\nWorkspaceDaemon · main thread\nspool · resource supervision · lifetime · logging · transport\nworker data · same serialized snapshot\n↓\n\nWORKER THREAD · SAME PROCESS\n\nNavigation + command capture\noutput chunks · worker heap sampling\n\nGrouped runtime view: shows snapshot flow and the main consumers, not all messages or construction calls. Type definitions in packages/daemon are not a separate running service.\n\nTHE COMPLETE DECISION SURFACE\n\nWhat comes with that change\nYou can stop after this layer.\n\nDefaults are preserved; error selection and some test scenarios change. Every decision below has a route to its mechanism and source. stated means a reason was found; unexplained means no reason for that specific choice was found in the searched inputs.\n\n01\nMake the caller supply the limits\nLocal defaults + per-consumer knobs\n→\nRequired policy inputs\nOutput capture, spooling, framing, resources, lifecycle and diagnostics read the existing snapshot. The operational implementations stay in apps/cli.\nReason: Omitted composition must not recreate local defaults.\nstated\n02\nKeep the operating envelope\nExisting values, formulas and untimed waits\n→\nSame values, one policy definition\nDefaults are retained. Memory limits still depend on host memory. No user tuning is added. Healthy startup, accepted completion and worker output acknowledgement still have no deadline; startup silence and result eviction remain deferred.\nReason: The architecture spec requires behavior preservation, one policy owner and no user tuning.\nstated\n03\nLet composition choose the response clock\nStatus action supplies 100 ms directly\n→\nStatus-observer purpose selects 100 ms\nThe purpose belongs to a transport instance, not to a message kind. Ordinary lifecycle and execution-status exchanges keep 250 ms; execute admission keeps its separate 5 s clock.\nReason: Status observation and ordinary execution-status requests have distinct deadlines.\nstated\n04\nCount attempts in their own scopes\nOne-shot reattach / resume / startup retry\n→\nThree numeric limits, all default to 1\nReattachment spans accepted execution; fetch-resume state belongs to each execute attempt, as it already did in base. Startup retry is separate and counts child exit or lost warm-up.\nReason: Each reattached execute attempt needs its own fetch-resume allowance; startup retains a fresh launch after failure.\nstated\n05\nExpose the reattached completion's error\nRecovery failure rethrows first accepted-close error\n→\nLater completion can expose its own error\nAfter an accepted close, a corrupt completion on the reattachment reaches the caller as corrupt instead of closed. Failure to obtain the reattached receipt still preserves the preceding error.\nunexplained\n06\nUse different input shapes at different depths\nDefaults hidden in consumers and helpers\n→\nSnapshot → sections → fields → numbers\nSome consumers take several sections, others one field or a bare number. The worker parent reparses the snapshot for a chunk limit; stored output keeps an optional internal cap. Transport keeps writeChunkSize and outputDirectory options.\nunexplained\n07\nKeep old tuning calls in test adapters\nTests tune production constructors\n→\nSeven helper files translate into policies\nTest-only wrappers preserve legacy calls and construct validated snapshots. Existing validation now governs their overrides: ordered output and memory limits, integers and positive polling intervals.\nReason: Tests need small limits without restoring production tuning seams.\nstated\n08\nMake wrappers look like the former APIs\nProduction classes at test import sites\n→\nAdapters aliased to production class names\nTests often keep names such as LocalDaemonTransport while importing TestLocalDaemonTransport. Most helper defaults come from currentSystem(); the workspace helper starts from its supplied or dependency policy.\nunexplained\n09\nLet adapters rewrite the requested test limits\nInline 0 means spill immediately\n→\nClient inline floor becomes 64 KiB\nThe client helper also creates the output directory. The daemon helper may turn inline 0 into half the result limit, lower chunk/result limits, and ignore memoryCapBytes. Existing cleanup assertions can now run without a spill.\nunexplained\n10\nReshape test payloads around valid policy limits\nTiny or zero standalone limits\n→\nCoordinated chunk / inline / result values\ncapture(1) becomes capture(32); one two-byte record becomes two one-byte records. Spool tests raise inline limits and sometimes append an extra record. The aggregate-capacity test now keeps its first completion inline.\nunexplained\n11\nMove the resource-policy test surface\nCLI memory recipe + three test definitions\n→\nExisting package policy tests + consumer tests\nThe duplicate CLI recipe and its derivation/constraint/default test blocks are deleted. Existing daemon-package tests cover those subjects. New tests exercise custom capacities, cadence, status purpose, startup retry counts and reattachment scope.\nunexplained\n12\nDelete a startup deadline input that was unused\nstartupTimeoutMs stored but never read\n→\nField and test arguments removed\nRemoving this input does not remove an active startup timer. The policy record already says healthy startup has no deadline; coordination grace remains a different, active clock.\nunexplained\n13\nGuard the retired names in production source\nMeta-test checks three policy bypass strings\n→\nMeta-test checks 36 retired strings\nThe guard scans CLI production source and excludes tests. It prevents the named defaults and options from returning; it does not analyze arbitrary numeric literals or equivalently renamed options.\nunexplained\n\nReason search: supplied PR body, six commit subjects and bodies, and plans/005. “Unexplained” reports the search result; it is not a verdict. Numeric policy reasons predate this PR and remain available with each value below.\n\n01 / The whole change\n\nOne source supplies the limits. Separate purposes and recovery scopes remain separate. The test translation layer and error-selection change are part of the decision.\n\nFollow a limit ↓\n\n02 / SAME DECISIONS, MORE MECHANISM\n\nFollow one limit.\n\nChoose any policy section, then a value. The path keeps both revisions visible. Memory values use a fixed 1 GiB effective-memory example, not this machine's memory.\n\n↔\nTransport\n↗\nStartup\n◷\nShutdown\n⤴\nDelivery\n▤\nOutput\n▥\nResources\n≋\nDiagnostics\n\nCAPTURE + SPOOL + CHUNKS\n\nOne raw chunk\n64 KiB\nInline output\n256 KiB\nOne completed result\n256 MiB\nAll retained spool output\n512 MiB\n\noutput.maximumChunkRawBytes\n\nOne raw chunk\n64 KiB\n\nWorker and result chunks · 64 KiB\n\nBefore · local supply\ncompletion-spool.ts\nconst (imported by 2 modules)\nexport const COMMAND_OUTPUT_CHUNK_BYTES = 64 * 1024;\nbase · line 10 ↗\ncommand-execution-result.ts\nsecond const, same value\nconst MAXIMUM_RECORD_BYTES = 64 * 1024;\nbase · line 56 ↗\nAfter · policy supply\nDaemonPolicy.values.output\nmaximumChunkRawBytes\ncommand-execution-result.ts\nreads or receives the policy value\nthis.maximumRecordBytes = policy.maximumChunkRawBytes;\nhead · line 154 ↗\ncompletion-spool.ts\nreads or receives the policy value\nthis.maximumChunkBytes = policy.maximumChunkRawBytes;\nhead · line 305 ↗\nlocal-daemon-transport.ts\nreads or receives the policy value\nthis.maximumChunkRawBytes = policy.output.maximumChunkRawBytes;\nhead · line 297 ↗\ndaemon-navigation-worker-entry.ts\nreads or receives the policy value\nthis.policy.values.output.maximumChunkRawBytes,\nhead · line 199 ↗\ndaemon-navigation-worker.ts\nreads or receives the policy value\nDaemonPolicy.fromSerialized(options.configuration.policy).values.output.maximumChunkRawBytes\nhead · line 80 ↗\ndaemon-result-chunk-codec.ts\nreads or receives the policy value\nstatic encode(chunk, maximumChunkRawBytes)\nhead · line 19 ↗\ndaemon-navigation-worker-protocol.ts\nreads or receives the policy value\nstatic response(value, maximumChunkRawBytes)\nhead · line 127 ↗\nstated\n\nBound one raw output record — existing policy record, line 29.\n\nSource of this value's reason ↗\nDecision 01 · Make the caller supply the limits ↗\nDecision 06 · Use different input shapes at different depths ↗\nDecision 10 · Reshape test payloads around valid policy limits ↗\n\nTHREE WORKED VIEWS\n\nWhere the distinctions matter\n\nDECISION 03 · TRANSPORT PURPOSE\n\nSame exchange, different clock\nConstruct the transport for\ndaemon status\nordinary lifecycle / execution status\nResponse budget 100 ms\n0\n250 ms\n\nThe status action chooses the status-observer purpose. Its identify and ping exchanges use the 100 ms response budget.\n\nIllustration of constructor selection; bar length is a policy budget, not measured response time. The separate admission budget remains 5 s.\n\nRead reason + source ↗\n\nDECISIONS 04–05 · RECOVERY SCOPE AND ERROR\n\nOne accepted request, two attempts\nReattachment budget · 1\nExecute attempt 1\nfetch-resume budget · 1\n→\nExecute attempt 2\nfresh fetch-resume budget · 1\nScripted recovery result\nCorrupt completion\nCompleted result\nAnother accepted close\nWould succeed on a third execute\nBefore\nclosed\n2 execute attempts\nDaemon connection ended after acceptance before completion\nAfter\ncorrupt\n2 execute attempts\nDaemon result transfer did not match its manifest\n\nRecorded execution: built base and head transport clients against a scripted Unix socket. The scope boxes describe the code; they do not imply that every scenario uses its fetch allowance.\n\nRead error-selection mechanism ↗\n\nDECISIONS 07–11 · TEST TRANSLATION\n\nA cleanup check can survive a change of storage path.\nTest asks for\noutputInlineBytes: 0\nBefore\n0-byte inline capacity\nnonempty output → spill to disk\nAfter\nmax(64 KiB, 0)\nsmall output → stays in memory\n“Directory is empty”\ncan hold in either case\n\nIn the focused run, 14 existing transport tests called the client spill method in base and did not call it in head. The adapter creates the directory before execution. Their unchanged cleanup assertions now exercise a different path.\n\nInspect adapter choices ↗\nSee the observed test rows ↓\n\nREAD STRAIGHT THROUGH, OR ENTER FROM ANY DECISION\n\nMechanisms and reasons\n↑ Complete decision surface\n01\nMake the caller supply the limits\nstated\nREASON FOUND\n\nThe PR says omitted composition must not recreate local defaults.\nPR body · Decisions 1\n\nAUTHORITY\n\nThe CLI composes a DaemonPolicy. The daemon receives serialized values and reconstructs the same snapshot; its worker receives those values too. This bridge predates this PR. The new work connects consumers to it.\n\nOUTPUT\n\nCommand capture and spool storage use the same chunk, inline and result limits. The codec, transfer decoder and worker-message validator receive the chunk limit explicitly. A stored file keeps the limit needed to decode its records.\n\nLIFECYCLE\n\nStartup ownership, heartbeat, authorization and readiness polling, lifetime, stop escalation, process-exit polling and drain acknowledgement all take policy values. Logging and disconnected-trace retention do as well.\n\nhead · daemon-entry.ts:21–49\nhead · workspace-daemon.ts:125–175\nhead · command-execution-result.ts:146–155\nFollow the related value ↗\n↑ Decision 01 in the whole change\n02\nKeep the operating envelope\nstated\nREASON FOUND\n\nThe existing policy record gives a reason for every value and for the intentional absence of these deadlines. The architecture spec requires one policy owner and forbids user tuning.\nplans/005/daemon-policy.md; architecture spec · Every threshold has one owner\n\nOUTPUT ENVELOPE\n\n64 KiB per chunk, 256 KiB before spilling, 256 MiB per result and 512 MiB across retained daemon spools. Control JSON and execution-transfer control use separate 8 MiB and 256 KiB limits.\n\nRESOURCE ENVELOPE\n\nSelect a positive constraint only if smaller than total memory. Floor effective memory to MiB, then derive half for hard RSS (256–8192 MiB), one quarter for worker old generation (128–4096 MiB), and 80% / 70% of hard RSS for shedding / resumption. Raw effective bytes remain in the snapshot; no CLI production read of that field remains in this PR.\n\nINDEPENDENT CLOCKS\n\nThe 100 ms status budget, 250 ms ordinary response budget and 5 s admission budget remain separate. Stop keeps min(500 ms, floor(stop budget / 2)) for escalation; trace capacity keeps an effective minimum of one.\n\nINTENTIONAL ABSENCES\n\nThe record says healthy warm-up progresses without a project-size deadline, accepted work has no completion timer, and worker output acknowledgement waits without a timer. Startup-silence policy and unacknowledged-result eviction are deferred.\n\nhead · daemon-policy.md:3–66\nhead · daemon-policy.ts:101–170\nhead · daemon-controller.ts:70–80\nhead · workspace-daemon.ts:888–900\nFollow the related value ↗\n↑ Decision 02 in the whole change\n03\nLet composition choose the response clock\nstated\nREASON FOUND\n\nThe PR says status observation and ordinary execution-status requests have distinct deadlines.\nPR body · Decisions 2\n\nSELECTION\n\nOnly the daemon status action supplies responseTimeoutPurpose: status-observer. The constructor picks the response deadline once. Other callers get the ordinary purpose by default.\n\nCONSEQUENCE\n\nAn identify or ping exchange gets the clock of the instance sending it. An execution-status message does not acquire the status-observer clock because of its name. The same instance-wide choice is also used for acknowledgement and endpoint probing.\n\nhead · register-daemon-command.ts:100–119\nhead · local-daemon-transport.ts:289–302\nhead · local-daemon-transport-validation.test.ts:49–147\nFollow the related value ↗\n↑ Decision 03 in the whole change\n04\nCount attempts in their own scopes\nstated\nREASON FOUND\n\nThe PR says each reattached execute attempt needs its own fetch-resume allowance. The policy record says one fresh startup launch follows an explicit child failure.\nPR body · Decisions 3; policy record · startup.childFailureRetryLimit\n\nOUTER SCOPE\n\ncompleteWithReattachments counts accepted-execution reattachments. The original request is sent again to recover the accepted request; this is not a new local execution.\n\nINNER SCOPE\n\nEach executeOnce invocation creates a new resumeCount. The guard permits a fetch only after acceptance and a manifest, with no settled completion or completed output. Base already declared resumeStarted inside executeOnce; the scope separation is preserved.\n\nSTARTUP\n\nensureRunning increments failureCount for DaemonChildExitError or DaemonWarmupLostError. It stops retrying at childFailureRetryLimit. New tests supply 0 and 2 and observe one and three launches.\n\nhead · local-daemon-transport.ts:395–427\nhead · local-daemon-transport.ts:448–493\nbase · local-daemon-transport.ts:431–470\nhead · daemon-startup-coordinator.ts:75–95\nFollow the related value ↗\n↑ Decision 04 in the whole change\n05\nExpose the reattached completion's error\nunexplained\nREASON FOUND\n\nNo reason for this error-selection change was found in the PR body, its six commit messages, or plans/005.\nSearch scope: supplied PR + commits + plans/005\n\nWHY THE RESULT CHANGES\n\nBase awaits both the new receipt and its completion inside a catch that rethrows the original close. Head assigns the new completion, then awaits it on the next loop iteration. That iteration catches a different error.\n\nBOUNDARY\n\nThis observation is at LocalDaemonTransport.completion. It does not establish a change in every user-visible CLI outcome. The page's recorded example runs built base and head clients against the same scripted Unix-socket response sequence.\n\nbase · local-daemon-transport.ts:398–413\nhead · local-daemon-transport.ts:402–427\nFollow the related value ↗\n↑ Decision 05 in the whole change\n06\nUse different input shapes at different depths\nunexplained\nREASON FOUND\n\nRequired inputs are explained, but no reason for these particular interface widths, the repeated parse, or the retained internal optional cap was found.\nSearch scope: supplied PR + commits + plans/005\n\nINPUT WIDTHS\n\nWorkspaceDaemon takes the whole snapshot. Transport takes transport, delivery and output. Controller and startup coordinator take startup and shutdown. Lifetime takes only idleTimeoutMs. The codec, frame decoder, worker validator, heap sampler and file-record decoder receive numbers.\n\nINTERNAL STORAGE\n\nStoredCommandOutput receives maximumRecordBytes as an optional parameter and uses a non-null assertion on its file-backed path. Its creator supplies the cap. This is a narrower internal contract than the required policy constructor.\n\nREMAINING OPTIONS\n\nLocalDaemonTransport still accepts writeChunkSize and outputDirectory. They affect I/O partitioning and storage location; the removed operational thresholds are now policy-backed.\n\nhead · local-daemon-transport.ts:24–37\nhead · daemon-lifetime.ts:10–25\nhead · daemon-navigation-worker.ts:76–90\nhead · command-execution-result.ts:74–90\nhead · daemon-result-chunk-codec.ts:128–156\nFollow the related value ↗\n↑ Decision 06 in the whole change\n07\nKeep old tuning calls in test adapters\nstated\nREASON FOUND\n\nThe PR says tests need small thresholds without restoring runtime tuning seams. It chooses test adapters over production compatibility overloads.\nPR body · Decisions 4\n\nBOUNDARY\n\nSeven helper files cover transport, workspace daemon, registry, controller, startup coordinator, process terminator and resource policy. Two tests also define local wrappers for logging and completion spooling.\n\nTRANSLATION\n\nThe existing DaemonPolicyTestFactory merges section overrides, then calls fromSerialized. That existing validator enforces exact fields, nonnegative safe integers, eight positive intervals, hard > soft > resume RSS and 0 < chunk ≤ inline ≤ result ≤ aggregate.\n\nhead · local-daemon-transport.ts:18–63\nhead · daemon-resource-policy.ts:1–34\nhead · policy-testing.ts:1–17\nhead · daemon-policy.ts:266–306\nFollow the related value ↗\n↑ Decision 07 in the whole change\n08\nMake wrappers look like the former APIs\nunexplained\nREASON FOUND\n\nThe PR explains test adapters, but not their aliasing or the choice of host-derived defaults for these helpers.\nSearch scope: supplied PR + commits + plans/005\n\nREADING A TEST\n\nA constructor call using a removed production option can still compile because the test's import names a wrapper. Logger and spool tests also shadow production names with local subclasses.\n\nMEMORY SOURCE\n\nThe old workspace fallback could reconstruct limits from memoryCapBytes. The helper now uses a policy from options or dependencies, with a resourcePolicy record translated if supplied. Several other wrappers seed from currentSystem().\n\nhead · local-daemon-transport-validation.test.ts:17–23\nhead · daemon-logger.test.ts:11–42\nhead · workspace-daemon.ts:28–65\nhead · daemon-controller.ts:27–46\nFollow the related value ↗\n↑ Decision 08 in the whole change\n09\nLet adapters rewrite the requested test limits\nunexplained\nREASON FOUND\n\nThe validator's ordering constraints explain why some old inputs cannot be used unchanged. No author reason for these specific rewrites or directory creation was found.\nSearch scope: supplied PR + commits + plans/005\n\nCLIENT\n\ninlineRawBytes = max(base maximumChunkRawBytes, outputInlineBytes). With default chunks, 0 becomes 65536. The helper mkdirSync call creates a directory even when the output remains in memory.\n\nDAEMON\n\nWith a known result cap, requested inline 0 becomes max(1, floor(result / 2)). Chunk is lowered to min(base chunk, inline, result). If only aggregate is given, result is capped by aggregate. memoryCapBytes is declared by the helper but never read.\n\nOBSERVED SCOPE\n\nIn the focused base/head run, 14 transport tests that called the client spill method in base no longer called it in head. Their empty-directory cleanup assertions remain. This changes which storage path those assertions exercise, without deciding whether the PR should ship.\n\nhead · local-daemon-transport.ts:42–63\nhead · workspace-daemon.ts:9–64\nhead · local-daemon-transport-execution.test.ts:170–226\nFollow the related value ↗\n↑ Decision 09 in the whole change\n10\nReshape test payloads around valid policy limits\nunexplained\nREASON FOUND\n\nThe source shows validation constraints, but no rationale for these exact replacement fixtures was found.\nSearch scope: supplied PR + commits + plans/005\n\nCAPTURE\n\nThe output comparison test now caps chunks with inline size. It raises the spill scenario to 32 bytes while keeping its record-equality assertions. A new smallest-chunk test writes two bytes with a one-byte chunk limit.\n\nSPOOL\n\nSeveral zero-inline spool fixtures use positive chunk/inline limits, then append enough to cross the threshold. The aggregate test changes inline from 1 to 6 while storing a six-byte first result, so that first result stays in memory.\n\nREQUESTS\n\nA custom worker emits two one-byte records rather than one two-byte record when using the one-byte limit. These input changes are part of the review surface even where assertions are retained.\n\nhead · cli-program-executor.test.ts:82–147\nhead · completion-spool.test.ts:89–120\nhead · workspace-daemon-requests.test.ts:1880–1910\nFollow the related value ↗\n↑ Decision 10 in the whole change\n11\nMove the resource-policy test surface\nunexplained\nREASON FOUND\n\nCentral policy ownership is stated; no separate explanation of the deleted test blocks or the chosen replacement cases was found.\nSearch scope: supplied PR + commits + plans/005\n\nREMOVED\n\nThe CLI test file removes an it.each derivation table, a constrained-memory test and the constant supervision-interval test. The surviving package suite already checks every default, constraint selection and boundary memory values. The two tables are not identical: the CLI had a 256 MiB row; the package uses a one-byte lower-bound row.\n\nADDED\n\nNew consumer tests cover one-byte chunk progress; output chunk capacity; resource cadence and thresholds; idle policy; logger backup count; JSON capacity; status and ordinary response purposes; startup retry budgets 0 and 2; and a fetch resume on a reattached execute attempt.\n\nCOMPARISON\n\nA focused probe ran the old CLI memory recipe and the package recipe on 60000 total/constraint pairs. The observed outputs agreed. This describes the recipe comparison, not the whole PR's correctness.\n\nbase · daemon-resource-monitor.test.ts:1–83\nhead · daemon-policy.test.ts:62–107\nhead · daemon-resource-monitor.test.ts:36–78\nhead · local-daemon-transport-execution.test.ts:846–895\nFollow the related value ↗\n↑ Decision 11 in the whole change\n12\nDelete a startup deadline input that was unused\nunexplained\nREASON FOUND\n\nThe record explains the absence of a healthy-startup deadline. No separate reason for removing this unused field in this PR was found.\nSearch scope: supplied PR + commits + plans/005\n\nBASE\n\nThe constructor stores startupTimeoutMs, defaulting to infinity. A source search finds no read of that property after assignment. Tests supplied small values, including the healthy-startup case, but those values did not drive a clock.\n\nHEAD\n\nThe option and assignments disappear. coordinationGraceMs still bounds authorization/missing-owner handling, not healthy progressing warm-up.\n\nbase · daemon-startup-coordinator.ts:45–76\nhead · daemon-startup-coordinator.ts:46–75\nhead · daemon-startup-coordinator.test.ts:91–121\nhead · daemon-policy.md:56–65\nFollow the related value ↗\n↑ Decision 12 in the whole change\n13\nGuard the retired names in production source\nunexplained\nREASON FOUND\n\nNo rationale for this particular source-string enforcement mechanism was found in the searched inputs.\nSearch scope: supplied PR + commits + plans/005\n\nMECHANISM\n\nappProductionSources concatenates production TypeScript source. A loop asserts that every retired string is absent. The expanded list includes old constant names, optional tuning seams, the dead startup timeout and the duplicate resource-policy class.\n\nBOUNDARY\n\nTest adapters deliberately live outside that scan. The assertion is about those strings; changing a policy read to a numeric literal or inventing a new option name is outside what it expresses.\n\nhead · daemon-package.test.ts:192–235\nFollow the related value ↗\n↑ Decision 13 in the whole change\n\n03 / CHECK THE SAME FACTS AGAINST SOURCE\n\nThe evidence stays local.\n\nThe 106 value citations open exact numbered source excerpts. The complete 60-file patch is included. The two focused execution probes explain the recorded examples; this artifact gives no correctness verdict.\n\nCOMPLETE DIFF\n60 files · +1,298 / −544\nLocal HTML, with file index →\nARTIFACT DATA\nClaims, values, sources and observations\nLocal JSON →\nEXPERIMENT RECORD\nChoices, abandoned approach, limits\nREADME →\nStorage path observations\n\nInstrumented calls to the actual client and daemon spill methods while running the same two test files in each tree. Counts describe storage-path execution, not coverage scores. All rows below spilled somewhere in base.\n\nTest\tClient spills\nbase → head\tDaemon spills\nbase → head\ntransfers and acknowledges a generated twelve MiB mixed-stream result\t1 → 1\t1 → 1\nadvances one client record only after its spool append completes\t1 → 1\t0 → 0\nrejects corrupt resumed transfer control: duplicate-manifest\t1 → 0\t0 → 0\nrejects corrupt resumed transfer control: missing-manifest\t1 → 0\t0 → 0\nrejects corrupt resumed transfer control: wrong-transfer\t1 → 0\t0 → 0\nrejects corrupt resumed transfer control: wrong-raw-bytes\t1 → 0\t0 → 0\nrejects corrupt resumed transfer control: wrong-record-count\t1 → 0\t0 → 0\nrejects corrupt resumed transfer control: wrong-digest\t1 → 0\t0 → 0\nrejects corrupt resumed transfer control: duplicate-end\t1 → 0\t0 → 0\nrejects corrupt resumed transfer control: chunk-after-end\t1 → 0\t0 → 0\nsettles an accepted completion when the acknowledgement response is eof\t1 → 0\t0 → 0\nsettles an accepted completion when the acknowledgement response is close\t1 → 0\t0 → 0\nsettles an accepted completion when the acknowledgement response is malformed\t1 → 0\t0 → 0\nsettles an accepted completion when the acknowledgement response is multiple\t1 → 0\t0 → 0\nsettles an accepted completion when the acknowledgement response is multiple-separated\t1 → 0\t0 → 0\ncleans client output and fails without replay when the daemon dies before resume\t1 → 1\t0 → 0\ndisposes partial client output when daemon delivery fails after its manifest\t1 → 0\t0 → 0\nspills threshold-plus-one output securely and acknowledges exact completion cleanup\t0 → 0\t1 → 1\nfails closed on aggregate capacity and never evicts an earlier completion\t0 → 0\t1 → 0\naccepts exactly 256 MiB and deletes the partial spool one byte over\t0 → 0\t1 → 1\ncleans only the confirmed dead instance and rejects unsafe existing storage\t0 → 0\t2 → 2\nreleases ownership and retries physical cleanup after a sync failure\t0 → 0\t1 → 1\nreleases ownership and retries physical cleanup after a close failure\t0 → 0\t1 → 1\nreleases acknowledged quota and retries failed unlink during instance cleanup\t0 → 0\t1 → 1\nMemory recipe comparison\n60,000 input pairs\nSame observed values for effective, hard, soft, resume and worker old-generation memory.\nRecorded result →\n\nOld CLI DaemonResourcePolicy versus surviving DaemonPolicy: 10,000 boundary and seeded memory values × six constraint cases. This probes recipe equivalence; it does not test every daemon behavior.\n\nChanged files\n\nAll 60 paths from the bundle, including helper, benchmark and end-to-end edits. Select a path for its full diff.\n\nPath\tRole\tΔ lines\napps/cli/src/cli-program-executor.test.ts\tTest / benchmark\t+57 / −6\napps/cli/src/cli-program-executor.ts\tImplementation\t+3 / −2\napps/cli/src/command-execution-result.ts\tImplementation\t+20 / −15\napps/cli/src/commands/daemon/register-daemon-command.ts\tImplementation\t+21 / −5\napps/cli/src/daemon/completion-spool.test.ts\tTest / benchmark\t+72 / −17\napps/cli/src/daemon/completion-spool.ts\tImplementation\t+15 / −18\napps/cli/src/daemon/daemon-command-dispatcher.integration.test.ts\tTest / benchmark\t+2 / −2\napps/cli/src/daemon/daemon-command-dispatcher.ts\tImplementation\t+4 / −3\napps/cli/src/daemon/daemon-controller.test.ts\tTest / benchmark\t+2 / −3\napps/cli/src/daemon/daemon-controller.ts\tImplementation\t+16 / −8\napps/cli/src/daemon/daemon-entry.ts\tImplementation\t+5 / −8\napps/cli/src/daemon/daemon-lifetime.test.ts\tTest / benchmark\t+18 / −8\napps/cli/src/daemon/daemon-lifetime.ts\tImplementation\t+5 / −3\napps/cli/src/daemon/daemon-logger.test.ts\tTest / benchmark\t+66 / −3\napps/cli/src/daemon/daemon-logger.ts\tImplementation\t+10 / −10\napps/cli/src/daemon/daemon-navigation-worker-entry.ts\tImplementation\t+9 / −4\napps/cli/src/daemon/daemon-navigation-worker-protocol.test.ts\tTest / benchmark\t+7 / −3\napps/cli/src/daemon/daemon-navigation-worker-protocol.ts\tImplementation\t+2 / −3\napps/cli/src/daemon/daemon-navigation-worker.ts\tImplementation\t+6 / −2\napps/cli/src/daemon/daemon-process-launcher.ts\tImplementation\t+9 / −6\napps/cli/src/daemon/daemon-registry.test.ts\tTest / benchmark\t+2 / −2\napps/cli/src/daemon/daemon-registry.ts\tImplementation\t+15 / −7\napps/cli/src/daemon/daemon-resource-monitor.test.ts\tTest / benchmark\t+66 / −91\napps/cli/src/daemon/daemon-resource-monitor.ts\tImplementation\t+6 / −62\napps/cli/src/daemon/daemon-result-chunk-codec.test.ts\tTest / benchmark\t+4 / −4\napps/cli/src/daemon/daemon-result-chunk-codec.ts\tImplementation\t+21 / −13\napps/cli/src/daemon/daemon-startup-coordinator.test.ts\tTest / benchmark\t+57 / −30\napps/cli/src/daemon/daemon-startup-coordinator.ts\tImplementation\t+26 / −22\napps/cli/src/daemon/local-daemon-transport-execution.test.ts\tTest / benchmark\t+115 / −40\napps/cli/src/daemon/local-daemon-transport-validation.test.ts\tTest / benchmark\t+115 / −1\napps/cli/src/daemon/local-daemon-transport.test.ts\tTest / benchmark\t+1 / −1\napps/cli/src/daemon/local-daemon-transport.ts\tImplementation\t+60 / −37\napps/cli/src/daemon/workspace-daemon-requests.test.ts\tTest / benchmark\t+17 / −6\napps/cli/src/daemon/workspace-daemon.test.ts\tTest / benchmark\t+6 / −5\napps/cli/src/daemon/workspace-daemon.ts\tImplementation\t+27 / −51\napps/cli/test/benchmark/daemon-scale-benchmark-harness.ts\tTest / benchmark\t+3 / −3\napps/cli/test/e2e/daemon/diagnostic-output.test.ts\tTest / benchmark\t+7 / −8\napps/cli/test/e2e/daemon/parity.test.ts\tTest / benchmark\t+2 / −2\napps/cli/test/e2e/daemon/persistent-pressure.test.ts\tTest / benchmark\t+2 / −2\napps/cli/test/e2e/daemon/state-isolation.test.ts\tTest / benchmark\t+1 / −1\napps/cli/test/e2e/daemon/status.test.ts\tTest / benchmark\t+3 / −2\napps/cli/test/e2e/daemon/stop.test.ts\tTest / benchmark\t+2 / −2\napps/cli/test/helpers/daemon-accepted-caller.ts\tTest helper\t+1 / −1\napps/cli/test/helpers/daemon-controller.ts\tTest helper\t+46 / −0\napps/cli/test/helpers/daemon-live-silent.ts\tTest helper\t+1 / −1\napps/cli/test/helpers/daemon-malformed-activity.ts\tTest helper\t+1 / −1\napps/cli/test/helpers/daemon-process-terminator.ts\tTest helper\t+24 / −0\napps/cli/test/helpers/daemon-registry-cleaner.ts\tTest helper\t+1 / −1\napps/cli/test/helpers/daemon-registry.ts\tTest helper\t+22 / −0\napps/cli/test/helpers/daemon-resource-policy.ts\tTest helper\t+34 / −0\napps/cli/test/helpers/daemon-startup-caller-exit.ts\tTest helper\t+3 / −3\napps/cli/test/helpers/daemon-startup-coordinator.ts\tTest helper\t+48 / −0\napps/cli/test/helpers/daemon-startup-mutation-owner.ts\tTest helper\t+1 / −1\napps/cli/test/helpers/daemon-startup-publisher.ts\tTest helper\t+1 / −1\napps/cli/test/helpers/e2e-process-cleanup.ts\tTest helper\t+3 / −5\napps/cli/test/helpers/local-daemon-transport.ts\tTest helper\t+64 / −0\napps/cli/test/helpers/workspace-daemon-persistent-pressure.ts\tTest helper\t+4 / −4\napps/cli/test/helpers/workspace-daemon-stuck.ts\tTest helper\t+4 / −4\napps/cli/test/helpers/workspace-daemon.ts\tTest helper\t+99 / −0\nmeta-tests/src/daemon-package.test.ts\tBoundary test\t+34 / −1\nReading limits\n\nInputs: supplied PR, full patch, file list, repo rules and stack position; assigned base/head source; plans/005; focused probes. The supplied overview files contain headings without symbol output. Other experiment folders were not read. A previous unfinished attempt in this same folder supplied the ledger and probe scripts; these were checked or rerun.\n\nThe diagrams group code and omit construction detail as marked. The clock example is a browser illustration; the recovery and spill examples are recorded code execution. No PR-wide validation claim follows from these probes. Source timestamps, comments and tests are evidence, not author rationale unless a reason is actually stated.\n\n↑ Back to the whole change\nExperiment 02 · unconstrained-b · PR 131 only · read-only artifact",
+  "headings": [
+    {
+      "tag": "H1",
+      "id": "",
+      "text": "A policy that now reaches\nits consumers."
+    },
+    {
+      "tag": "H2",
+      "id": "map-title",
+      "text": "Who supplies the number?"
+    },
+    {
+      "tag": "H2",
+      "id": "runtime-title",
+      "text": "Two processes. A worker inside one."
+    },
+    {
+      "tag": "H3",
+      "id": "",
+      "text": "Compose the snapshot"
+    },
+    {
+      "tag": "H3",
+      "id": "",
+      "text": "Reconstruct the same values"
+    },
+    {
+      "tag": "H2",
+      "id": "decisions-title",
+      "text": "What comes with that change"
+    },
+    {
+      "tag": "H2",
+      "id": "follow-title",
+      "text": "Follow one limit."
+    },
+    {
+      "tag": "H3",
+      "id": "leaf-name",
+      "text": "One raw chunk"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "Before · local supply"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "After · policy supply"
+    },
+    {
+      "tag": "H2",
+      "id": "mechanisms-title",
+      "text": "Where the distinctions matter"
+    },
+    {
+      "tag": "H3",
+      "id": "",
+      "text": "Same exchange, different clock"
+    },
+    {
+      "tag": "H3",
+      "id": "",
+      "text": "One accepted request, two attempts"
+    },
+    {
+      "tag": "H3",
+      "id": "",
+      "text": "A cleanup check can survive a change of storage path."
+    },
+    {
+      "tag": "H2",
+      "id": "decision-depth-title",
+      "text": "Mechanisms and reasons"
+    },
+    {
+      "tag": "H3",
+      "id": "",
+      "text": "Make the caller supply the limits"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "AUTHORITY"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "OUTPUT"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "LIFECYCLE"
+    },
+    {
+      "tag": "H3",
+      "id": "",
+      "text": "Keep the operating envelope"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "OUTPUT ENVELOPE"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "RESOURCE ENVELOPE"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "INDEPENDENT CLOCKS"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "INTENTIONAL ABSENCES"
+    },
+    {
+      "tag": "H3",
+      "id": "",
+      "text": "Let composition choose the response clock"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "SELECTION"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "CONSEQUENCE"
+    },
+    {
+      "tag": "H3",
+      "id": "",
+      "text": "Count attempts in their own scopes"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "OUTER SCOPE"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "INNER SCOPE"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "STARTUP"
+    },
+    {
+      "tag": "H3",
+      "id": "",
+      "text": "Expose the reattached completion's error"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "WHY THE RESULT CHANGES"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "BOUNDARY"
+    },
+    {
+      "tag": "H3",
+      "id": "",
+      "text": "Use different input shapes at different depths"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "INPUT WIDTHS"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "INTERNAL STORAGE"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "REMAINING OPTIONS"
+    },
+    {
+      "tag": "H3",
+      "id": "",
+      "text": "Keep old tuning calls in test adapters"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "BOUNDARY"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "TRANSLATION"
+    },
+    {
+      "tag": "H3",
+      "id": "",
+      "text": "Make wrappers look like the former APIs"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "READING A TEST"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "MEMORY SOURCE"
+    },
+    {
+      "tag": "H3",
+      "id": "",
+      "text": "Let adapters rewrite the requested test limits"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "CLIENT"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "DAEMON"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "OBSERVED SCOPE"
+    },
+    {
+      "tag": "H3",
+      "id": "",
+      "text": "Reshape test payloads around valid policy limits"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "CAPTURE"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "SPOOL"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "REQUESTS"
+    },
+    {
+      "tag": "H3",
+      "id": "",
+      "text": "Move the resource-policy test surface"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "REMOVED"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "ADDED"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "COMPARISON"
+    },
+    {
+      "tag": "H3",
+      "id": "",
+      "text": "Delete a startup deadline input that was unused"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "BASE"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "HEAD"
+    },
+    {
+      "tag": "H3",
+      "id": "",
+      "text": "Guard the retired names in production source"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "MECHANISM"
+    },
+    {
+      "tag": "H4",
+      "id": "",
+      "text": "BOUNDARY"
+    },
+    {
+      "tag": "H2",
+      "id": "evidence-title",
+      "text": "The evidence stays local."
+    },
+    {
+      "tag": "H3",
+      "id": "",
+      "text": "Storage path observations"
+    },
+    {
+      "tag": "H3",
+      "id": "",
+      "text": "Memory recipe comparison"
+    },
+    {
+      "tag": "H3",
+      "id": "",
+      "text": "Changed files"
+    },
+    {
+      "tag": "H3",
+      "id": "",
+      "text": "Reading limits"
+    }
+  ],
+  "controls": [
+    {
+      "tag": "A",
+      "id": "",
+      "text": "rich-review / 02",
+      "href": "#top",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "01 · Whole change",
+      "href": "#top",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "02 · Follow a limit",
+      "href": "#follow",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "03 · Evidence",
+      "href": "#evidence",
+      "data": {}
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Before",
+      "href": null,
+      "data": {
+        "data-revision": "base"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "After",
+      "href": null,
+      "data": {
+        "data-revision": "head"
+      }
+    },
+    {
+      "tag": "a",
+      "id": "",
+      "text": "Follow Transport policy",
+      "href": "#follow",
+      "data": {
+        "data-map-group": "transport"
+      }
+    },
+    {
+      "tag": "a",
+      "id": "",
+      "text": "Follow Startup policy",
+      "href": "#follow",
+      "data": {
+        "data-map-group": "startup"
+      }
+    },
+    {
+      "tag": "a",
+      "id": "",
+      "text": "Follow Shutdown policy",
+      "href": "#follow",
+      "data": {
+        "data-map-group": "shutdown"
+      }
+    },
+    {
+      "tag": "a",
+      "id": "",
+      "text": "Follow Delivery policy",
+      "href": "#follow",
+      "data": {
+        "data-map-group": "delivery"
+      }
+    },
+    {
+      "tag": "a",
+      "id": "",
+      "text": "Follow Output policy",
+      "href": "#follow",
+      "data": {
+        "data-map-group": "output"
+      }
+    },
+    {
+      "tag": "a",
+      "id": "",
+      "text": "Follow Resources policy",
+      "href": "#follow",
+      "data": {
+        "data-map-group": "resources"
+      }
+    },
+    {
+      "tag": "a",
+      "id": "",
+      "text": "Follow Diagnostics policy",
+      "href": "#follow",
+      "data": {
+        "data-map-group": "diagnostics"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "↑ Package view",
+      "href": "#map-section",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "01\nMake the caller supply the limits\nLocal defaults + per-consumer knobs\n→\nRequired policy inputs\nOutput capture, spooling, framing, resources, lifecycle and di",
+      "href": "#decision-required",
+      "data": {
+        "data-decision": "required"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "02\nKeep the operating envelope\nExisting values, formulas and untimed waits\n→\nSame values, one policy definition\nDefaults are retained. Memory limits still depen",
+      "href": "#decision-values",
+      "data": {
+        "data-decision": "values"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "03\nLet composition choose the response clock\nStatus action supplies 100 ms directly\n→\nStatus-observer purpose selects 100 ms\nThe purpose belongs to a transport ",
+      "href": "#decision-purpose",
+      "data": {
+        "data-decision": "purpose"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "04\nCount attempts in their own scopes\nOne-shot reattach / resume / startup retry\n→\nThree numeric limits, all default to 1\nReattachment spans accepted execution;",
+      "href": "#decision-budgets",
+      "data": {
+        "data-decision": "budgets"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "05\nExpose the reattached completion's error\nRecovery failure rethrows first accepted-close error\n→\nLater completion can expose its own error\nAfter an accepted c",
+      "href": "#decision-error",
+      "data": {
+        "data-decision": "error"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "06\nUse different input shapes at different depths\nDefaults hidden in consumers and helpers\n→\nSnapshot → sections → fields → numbers\nSome consumers take several ",
+      "href": "#decision-shapes",
+      "data": {
+        "data-decision": "shapes"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "07\nKeep old tuning calls in test adapters\nTests tune production constructors\n→\nSeven helper files translate into policies\nTest-only wrappers preserve legacy cal",
+      "href": "#decision-adapters",
+      "data": {
+        "data-decision": "adapters"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "08\nMake wrappers look like the former APIs\nProduction classes at test import sites\n→\nAdapters aliased to production class names\nTests often keep names such as L",
+      "href": "#decision-aliases",
+      "data": {
+        "data-decision": "aliases"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "09\nLet adapters rewrite the requested test limits\nInline 0 means spill immediately\n→\nClient inline floor becomes 64 KiB\nThe client helper also creates the outpu",
+      "href": "#decision-rewrite",
+      "data": {
+        "data-decision": "rewrite"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "10\nReshape test payloads around valid policy limits\nTiny or zero standalone limits\n→\nCoordinated chunk / inline / result values\ncapture(1) becomes capture(32); ",
+      "href": "#decision-fixtures",
+      "data": {
+        "data-decision": "fixtures"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "11\nMove the resource-policy test surface\nCLI memory recipe + three test definitions\n→\nExisting package policy tests + consumer tests\nThe duplicate CLI recipe an",
+      "href": "#decision-tests",
+      "data": {
+        "data-decision": "tests"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "12\nDelete a startup deadline input that was unused\nstartupTimeoutMs stored but never read\n→\nField and test arguments removed\nRemoving this input does not remove",
+      "href": "#decision-dead",
+      "data": {
+        "data-decision": "dead"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "13\nGuard the retired names in production source\nMeta-test checks three policy bypass strings\n→\nMeta-test checks 36 retired strings\nThe guard scans CLI productio",
+      "href": "#decision-fence",
+      "data": {
+        "data-decision": "fence"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "Follow a limit ↓",
+      "href": "#follow",
+      "data": {}
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "↔\nTransport",
+      "href": null,
+      "data": {
+        "data-group": "transport"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "↗\nStartup",
+      "href": null,
+      "data": {
+        "data-group": "startup"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "◷\nShutdown",
+      "href": null,
+      "data": {
+        "data-group": "shutdown"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "⤴\nDelivery",
+      "href": null,
+      "data": {
+        "data-group": "delivery"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "▤\nOutput",
+      "href": null,
+      "data": {
+        "data-group": "output"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "▥\nResources",
+      "href": null,
+      "data": {
+        "data-group": "resources"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "≋\nDiagnostics",
+      "href": null,
+      "data": {
+        "data-group": "diagnostics"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "One raw chunk\n64 KiB",
+      "href": null,
+      "data": {
+        "data-leaf": "output.maximumChunkRawBytes"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Inline output\n256 KiB",
+      "href": null,
+      "data": {
+        "data-leaf": "output.inlineRawBytes"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "One completed result\n256 MiB",
+      "href": null,
+      "data": {
+        "data-leaf": "output.maximumResultRawBytes"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "All retained spool output\n512 MiB",
+      "href": null,
+      "data": {
+        "data-leaf": "output.maximumAggregateSpoolRawBytes"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "base · line 10 ↗",
+      "href": null,
+      "data": {
+        "data-source": "{\"side\":\"base\",\"path\":\"apps/cli/src/daemon/completion-spool.ts\",\"start\":8,\"end\":15,\"highlight\":10}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "base · line 56 ↗",
+      "href": null,
+      "data": {
+        "data-source": "{\"side\":\"base\",\"path\":\"apps/cli/src/command-execution-result.ts\",\"start\":54,\"end\":61,\"highlight\":56}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · line 154 ↗",
+      "href": null,
+      "data": {
+        "data-source": "{\"side\":\"head\",\"path\":\"apps/cli/src/command-execution-result.ts\",\"start\":152,\"end\":159,\"highlight\":154}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · line 305 ↗",
+      "href": null,
+      "data": {
+        "data-source": "{\"side\":\"head\",\"path\":\"apps/cli/src/daemon/completion-spool.ts\",\"start\":303,\"end\":310,\"highlight\":305}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · line 297 ↗",
+      "href": null,
+      "data": {
+        "data-source": "{\"side\":\"head\",\"path\":\"apps/cli/src/daemon/local-daemon-transport.ts\",\"start\":295,\"end\":302,\"highlight\":297}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · line 199 ↗",
+      "href": null,
+      "data": {
+        "data-source": "{\"side\":\"head\",\"path\":\"apps/cli/src/daemon/daemon-navigation-worker-entry.ts\",\"start\":197,\"end\":204,\"highlight\":199}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · line 80 ↗",
+      "href": null,
+      "data": {
+        "data-source": "{\"side\":\"head\",\"path\":\"apps/cli/src/daemon/daemon-navigation-worker.ts\",\"start\":78,\"end\":85,\"highlight\":80}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · line 19 ↗",
+      "href": null,
+      "data": {
+        "data-source": "{\"side\":\"head\",\"path\":\"apps/cli/src/daemon/daemon-result-chunk-codec.ts\",\"start\":17,\"end\":24,\"highlight\":19}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · line 127 ↗",
+      "href": null,
+      "data": {
+        "data-source": "{\"side\":\"head\",\"path\":\"apps/cli/src/daemon/daemon-navigation-worker-protocol.ts\",\"start\":125,\"end\":132,\"highlight\":127}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Source of this value's reason ↗",
+      "href": null,
+      "data": {
+        "data-source": "{\"side\":\"head\",\"path\":\"plans/005/daemon-policy.md\",\"start\":29,\"end\":29}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Decision 01 · Make the caller supply the limits ↗",
+      "href": null,
+      "data": {
+        "data-decision": "required"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Decision 06 · Use different input shapes at different depths ↗",
+      "href": null,
+      "data": {
+        "data-decision": "shapes"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Decision 10 · Reshape test payloads around valid policy limits ↗",
+      "href": null,
+      "data": {
+        "data-decision": "fixtures"
+      }
+    },
+    {
+      "tag": "SELECT",
+      "id": "clock-purpose",
+      "text": "daemon status\nordinary lifecycle / execution status",
+      "href": null,
+      "data": {}
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Read reason + source ↗",
+      "href": null,
+      "data": {
+        "data-decision": "purpose"
+      }
+    },
+    {
+      "tag": "SELECT",
+      "id": "recovery-scenario",
+      "text": "Corrupt completion\nCompleted result\nAnother accepted close\nWould succeed on a third execute",
+      "href": null,
+      "data": {}
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Read error-selection mechanism ↗",
+      "href": null,
+      "data": {
+        "data-decision": "error"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Inspect adapter choices ↗",
+      "href": null,
+      "data": {
+        "data-decision": "rewrite"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "See the observed test rows ↓",
+      "href": "#spill-evidence",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "↑ Complete decision surface",
+      "href": "#whole-change",
+      "data": {}
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · daemon-entry.ts:21–49",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/daemon/daemon-entry.ts\",\"start\":21,\"end\":49,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · workspace-daemon.ts:125–175",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/daemon/workspace-daemon.ts\",\"start\":125,\"end\":175,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · command-execution-result.ts:146–155",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/command-execution-result.ts\",\"start\":146,\"end\":155,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Follow the related value ↗",
+      "href": null,
+      "data": {
+        "data-leaf-jump": "output.maximumChunkRawBytes"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "↑ Decision 01 in the whole change",
+      "href": "#whole-change",
+      "data": {
+        "data-top-decision": "required"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · daemon-policy.md:3–66",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"plans/005/daemon-policy.md\",\"start\":3,\"end\":66,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · daemon-policy.ts:101–170",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"packages/daemon/src/daemon-policy.ts\",\"start\":101,\"end\":170,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · daemon-controller.ts:70–80",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/daemon/daemon-controller.ts\",\"start\":70,\"end\":80,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · workspace-daemon.ts:888–900",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/daemon/workspace-daemon.ts\",\"start\":888,\"end\":900,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Follow the related value ↗",
+      "href": null,
+      "data": {
+        "data-leaf-jump": "resources.hardProcessRssBytes"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "↑ Decision 02 in the whole change",
+      "href": "#whole-change",
+      "data": {
+        "data-top-decision": "values"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · register-daemon-command.ts:100–119",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/commands/daemon/register-daemon-command.ts\",\"start\":100,\"end\":119,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · local-daemon-transport.ts:289–302",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/daemon/local-daemon-transport.ts\",\"start\":289,\"end\":302,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · local-daemon-transport-validation.test.ts:49–147",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/daemon/local-daemon-transport-validation.test.ts\",\"start\":49,\"end\":147,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Follow the related value ↗",
+      "href": null,
+      "data": {
+        "data-leaf-jump": "transport.statusResponseTimeoutMs"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "↑ Decision 03 in the whole change",
+      "href": "#whole-change",
+      "data": {
+        "data-top-decision": "purpose"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · local-daemon-transport.ts:395–427",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/daemon/local-daemon-transport.ts\",\"start\":395,\"end\":427,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · local-daemon-transport.ts:448–493",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/daemon/local-daemon-transport.ts\",\"start\":448,\"end\":493,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "base · local-daemon-transport.ts:431–470",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/daemon/local-daemon-transport.ts\",\"start\":431,\"end\":470,\"side\":\"base\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · daemon-startup-coordinator.ts:75–95",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/daemon/daemon-startup-coordinator.ts\",\"start\":75,\"end\":95,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Follow the related value ↗",
+      "href": null,
+      "data": {
+        "data-leaf-jump": "delivery.postAcceptanceExecutionReattachmentLimit"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "↑ Decision 04 in the whole change",
+      "href": "#whole-change",
+      "data": {
+        "data-top-decision": "budgets"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "base · local-daemon-transport.ts:398–413",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/daemon/local-daemon-transport.ts\",\"start\":398,\"end\":413,\"side\":\"base\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · local-daemon-transport.ts:402–427",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/daemon/local-daemon-transport.ts\",\"start\":402,\"end\":427,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Follow the related value ↗",
+      "href": null,
+      "data": {
+        "data-leaf-jump": "delivery.postAcceptanceExecutionReattachmentLimit"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "↑ Decision 05 in the whole change",
+      "href": "#whole-change",
+      "data": {
+        "data-top-decision": "error"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · local-daemon-transport.ts:24–37",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/daemon/local-daemon-transport.ts\",\"start\":24,\"end\":37,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · daemon-lifetime.ts:10–25",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/daemon/daemon-lifetime.ts\",\"start\":10,\"end\":25,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · daemon-navigation-worker.ts:76–90",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/daemon/daemon-navigation-worker.ts\",\"start\":76,\"end\":90,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · command-execution-result.ts:74–90",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/command-execution-result.ts\",\"start\":74,\"end\":90,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · daemon-result-chunk-codec.ts:128–156",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/daemon/daemon-result-chunk-codec.ts\",\"start\":128,\"end\":156,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Follow the related value ↗",
+      "href": null,
+      "data": {
+        "data-leaf-jump": "output.maximumChunkRawBytes"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "↑ Decision 06 in the whole change",
+      "href": "#whole-change",
+      "data": {
+        "data-top-decision": "shapes"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · local-daemon-transport.ts:18–63",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/test/helpers/local-daemon-transport.ts\",\"start\":18,\"end\":63,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · daemon-resource-policy.ts:1–34",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/test/helpers/daemon-resource-policy.ts\",\"start\":1,\"end\":34,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · policy-testing.ts:1–17",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"packages/daemon/src/policy-testing.ts\",\"start\":1,\"end\":17,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · daemon-policy.ts:266–306",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"packages/daemon/src/daemon-policy.ts\",\"start\":266,\"end\":306,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Follow the related value ↗",
+      "href": null,
+      "data": {
+        "data-leaf-jump": "output.inlineRawBytes"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "↑ Decision 07 in the whole change",
+      "href": "#whole-change",
+      "data": {
+        "data-top-decision": "adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · local-daemon-transport-validation.test.ts:17–23",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/daemon/local-daemon-transport-validation.test.ts\",\"start\":17,\"end\":23,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · daemon-logger.test.ts:11–42",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/daemon/daemon-logger.test.ts\",\"start\":11,\"end\":42,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · workspace-daemon.ts:28–65",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/test/helpers/workspace-daemon.ts\",\"start\":28,\"end\":65,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · daemon-controller.ts:27–46",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/test/helpers/daemon-controller.ts\",\"start\":27,\"end\":46,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Follow the related value ↗",
+      "href": null,
+      "data": {
+        "data-leaf-jump": "resources.hardProcessRssBytes"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "↑ Decision 08 in the whole change",
+      "href": "#whole-change",
+      "data": {
+        "data-top-decision": "aliases"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · local-daemon-transport.ts:42–63",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/test/helpers/local-daemon-transport.ts\",\"start\":42,\"end\":63,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · workspace-daemon.ts:9–64",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/test/helpers/workspace-daemon.ts\",\"start\":9,\"end\":64,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · local-daemon-transport-execution.test.ts:170–226",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/daemon/local-daemon-transport-execution.test.ts\",\"start\":170,\"end\":226,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Follow the related value ↗",
+      "href": null,
+      "data": {
+        "data-leaf-jump": "output.inlineRawBytes"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "↑ Decision 09 in the whole change",
+      "href": "#whole-change",
+      "data": {
+        "data-top-decision": "rewrite"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · cli-program-executor.test.ts:82–147",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/cli-program-executor.test.ts\",\"start\":82,\"end\":147,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · completion-spool.test.ts:89–120",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/daemon/completion-spool.test.ts\",\"start\":89,\"end\":120,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · workspace-daemon-requests.test.ts:1880–1910",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/daemon/workspace-daemon-requests.test.ts\",\"start\":1880,\"end\":1910,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Follow the related value ↗",
+      "href": null,
+      "data": {
+        "data-leaf-jump": "output.maximumChunkRawBytes"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "↑ Decision 10 in the whole change",
+      "href": "#whole-change",
+      "data": {
+        "data-top-decision": "fixtures"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "base · daemon-resource-monitor.test.ts:1–83",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/daemon/daemon-resource-monitor.test.ts\",\"start\":1,\"end\":83,\"side\":\"base\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · daemon-policy.test.ts:62–107",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"packages/daemon/src/daemon-policy.test.ts\",\"start\":62,\"end\":107,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · daemon-resource-monitor.test.ts:36–78",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/daemon/daemon-resource-monitor.test.ts\",\"start\":36,\"end\":78,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · local-daemon-transport-execution.test.ts:846–895",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/daemon/local-daemon-transport-execution.test.ts\",\"start\":846,\"end\":895,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Follow the related value ↗",
+      "href": null,
+      "data": {
+        "data-leaf-jump": "resources.supervisionIntervalMs"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "↑ Decision 11 in the whole change",
+      "href": "#whole-change",
+      "data": {
+        "data-top-decision": "tests"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "base · daemon-startup-coordinator.ts:45–76",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/daemon/daemon-startup-coordinator.ts\",\"start\":45,\"end\":76,\"side\":\"base\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · daemon-startup-coordinator.ts:46–75",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/daemon/daemon-startup-coordinator.ts\",\"start\":46,\"end\":75,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · daemon-startup-coordinator.test.ts:91–121",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"apps/cli/src/daemon/daemon-startup-coordinator.test.ts\",\"start\":91,\"end\":121,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · daemon-policy.md:56–65",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"plans/005/daemon-policy.md\",\"start\":56,\"end\":65,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Follow the related value ↗",
+      "href": null,
+      "data": {
+        "data-leaf-jump": "startup.coordinationGraceMs"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "↑ Decision 12 in the whole change",
+      "href": "#whole-change",
+      "data": {
+        "data-top-decision": "dead"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "head · daemon-package.test.ts:192–235",
+      "href": null,
+      "data": {
+        "data-source": "{\"path\":\"meta-tests/src/daemon-package.test.ts\",\"start\":192,\"end\":235,\"side\":\"head\"}"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "id": "",
+      "text": "Follow the related value ↗",
+      "href": null,
+      "data": {
+        "data-leaf-jump": "transport.singleResponseTimeoutMs"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "↑ Decision 13 in the whole change",
+      "href": "#whole-change",
+      "data": {
+        "data-top-decision": "fence"
+      }
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "COMPLETE DIFF\n60 files · +1,298 / −544\nLocal HTML, with file index →",
+      "href": "evidence.html",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "ARTIFACT DATA\nClaims, values, sources and observations\nLocal JSON →",
+      "href": "data/artifact.json",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "EXPERIMENT RECORD\nChoices, abandoned approach, limits\nREADME →",
+      "href": "README.md",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "Recorded result →",
+      "href": "probes/out/memory.json",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/cli-program-executor.test.ts",
+      "href": "evidence.html#file-1",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/cli-program-executor.ts",
+      "href": "evidence.html#file-2",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/command-execution-result.ts",
+      "href": "evidence.html#file-3",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/commands/daemon/register-daemon-command.ts",
+      "href": "evidence.html#file-4",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/completion-spool.test.ts",
+      "href": "evidence.html#file-5",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/completion-spool.ts",
+      "href": "evidence.html#file-6",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-command-dispatcher.integration.test.ts",
+      "href": "evidence.html#file-7",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-command-dispatcher.ts",
+      "href": "evidence.html#file-8",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-controller.test.ts",
+      "href": "evidence.html#file-9",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-controller.ts",
+      "href": "evidence.html#file-10",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-entry.ts",
+      "href": "evidence.html#file-11",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-lifetime.test.ts",
+      "href": "evidence.html#file-12",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-lifetime.ts",
+      "href": "evidence.html#file-13",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-logger.test.ts",
+      "href": "evidence.html#file-14",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-logger.ts",
+      "href": "evidence.html#file-15",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-navigation-worker-entry.ts",
+      "href": "evidence.html#file-16",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-navigation-worker-protocol.test.ts",
+      "href": "evidence.html#file-17",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-navigation-worker-protocol.ts",
+      "href": "evidence.html#file-18",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-navigation-worker.ts",
+      "href": "evidence.html#file-19",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-process-launcher.ts",
+      "href": "evidence.html#file-20",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-registry.test.ts",
+      "href": "evidence.html#file-21",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-registry.ts",
+      "href": "evidence.html#file-22",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-resource-monitor.test.ts",
+      "href": "evidence.html#file-23",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-resource-monitor.ts",
+      "href": "evidence.html#file-24",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-result-chunk-codec.test.ts",
+      "href": "evidence.html#file-25",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-result-chunk-codec.ts",
+      "href": "evidence.html#file-26",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-startup-coordinator.test.ts",
+      "href": "evidence.html#file-27",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/daemon-startup-coordinator.ts",
+      "href": "evidence.html#file-28",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/local-daemon-transport-execution.test.ts",
+      "href": "evidence.html#file-29",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/local-daemon-transport-validation.test.ts",
+      "href": "evidence.html#file-30",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/local-daemon-transport.test.ts",
+      "href": "evidence.html#file-31",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/local-daemon-transport.ts",
+      "href": "evidence.html#file-32",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/workspace-daemon-requests.test.ts",
+      "href": "evidence.html#file-33",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/workspace-daemon.test.ts",
+      "href": "evidence.html#file-34",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/src/daemon/workspace-daemon.ts",
+      "href": "evidence.html#file-35",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/test/benchmark/daemon-scale-benchmark-harness.ts",
+      "href": "evidence.html#file-36",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/test/e2e/daemon/diagnostic-output.test.ts",
+      "href": "evidence.html#file-37",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/test/e2e/daemon/parity.test.ts",
+      "href": "evidence.html#file-38",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/test/e2e/daemon/persistent-pressure.test.ts",
+      "href": "evidence.html#file-39",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/test/e2e/daemon/state-isolation.test.ts",
+      "href": "evidence.html#file-40",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/test/e2e/daemon/status.test.ts",
+      "href": "evidence.html#file-41",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/test/e2e/daemon/stop.test.ts",
+      "href": "evidence.html#file-42",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/test/helpers/daemon-accepted-caller.ts",
+      "href": "evidence.html#file-43",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/test/helpers/daemon-controller.ts",
+      "href": "evidence.html#file-44",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/test/helpers/daemon-live-silent.ts",
+      "href": "evidence.html#file-45",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/test/helpers/daemon-malformed-activity.ts",
+      "href": "evidence.html#file-46",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/test/helpers/daemon-process-terminator.ts",
+      "href": "evidence.html#file-47",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/test/helpers/daemon-registry-cleaner.ts",
+      "href": "evidence.html#file-48",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/test/helpers/daemon-registry.ts",
+      "href": "evidence.html#file-49",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/test/helpers/daemon-resource-policy.ts",
+      "href": "evidence.html#file-50",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/test/helpers/daemon-startup-caller-exit.ts",
+      "href": "evidence.html#file-51",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/test/helpers/daemon-startup-coordinator.ts",
+      "href": "evidence.html#file-52",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/test/helpers/daemon-startup-mutation-owner.ts",
+      "href": "evidence.html#file-53",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/test/helpers/daemon-startup-publisher.ts",
+      "href": "evidence.html#file-54",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/test/helpers/e2e-process-cleanup.ts",
+      "href": "evidence.html#file-55",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/test/helpers/local-daemon-transport.ts",
+      "href": "evidence.html#file-56",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/test/helpers/workspace-daemon-persistent-pressure.ts",
+      "href": "evidence.html#file-57",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/test/helpers/workspace-daemon-stuck.ts",
+      "href": "evidence.html#file-58",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "apps/cli/test/helpers/workspace-daemon.ts",
+      "href": "evidence.html#file-59",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "meta-tests/src/daemon-package.test.ts",
+      "href": "evidence.html#file-60",
+      "data": {}
+    },
+    {
+      "tag": "A",
+      "id": "",
+      "text": "↑ Back to the whole change",
+      "href": "#top",
+      "data": {}
+    }
+  ]
+}

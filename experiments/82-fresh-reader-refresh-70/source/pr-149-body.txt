@@ -1,0 +1,286 @@
+## Context
+
+[PR #148](https://github.com/mohasarc/symnav/pull/148) establishes the package `DaemonClient` and stages daemon mechanisms, but the shipped CLI and external test consumers still retain app-local ownership paths. This PR makes `@symnav/daemon` the sole mechanism owner while preserving command output, telemetry, execution modes, and lifecycle behavior.
+
+## Shape
+
+Before — CLI runtime and external tests still cross the app-local daemon boundary:
+
+```mermaid
+flowchart LR
+  E[CLI entry] -->|calls| D[CLI daemon dispatcher]
+  D -->|calls| A[App-local daemon copies]
+  T[CLI tests and benchmark] -->|calls| A
+  P[DaemonClient package root] -->|calls| M[Staged package mechanisms]
+  classDef removed fill:#ffebe9,stroke:#cf222e,color:#24292f
+  classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f
+  class D,A removed
+  class E,T changed
+```
+
+After — CLI coordinates invocations through the package root, and tests observe package state through a read-only subpath:
+
+```mermaid
+flowchart LR
+  E[CLI entry] -->|calls| C[CLI invocation coordinator]
+  C -->|calls| P[DaemonClient package root]
+  P -->|calls| M[Package-owned mechanisms]
+  T[CLI tests and benchmark] -->|calls| I[Read-only testing inspector]
+  I -->|calls| M
+  classDef added fill:#dafbe1,stroke:#1a7f37,color:#24292f
+  classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f
+  class C,I added
+  class E,T,M changed
+```
+
+Legend: green = added; red = removed; yellow = changed; unfilled = pre-existing and unchanged.
+
+- Atomic frozen install, build, 2,696 tests with 8 expected skips, lint, and typecheck pass at the exact head.
+- Explicit cold and warm suites each pass 355 tests with 8 expected skips.
+- Scale-1 daemon benchmark passes parity, freshness, responsiveness, continuity, telemetry, resource, and spool-cleanup gates.
+
+## Where it lives
+
+```text
+.
+├── apps/cli/
+│   ├── src/
+│   │   ├── ++ cli-invocation-coordinator.ts       # owns local/control/workspace routing
+│   │   ├── ~~ invocation-workspace-selector.ts   # moved from src/daemon/
+│   │   ├── ** cli.ts                              # composes one public daemon client
+│   │   ├── ** commands/daemon/register-daemon-command.ts # calls public lifecycle controls
+│   │   └── -- daemon/ ... 45 files                # removes app-owned mechanism copies
+│   └── ** test/ ... 34 files                      # uses public behavior or testing inspector
+├── packages/daemon/
+│   ├── ** package.json                            # exposes exactly four package paths
+│   ├── ++ src/testing/ ... 3 files                # read-only state inspection boundary
+│   ├── ** src/transport/ ... 16 files             # replaces compatibility facade
+│   ├── ++ test/actors/daemon-accepted-caller.ts   # package-owned accepted caller
+│   └── ~~ test/actors/ ... 6 files                # moved from apps/cli/test/helpers/
+├── meta-tests/src/
+│   ├── ++ cli-daemon-reachability.test.ts         # locks production import graph
+│   ├── ++ daemon-storage-boundary.test.ts         # locks testing storage boundary
+│   └── ** ... 3 files                             # locks exports, deletion, and lint rules
+├── ** AGENTS.md                                   # records final package ownership
+└── ** plans/000/symnav-stages.md                  # records completed architecture milestone
+```
+
+## Public surface
+
+```ts
+export class DaemonTestingInspector {
+  constructor(canonicalStateDirectory: string);
+  listInstances(): readonly DaemonTestingInstance[];
+  hasStateArtifacts(): boolean;
+  readDiagnostics(canonicalWorkspaceRoot: string, cursor?: number): DaemonTestingDiagnosticPage;
+  completionSpoolUsage(canonicalWorkspaceRoot: string): DaemonTestingSpoolUsage;
+}
+
+// Removed from DaemonPolicy:
+static fromSerialized(value: unknown): DaemonPolicy;
+toSerialized(): Readonly<SerializedDaemonPolicy>;
+```
+
+## Decisions
+
+- Chose a CLI invocation coordinator over the app-local daemon dispatcher, because argv classification and workspace discovery remain host responsibilities while execution belongs behind `DaemonClient`.
+- Chose a read-only testing inspector over exposing registry, diagnostic, or spool paths, because external assertions need observability without storage or mutation authority.
+- Chose package-owned actors with an injected executor URL over package tests naming CLI build artifacts, because daemon tests must not depend on app layout.
+- Chose focused package transport composition over retaining `LocalDaemonTransport`, because lifecycle, execution, result transfer, and socket owners now have one package boundary.
+- Chose exact compiler-backed import, export, clock, and storage inventories over regex or compatibility aliases, because ordinary TypeScript syntax must not bypass final ownership rules.
+
+## Look here
+
+- `apps/cli/src/cli-invocation-coordinator.ts:17`
+- `packages/daemon/src/testing/daemon-testing-inspector.ts:35`
+- `meta-tests/src/daemon-storage-boundary.test.ts:215`
+
+
+Commit subjects and bodies
+e09553a8269267cdd8ebec95ea4c00fc66712f75 Specify CLI invocation coordination
+
+65371fbba380b21a5077d13a2fa1a3666cc6877e Move invocation selection into CLI
+
+da4261619d7ff38b753b9a4ae6270ba4a3d154d4 Route CLI invocations through DaemonClient
+
+2f914dada453f486c2037fe51ac0bb1f3eb07a57 Specify public daemon lifecycle commands
+
+49ab7c945737136498f3a476288c79871947dfe5 Delegate daemon commands to DaemonClient
+
+ab417b09807c4e7978b2cc056984d775fa5c5c71 Lock top-level daemon composition
+
+75c9a72d5ae5f3e9f5b093583efc9c23b900952a Lock the reachable CLI daemon boundary
+
+803c02bbcb731ffaa88ce8ab4d020ce1e69a91ae Specify relative daemon control cwd
+
+ffa0bb284d2f62bf5182ba58abe779d3be40efe8 Normalize daemon control cwd
+
+cbcebf52c31b53e326ed7f69660d4fbf500a5d20 Align CLI coordinator boundary
+
+9945d596c052b1a7f89da4ddedc901ec82e37700 Exercise diagnostics through package daemon entry
+
+6d81d76fa7951f4a3f2fa147802533e5aac1006a Satisfy CLI test lint contracts
+
+5b940bd0e25a0534bddf2ce6aa7cb71ccc1a0fbf Specify daemon import syntax boundary
+
+17b00cd2375347cdc2ad00d08945f2ab0cb26e11 Enforce daemon import syntax boundary
+
+0a38145da68ebb8326db013bff10ec7a4b13f63f Specify syntax-complete daemon import detection
+
+e5f99828c066f30293374f1122e21fabd7b0e472 Parse TypeScript imports for daemon boundaries
+
+054424b3f5dd5e5ff40c8e6fc9db82e97f02481c Specify read-only daemon testing inspection
+
+d7f60b07fdce1cc039ffeb83802dcb2654f63ad5 Expose read-only daemon testing inspection
+
+6e441e4b4dbb742fe9361f8f1d98c8c53aa270c5 Specify test-only daemon inspector imports
+
+9e80c3d365099f1fcc95b8f88cac48435e57301f Restrict daemon inspector to tests
+
+be272702a940c937179923634d08b47d346bed5f Inspect daemon e2e state through testing API
+
+20559201afa9872c419222c3ca5723e60dc4ce65 Inspect daemon benchmark state through testing API
+
+d04aa0f7a6257690acfc1191978aac8fc4a91ea7 Own test process cleanup outside daemon mechanisms
+
+0afd69187db20001d18cac2487a2fc5870704c02 Specify rotated diagnostic inspection order
+
+fb6d864d3a20af5d5a8b4f44cf61007c76044e4f Inspect rotated daemon diagnostics chronologically
+
+86761bd6454434448eb055df9b8d4a2378290563 Inspect daemon isolation through testing API
+
+a567e24453aa2ab27bc32c9d87e0a74cc20d4fcc Move daemon state actors into daemon package
+
+9e31259fa8a43337ee5c5d1f09c8db2e637e6cf9 Move controlled daemon actor into daemon package
+
+9284116a4bb2be984054d9b3af010b31b61a90b2 Use package-owned daemon parity actors
+
+3b739006ef3e0b0896756358a9fbb5ecaa379473 Inspect persistent pressure through public status
+
+d698b1a55d0ce2e46c7bb716d0b7d4f866276516 Internalize daemon policy serialization
+
+9f4886435a5f71e2dbced0db83814529b10c414f Remove CLI-owned daemon mechanisms
+
+ff2888997bcb8a427960b4aa58de07cc6b7fc105 Replace daemon transport compatibility facade
+
+4d9755a425805d6a00d62770a7b2a2c44ead60d5 Lock final daemon package surface
+
+a92afc1a96d9b22fad3a8dbce93de85252c1e600 Handle invalid inspector state paths
+
+e72f3b10904ea371e7fdeddfce366245e123c5eb Format daemon testing lint cases
+
+fdc718dc8f7b91423487b8bcb8ba770de343e834 Specify invalid daemon inspector state reads
+
+d01799054780a684f9e197489d256c519c0f3276 Normalize invalid daemon inspector state reads
+
+4ed1de0052b29ec776a33e6e7101f1226d47f563 Specify exhaustive daemon export inventory
+
+a7d46afd33f45c9c4286f0f21810e5c9b68f2619 Inventory every TypeScript export form
+
+0ab7e9d011fd80fbada3485ae5176905cef6fe0b Lock daemon source and declaration exports
+
+ff983397427c3ba699899145d90796d00d83c84a Lock emitted daemon policy surface
+
+ac8fd267890b41820a5cd8e41e749950aaaa629a Specify equivalent daemon clock sources
+
+b6761ee46e629b0d66d1a2f39090f631b155cd2c Detect syntax-aware daemon clock sources
+
+2e06c2aa9720e715ca26349d3c74f284a453cb89 Specify adversarial daemon peer integration
+
+0ff9276304571e862c74260e870911500455122e Run adversarial peers through daemon client
+
+7e3dca4b03013d26a2fc02ed6f23c17192541bd6 Format invalid daemon inspector cases
+
+8976d7409f194904a3bf62653eb6bc98fc3b68ab Specify import-equals daemon reachability
+
+7db908eb985844967b82d22674a1651b0b574aae Parse import-equals daemon dependencies
+
+e49515135b2154bb27b38515f652755420ae3e08 Specify import-equals export inventory
+
+3af983dfece4ede0f1ecedc25ba5e8baf5311c5d Inventory import-equals exports
+
+3b9a572f4ee20111d388f3c49bbc36fc30c4455e Specify every inspector filesystem failure
+
+b56a4ea1d8f5f4af0f0bea361235ddadfb25f4fe Classify inspector artifact read failures
+
+7235fff84c81c5198cd7ba6586122a7b25c22d1b Specify semantic daemon clock sources
+
+63fdc227468de95ef89f28c831fd6fb7744541d9 Resolve daemon clock identifiers lexically
+
+5a5198db54764760e996f777d4d6e2b717a00680 Specify package test executor independence
+
+aea44a091f28ea01a26c2985630e7449d35ec024 Inject controlled daemon executor URL
+
+1eb3916559058fbf6294043dbad0f3e25f4444fe Specify runtime import-equals exports
+
+7ab16df4faf4d96e0440a10ada34d5835a42d3fb Classify import-equals exports semantically
+
+3d32eb0eecaaaa7e997258c45f58fef8a078faac Specify import-equals daemon clock aliases
+
+6b6632726ca97ee6d402bd3d33eada1372981365 Resolve import-equals daemon clock aliases
+
+b54aeca64d66ce5c248393f7c9a24a181ec9117a Specify external daemon storage boundary
+
+65bdd226ee069bedca46e3023847bd22a678a4d5 Inspect telemetry daemon state through testing API
+
+64aea4d5fbbd73d2bd62b6f2b576bce24903f45a Document final daemon package ownership
+
+688173885455dd0779b123bfbe90b7c5400b36fc Specify dynamic daemon clock imports
+
+21cb6cfda698e3edd072041cdb1140e52ca335ce Reject dynamic daemon clock imports
+
+279b629d8418a24161fb1fdf5a7ddd3a7ce37427 Specify computed daemon clock members
+
+fc3dc695bc8fd9de850781e6a2e030bb0864ee24 Classify computed daemon clock members
+
+7730a9feb527357e0a055631601e99ec1c06d350 Specify platform daemon path builders
+
+68a6240a80d653ceae9cd3299a88e28cb03d9532 Classify platform daemon path builders
+
+1d76592bbef9ba86bd827dbb64d523d8696fbf9a Specify contextual daemon storage paths
+
+a592cb32a44983538f3e82efe774dc0cfb26dd37 Classify contextual daemon storage paths
+
+8ddb833b3e1970598a3f523a4f02e1550546aec2 Specify aliased daemon clock sources
+
+40c8ab9dad7da6e8d38d8d8726a112ef8f754d97 Resolve aliased daemon clock sources
+
+44080a7563f3f7bafb268a7562028c3c7c627d32 Specify semantic daemon storage access
+
+bcfc89488ff8bf07bc8e3b8f5cff164725b422f0 Resolve semantic daemon storage access
+
+4f2ab33c179b5c6e321bbfd613bf79dbc0fb49d1 Specify callable daemon wall clocks
+
+fe36df025e9cb5ca17cf48d761c6d080c33d5f57 Classify callable daemon wall clocks
+
+25b93bac45053a3242f8e3f200a1ba26754c8c62 Specify dynamic daemon storage access
+
+69e1cd07c1245f5ff28c42e74adeee49a1086bc5 Classify dynamic daemon storage access
+
+0049b660538c3ea118c686e86b5d53e37ea42e51 Specify invoked daemon wall clocks
+
+ec5e4b7547c8a34effdc948beddcba9ad39d5cbe Classify invoked daemon wall clocks
+
+0ac6d1da7125858f26d69461d41fc0c463b0039d Specify promised daemon storage access
+
+b8a09975a59c9f7cdb8ddb4a66e418e3df856aa8 Classify promised daemon storage access
+
+748529679b40310b665720cbf13d217598778860 Specify default dynamic daemon storage access
+
+ea6c6321a634fdccfd10cdd1d67890c04a63bbbc Classify default dynamic daemon storage access
+
+e71da400a18c7972a09fa8d1bacc8a9fc807a59f Specify callback-body daemon storage access
+
+5cbc1cde6ffcd802ab4e30750df3c2001a4ed04a Classify callback-body daemon storage access
+
+c7f36b1b49115972d97ff20def8019a9ec1323a5 Specify aliased callback daemon storage access
+
+673208bc0b510581b6aff988fdc608335c1f77df Resolve aliased callback daemon storage access
+
+66f3c9053f705238dda202dfd9ec1401c72c3db2 Use native paths in CLI reachability gate
+
+eb512e8ea7a57fcc58f8709f8dadf152e725d3d7 Read daemon clock inventory from file URLs
+
+1599252152c565631066bcdc312f8669438beacd Align daemon test workspace path dialect
+
+d07002357d3e9596bfaae910a1ac63b77981620b Track disconnected daemon actor directly

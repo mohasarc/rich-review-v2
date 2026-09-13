@@ -1,0 +1,190 @@
+## Context
+
+Daemon process ownership still lived in CLI-local mechanisms, and hosts needed registry, transport, startup, and lifecycle knowledge to compose daemon execution. This group establishes the package-owned process and client boundary while leaving the active CLI consumer switch to the next PR.
+
+## Shape
+
+Before — CLI-local mechanisms own process coordination and expose their composition burden to the host:
+
+```mermaid
+flowchart LR
+  H[CLI host] --> W[WorkspaceDaemon]
+  W --> M[CLI-local daemon mechanisms]
+  P[daemon package] --> C[Contracts and policy]
+  classDef removed fill:#ffebe9,stroke:#cf222e,color:#24292f
+  class W removed
+```
+
+After — package entries and a public client compose package-local mechanisms; the shipped CLI still follows its frozen compatibility graph:
+
+```mermaid
+flowchart LR
+  H[CLI host] --> F[Frozen compatibility graph]
+  P[daemon package] --> D[DaemonClient public facade]
+  D --> M[Private routing and lifecycle mechanisms]
+  E[Process and worker entries] --> M
+  classDef added fill:#dafbe1,stroke:#1a7f37,color:#24292f
+  classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f
+  class D,M,E added
+  class F changed
+```
+
+Legend: green = added; red = removed; yellow = changed; unfilled = pre-existing and unchanged.
+
+## Where it lives
+
+```text
+.
+├── apps/cli/src/daemon/
+│   ├── ~~ daemon-process-coordinator.ts # renamed from workspace-daemon.ts; owns process lifecycle
+│   ├── ** daemon-clock.ts               # owns wall and monotonic time sources
+│   ├── ** daemon-registry.ts            # owns startup-lock equality
+│   └── ** ... 9 files                   # coordinated compatibility mechanisms, then frozen
+├── packages/daemon/
+│   ├── ** package.json                  # exposes real process and worker entry subpaths
+│   ├── src/
+│   │   ├── ++ client/ ... 8 files       # public facade and private routing/runtime composition
+│   │   ├── ++ delivery/, diagnostics/, execution/, lifecycle/
+│   │   ├── ++ process/, registry/, resources/, transport/, worker/ # package mechanism owners
+│   │   ├── ~~ ... 37 test files         # moved from apps/cli/src/daemon/
+│   │   ├── ++ process-entry.ts
+│   │   ├── ++ worker-entry.ts
+│   │   └── ** index.ts                  # exports the host-facing client surface
+│   └── ++ test/ ... 24 files            # generic executor and built-entry integration fixtures
+├── meta-tests/src/
+│   └── ++ daemon-compatibility-copy.test.ts # freezes 38 app-local production copies
+└── plans/005/
+    └── ** daemon-follow-ups-functional-spec.md # records deferred idle-accounting changes
+```
+
+## Public surface
+
+```ts
+export type {
+  DaemonClientExecuteRequest,
+  DaemonClientExecuteResult,
+  DaemonClientOptions,
+  DaemonControlRequest,
+} from "./client/daemon-client-contracts.js";
+export { DaemonClient } from "./client/daemon-client.js";
+
+export class DaemonClient {
+  constructor(options: DaemonClientOptions);
+  execute(request: DaemonClientExecuteRequest): Promise<DaemonClientExecuteResult>;
+  control(
+    request: Extract<DaemonControlRequest, { readonly action: "start" }>,
+  ): Promise<DaemonStartResult>;
+  control(
+    request: Extract<DaemonControlRequest, { readonly action: "status" }>,
+  ): Promise<readonly RunningDaemonStatus[]>;
+  control(
+    request: Extract<DaemonControlRequest, { readonly action: "stop" }>,
+  ): Promise<DaemonStopResult>;
+}
+```
+
+## Decisions
+
+- Chose a Node-free public façade with a dynamically loaded internal runtime over exposing Node-backed mechanisms, because host declarations must not acquire Node ambient dependencies.
+- Chose ordered lazy routing guards over eager registry and transport observation, because the first routing decision must prevent every later side effect.
+- Chose package staging with a frozen CLI compatibility graph over switching production consumers during relocation, because mechanism ownership and host invocation coordination need separate review boundaries.
+- Chose package-owned result capture and controlled failure outputs over host-provided storage or output factories, because warm transfer cleanup and replay safety belong to the daemon client.
+- Chose to preserve acceptance-based idle timing over correcting it during extraction, because readiness- and completion-based lifetime changes are explicitly deferred behavior.
+
+## Look here
+
+- `packages/daemon/src/process/process-coordinator.ts:84`
+- `packages/daemon/src/client/daemon-client-runtime.ts:139`
+- `packages/daemon/src/client/daemon-client.ts:20`
+
+
+Commit subjects and bodies
+5fb83c449d05b9f567e42c5248bf60d06d3c11bd Specify daemon lifetime clock ownership
+
+61fa2d70f8beff2a3fb8724e42eada8382cb7bd0 Give daemon lifetime its wall clock
+
+aec3f7c02a591e710c80814d99ef2b50051c970d Specify registry startup ownership authority
+
+c3796a65090baa7fc1a67491c4045a48a8040c8b Centralize registry startup ownership checks
+
+7e860218e55963852a0d5afe497ccde702e5f4a5 Rename workspace daemon as process coordinator
+
+3d25c347f1778ecccf8ca9314e224bac71f9fa1c Specify process request authentication order
+
+7fd93d33c1f74da7541a37f14d5673a5d1d74518 Specify validated process coordinate adoption
+
+0a3d57c6f6b2c8d807cd8d34c0163a8b7c915d72 Adopt validated process coordinates
+
+bdaff55dc8f541e90a86da64512bd7941a59ade3 Specify daemon clock source ownership
+
+f6f942ef7a57a6c1632752aef3e685f66a496de1 Route daemon timing through its clock
+
+516cb9b91c44ab97117b31dde9777099d8d95cab Characterize process callback composition
+
+25ddbe22d120013e627a66772601e8cbd9b8d6dc Specify canonical startup ownership authority
+
+b46872384d0981f0df87d8885fc4e40c152a2c1c Centralize all startup ownership decisions
+
+4a0b280649a62c26f0f712166709e086dda74b74 Specify narrow startup ownership coordinates
+
+f2bda0b61ff09ceaea12eb3a7d5f666d83d5ac48 Stage daemon mechanism compatibility copies
+
+8a21dd5b425727b91cf61ad3ad78ad6748e36a13 Organize daemon mechanisms by ownership
+
+36ef14651a616e10bb7f3097932d4ad088a81d09 Add daemon package executable entries
+
+b855f6be930d9b2ddcab766caba19c6d41e45e03 Prove built daemon entry resolution
+
+e0425f842d6c8051b91ef85b34444704fdefe693 Retire flat daemon staging copies
+
+ed3baa7f1003a25b177a105102a84afc9630a645 Relocate daemon mechanism ownership tests
+
+501c5b5e769966feb45170ce65c3b44a35820287 Retire app-owned daemon mechanism tests
+
+68fbaace0bd962ad451c803c29d04901dfc9c866 Keep executor fixture package-independent
+
+6629b30f879da58db646d14bd0d44768632fe7b2 Conform daemon staging tests to lint rules
+
+dad9676feea612dac85c33e7b890355f3cb98fd1 Specify exhaustive daemon entry exports
+
+e1dc8725f40e1e14f9959b5df8295dc003d21b7e Prove built daemon process entry execution
+
+0f31a619e806dcadd81207de6643b92bd353e716 Restore CLI executor version rejection oracle
+
+70c7bea75c15581aa696adbddcb2a1ba8c2c598e Specify ordered daemon routing decisions
+
+d8703664779d06200f2190ee65632fc9afdd1b73 Own ordered daemon routing decisions
+
+cd94bd488a39b14a29a4d9e0eb44b0c2164c5aef Define daemon client host contracts
+
+2c7a42178376434fe2cccc676d924096ce5d2678 Specify daemon client execution ownership
+
+18e2f4ade3e424158bdf781f18ddf183a4fec7f8 Route execution through DaemonClient
+
+ea52cfbb9b344f601ae9b3d14f2998018bed4ec1 Specify daemon client lifecycle control
+
+c41d2e20074e907801b5556793ec5cfa260d1674 Own daemon lifecycle composition in DaemonClient
+
+6762c7f819a80272e67c60b2b5b0b5c151e94bcd Specify host-owned daemon readiness probe
+
+a29be148b5b6b6a6ec58831fcb1e7b98cc60b5ad Route host readiness probes through startup
+
+f2a9d157c96cba64e65937909f63abbb5b4b63b6 Compose warm result capture in DaemonClient
+
+f6030ed6f1dc188e9a8a05088ead957d7932cb8f Expose the Node-free DaemonClient facade
+
+bca036f0ad16ede54127ad25e9c31928af26dc76 Lock the public DaemonClient boundary
+
+32152f1da945995fbc152a406320d3f8af342eac Represent disabled daemon routing
+
+4b414b37516fdeb314d067e0041b06ea1a17720f Complete daemon client routing characterization
+
+3cb60059251dd336fde21f8e1796fb1fcd550816 Specify missing warm output handling
+
+73c0f1c8aaa1d2d4df9e22b2ceda0d4588fa6e5c Lock daemon control overload return types
+
+80d4afe0c24c96f30c47ff16a57d9068f04d4213 Specify portable daemon compatibility hashing
+
+cef673008deef942b379543be48307ec2379d6b6 Normalize daemon compatibility source line endings
+
+20838f8dbf413e04767543eb2380d0d114da6c60 Specify Windows process entry cleanup ownership

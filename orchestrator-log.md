@@ -1262,3 +1262,12 @@ no changes added to commit (use "git add" and/or "git commit -a")
 - 2026-09-13 15:48:32 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/79-failure-domain-pinball/node_modules/phaser/types/phaser.json
 - 2026-09-13 15:48:32 +03: MONITOR OK supervisor=39161, finished=82, running=2, queued=0, dirty-worktrees=0, missing-readmes=0, free-disk=20.3GiB
 - 2026-09-13 15:53:15 +03: FINISH 84-fresh-reader-refresh-80 via codex, exit 0, README present
+- 2026-09-13 15:53:16 +03: COMMIT OK 84-fresh-reader-refresh-80: [main 92f86c8] Add experiment 84 fresh-reader-refresh-80
+- 2026-09-13 15:53:45 +03: PUBLISH OK: To https://github.com/mohasarc/rich-review-v2.git
+   9daf1a2..92f86c8  main -> main
+- 2026-09-13 15:53:47 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/79-failure-domain-pinball/node_modules/phaser/types/phaser.json
+- 2026-09-13 15:58:51 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/79-failure-domain-pinball/node_modules/phaser/types/phaser.json
+- 2026-09-13 16:02:01 +03: STOP signal 15; terminating 1 active workers
+- 2026-09-13 16:02:06 +03: SUPERVISOR STOPPED
+- 2026-09-13 16:02:26 +03: MONITOR STOPPED
+- 2026-09-13 16:04:31 +03: FINAL STOP requested by user. Supervisor and watchdog exited; no screen sessions, active workers, queued briefs, or running briefs remain. Experiment 82 was interrupted, retained as a documented negative result with README, and moved to done. Final inventory: 84 experiment folders, 84 done briefs, 0 running, 0 queued; symnav worktrees were not modified.

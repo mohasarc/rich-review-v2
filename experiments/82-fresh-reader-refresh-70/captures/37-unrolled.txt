@@ -1,0 +1,1471 @@
+Skip to decisions
+╬
+READING LOOM
+EXPERIMENT 37 / PR #127 / LAYER 4 OF 26
+Experiment notes ↗
+
+SCOPE SEMANTIC CACHES TO ONE TURN
+
+Same query work.
+A different clearing hand.
+
+LOSSY INTUITION
+Six drawers keep their contents separate. A shared caretaker now empties them. The drawers are caches, not processes.
+
+Core takes cache lifetime; TypeScript keeps the algorithms. Successful refresh still resets the turn. Release clears first, and now waits for project release to finish or reject.
+
+6 changed files
+12 decisions below
+3 reasons not found
+THE PACKAGE SEAM
+ changed ownership
+BEFORE
+AFTER
+@symnav/backend-typescript
+Semantic query service
+TypeScript algorithms
+6 Maps + 6 manual clears
+@symnav/backend-typescript
+Semantic query service
+algorithms · holds scope instance
+create / use
+@symnav/core
+Scope → 6 handles → 6 Maps
+one synchronous clearing loop
+RELEASE COMPLETION NOW CROSSES THIS WHOLE CHAIN
+TypeScriptBackend
+Semantic query service
+TypeScriptProjectGraph
+Boxes show source ownership. The TypeScript service holds the runtime scope instance. No process moves.
+07
+
+Keep this boundary in view. The PR says failure behavior is preserved and also introduces an awaited release barrier. The source shows changed completion timing and rejection propagation. A reason reconciling these claims was not found.
+
+Locate this decision →
+
+A REVIEW WITH TWO INDEPENDENT DIRECTIONS
+
+Keep a fact. Change its depth.
+Keep a depth. Change the fact.
+
+Read the twelve threads down the left for the complete change. Select any crossing to inspect it. The right-hand pane holds your place.
+
+On a crossing: ↑↓ change decision · ←→ change depth · Esc return to Shape.
+
+Return to the loom ↑
+Return to the same crossing ↑
+
+DECISION 01 · OWNERSHIP
+
+Move lifetime across the package seam
+
+Core gains the generic cache lifetime owner. The TypeScript query service holds its instance and keeps the semantic algorithms. The existing TypeScript → core dependency direction stays the same.
+
+STATEDThe architecture spec assigns language-independent retention to core; the PR explicitly moves only cache lifetime.
+
+BACKEND TYPESCRIPT
+CORE
+Semantic query service
+algorithms stay here
+holds scope instance
+Scope implementation
+register + clear handles
+6 separate Maps
+uses
+Package direction stays TypeScript → core.
+Source ownership and object ownership are different: the core class is instantiated inside the TypeScript service.
+
+CHOICE
+
+Move the reusable lifetime mechanism into core while keeping language-specific query work in the backend.
+
+BEFORE
+TypeScriptSemanticQueryService owns six Maps and names every Map in a manual clearing method.
+AFTER
+The service creates a core TurnScopedCacheScope; the scope registers and clears the handles.
+
+MECHANISM
+
+01
+Source boundary
+
+TurnScopedCacheScope is implemented in packages/core/src/backend and exported by core.
+
+02
+Object ownership
+
+Each TypeScriptSemanticQueryService constructs its own scope and retains it as a private field.
+
+03
+Calls across the seam
+
+The service asks the scope to create caches, begin a turn, and release transient entries.
+
+04
+Work stays put
+
+Definition, reference, call-target, caller, callee, and position-resolution algorithms remain in TypeScript.
+
+EVIDENCE
+
+Exact local source excerpts, tied to the bundle’s base and head commits. Line numbers refer to the named revision. Rationale is attributed separately from implementation.
+
+The new generic lifetime owner has no imports.
+
+HEAD · 64919bcb · packages/core/src/backend/turn-scoped-cache-scope.ts:26–46
+
+26export class TurnScopedCacheScope {
+27  private readonly caches: ClearableTurnScopedCache[] = [];
+28
+29  createCache<Key, Value>(): TurnScopedCache<Key, Value> {
+30    const cache = new TurnScopedCacheHandle<Key, Value>();
+31    this.caches.push(cache);
+32    return cache;
+33  }
+34
+35  beginTurn(): void {
+36    this.clear();
+37  }
+38
+39  releaseTransientResources(): void {
+40    this.clear();
+41  }
+42
+43  private clear(): void {
+44    for (const cache of this.caches) cache.clear();
+45  }
+46}
+The TypeScript service holds the scope instance and six handles.
+
+HEAD · 64919bcb · packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts:29–55
+
+29export class TypeScriptSemanticQueryService implements PositionDefinitionResolver {
+30  private files: readonly WorkspaceFile[] = [];
+31  private readonly cacheScope = new TurnScopedCacheScope();
+32  private readonly definitionsByIdentity = this.cacheScope.createCache<
+33    string,
+34    Promise<readonly SymbolOverviewNode[]>
+35  >();
+36  private readonly referencesByIdentity = this.cacheScope.createCache<
+37    string,
+38    Promise<readonly SemanticReferenceLocation[]>
+39  >();
+40  private readonly callTargetsByIdentity = this.cacheScope.createCache<
+41    string,
+42    Promise<CallTargetResolution>
+43  >();
+44  private readonly callersByIdentity = this.cacheScope.createCache<
+45    string,
+46    Promise<readonly CallEdge[]>
+47  >();
+48  private readonly calleesByIdentity = this.cacheScope.createCache<
+49    string,
+50    Promise<readonly CallEdge[]>
+51  >();
+52  private readonly definitionsByPosition = this.cacheScope.createCache<
+53    string,
+54    readonly SemanticNodeLocation[]
+55  >();
+The package exposes the class and cache type.
+
+HEAD · 64919bcb · packages/core/src/index.ts:152–152
+
+152export { TurnScopedCacheScope, type TurnScopedCache } from "./backend/turn-scoped-cache-scope.js";
+Stated ownership reason in the architecture spec.
+
+HEAD · 64919bcb · plans/005/daemon-architecture-functional-spec.md:53–64
+
+53### A language backend holds only language-specific logic
+54
+55A concept that another language could share lives in core as a base the backend extends. The backend supplies only what depends on the language's toolchain.
+56
+57```text
+58Shared in core: file revision tracking, prepared-file index, declarations-by-identity,
+59transactional index publication, project-membership graph with input invalidation,
+60turn-scoped query cache lifecycle.
+61TypeScript-only: extraction from TypeScript syntax trees, tsconfig parsing (extends,
+62references, path aliases, include/exclude), program and language-service creation,
+63semantic query bodies.
+64```
+
+DECISION 02 · SIX HANDLES
+
+Keep six independent compartments
+
+Five handles keep promises under formatted symbol identities; a sixth keeps location arrays under file:position keys. Keys, value types, and exact cached identities stay separate. Callers and references still share reference-location work.
+
+STATEDThe PR chooses six handles over a shared map because the queries have independent key and value spaces.
+
+One clearing scope
+definitions
+identity → promise
+references
+identity → promise
+call targets
+identity → promise
+callers
+identity → promise
+callees
+identity → promise
+positions
+file:start → locations[]
+Each handle owns its own Map; names do not collide.
+The scope unifies lifetime. The six typed key/value spaces stay isolated.
+
+CHOICE
+
+One lifetime owner does not imply one namespace.
+
+BEFORE
+Six independently typed Maps; identity-based queries and position-based lookup have different key/value contracts.
+AFTER
+Six independently typed handles with the same key/value contracts; each handle contains its own Map.
+
+MECHANISM
+
+01
+Five identity handles
+
+Definitions, reference locations, call targets, callers, and callees use formatSymbolIdentity(identity). Each stores its original promise.
+
+02
+One position handle
+
+Definition locations use `${relativePath}:${node.getStart()}` and store a readonly location array.
+
+03
+Sharing within the right compartment
+
+findCallers and findReferences both use referenceLocations; they do not merge all query caches.
+
+04
+Identity boundary
+
+A handle returns its exact cached value. Outer async projections are not a promise-identity contract; position and reference projections are covered in 08.
+
+Handle	Key	Stored value
+definitions	symbol identity	Promise<overview nodes>
+references	symbol identity	Promise<reference locations>
+call targets	symbol identity	Promise<resolution>
+callers	symbol identity	Promise<call edges>
+callees	symbol identity	Promise<call edges>
+position definitions	file:start	semantic locations[]
+
+EVIDENCE
+
+Exact local source excerpts, tied to the bundle’s base and head commits. Line numbers refer to the named revision. Rationale is attributed separately from implementation.
+
+All six types are preserved in distinct handles.
+
+HEAD · 64919bcb · packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts:29–55
+
+29export class TypeScriptSemanticQueryService implements PositionDefinitionResolver {
+30  private files: readonly WorkspaceFile[] = [];
+31  private readonly cacheScope = new TurnScopedCacheScope();
+32  private readonly definitionsByIdentity = this.cacheScope.createCache<
+33    string,
+34    Promise<readonly SymbolOverviewNode[]>
+35  >();
+36  private readonly referencesByIdentity = this.cacheScope.createCache<
+37    string,
+38    Promise<readonly SemanticReferenceLocation[]>
+39  >();
+40  private readonly callTargetsByIdentity = this.cacheScope.createCache<
+41    string,
+42    Promise<CallTargetResolution>
+43  >();
+44  private readonly callersByIdentity = this.cacheScope.createCache<
+45    string,
+46    Promise<readonly CallEdge[]>
+47  >();
+48  private readonly calleesByIdentity = this.cacheScope.createCache<
+49    string,
+50    Promise<readonly CallEdge[]>
+51  >();
+52  private readonly definitionsByPosition = this.cacheScope.createCache<
+53    string,
+54    readonly SemanticNodeLocation[]
+55  >();
+Caller computation reuses the reference-location cache.
+
+HEAD · 64919bcb · packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts:108–114
+
+108  findCallers(identity: SymbolIdentity): Promise<readonly CallEdge[]> {
+109    const key = formatSymbolIdentity(identity);
+110    return this.callersByIdentity.getOrCreate(key, () =>
+111      this.referenceLocations(identity).then((locations) =>
+112        new CallerFinder(this.workspaceState).find(locations),
+113      ),
+114    );
+The characterization checks exact service-level promise identities.
+
+HEAD · 64919bcb · packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts:43–58
+
+43    const caller = identity("src/app.ts", "caller");
+44    queries.beginTurn(snapshot.files);
+45
+46    const definitions = queries.findDefinitions(target);
+47    const callTarget = queries.findCallTarget(target);
+48    const callers = queries.findCallers(target);
+49    const callees = queries.findCallees(caller);
+50
+51    expect(queries.findDefinitions(target)).toBe(definitions);
+52    expect(queries.findCallTarget(target)).toBe(callTarget);
+53    expect(queries.findCallers(target)).toBe(callers);
+54    expect(queries.findCallees(caller)).toBe(callees);
+55    await expect(definitions).resolves.toHaveLength(1);
+56    await expect(callTarget).resolves.toMatchObject({ outcome: "resolved" });
+57    await expect(callers).resolves.toHaveLength(1);
+58    await expect(callees).resolves.toHaveLength(1);
+Stated reason, including the alternative the author named.
+
+PR BODY · bundle · inputs/pr-127/pr.json → body:78–78
+
+78- Chose one scope with six handles over one shared map, because the existing queries have independent key and value spaces.
+
+DECISION 03 · PRESENCE
+
+An undefined value still occupies a key
+
+The generic handle tests membership with Map.has, then returns Map.get. A stored undefined is a hit. The factory runs only when the key is absent; the TypeScript cache value types themselves are unchanged.
+
+STATEDThe PR says undefined is a valid cached value, so truthiness cannot decide whether a key exists.
+
+Map.has(key) controls both branches
+key absent
+has → false
+Call factory → store value
+key → undefined
+has → true
+Return stored undefined
+An empty value is not the same as an absent entry.
+This is a new generic contract; the existing TypeScript handles still store their original promise and array types.
+
+CHOICE
+
+Define emptiness by absent key, not by the returned value.
+
+BEFORE
+TypeScript query methods use truthy Map.get checks for their existing promise and array value types.
+AFTER
+The generic core handle uses Map.has before Map.get, including for a handle whose value type permits undefined.
+
+MECHANISM
+
+01
+Lookup
+
+Ask values.has(key). This is the sole cache-hit predicate.
+
+02
+Hit
+
+Return values.get(key), cast to Value. Do not call the factory.
+
+03
+Miss
+
+Call the factory synchronously, store exactly what it returned, and return that same value.
+
+04
+Repeated undefined
+
+The test calls the same undefined factory twice through one key and expects one factory call.
+
+Stored state	has(key)	Outcome
+no entry	false	run factory
+undefined	true	reuse undefined
+empty array	true	reuse array
+promise	true	reuse promise
+
+EVIDENCE
+
+Exact local source excerpts, tied to the bundle’s base and head commits. Line numbers refer to the named revision. Rationale is attributed separately from implementation.
+
+Membership, synchronous creation, exact storage.
+
+HEAD · 64919bcb · packages/core/src/backend/turn-scoped-cache-scope.ts:12–19
+
+12  private readonly values = new Map<Key, Value>();
+13
+14  getOrCreate(key: Key, createValue: () => Value): Value {
+15    if (this.values.has(key)) return this.values.get(key) as Value;
+16    const value = createValue();
+17    this.values.set(key, value);
+18    return value;
+19  }
+A valid undefined is reused; separate handles stay isolated.
+
+HEAD · 64919bcb · packages/core/src/backend/turn-scoped-cache-scope.test.ts:6–24
+
+6  it("returns each exact factory value once per key and handle", () => {
+7    const scope = new TurnScopedCacheScope();
+8    const first = scope.createCache<string, readonly string[] | undefined>();
+9    const second = scope.createCache<string, readonly string[] | undefined>();
+10    const firstValue: readonly string[] = [];
+11    const secondValue: readonly string[] = [];
+12    const firstFactory = vi.fn(() => firstValue);
+13    const undefinedFactory = vi.fn(() => undefined);
+14    const secondFactory = vi.fn(() => secondValue);
+15
+16    expect(first.getOrCreate("value", firstFactory)).toBe(firstValue);
+17    expect(first.getOrCreate("value", firstFactory)).toBe(firstValue);
+18    expect(first.getOrCreate("undefined", undefinedFactory)).toBeUndefined();
+19    expect(first.getOrCreate("undefined", undefinedFactory)).toBeUndefined();
+20    expect(second.getOrCreate("value", secondFactory)).toBe(secondValue);
+21
+22    expect(firstFactory).toHaveBeenCalledOnce();
+23    expect(undefinedFactory).toHaveBeenCalledOnce();
+24    expect(secondFactory).toHaveBeenCalledOnce();
+Stated reason.
+
+PR BODY · bundle · inputs/pr-127/pr.json → body:79–79
+
+79- Chose `Map.has` before `Map.get` over truthiness checks, because `undefined` is a valid cached value.
+
+DECISION 04 · FAILURE IDENTITY
+
+A rejected promise sticks; a thrown factory retries
+
+The handle stores returned promises without wrapping or awaiting them, including later rejection. A synchronous throw happens before storage and retries next time. Query observers remain inside cache-fill factories and run on attempted fills, not hits.
+
+STATEDThe PR explicitly requires preserving promise/value identities and failure behavior for the query algorithms.
+
+RETURNED PROMISE
+Factory returns P
+store P immediately
+P rejects later
+entry still holds P
+Next lookup
+same P
+SYNCHRONOUS THROW
+Factory throws
+no value returned
+No Map.set
+key stays absent
+Next lookup
+factory retries
+Order from source. The cache does not transform promises. Observer calls are part of attempted fills.
+
+CHOICE
+
+Preserve the difference between returning a failing promise and throwing before returning any value.
+
+BEFORE
+Each query performs work before Map.set. Returned promises are cached; a synchronous throw never reaches storage.
+AFTER
+getOrCreate preserves that order and exact value identity. It does not add catch, await, retry policy, or promise wrapping.
+
+MECHANISM
+
+01
+Asynchronous failure
+
+createValue returns promise P. The handle stores P now; later rejection does not evict P.
+
+02
+Synchronous failure
+
+createValue throws. The assignment and Map.set are never reached, so the next lookup tries again.
+
+03
+TypeScript reference discovery
+
+findReferenceLocations is evaluated before Promise.resolve receives its result. It can throw before a cache value exists.
+
+04
+Observer calls
+
+definitionSearch, referenceSearch, and callTargetResolution remain inside the fill factory. A repeated synchronous failure therefore repeats its observer call.
+
+EVIDENCE
+
+Exact local source excerpts, tied to the bundle’s base and head commits. Line numbers refer to the named revision. Rationale is attributed separately from implementation.
+
+The factory precedes storage; there is no promise transformation.
+
+HEAD · 64919bcb · packages/core/src/backend/turn-scoped-cache-scope.ts:14–19
+
+14  getOrCreate(key: Key, createValue: () => Value): Value {
+15    if (this.values.has(key)) return this.values.get(key) as Value;
+16    const value = createValue();
+17    this.values.set(key, value);
+18    return value;
+19  }
+Synchronous reference discovery is evaluated before Promise.resolve.
+
+HEAD · 64919bcb · packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts:163–170
+
+163  private referenceLocations(
+164    identity: SymbolIdentity,
+165  ): Promise<readonly SemanticReferenceLocation[]> {
+166    const key = formatSymbolIdentity(identity);
+167    return this.referencesByIdentity.getOrCreate(key, () => {
+168      this.observer?.referenceSearch?.(identity);
+169      return Promise.resolve(this.findReferenceLocations(identity));
+170    });
+Rejected promise retained; synchronous throwing factory called twice.
+
+HEAD · 64919bcb · packages/core/src/backend/turn-scoped-cache-scope.test.ts:63–72
+
+63    const first = promises.getOrCreate("key", rejectedFactory);
+64    const second = promises.getOrCreate("key", rejectedFactory);
+65
+66    expect(second).toBe(first);
+67    await expect(first).rejects.toBe(rejection);
+68    expect(promises.getOrCreate("key", rejectedFactory)).toBe(first);
+69    expect(rejectedFactory).toHaveBeenCalledOnce();
+70    expect(() => values.getOrCreate("key", throwingFactory)).toThrow("synchronous failure");
+71    expect(() => values.getOrCreate("key", throwingFactory)).toThrow("synchronous failure");
+72    expect(throwingFactory).toHaveBeenCalledTimes(2);
+The reference search and its observer repeat on synchronous failure.
+
+HEAD · 64919bcb · packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts:113–132
+
+113  it("retries synchronous reference discovery failures", async () => {
+114    const failure = new Error("reference failure");
+115    const locateSemanticCopies = vi.fn(() => {
+116      throw failure;
+117    });
+118    const state = { locateSemanticCopies } as unknown as TypeScriptWorkspaceState;
+119    let referenceSearches = 0;
+120    const queries = new TypeScriptSemanticQueryService(undefined, state, {
+121      referenceSearch: () => {
+122        referenceSearches += 1;
+123      },
+124    });
+125    const target = identity("src/app.ts", "target");
+126    queries.beginTurn([]);
+127
+128    await expect(queries.findReferences(target)).rejects.toBe(failure);
+129    await expect(queries.findReferences(target)).rejects.toBe(failure);
+130
+131    expect(locateSemanticCopies).toHaveBeenCalledTimes(2);
+132    expect(referenceSearches).toBe(2);
+Stated preservation constraint.
+
+PR BODY · bundle · inputs/pr-127/pr.json → body:3–3
+
+3The [daemon architecture spec](https://github.com/mohasarc/symnav/blob/main/plans/005/daemon-architecture-functional-spec.md) assigns turn-scoped semantic-cache lifetime to core. Building on #126, this layer moves only cache lifetime out of TypeScript while preserving all six algorithms, key spaces, promise/value identities, and failure behavior.
+
+DECISION 05 · TURN BOUNDARY
+
+Success, not refresh entry, begins a turn
+
+The backend starts a cache turn only after refresh succeeds: source cache first, graph refresh for workspace coverage, then state refresh. Selection skips graph refresh. Failure keeps the previous semantic-cache turn. That order already existed; it does not promise whole-system rollback.
+
+STATEDThe PR says failed refresh must preserve the current successful turn, rather than clearing caches at refresh entry.
+
+SUCCESSFUL REFRESH
+Source cache
+refresh
+Graph refresh
+workspace only
+State refresh
+await
+beginTurn
+clear all
+If an awaited refresh rejects
+previous semantic-cache turn remains
+Ordering diagram; no whole-system rollback is implied.
+This success boundary is retained from base. Selection coverage skips the project-graph refresh.
+
+CHOICE
+
+Keep the cache boundary after the successful refresh sequence.
+
+BEFORE
+Refresh source cache; optionally await project graph; await state; call semantic beginTurn(snapshot).
+AFTER
+The same ordering, ending with beginTurn(snapshot.files). The scope clears only when that final call is reached.
+
+MECHANISM
+
+01
+Source and graph first
+
+The source cache refreshes first. Workspace coverage then awaits project-graph refresh; selection coverage skips that graph call.
+
+02
+Await state
+
+The backend awaits state.refresh with the snapshot files and coverage.
+
+03
+Success path
+
+Only then does semantic beginTurn store the files and synchronously clear every handle through the scope.
+
+04
+Failure path
+
+A rejection before beginTurn skips the semantic-cache reset. The test observes one definition search across a failed state refresh; it does not establish rollback for every other state owner.
+
+EVIDENCE
+
+Exact local source excerpts, tied to the bundle’s base and head commits. Line numbers refer to the named revision. Rationale is attributed separately from implementation.
+
+The successful-refresh ordering predates this PR.
+
+BASE · a1e325a5 · packages/backend-typescript/src/typescript-backend/typescript-backend.ts:79–85
+
+79  async refresh(request: BackendRefreshRequest): Promise<BackendRefreshSummary> {
+80    this.sourceCache?.refresh(request.snapshot);
+81    if (request.coverage === "workspace") await this.projectGraph?.refresh(request.snapshot);
+82    const summary = await this.state.refresh(request.snapshot.files, request.coverage);
+83    this.semanticQueries.beginTurn(request.snapshot);
+84    return summary;
+85  }
+The call now passes only the files; its placement stays the same.
+
+HEAD · 64919bcb · packages/backend-typescript/src/typescript-backend/typescript-backend.ts:79–85
+
+79  async refresh(request: BackendRefreshRequest): Promise<BackendRefreshSummary> {
+80    this.sourceCache?.refresh(request.snapshot);
+81    if (request.coverage === "workspace") await this.projectGraph?.refresh(request.snapshot);
+82    const summary = await this.state.refresh(request.snapshot.files, request.coverage);
+83    this.semanticQueries.beginTurn(request.snapshot.files);
+84    return summary;
+85  }
+The failed state refresh preserves the already-computed definition value.
+
+HEAD · 64919bcb · packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts:152–161
+
+152    const snapshot: WorkspaceSnapshot = { root: "/repo", files: [] };
+153    const target = identity("src/app.ts", "target");
+154    await backend.refresh({ snapshot, coverage: "workspace" });
+155    const definitions = await backend.findDefinitions([], target);
+156    refreshFails = true;
+157
+158    await expect(backend.refresh({ snapshot, coverage: "workspace" })).rejects.toBe(failure);
+159
+160    await expect(backend.findDefinitions([], target)).resolves.toBe(definitions);
+161    expect(definitionSearches).toBe(1);
+Stated reason for retaining this boundary.
+
+PR BODY · bundle · inputs/pr-127/pr.json → body:81–81
+
+81- Chose to begin the next turn only after refresh succeeds over clearing at refresh entry, because failed refresh must preserve the current successful turn.
+
+DECISION 06 · CLEAR FIRST
+
+Erase entries before project release can settle
+
+Release synchronously empties all six caches, then starts and awaits project release. Old cached entries are unavailable while release is pending or rejecting. Clearing does not block new queries: a query may refill a cache during the wait.
+
+STATEDThe PR says released semantics must be unavailable while project release is pending or rejecting.
+
+CACHE ENTRIES
+SYNCHRONOUS SWEEP
+PROJECT RELEASE
+•
+•
+•
+•
+•
+•
+await graph
+pending / rejects
+A query during the wait can refill
+release is not a query admission gate
+Order from source, with schematic spacing. The new test queries before release settles and observes a new cached value.
+
+CHOICE
+
+Clear immediately, rather than after asynchronous project release finishes.
+
+BEFORE
+The service manually clears all six Maps before starting project release, without awaiting it.
+AFTER
+The service clears through core first, then awaits project release. The clear-before-release order is retained; waiting is the separate change in 07.
+
+MECHANISM
+
+01
+Synchronous edge
+
+Calling the async service release enters its body immediately and calls cacheScope.releaseTransientResources.
+
+02
+One sweep
+
+Core iterates registered handles and calls clear on each Map before any project release await.
+
+03
+Then wait
+
+The service invokes optional project release and awaits its result. Clearing has already occurred if that promise is pending or rejects.
+
+04
+During the wait
+
+The new test queries again before project release settles and gets a newly computed result. Clear is not an admission gate; the reusable-handle contract is described in 10.
+
+EVIDENCE
+
+Exact local source excerpts, tied to the bundle’s base and head commits. Line numbers refer to the named revision. Rationale is attributed separately from implementation.
+
+The original service also cleared before starting release.
+
+BASE · a1e325a5 · packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts:125–128
+
+125  releaseTransientResources(): void {
+126    this.clearQueryCaches();
+127    this.projects?.releaseTransientResources();
+128  }
+Core clears before the first await.
+
+HEAD · 64919bcb · packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts:129–132
+
+129  async releaseTransientResources(): Promise<void> {
+130    this.cacheScope.releaseTransientResources();
+131    await this.projects?.releaseTransientResources();
+132  }
+Turn and release use the same synchronous sweep.
+
+HEAD · 64919bcb · packages/core/src/backend/turn-scoped-cache-scope.ts:35–45
+
+35  beginTurn(): void {
+36    this.clear();
+37  }
+38
+39  releaseTransientResources(): void {
+40    this.clear();
+41  }
+42
+43  private clear(): void {
+44    for (const cache of this.caches) cache.clear();
+45  }
+The test refills while release remains pending, then observes the rejection.
+
+HEAD · 64919bcb · packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts:195–216
+
+195    const release = backend.releaseTransientResources();
+196    let releaseSettled = false;
+197    void release.then(
+198      () => {
+199        releaseSettled = true;
+200      },
+201      () => {
+202        releaseSettled = true;
+203      },
+204    );
+205    const afterRelease = await backend.findDefinitions([], target);
+206
+207    expect(afterRelease).not.toBe(beforeRelease);
+208    expect(definitionSearches).toBe(2);
+209    expect(projectGraph.releaseTransientResources).toHaveBeenCalledOnce();
+210    await Promise.resolve();
+211    expect(releaseSettled).toBe(false);
+212
+213    rejectProjectRelease?.(releaseFailure);
+214    await expect(release).rejects.toBe(releaseFailure);
+215    expect(firstProjectRelease).toHaveBeenCalledOnce();
+216    expect(laterProjectRelease).not.toHaveBeenCalled();
+Stated reason.
+
+PR BODY · bundle · inputs/pr-127/pr.json → body:80–80
+
+80- Chose synchronous cache clearing before project release over clearing after the await, because released semantics must be unavailable while release is pending or rejecting.
+
+DECISION 07 · AWAITED RELEASE
+
+Move completion to the far side of project release
+
+Backend release now waits for project release and propagates its rejection; previously it could resolve while project release was pending. The PR names this API change while also claiming failure behavior is preserved. It gives no reason reconciling those two claims.
+
+UNEXPLAINEDAn awaited backend barrier is documented, but no rationale was found for this caller-observable timing/rejection change within a preservation-only refactor.
+
+BEFORE
+AFTER
+clear
+project settles
+Backend can resolve
+project release still pending
+Backend release promise stays pending
+await service → await project graph
+Finish / reject
+Ordering diagram; not elapsed time or a recorded execution. The completion boundary moves in the source.
+
+CHOICE
+
+Extend the caller-visible completion boundary through the asynchronous release chain.
+
+BEFORE
+The exported service returns void after starting project release. The backend async method calls it without await and can resolve independently.
+AFTER
+The service returns Promise<void> and awaits projects. The backend awaits the service, so its promise stays pending and carries project failure.
+
+MECHANISM
+
+01
+Caller → backend
+
+The backend was already async. Its body now awaits semanticQueries.releaseTransientResources.
+
+02
+Backend → service → graph
+
+The service becomes async and awaits the optional project graph release after synchronous cache clearing.
+
+03
+Pending graph
+
+The backend release promise is still pending. The new test records releaseSettled === false.
+
+04
+Rejected graph
+
+The rejection travels back to the backend promise. This is an explicitly shipped difference, not a correctness verdict or an invented justification.
+
+EVIDENCE
+
+Exact local source excerpts, tied to the bundle’s base and head commits. Line numbers refer to the named revision. Rationale is attributed separately from implementation.
+
+Before: the async backend does not join project release.
+
+BASE · a1e325a5 · packages/backend-typescript/src/typescript-backend/typescript-backend.ts:87–89
+
+87  async releaseTransientResources(): Promise<void> {
+88    this.semanticQueries.releaseTransientResources();
+89  }
+Before: the exported service starts project release and returns void.
+
+BASE · a1e325a5 · packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts:125–128
+
+125  releaseTransientResources(): void {
+126    this.clearQueryCaches();
+127    this.projects?.releaseTransientResources();
+128  }
+After: the backend awaits the service.
+
+HEAD · 64919bcb · packages/backend-typescript/src/typescript-backend/typescript-backend.ts:87–89
+
+87  async releaseTransientResources(): Promise<void> {
+88    await this.semanticQueries.releaseTransientResources();
+89  }
+After: the service awaits the project graph.
+
+HEAD · 64919bcb · packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts:129–132
+
+129  async releaseTransientResources(): Promise<void> {
+130    this.cacheScope.releaseTransientResources();
+131    await this.projects?.releaseTransientResources();
+132  }
+Pending completion and propagated rejection are explicit new expectations.
+
+HEAD · 64919bcb · packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts:207–216
+
+207    expect(afterRelease).not.toBe(beforeRelease);
+208    expect(definitionSearches).toBe(2);
+209    expect(projectGraph.releaseTransientResources).toHaveBeenCalledOnce();
+210    await Promise.resolve();
+211    expect(releaseSettled).toBe(false);
+212
+213    rejectProjectRelease?.(releaseFailure);
+214    await expect(release).rejects.toBe(releaseFailure);
+215    expect(firstProjectRelease).toHaveBeenCalledOnce();
+216    expect(laterProjectRelease).not.toHaveBeenCalled();
+The PR discloses the changed release return type.
+
+PR BODY · bundle · inputs/pr-127/pr.json → body:66–75
+
+66Changed on exported `TypeScriptSemanticQueryService`:
+67
+68```ts
+69// before: beginTurn(snapshot: WorkspaceSnapshot): void
+70beginTurn(files: readonly WorkspaceFile[]): void;
+71
+72// before: releaseTransientResources(): void
+73releaseTransientResources(): Promise<void>;
+74```
+75
+The same PR context claims failure behavior is preserved.
+
+PR BODY · bundle · inputs/pr-127/pr.json → body:3–3
+
+3The [daemon architecture spec](https://github.com/mohasarc/symnav/blob/main/plans/005/daemon-architecture-functional-spec.md) assigns turn-scoped semantic-cache lifetime to core. Building on #126, this layer moves only cache lifetime out of TypeScript while preserving all six algorithms, key spaces, promise/value identities, and failure behavior.
+
+DECISION 08 · PROJECTION
+
+Cache locations; project nodes on every access
+
+Position lookup still caches locations, including empty results, then rehydrates nodes each access. Its returned array is fresh even when the node object is reused. Public reference results are also projected from cached locations; cache identity is not every returned array’s identity.
+
+STATEDThe PR requires preserving all query algorithms and value identities; the characterization commit explicitly records these existing contracts.
+
+Query a position
+file:start
+Cached semantic locations
+file + start + syntax kind; [] can be cached
+Access one → rehydrate
+new result array A
+Access two → rehydrate
+new result array B
+A ≠ B; a resolved node can be the same object.
+Position results are rebuilt from locations on every access. Reference results are likewise projected after cache lookup.
+
+CHOICE
+
+Retain reusable locations as the cached value, with node rehydration and result projection at access time.
+
+BEFORE
+definitionNodesOf caches file/start/kind locations and projects nodes afterward. findReferences projects cached reference locations.
+AFTER
+Only the location-cache get/create plumbing changes. The node and reference projection code remains outside the cached factory.
+
+MECHANISM
+
+01
+Fill once per position
+
+For an identifier or private identifier with a relative path, discovery records each definition’s file, start, and syntax kind. Empty locations are cached too.
+
+02
+Rehydrate every access
+
+Outside getOrCreate, each location is resolved through a project source file or workspace node lookup, matching start and kind.
+
+03
+Two identities
+
+The characterization expects different returned arrays but the same first node object. That is consistent with caching locations.
+
+04
+Reference projection too
+
+findReferences awaits cached referenceLocations, then computes its result array. The promise and value identity contract belongs to the stored value, not to every outer wrapper.
+
+EVIDENCE
+
+Exact local source excerpts, tied to the bundle’s base and head commits. Line numbers refer to the named revision. Rationale is attributed separately from implementation.
+
+Cached location discovery ends before per-access rehydration begins.
+
+HEAD · 64919bcb · packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts:134–160
+
+134  definitionNodesOf(node: Node): readonly Node[] {
+135    if (!Node.isIdentifier(node) && !Node.isPrivateIdentifier(node)) return [];
+136    const relativePath = this.workspaceState.relativePathOf(node.getSourceFile());
+137    if (!relativePath) return [];
+138    const key = `${relativePath}:${node.getStart()}`;
+139    const locations = this.definitionsByPosition.getOrCreate(key, () => {
+140      this.observer?.callTargetResolution?.(relativePath, node.getStart());
+141      return node.getDefinitionNodes().flatMap((definition) => {
+142        const definitionRelativePath = this.workspaceState.relativePathOf(
+143          definition.getSourceFile(),
+144        );
+145        return definitionRelativePath
+146          ? [
+147              {
+148                relativePath: definitionRelativePath,
+149                start: definition.getStart(),
+150                kind: definition.getKind(),
+151              },
+152            ]
+153          : [];
+154      });
+155    });
+156    return locations.flatMap((location) => {
+157      const sourceFile = this.projects?.sourceFileFor(location.relativePath);
+158      const definition = this.nodeAtSemanticLocation(location, sourceFile);
+159      return definition ? [definition] : [];
+160    });
+Rehydration matches semantic location, with workspace fallback.
+
+HEAD · 64919bcb · packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts:219–230
+
+219  private nodeAtSemanticLocation(
+220    location: SemanticNodeLocation,
+221    sourceFile: SourceFile | undefined,
+222  ): Node | undefined {
+223    let node =
+224      sourceFile?.getDescendantAtPos(location.start) ??
+225      this.workspaceState.nodeAt(location.relativePath, location.start);
+226    while (node) {
+227      if (node.getStart() === location.start && node.getKind() === location.kind) return node;
+228      node = node.getParent();
+229    }
+230    return undefined;
+Different arrays, same node, and only one discovery per queried position.
+
+HEAD · 64919bcb · packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts:83–92
+
+83    const firstDefinitions = queries.definitionNodesOf(targetCall);
+84    const secondDefinitions = queries.definitionNodesOf(targetCall);
+85    const firstMissing = queries.definitionNodesOf(missingCall);
+86    const secondMissing = queries.definitionNodesOf(missingCall);
+87
+88    expect(firstDefinitions).not.toBe(secondDefinitions);
+89    expect(firstDefinitions[0]).toBe(secondDefinitions[0]);
+90    expect(firstMissing).toEqual([]);
+91    expect(secondMissing).toEqual([]);
+92    expect(resolvedPositions).toEqual([targetCall.getStart(), missingCall.getStart()]);
+Reference results are also projected after reading the cache.
+
+HEAD · 64919bcb · packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts:80–90
+
+80  async findReferences(identity: SymbolIdentity): Promise<readonly SymbolReference[]> {
+81    const locations = await this.referenceLocations(identity);
+82    return locations.flatMap((location) => {
+83      if (location.isDefinition) return [];
+84      const node = this.workspaceState.nodeAt(location.relativePath, location.start);
+85      if (!node) return [];
+86      const sourceFile = node.getSourceFile();
+87      const { line, character } = sourceFile.compilerNode.getLineAndCharacterOfPosition(
+88        location.start,
+89      );
+90      return [
+The author names characterization as a distinct commit.
+
+COMMITS · bundle · inputs/pr-127/pr.json → commits:1–1
+
+144de06c631863ac27d78545d7cb9570b2ce19165 Characterize TypeScript semantic cache identities
+
+DECISION 09 · INPUT CONTRACT
+
+Pass the file list instead of the snapshot
+
+The exported semantic service’s beginTurn changes from WorkspaceSnapshot to readonly WorkspaceFile[]. The backend now passes snapshot.files. The service still assigns its file list before clearing caches; a specific reason for narrowing the API was not found.
+
+UNEXPLAINEDThe PR lists the new signature under Public surface, but gives no rationale for the narrower input contract.
+
+BEFORE
+AFTER
+WorkspaceSnapshot
+root + files
+readonly WorkspaceFile[]
+files only
+service.beginTurn
+this.files = snapshot.files
+service.beginTurn
+this.files = files
+Both assign files before clearing the cache turn.
+The source narrows the input. The PR names the signature change but gives no reason for that choice.
+
+CHOICE
+
+Narrow the service input while preserving assignment-before-clear order.
+
+BEFORE
+beginTurn(snapshot: WorkspaceSnapshot) extracts snapshot.files internally.
+AFTER
+beginTurn(files: readonly WorkspaceFile[]) takes that list directly; the backend performs the extraction at the call site.
+
+MECHANISM
+
+01
+Public input
+
+The service imports WorkspaceFile instead of WorkspaceSnapshot. Its files field is a readonly WorkspaceFile array.
+
+02
+Composition at the caller
+
+TypeScriptBackend passes request.snapshot.files to beginTurn after refresh succeeds.
+
+03
+Within beginTurn
+
+The service first assigns this.files, then asks the cache scope to begin the new turn.
+
+04
+Reason boundary
+
+The shipped signature is explicit. Treating it as “decoupling” or “less knowledge” would be an interpretation; the author does not give that reason.
+
+EVIDENCE
+
+Exact local source excerpts, tied to the bundle’s base and head commits. Line numbers refer to the named revision. Rationale is attributed separately from implementation.
+
+Before: the service receives the full snapshot.
+
+BASE · a1e325a5 · packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts:49–52
+
+49  beginTurn(snapshot: WorkspaceSnapshot): void {
+50    this.files = snapshot.files;
+51    this.clearQueryCaches();
+52  }
+After: it receives files and preserves ordering.
+
+HEAD · 64919bcb · packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts:63–66
+
+63  beginTurn(files: readonly WorkspaceFile[]): void {
+64    this.files = files;
+65    this.cacheScope.beginTurn();
+66  }
+The backend now extracts the file list.
+
+HEAD · 64919bcb · packages/backend-typescript/src/typescript-backend/typescript-backend.ts:82–84
+
+82    const summary = await this.state.refresh(request.snapshot.files, request.coverage);
+83    this.semanticQueries.beginTurn(request.snapshot.files);
+84    return summary;
+Documented API change, without a stated reason.
+
+PR BODY · bundle · inputs/pr-127/pr.json → body:69–70
+
+69// before: beginTurn(snapshot: WorkspaceSnapshot): void
+70beginTurn(files: readonly WorkspaceFile[]): void;
+
+DECISION 10 · LIFETIME API
+
+Keep handles alive; clear their entries
+
+Core exports a scope and getOrCreate-only handle interface; the scope clears Maps in place. Handles, their registration list, and the service’s file list survive release. Handles can refill afterward, with no public dispose, per-key eviction, cancellation, or active-turn gate.
+
+UNEXPLAINEDThe public surface is documented and reuse is tested. No specific rationale was found for this minimal handle surface and its non-terminal release semantics.
+
+SCOPE KEEPS ITS HANDLE REGISTRY
+Same handle object
+getOrCreate(key, factory)
+Same Map; empty entries
+beginTurn / release → clear
+The scope can clear; the public handle type cannot.
+No dispose, per-key eviction, cancellation, or active-turn gate.
+Release is a reusable clearing operation. It neither destroys the handles nor clears the service’s files field.
+
+CHOICE
+
+Separate lookup capability from lifetime capability, with release emptying reusable containers.
+
+BEFORE
+The TypeScript service retains six Maps across turns and clears entries manually.
+AFTER
+The new core scope retains registered handles; beginTurn and releaseTransientResources both call the same private clear loop.
+
+MECHANISM
+
+01
+Two public capabilities
+
+TurnScopedCache exposes only getOrCreate. TurnScopedCacheScope exposes createCache, beginTurn, and releaseTransientResources.
+
+02
+Registration survives
+
+createCache appends a handle to an array. clear walks that array; it does not replace or empty the registry.
+
+03
+Entries do not survive
+
+Each handle invokes Map.clear. The same handle can compute a new value afterward, including after repeated release calls.
+
+04
+Scope of release
+
+There is no state check, cancellation, disposal, or per-key eviction method in this public API. The service retains its files field; release is not destruction of the service.
+
+EVIDENCE
+
+Exact local source excerpts, tied to the bundle’s base and head commits. Line numbers refer to the named revision. Rationale is attributed separately from implementation.
+
+The public handle interface omits lifetime operations.
+
+HEAD · 64919bcb · packages/core/src/backend/turn-scoped-cache-scope.ts:1–7
+
+1export interface TurnScopedCache<Key, Value> {
+2  getOrCreate(key: Key, createValue: () => Value): Value;
+3}
+4
+5interface ClearableTurnScopedCache {
+6  clear(): void;
+7}
+Maps and handles are retained while entries are cleared.
+
+HEAD · 64919bcb · packages/core/src/backend/turn-scoped-cache-scope.ts:21–46
+
+21  clear(): void {
+22    this.values.clear();
+23  }
+24}
+25
+26export class TurnScopedCacheScope {
+27  private readonly caches: ClearableTurnScopedCache[] = [];
+28
+29  createCache<Key, Value>(): TurnScopedCache<Key, Value> {
+30    const cache = new TurnScopedCacheHandle<Key, Value>();
+31    this.caches.push(cache);
+32    return cache;
+33  }
+34
+35  beginTurn(): void {
+36    this.clear();
+37  }
+38
+39  releaseTransientResources(): void {
+40    this.clear();
+41  }
+42
+43  private clear(): void {
+44    for (const cache of this.caches) cache.clear();
+45  }
+46}
+The same handles refill after both turn reset and repeated release.
+
+HEAD · 64919bcb · packages/core/src/backend/turn-scoped-cache-scope.test.ts:27–49
+
+27  it("clears every handle at turn and release boundaries", () => {
+28    const scope = new TurnScopedCacheScope();
+29    const first = scope.createCache<string, object>();
+30    const second = scope.createCache<string, object>();
+31    const firstFactory = vi.fn(() => ({}));
+32    const secondFactory = vi.fn(() => ({}));
+33    const initialFirst = first.getOrCreate("shared", firstFactory);
+34    const initialSecond = second.getOrCreate("shared", secondFactory);
+35
+36    scope.beginTurn();
+37
+38    expect(first.getOrCreate("shared", firstFactory)).not.toBe(initialFirst);
+39    expect(second.getOrCreate("shared", secondFactory)).not.toBe(initialSecond);
+40
+41    const nextFirst = first.getOrCreate("shared", firstFactory);
+42    const nextSecond = second.getOrCreate("shared", secondFactory);
+43    scope.releaseTransientResources();
+44    scope.releaseTransientResources();
+45
+46    expect(first.getOrCreate("shared", firstFactory)).not.toBe(nextFirst);
+47    expect(second.getOrCreate("shared", secondFactory)).not.toBe(nextSecond);
+48    expect(firstFactory).toHaveBeenCalledTimes(3);
+49    expect(secondFactory).toHaveBeenCalledTimes(3);
+The service release does not clear its files field.
+
+HEAD · 64919bcb · packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts:129–132
+
+129  async releaseTransientResources(): Promise<void> {
+130    this.cacheScope.releaseTransientResources();
+131    await this.projects?.releaseTransientResources();
+132  }
+The deliberately small API is documented; its specific rationale is not.
+
+PR BODY · bundle · inputs/pr-127/pr.json → body:52–64
+
+52Added to `@symnav/core`:
+53
+54```ts
+55export interface TurnScopedCache<Key, Value> {
+56  getOrCreate(key: Key, createValue: () => Value): Value;
+57}
+58
+59export class TurnScopedCacheScope {
+60  createCache<Key, Value>(): TurnScopedCache<Key, Value>;
+61  beginTurn(): void;
+62  releaseTransientResources(): void;
+63}
+64```
+
+DECISION 11 · OLD PROMISES
+
+Late settlement cannot repopulate the next turn
+
+Clearing drops the cache’s reference to an old promise; it does not cancel that promise or revoke values already held by callers. An old promise may settle later, but cannot replace a newer entry: the cache installs no settlement callback that writes back.
+
+STATEDThe PR’s preservation constraint keeps exact promises and their failure behavior. The new core test explicitly preserves old settlement without replacing a new-turn entry.
+
+Turn A
+key → oldPromise
+Clear + turn B
+key → newPromise
+Read turn B
+newPromise
+Old promise still settles for its holder
+No settlement callback writes back into the cache.
+Eviction removes an entry, not a promise held elsewhere.
+Order from the core test. This is a diagram of the contract, not a running simulation.
+
+CHOICE
+
+Keep the cached unit as the original promise, rather than installing an asynchronous result back into the cache.
+
+BEFORE
+The TypeScript Maps hold promises directly and clear entries at lifecycle boundaries, without settlement writeback.
+AFTER
+The generic handle also stores the returned promise directly. Map.clear removes its entry while existing holders keep their promise.
+
+MECHANISM
+
+01
+Turn A
+
+A handle stores oldPromise at key. A caller retains that promise.
+
+02
+Begin turn B
+
+clear removes the entry; the same handle stores newPromise under the same key.
+
+03
+Old work completes
+
+The caller can still observe oldPromise settling to old. Clearing was not cancellation.
+
+04
+Read turn B
+
+The cache still returns the new-turn entry. getOrCreate has no then/catch handler that could write an old settlement back.
+
+EVIDENCE
+
+Exact local source excerpts, tied to the bundle’s base and head commits. Line numbers refer to the named revision. Rationale is attributed separately from implementation.
+
+Direct value storage and Map.clear; no settlement writeback.
+
+HEAD · 64919bcb · packages/core/src/backend/turn-scoped-cache-scope.ts:14–23
+
+14  getOrCreate(key: Key, createValue: () => Value): Value {
+15    if (this.values.has(key)) return this.values.get(key) as Value;
+16    const value = createValue();
+17    this.values.set(key, value);
+18    return value;
+19  }
+20
+21  clear(): void {
+22    this.values.clear();
+23  }
+The old promise settles, while the key still resolves to the new value.
+
+HEAD · 64919bcb · packages/core/src/backend/turn-scoped-cache-scope.test.ts:75–90
+
+75  it("does not let an old promise settlement replace a new turn entry", async () => {
+76    const scope = new TurnScopedCacheScope();
+77    const cache = scope.createCache<string, Promise<string>>();
+78    let settleOld: ((value: string) => void) | undefined;
+79    const oldPromise = new Promise<string>((resolve) => {
+80      settleOld = resolve;
+81    });
+82    const newPromise = Promise.resolve("new");
+83    expect(cache.getOrCreate("key", () => oldPromise)).toBe(oldPromise);
+84
+85    scope.beginTurn();
+86    expect(cache.getOrCreate("key", () => newPromise)).toBe(newPromise);
+87    settleOld?.("old");
+88
+89    await expect(oldPromise).resolves.toBe("old");
+90    await expect(cache.getOrCreate("key", () => Promise.resolve("other"))).resolves.toBe("new");
+Stated promise/value preservation constraint.
+
+PR BODY · bundle · inputs/pr-127/pr.json → body:3–3
+
+3The [daemon architecture spec](https://github.com/mohasarc/symnav/blob/main/plans/005/daemon-architecture-functional-spec.md) assigns turn-scoped semantic-cache lifetime to core. Building on #126, this layer moves only cache lifetime out of TypeScript while preserving all six algorithms, key spaces, promise/value identities, and failure behavior.
+
+DECISION 12 · TEST CHOICES
+
+Characterize the extraction without replacing old tests
+
+The patch adds six service tests and four core tests. All five existing service tests and their helpers remain byte-for-byte unchanged. The additions cover identities, projections, failures, boundaries, and late settlement. No deleted or weakened existing assertion, or separate unrelated feature, was found in this six-file diff.
+
+STATEDThe commits name characterization and lifecycle specification; the PR says tests lock identity, error, and clearing contracts while the algorithms are preserved.
+
+SERVICE TESTS
+5 existing tests
+source tail unchanged
++6 characterization tests
+identities · projections · boundaries
+CORE TESTS
++4 new lifecycle tests
+exact values · clearing · errors · late settlement
+Source comparison across the two changed test files. Counts describe the diff, not a correctness score.
+
+CHOICE
+
+Add tests around existing semantics and the new ownership boundary; the new awaited-release expectation is separately surfaced in 07.
+
+BEFORE
+Five service tests cover shared reference work, next-turn clearing, position reuse, graph traversal reuse, and rebuilding after release.
+AFTER
+Those tests remain intact. Six more service tests characterize the contracts; four new core tests specify the reusable cache primitive.
+
+MECHANISM
+
+01
+Existing service tests
+
+The complete source tail from the first original test through all helpers matches base exactly. No original assertion is edited.
+
+02
+Six added service tests
+
+Promise identity; empty-position rehydration; asynchronous failure retention; synchronous failure retry; failed-refresh retention; awaited release.
+
+03
+Four new core tests
+
+Exact values and isolated handles; clearing and reuse; promise-versus-throw behavior; old settlement after a new turn.
+
+04
+What this comparison establishes
+
+A diff inventory, not end-to-end behavior parity. The awaited-release contract is an added expectation, not an explanation for its change.
+
+Test group	Before	After
+service, existing	5	5 unchanged
+service, added	0	6
+core cache scope	0	4
+existing assertions removed	—	0
+
+EVIDENCE
+
+Exact local source excerpts, tied to the bundle’s base and head commits. Line numbers refer to the named revision. Rationale is attributed separately from implementation.
+
+Author-recorded characterization, contract, and implementation commits.
+
+COMMITS · bundle · inputs/pr-127/pr.json → commits:1–6
+
+144de06c631863ac27d78545d7cb9570b2ce19165 Characterize TypeScript semantic cache identities
+267df0279bdf4d40bdfa05f813ab56475a9ffbf9c Define turn-scoped cache handles
+3f515f73e93ae678f75189d02f184829e4ab895a9 Specify turn-scoped cache lifecycle
+4471a46653a6f381e4a6c7960a4f1094e2217fe3e Implement turn-scoped cache lifecycle
+59e656518954d8e6b81966d768badce82738d4efc Specify awaited semantic resource release
+664919bcbcf7fcc8202779b78c5f069b24662bb18 Adopt turn-scoped TypeScript query caches
+One of six added service tests; all six names are in the inventory below.
+
+HEAD · 64919bcb · packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts:29–29
+
+29  it("shares each identity query promise independently within one turn", async () => {
+New core suite; all four names are in the inventory below.
+
+HEAD · 64919bcb · packages/core/src/backend/turn-scoped-cache-scope.test.ts:5–9
+
+5describe("TurnScopedCacheScope", () => {
+6  it("returns each exact factory value once per key and handle", () => {
+7    const scope = new TurnScopedCacheScope();
+8    const first = scope.createCache<string, readonly string[] | undefined>();
+9    const second = scope.createCache<string, readonly string[] | undefined>();
+Stated purpose of the core test file.
+
+PR BODY · bundle · inputs/pr-127/pr.json → body:43–43
+
+43    │       └── ++ turn-scoped-cache-scope.test.ts  # locks identity, error, and clearing contracts
+
+Compared original service-test tail including helpers: identical.
+Base service: 5 · Head service: 11 · New core: 4.
+This is a source inventory; no end-to-end parity conclusion follows.
+
+SERVICE TEST NAMES
+
+shares each identity query promise independently within one turn ADDED
+caches empty position results while rehydrating nodes for every access ADDED
+retains asynchronous definition and callee failures for the turn ADDED
+retries synchronous reference discovery failures ADDED
+preserves the current turn when backend refresh fails ADDED
+clears caches before awaiting project release and rejects at the backend boundary ADDED
+shares one reference search across caller and reference projections UNCHANGED
+shares caches within one turn and clears them for the next turn UNCHANGED
+resolves each call position once while grouping repeated targets UNCHANGED
+queries each declaration position once across diamond graph paths UNCHANGED
+rebuilds released fresh semantics once in an unchanged turn UNCHANGED
+
+NEW CORE TEST NAMES
+
+returns each exact factory value once per key and handle
+clears every handle at turn and release boundaries
+retains promise settlement and retries synchronous factory failures
+does not let an old promise settlement replace a new turn entry
+
+PR #127 · base a1e325a5 → head 64919bcb
+All twelve decisions are present above; lower depths expose their mechanisms and sources.
+
+PR body & commits · Full six-file diff · Source manifest
+Test comparison · Method, limits, and opening instructions
+
+Decision 01 of 12: Move lifetime across the package seam. Shape depth.
