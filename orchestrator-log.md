@@ -1210,3 +1210,16 @@ no changes added to commit (use "git add" and/or "git commit -a")
 - 2026-09-13 14:48:25 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/79-failure-domain-pinball/node_modules/phaser/types/phaser.json
 - 2026-09-13 14:53:32 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/79-failure-domain-pinball/node_modules/phaser/types/phaser.json
 - 2026-09-13 14:57:39 +03: FINISH 79-failure-domain-pinball via codex, exit 0, README present
+- 2026-09-13 14:57:40 +03: COMMIT OK 79-failure-domain-pinball: [main 4611680] Add experiment 79 failure-domain-pinball
+- 2026-09-13 15:00:47 +03: PUBLISH OK: To https://github.com/mohasarc/rich-review-v2.git
+   aaa6ab1..4611680  main -> main
+- 2026-09-13 15:00:49 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/79-failure-domain-pinball/node_modules/phaser/types/phaser.json
+- 2026-09-13 15:00:49 +03: MONITOR OK supervisor=39161, finished=79, running=3, queued=0, dirty-worktrees=0, missing-readmes=0, free-disk=19.7GiB
+- 2026-09-13 15:06:00 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/79-failure-domain-pinball/node_modules/phaser/types/phaser.json
+- 2026-09-13 15:07:10 +03: README MISSING 80-typographic-morphology after worker exit 1
+- 2026-09-13 15:07:10 +03: REQUEUE 80-typographic-morphology after attempt 1: worker exited 1 without README
+- 2026-09-13 15:07:10 +03: START 80-typographic-morphology attempt 2 via claude-opus, pid 34768
+- 2026-09-13 15:07:20 +03: README MISSING 80-typographic-morphology after worker exit 1
+- 2026-09-13 15:07:20 +03: REQUEUE 80-typographic-morphology after attempt 2: worker exited 1 without README
+- 2026-09-13 15:07:20 +03: START 80-typographic-morphology attempt 3 via codex, pid 35398
+- 2026-09-13 15:10:41 +03: FINISH 81-critique-refresh-70 via codex, exit 0, README present

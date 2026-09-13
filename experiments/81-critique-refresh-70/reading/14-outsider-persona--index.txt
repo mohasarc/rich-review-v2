@@ -1,0 +1,1869 @@
+Skip to the system map
+s↗ symnav
+FIRST VISIT / 14
+
+GET YOUR BEARINGS
+
+01
+The system
+02
+The moved boundaries
+03
+The complete choice sheet
+04
+Follow a command
+05
+What stays warm
+06
+Bring the answer back
+07
+Check the sources
+Names in plain language ↗
+
+Read straight down.
+Or choose a box.
+Every source opens here.
+
+main → #149
+26 pull requests
+b6801eb → d070023
+
+AN OUTSIDER'S FIELD GUIDE · DAEMON REFACTOR STACK
+
+First, know
+the place.
+
+symnav answers questions about TypeScript code. You ask where a symbol is defined, who uses it, or what a file contains. It reads a workspace and prints a tree or JSON.
+
+YOUR CODE
+orders.ts
+payments.ts
+tsconfig.json
+→
+YOUR QUESTION
+symnav refs PaymentProvider.ts::charge
+“Which places refer to this symbol?”
+→
+THE ANSWER
+Files · symbols · relationships
+Human-readable output, or --json
+
+Illustrative filenames and question. This is a product sketch, not captured command output.
+
+↻
+
+Keep the workshop open between visits. Parsing a codebase again for every command wastes preparation. A background daemon keeps analysis state warm; each command still refreshes the data it needs.
+
+Lossy analogy: the “workshop” contains a daemon process and a worker thread. Warm state is reusable preparation, not permission to return an old answer.
+One terminal visit. A longer-lived workshop.
+
+These are runtime boundaries. A package is a source-code owner; it is not a separate process.
+
+CALLER PROCESS · one invocation
+CLI host
+Reads arguments and environment
+Finds the workspace · writes output
+apps/cli
+↓ supplies a command
+DaemonClient
+Selects warm, cold, or fallback
+Owns startup and recovery
+@symnav/daemon
+Cold / fallback route
+Run the host executor here.
+The background process is optional.
+See routing →
+local socket
+⇄
+request identity
+ordered output bytes
+Transport owners →
+DAEMON PROCESS · workspace + state directory
+Process coordinator
+Admission · accepted-request ledger · FIFO queue
+Delivery · resources · worker generations · status
+@symnav/daemon
+WORKER THREAD · same process, own JS heap
+Worker machinery
+Loads the host's executor module URL
+The injection decision →
+Changed composition boundary · #135
+Worker-created CLI objects → host-supplied executor module
+CLI-provided executor
+Knows what a symnav command means
+apps/cli/src/daemon-executor.ts
+Core
+Workspace/session
+Reusable state & cache lifetimes
+TypeScript backend
+TypeScript parsing
+Symbols & semantic queries
+Renderer
+Formats results
+
+Outside the process boxes: workspace files supply the code. A daemon identity combines the workspace root and state directory. The daemon stores registry records, diagnostics, and retained result bytes; the CLI resolves that state directory. Telemetry separately records usage shape and execution mode.
+
+Who owns those paths? →
+
+Map omits individual control exchanges, startup election steps, and backpressure. The paths and ownership shown above are expanded in the choice sheet and walkthroughs.
+
+Open the architecture contract ↗
+
+02 / WHAT THIS STACK CHANGES
+
+The workshop existed.
+The ownership lines move.
+
+The stated goal is the same navigation output, timing, and lifecycle behavior with reusable ownership boundaries. The wire protocol does change from generation 4 to 5 to carry an explicit command name. The active CLI switch happens in #149; #148 stages the package first.
+
+Before
+main
+CLI application
+Syntax + environment + composition
+Daemon client, server, workers, transport,
+execution, delivery, policy, lifecycle rendering
+Workspace request / retained scopes
+TypeScript backend
+TypeScript-specific interpretation
+Source cache + revision indexes + project graph
+Semantic cache lifetime
+Telemetry
+Usage capture + shared state-path resolution
+→
+REASSIGN
+RESPONSIBILITY
+After
+tip of #149
+CLI application
+Syntax + environment + host executor + composition
+Daemon package
+Every daemon mechanism behind DaemonClient
+Core
+Sessions, source bytes, indexes, project publication,
+turn-scoped cache lifetime
+TypeScript
+Language-specific hooks
+Renderer
+Also lifecycle reports
+Telemetry
+Usage capture; receives its state path
+
+Teal border = responsibility received across a package boundary. The daemon package is new; core and renderer already existed.
+
+Affected responsibilities only: the left-hand map omits existing core primitives and renderer work. “After” shows the responsibility transfers, not new runtime processes.
+
+Production imports have a direction
+CLI → core, daemon, renderer, TypeScript, telemetry
+TypeScript → core
+Renderer → core, daemon
+Core, daemon, telemetry → no internal packages
+
+The daemon can load a supplied executor module at runtime. It does not import core or TypeScript as package dependencies. The public façade avoids Node ambient types; its dynamically loaded runtime still uses Node.
+
+Locked dependency table ↗ Façade and lazy runtime ↗
+Carry these six facts into every detail.
+01 / STATE
+Retain preparation; renew meaning.
+
+Source bytes, file indexes, project membership, and a session live longer than one query. Six independent semantic caches clear on a successful new turn or before release. Publication is per backend index or project graph; there is no whole-pipeline transaction. Selection refresh still evicts omitted source bytes.
+
+02 / HOST
+The host knows the product.
+
+The CLI classifies syntax, resolves the workspace and state path, supplies an absolute executor module URL, and writes output. The daemon owns routing and captures warm output. The renderer also formats lifecycle reports. Build rules enforce the final package surface.
+
+03 / POLICY & IDENTITY
+One owner for each rule.
+
+Immutable policy sections cross process and worker boundaries. Values stay fixed for users. One command vocabulary, distinct failure vocabularies, ordered routing and admission guards, and code-derived retry safety replace scattered authorities. Generation 5 makes command identity mandatory.
+
+04 / TRANSPORT
+Finishing bytes is different from doing work.
+
+Separate owners handle framing, validation, raw sockets, bounded lifecycle exchanges, accepted execution, and resumable result receipt. Appended records advance the resume position. Fetches keep transfer state; reattachments keep request identity but create fresh capture. Each has its own retry budget.
+
+05 / DAEMON LIFE
+Accepted work has a continuing identity.
+
+The ledger deduplicates; one FIFO queue executes; delivery tracks the current stream; a generation manager fences old workers. Resources gate readiness and later turns. Activity uses explicit snapshots. Cleanup failure can be diagnostic while acknowledgement succeeds. Accepted failure never triggers local replay.
+
+06 / CARRIED CHOICES
+Preservation has a cost.
+
+Idle time still starts at construction and resets on acceptance. Ledger eviction, startup silence, control-plane start readiness, endpoint relocation, new election, selection-aware byte retention, and readiness/completion idle changes are deferred. Tests lose or change some composed observations; the PR template also changes without a stated reason.
+
+A SMALL MAP KEY
+
+Symbol
+A named code element, such as a function, class, or method.
+Workspace
+The code root chosen for the command. Nested repositories form separate boundaries.
+Backend
+The language-specific engine that answers code questions.
+Snapshot / revision
+A discovered set of files / the identity used to tell whether a file changed.
+Turn
+One refreshed opportunity to run a query. Prepared state may outlive it.
+Ledger
+The daemon's record of accepted requests and their completion states.
+Spool
+Stored output records waiting for delivery or acknowledgement; small output can stay in memory.
+Generation
+An identity for a worker lifetime, used to ignore reports from an older worker.
+Cold / warm / fallback
+Local execution / retained daemon execution / local execution after a recoverable daemon problem.
+Facade / port / hook
+A small public doorway / a limited capability interface / host-specific behavior supplied to a reusable base.
+Admission / acceptance
+Checks before taking work / the daemon's promise to own that request identity.
+FIFO / backpressure
+First accepted turn goes first / slow consumption makes the sender wait.
+
+03 / THE COMPLETE CHOICE SHEET
+
+Know the choices
+before the machinery.
+
+This is the rest of the top layer: 117 recorded PR decisions, policy values, and the additional changes found in the delta. Choice text stays visible. Open a row for its reason and original source; that adds evidence for the same choice.
+
+stated
+A reason appears in a supplied PR or plan.
+unexplained
+No specific reason found in the inspected material.
+
+The six facts above are a lossy index of this sheet, not a replacement for it. Intermediate decisions are marked where later PRs supersede them. Source inspection is bounded; the evidence drawer also includes every changed file and a mechanical test-title screen.
+
+State
+Host
+Policy & identity
+Transport
+Daemon life
+Tests & carried choices
+State: which preparation survives another command?
+
+Portable state moves from TypeScript and CLI into core. The TypeScript backend remains responsible for its toolchain and the meaning of queries.
+
+#123
+Share the source-text cache without requiring TypeScript
+
+A cache of file bytes moves to core; selection refresh still replaces its revision set.
+
+Chose core ownership over TypeScript-backend ownership
+stated
+Chose snapshot replacement over coverage-aware merging
+stated
+Chose a FileSystem facade over cache-specific reads
+stated
+workspace-source-cache.ts ↗ workspace-source-cache.test.ts ↗Original #123 ↗
+#124
+Publish each prepared-file index only after preparation succeeds
+
+Core compares revisions and validates candidate indexes; TypeScript supplies a reversible toolchain transaction. One-file ensure operations preserve earlier progress.
+
+Chose an incremental overlay candidate over requiring complete preparation output
+stated
+Chose candidate validation before subclass commit over post-commit validation
+stated
+Chose one-file selection transactions for ensureFiles over one aggregate transaction
+stated
+Chose a TypeScript-owned mutation journal over core mutation callbacks
+stated
+Chose reversible path staging before source removal over recreating removed sources
+stated
+revisioned-backend-state.ts ↗ typescript-workspace-state.ts ↗Original #124 ↗
+#126
+Publish file-to-project membership as one graph
+
+Core owns discovery, observed input changes, canonical membership, and publication. TypeScript supplies configuration parsing and project construction.
+
+Chose a core abstract base over leaving reusable graph mechanics in TypeScript
+stated
+Chose one fresh collector per rebuild over retaining observations across graphs
+stated
+Chose exact active-input validation over an undocumented subclass precondition
+stated
+Chose canonical snapshot members over relative-path-only membership
+stated
+Chose complete validation followed by one state assignment over incremental mutation
+stated
+project-graph.ts ↗ typescript-project-graph.ts ↗Original #126 ↗
+#127
+Let six query caches share a lifetime, not their contents
+
+The queries keep their separate key/value spaces and cached promise identities. Only the lifetime mechanism moves.
+
+Chose one scope with six handles over one shared map
+stated
+Chose Map.has before Map.get over truthiness checks
+stated
+Chose synchronous cache clearing before project release over clearing after the await
+stated
+Chose to begin the next turn only after refresh succeeds over clearing at refresh entry
+stated
+turn-scoped-cache-scope.ts ↗ typescript-semantic-query-service.ts ↗ typescript-backend.ts ↗Original #127 ↗
+#128
+Give a workspace session to core
+
+Cold request discovery and retained daemon discovery use one session interface, with deliberate selection isolation and release behavior.
+
+Chose explicit request/session discovery retention over one cached strategy
+stated
+Chose fresh selection discovery over retained-catalog reconciliation
+stated
+Chose a copied backend array and fresh router per turn over a persistent router
+stated
+Chose explicit workspace opening before validation and preparation after validation over one combined call
+stated
+Chose repeatable concurrent release over permanent session closure
+stated
+workspace-session.ts ↗ workspace-session.test.ts ↗ command.ts ↗Original #128 ↗
+Host: who knows what a symnav command means?
+
+The CLI supplies product knowledge. The daemon provides the machinery to keep an executor available and deliver its output. Renderer and telemetry retain distinct jobs.
+
+#129
+Resolve the shared state directory at the CLI boundary
+
+The CLI selects and canonicalizes one path, then injects it into both daemon and telemetry composition.
+
+Chose a CLI-owned class over renamed telemetry functions
+stated
+Chose one top-level resolved value over per-consumer resolution
+stated
+Chose longest-existing-ancestor canonicalization over requiring the final directory to exist
+stated
+Chose constructor-injected environment and home values over test-time global mutation
+stated
+state-directory-resolver.ts ↗ state-dir.ts ↗Original #129 ↗
+#135
+Load a host executor instead of importing the CLI from daemon code
+
+An absolute file URL supplies the executor. Worker machinery validates it, sequences and rechunks output, and asks for request-local heap sampling without knowing CLI phase types.
+
+Chose an absolute injected file URL over importing CLI code from daemon mechanisms
+stated
+Chose recursive JSON-like diagnostics over a CLI refresh-summary contract
+stated
+Chose worker-side rechunking and sequencing over transport metadata in executor output
+stated
+Chose runtime validation over trusting dynamically imported TypeScript shapes
+stated
+Chose a daemon-owned no-payload sampling callback over sharing CLI command-phase types
+stated
+daemon-executor.ts ↗ daemon-executor.ts ↗ navigation-worker-entry.ts ↗Original #135 ↗
+#136
+Move start/status/stop formatting to renderer
+
+Daemon reports are portable data. Renderer owns their text and JSON bytes; CLI still selects format and writes the terminal.
+
+Chose one stateless renderer class over command-specific formatter functions
+stated
+Chose public @symnav/daemon report imports over daemon internal subpaths
+stated
+daemon-lifecycle-renderer.ts ↗ register-daemon-command.ts ↗Original #136 ↗
+#148
+Put the mechanism package behind DaemonClient
+
+A small public façade loads its Node runtime dynamically. Ordered lazy routing stops later side effects. The package owns warm capture and controlled failure output.
+
+Package staging, not the shipped CLI switch. Both copies exist at this point. #149 changes the active consumer and removes the app-local mechanisms.
+
+Chose a Node-free public façade with a dynamically loaded internal runtime over exposing Node-backed mechanisms
+stated
+Chose ordered lazy routing guards over eager registry and transport observation
+stated
+Chose package staging with a frozen CLI compatibility graph over switching production consumers during relocation
+stated
+Chose package-owned result capture and controlled failure outputs over host-provided storage or output factories
+stated
+Chose to preserve acceptance-based idle timing over correcting it during extraction
+stated
+daemon-client.ts ↗ daemon-client-runtime.ts ↗ daemon-routing-policy.ts ↗ process-coordinator.ts ↗Original #148 ↗
+#149
+Switch the active CLI and enforce physical ownership
+
+CliInvocationCoordinator calls the public client. External tests use a read-only inspector; package actors own internal setup. Compiler-backed inventories enforce imports, exports, clocks, and storage access.
+
+Chose a CLI invocation coordinator over the app-local daemon dispatcher
+stated
+Chose a read-only testing inspector over exposing registry, diagnostic, or spool paths
+stated
+Chose package-owned actors with an injected executor URL over package tests naming CLI build artifacts
+stated
+Chose focused package transport composition over retaining LocalDaemonTransport
+stated
+Chose exact compiler-backed import, export, clock, and storage inventories over regex or compatibility aliases
+stated
+cli-invocation-coordinator.ts ↗ daemon-testing-inspector.ts ↗ daemon-storage-boundary.test.ts ↗ cli-daemon-reachability.test.ts ↗Original #149 ↗
+Policy and identity: who gets to decide?
+
+Limits, names, failure classification, and guard order become explicit authorities. The package is introduced before every mechanism moves into it.
+
+#130
+Introduce the daemon package and one complete policy snapshot
+
+Contracts and thresholds acquire a leaf package. Detached process and worker configuration receive the complete versioned snapshot.
+
+Intermediate step: mechanisms still live in CLI here. The temporary policy-testing export is gone at #149; final test factories are package-local and serialization is internal.
+
+Chose a zero-internal-dependency package over keeping portable contracts in CLI
+stated
+Chose a complete versioned snapshot over partial per-hop options
+stated
+Chose a restricted ./policy-testing subpath over root-level overrides
+stated
+Chose AST, declaration, runtime, manifest, and dependency allowlists over documentation alone
+stated
+Chose a cut after snapshot propagation over including operational consumer migration
+stated
+daemon-policy.ts ↗ process-launcher.ts ↗ package.json ↗Original #130 ↗
+#131
+Make every mechanism consume its policy section
+
+Policy transport becomes policy use: required slices replace local numeric defaults. Status observation uses 100 ms; ordinary single-response exchanges use 250 ms.
+
+Chose required policy slices over optional per-consumer numbers
+stated
+Chose composition-purpose timeout selection over request-kind selection
+stated
+Chose independent numeric resume and reattachment counters over one shared boolean
+stated
+Chose test-only adapters over production compatibility overloads
+stated
+daemon-transport.ts ↗ daemon-policy.ts ↗ daemon-policy.md ↗Original #131 ↗
+#132
+Carry the command name; do not guess it from arguments
+
+CLI syntax decides command identity once. The daemon carries and validates it alongside opaque argv, including duplicate compatibility.
+
+Chose a frozen daemon-owned tuple over another app-local set
+stated
+Chose an exhaustive CLI record over deriving workspace routes from the full tuple
+stated
+Chose commandName beside opaque argv over nesting or reparsing it
+stated
+Chose to include commandName in accepted-request compatibility over comparing argv alone
+stated
+Chose a new protocol generation over optional or legacy command metadata
+stated
+daemon-command-name.ts ↗ invocation-workspace-selector.ts ↗ protocol.ts ↗ accepted-request-ledger.ts ↗Original #132 ↗
+#133
+Separate worker failure from accepted-request failure
+
+Outer classification keeps this priority: resource interruption, response capacity, worker exit, then shutdown context. Worker failures retain their separate wire-level values.
+
+The CLI-derived error facts in this PR become package-owned mechanism facts when the implementations move. The classification boundary remains.
+
+Chose one private outer tuple with a derived union over repeated app-local unions
+stated
+Chose a distinct worker type with no shared literals over retaining the colliding alias
+stated
+Chose a pure context classifier over lifecycle-specific branching at the call site
+stated
+Chose app-owned instanceof fact derivation over constructor-name or error.name reflection
+stated
+daemon-execution-failure.ts ↗ accepted-execution-session.ts ↗Original #133 ↗
+#134
+Make the first failed admission guard authoritative
+
+Authentication → worker readiness → resource pressure → queue state → duplicate compatibility. Rejection code determines retry safety.
+
+The request field was deliberately temporary/opaque at this stage. Executor contracts arrive in #135; the final admission context still uses unknown because guards do not inspect product payloads.
+
+Chose explicit guard classes over inline conditionals
+stated
+Chose side-effect-free ledger compatibility over mutation-time corruption handling
+stated
+Chose code-derived retry safety over trusting wire booleans
+stated
+Chose unknown for the temporary request field over importing the CLI request type
+stated
+daemon-admission.ts ↗ protocol-validator.ts ↗Original #134 ↗
+Transport: who owns each part of the conversation?
+
+A socket connection, a frame, a complete request, and a result transfer have different lifetimes. These PRs separate them before the final package move.
+
+#137
+Separate byte framing from protocol meaning
+
+Codec owns frame boundaries and binary integrity. Validator owns shapes and correlation. Consumers depend on operation-shaped interfaces.
+
+The intermediate LocalDaemonTransport error-mapping boundary becomes the split package composition by #149. Its monolithic implementation is removed.
+
+Chose operation-shaped transport interfaces over LocalDaemonTransport and consumer-local transport shapes
+stated
+Chose separate control and transfer decoders over one binary-aware decoder
+stated
+Chose response-kind-specific JSON limits over one control limit
+stated
+Chose to map DaemonProtocolError at the facade boundary over changing DaemonTransportError
+stated
+Chose to absorb result-chunk header and digest validation into DaemonWireCodec over retaining a standalone chunk codec
+stated
+wire-codec.ts ↗ protocol-validator.ts ↗ contracts.ts ↗Original #137 ↗
+#138
+Retain receipt state across a resumed result fetch
+
+The receiver owns manifest identity, record offset, and finish validation. Output capture owns storage; successful finish hands disposal ownership to the caller.
+
+Chose daemon-scoped capture over extending CLI OrderedCommandOutput
+stated
+Chose to advance resume offsets after awaited append over advancing on frame receipt
+stated
+Chose one receiver across initial and fetch connections over rebuilding receipt state
+stated
+Chose fresh wire decoders per connection over retaining decoder state
+stated
+Chose caller ownership after successful finish over receiver-owned cleanup
+stated
+result-transfer-receiver.ts ↗ client-result-capture.ts ↗Original #138 ↗
+#139
+Give raw outbound sockets one owner
+
+A pull-driven iterator controls read flow; a connection-owned FIFO preserves write order under backpressure.
+
+Keeping protocol and inbound serving in the façade is an intermediate split. #140–#142 extract the remaining state machines before #149 removes that façade.
+
+Chose a pull-driven async iterator over forwarded data events
+stated
+Chose a connection-owned FIFO over façade-owned drain handling
+stated
+Kept protocol decoding and delivery-state translation in LocalDaemonTransport over moving them into the socket client
+stated
+Kept inbound server sockets in LocalDaemonTransport over extracting both directions together
+stated
+socket-client.ts ↗ socket-client.test.ts ↗Original #139 ↗
+#140
+Share the bounded, one-response exchange machinery
+
+Lifecycle calls, execution-status, and result acknowledgements share correlation and cleanup mechanics, while capability ports stay narrow.
+
+Chose one client for lifecycle, execution-status, and result-acknowledgement exchanges over separate request-specific clients
+stated
+Kept result acknowledgement off DaemonLifecycleRequester over widening the port
+stated
+Chose timeout injection at composition over request-kind selection
+stated
+Chose semantic validation before assigning accepted over treating every decoded frame as accepted
+stated
+Chose a shared transport-error module over lifecycle-client ownership
+stated
+lifecycle-client.ts ↗ transport-error.ts ↗Original #140 ↗
+#141
+Give inbound connections their own server
+
+Endpoint binding, each connection’s response/write chains, and shared graceful/forced shutdown belong together.
+
+Chose a dedicated socket-server owner over retaining inbound mechanics in the transport façade
+stated
+Chose the injected DaemonSocketClient over a second outbound connection path
+stated
+Chose independent per-connection response and write chains over a server-wide queue
+stated
+Chose one cached shutdown promise over independent close operations
+stated
+socket-server.ts ↗ socket-server.test.ts ↗Original #141 ↗
+#142
+Recover accepted execution in one client state machine
+
+One execution attempt can resume its result transfer. A permitted reattachment creates a fresh capture for the same request. The two counters stay independent.
+
+Chose a dedicated execution client over a generic response chain
+stated
+Chose a fresh output capture per execute attempt over reusing interrupted capture state
+stated
+Chose independent numeric policy counters over boolean recovery flags
+stated
+Chose the lifecycle client's acknowledgement-only surface over widening DaemonLifecycleRequester
+stated
+Chose an internal fetch-ended error over changing the public exhausted-fetch failure
+stated
+execution-client.ts ↗ execution-client.test.ts ↗Original #142 ↗
+#143
+Make the remaining transport façade only compose and delegate
+
+Require the policy, inject components directly, and remove leftover framing checks. An architecture test constrains responsibilities rather than line count.
+
+This is a temporary compatibility façade. #149 replaces it with DaemonTransportFactory; it is not an extra layer in the final runtime.
+
+Chose one required DaemonPolicy over an optional system-policy fallback
+stated
+Chose direct component injection over module mocking
+stated
+Chose to remove canFrame over delegating the probe
+stated
+Chose a source architecture oracle over a line-count limit
+stated
+daemon-transport.ts ↗ daemon-transport-composition.test.ts ↗Original #143 ↗
+Daemon life: who keeps accepted work coherent?
+
+The process shell becomes a coordinator of dedicated owners. The ledger, queue, resources, workers, and output storage retain their own state.
+
+#144
+Project status from explicit state snapshots
+
+A pure projector receives clocks, queue/resources, process state, and worker state. It preserves the distinction between reported generation, sampled spool usage, and legacy pong fields.
+
+Chose a static projector over an injected service
+stated
+Chose explicit clock and process values over callbacks
+stated
+Chose worker snapshot generation over resource snapshot generation
+stated
+Chose sampled resources.spoolBytes over a completion-store read
+stated
+Kept legacy pong fileCount independent of worker readiness over matching activity optionality
+stated
+activity-projector.ts ↗ activity-projector.test.ts ↗Original #144 ↗
+#145
+Give each worker lifetime an explicit generation
+
+One manager owns startup, execution, replacement, fencing, release, and shutdown. Resource policy decides recovery; explicit activation publishes readiness after sampling.
+
+Chose one generation manager over process-shell worker fields
+stated
+Chose a recovery port over importing the resource supervisor
+stated
+Chose explicit readiness activation over publishing readiness with the worker report
+stated
+Chose one stored replacement operation over parallel transitions
+stated
+Chose separate close and termination operations over one shutdown promise
+stated
+worker-generation-manager.ts ↗ worker-generation-manager.test.ts ↗Original #145 ↗
+#146
+Coordinate delivery without taking ownership of ledger or spool data
+
+The delivery session attaches clients, tracks the latest transfer promise, acknowledges results, and fences retained diagnostic traces.
+
+Chose one injected delivery session over process-shell delivery fields
+stated
+Chose narrow ledger and spool ports over moving their data into the session
+stated
+Chose the latest per-request delivery promise over aggregating duplicate attachments
+stated
+Chose retention-fenced trace handles over raw observer handles
+stated
+Chose physical cleanup before logical acknowledgement over conditional journal acknowledgement
+stated
+delivery-session.ts ↗ delivery-session.test.ts ↗Original #146 ↗
+#147
+Coordinate one FIFO turn per accepted identity
+
+Immutable acceptance metadata stays in the ledger. A session queues execution and turn-boundary sampling; duplicate attachment does not repeat acceptance side effects.
+
+Chose immutable acceptance metadata on each ledger entry over a parallel process map
+stated
+Chose an injected session over moving ledger, queue, delivery, worker, resource, lifetime, or shutdown state
+stated
+Chose a narrow process-lifecycle port over exposing the process shell
+stated
+Chose turn-boundary sampling inside each queued operation over post-hoc process scheduling
+stated
+Chose duplicate attachment over acceptance replay
+stated
+accepted-execution-session.ts ↗ accepted-request-ledger.ts ↗ request-queue.ts ↗Original #147 ↗
+Tests, deferred behavior, and adjacent edits
+
+These carry the same weight as moving a package. A lower-level test can exercise a mechanism while a removed end-to-end scenario no longer exercises the composed CLI path.
+
+Remove the TypeScript root revision/index helper types and telemetry state-path resolvers as their responsibilities move to core and CLI.
+stated
+Preserve cached undefined values and promise identity, including rejected promises; do not cache a synchronously thrown factory failure.
+stated
+Keep publication local: one backend index or project graph at a time; earlier successful work can survive a later failure.
+stated
+Keep FIFO configuration discovery, last configured owner as the primary project, and an inferred project for unowned files.
+unexplained
+Retain idle timing from construction and latest new acceptance; do not reset it at readiness or completion.
+stated
+Defer eight follow-ups: ledger eviction, startup-silence bound, control-plane start readiness, endpoint relocation, socket-bind election evaluation, source-byte retention, and two idle-timing changes.
+stated
+Make external test observation read-only, including invalid/missing/malformed/unavailable storage reads; keep policy test factories internal.
+stated
+During #148 staging, normalize line endings in the source-copy test hash; at #149 replace that test with a physical-absence check.
+unexplained
+Normalize relative --cwd for daemon control commands at the CLI host.
+stated
+Change the PR template: plain-text change trees, Context, language-neutral signatures, and a Visuals section replace prior embed and reading-order guidance.
+unexplained
+Remove the CLI cross-process starting-owner scenario; add a package client/actor scenario for the same ownership topic.
+unexplained
+Remove the CLI live-silent-daemon status scenario; exercise a live silent peer through the package client.
+unexplained
+Remove the CLI malformed-activity status scenario; exercise malformed activity redaction through the package client.
+unexplained
+Remove the CLI warm-up-after-caller-kill scenario; retain related registry and startup-coordinator tests.
+unexplained
+Remove the CLI stale current-schema record cleanup scenario; keep related controller and registry observation tests.
+unexplained
+Remove the CLI prompt-status-under-stuck-work scenario; keep process-level activity and responsiveness tests.
+unexplained
+Remove the CLI workspace-deletion cold-output parity scenario; keep daemon workspace-disappearance handling tests.
+unexplained
+Remove the built stop-command in-flight drain scenario; retain process/session drain tests.
+unexplained
+Remove the built stop-command forced-termination scenario; retain a real-process force-stop test in the daemon package.
+unexplained
+Remove the built stop-command launched-startup exit scenario; retain controller tests for exact launched-process exit.
+unexplained
+Remove end-to-end diagnostic log filename, backup-count, and per-file size assertions; keep logger unit coverage.
+unexplained
+Narrow diagnostic redaction assertions from raw log contents to parsed inspector events.
+unexplained
+Replace disconnected-caller completion-state polling with telemetry observation and a subsequent successful warm call.
+unexplained
+Replace persistent-pressure endpoint and process-token checks with read-only instance inspection and public status cleanup.
+unexplained
+Run the FIFO freshness scenario through two public overview commands instead of a raw protocol version request followed by overview.
+stated
+The actual policy choices
+
+These are the recorded defaults and derivations. “No timer” is a choice too. The numeric record states a purpose for each value; several purposes say only that existing timing is preserved.
+
+Owned value / recipe	Default	Where it applies	Reason
+transport.singleResponseTimeoutMs	250 ms	Ordinary lifecycle and execution-status exchanges	
+stated
+Bound one-response local socket waits
+transport.statusResponseTimeoutMs	100 ms	Status observer lifecycle exchange	
+stated
+Keep status aggregation responsive independently of routing
+transport.executionAdmissionTimeoutMs	5 s	Execute submission until acceptance	
+stated
+Bound admission without timing accepted completion
+transport.maximumJsonPayloadBytes	8 MiB	Ordinary JSON control frames	
+stated
+Bound decoded control input
+transport.maximumExecutionControlPayloadBytes	256 KiB	Execution transfer control frames	
+stated
+Keep binary-transfer control bounded separately
+startup.coordinationGraceMs	15 s	Startup ownership and missing-owner observation	
+stated
+Preserve election recovery grace
+startup.heartbeatIntervalMs	100 ms	Startup-owner heartbeat	
+stated
+Maintain live ownership while warming
+startup.authorizationPollIntervalMs	10 ms	Process authorization wait	
+stated
+Preserve the distinct fast authorization cadence
+startup.observationPollIntervalMs	20 ms	Launcher readiness observation	
+stated
+Preserve current readiness polling cadence
+startup.previousInstanceTerminationTimeoutMs	5 min	Replacement of a previous instance	
+stated
+Allow controlled termination before new ownership proceeds
+startup.childFailureRetryLimit	1 retry	Explicit startup child failure	
+stated
+Preserve one fresh launch after a failed child
+shutdown.idleTimeoutMs	30 min	Warm daemon idle lifetime	
+stated
+Release retained resources after inactivity
+shutdown.stopTimeoutMs	5 s	User-requested stop	
+stated
+Bound graceful stop and forced escalation together
+shutdown.forcedTerminationReserveMaximumMs	500 ms	Stop escalation reserve	
+stated
+Leave bounded time for authenticated force termination
+recipe.forcedTerminationReserve	min(forcedTerminationReserveMaximumMs, floor(stopTimeoutMs / 2))	Effective stop escalation reserve	
+stated
+Preserve small overridden stop windows
+shutdown.controllerPollIntervalMs	20 ms	Controller process/registry observation	
+stated
+Preserve control-plane polling cadence
+shutdown.processSignalExitTimeoutMs	500 ms after SIGTERM and 500 ms after SIGKILL	Direct process termination	
+stated
+Give each signal a bounded exit interval
+shutdown.processExitPollIntervalMs	20 ms	Direct process termination	
+stated
+Preserve process-exit polling cadence independently
+shutdown.resourceDrainAcknowledgementGraceMs	250 ms	Completion acknowledgement during drain	
+stated
+Permit an attached client to acknowledge before cleanup
+shutdown.resourceDrainAcknowledgementPollIntervalMs	5 ms	Completion acknowledgement during drain	
+stated
+Preserve the distinct fast acknowledgement cadence
+delivery.postAcceptanceExecutionReattachmentLimit	1 reattachment	Authenticated close after acceptance	
+stated
+Recover the accepted request without local replay
+delivery.resultTransferResumeLimitPerExecutionAttempt	1 fetch resume per execute attempt	Interrupted manifest transfer	
+stated
+Resume one transfer independently for each execute attempt
+output.maximumChunkRawBytes	64 KiB	Worker and result chunks	
+stated
+Bound one raw output record
+output.inlineRawBytes	256 KiB	Inline result storage	
+stated
+Avoid files for small results
+output.maximumResultRawBytes	256 MiB	One completed result	
+stated
+Bound retained output for one request
+output.maximumAggregateSpoolRawBytes	512 MiB	All retained completions for one daemon	
+stated
+Bound aggregate spool pressure
+recipe.effectiveMemorySelection	Use constrained bytes only when positive and smaller than total bytes; preserve selected raw bytes	Memory derivation input	
+stated
+Respect real lower constraints without rounding identity
+resources.effectiveMemoryBytes	Selected raw effective bytes	Resource reports and derived thresholds	
+stated
+Preserve non-MiB-aligned system information exactly
+recipe.effectiveMemoryMiB	max(1, floor(effectiveMemoryBytes / MiB))	Memory threshold derivation	
+stated
+Give sub-MiB inputs a stable minimum
+recipe.hardProcessRss	clamp(floor(effectiveMemoryMiB / 2), 256, 8192) * MiB	Hard daemon RSS limit	
+stated
+Reserve memory for the host while bounding small and large systems
+resources.hardProcessRssBytes	Hard-process-RSS recipe	Process replacement and worker launch	
+stated
+Trigger controlled replacement before OOM
+resources.softProcessRssBytes	floor(hardProcessRssMiB * 0.8) * MiB	Transient resource shedding	
+stated
+Shed before hard replacement
+resources.resumeProcessRssBytes	floor(hardProcessRssMiB * 0.7) * MiB	Admission resumption	
+stated
+Require lower RSS before resuming work
+recipe.workerOldGeneration	clamp(floor(effectiveMemoryMiB / 4), 128, 4096) MiB	Worker V8 old generation	
+stated
+Bound worker heap within process budget
+resources.workerMaxOldGenerationSizeMiB	Worker-old-generation recipe	Worker resource limits	
+stated
+Pass the derived V8 limit unchanged
+resources.supervisionIntervalMs	250 ms	Process RSS and spool sampling	
+stated
+Detect sustained pressure without per-operation overhead
+resources.replacementWindowMs	10 min	Replacement circuit	
+stated
+Count only recent replacements
+resources.replacementLimit	2 replacements; third drains	Replacement circuit	
+stated
+Stop persistent replacement churn
+resources.workerHeapSampleIntervalMs	25 ms	Active worker heap high-water sampling	
+stated
+Observe short-lived heap peaks
+diagnostics.logRotateBytes	10 MiB	Diagnostic log rotation	
+stated
+Bound active diagnostic file size
+diagnostics.logBackupCount	4 backups plus active log	Diagnostic log rotation	
+stated
+Retain a bounded diagnostic history
+diagnostics.maximumQueuedEvents	1,024	Pending diagnostic writes	
+stated
+Bound memory when storage is slow
+diagnostics.disconnectedTraceRetentionMs	5 min	Disconnected operation traces	
+stated
+Retain reconnect evidence without changing result retention
+diagnostics.maximumDisconnectedTraces	1,024 with effective minimum 1	Disconnected operation traces	
+stated
+Bound diagnostic-only retention
+Intentional absences
+Healthy startup: None
+Progressing warm-up has no project-size deadline.
+stated
+Startup silence: None
+Silence handling is deferred to the follow-up contract.
+stated
+Post-accept completion: None
+Accepted work is not replayed or failed because it runs long.
+stated
+Worker output acknowledgement: None
+Backpressure waits for durable consumption without a timer.
+stated
+Unacknowledged result: None
+Retention eviction is deferred to the follow-up contract.
+stated
+Read the complete policy record ↗
+You can stop at this layer.
+The decisions are on the page. Below, the same facts become concrete requests, lifetimes, and source lines.
+Return to the ownership map ↑
+
+04 / WORKED EXAMPLE
+
+Follow one command
+through the map.
+
+symnav overview src/a.ts selects one file. The CLI finds its workspace; DaemonClient selects a route. Acceptance separates safe local recovery from recovery of the already accepted request.
+
+Illustrative trace, derived from source. No symnav code runs here. Steps combine multiple function calls and omit election details; the scenario descriptions state the branches being illustrated.
+
+Ready daemon
+No daemon record
+Rejected for pressure
+Accepted, then disconnected
+
+A compatible daemon is ready, guards pass, and delivery finishes. One new accepted identity enters one FIFO turn. Selection discovers a.ts without reconciling unrelated retained siblings.
+
+01 · CLI host
+Classify the question
+02 · DaemonClient · caller
+Choose the warm route
+03 · Daemon coordinator
+Admit, then accept
+04 · Accepted execution session
+Enter one FIFO turn
+05 · Host executor · worker
+Refresh and answer
+06 · Delivery + client receiver
+Transfer and verify output
+07 · CLI host · caller
+Write the answer
+← Previous step
+1 / 7
+Next step →
+Reset
+
+CLI host
+
+Classify the question
+
+InvocationWorkspaceSelector labels the command overview and normalizes argv. CliInvocationCoordinator resolves the workspace root before calling DaemonClient.
+
+No daemon request has been accepted.
+
+Open the implementing boundary ↗
+BEFORE / NOT ACCEPTED
+Local execution is available only when the failure is retry-safe.
+Not-ready, pressure, and draining rejections are retry-safe. An incompatible duplicate is not. Authentication mismatch disconnects.
+ACCEPTED
+↓
+same identity
+AFTER ACCEPTANCE
+Recover delivery or return a controlled failure.
+Never rerun the work locally. A long command has no completion timeout. Duplicate attachment creates no new queue turn, trace, or idle reset.
+Warm route and controlled failures ↗ Admission order and retry codes ↗
+↑ The decisions behind this path
+
+05 / DIFFERENT KINDS OF WARM
+
+A saved file is not
+a saved answer.
+
+The stack moves reusable lifetimes to core while leaving TypeScript-specific interpretation in the backend. The same cache word hides four different retention rules.
+
+What is held	Owner after the stack	What ends or replaces it
+Workspace discovery and backend instances	WorkspaceSession in core	Cold requests discover afresh; retained sessions reuse catalog identity. Selected-file discovery bypasses retained sibling reconciliation.
+Source text bytes	WorkspaceSourceCache in core	Every supplied snapshot replaces the byte-cache revision set, including selections. Changed paths/revisions invalidate bytes; omitted files are evicted.
+Prepared file and project indexes	Core bases, with TypeScript hooks	Validate a candidate, then publish it. Backend selection overlays retain omitted prepared files; full refresh removes absent files. Each index/graph has its own publication boundary.
+Six semantic query maps	TurnScopedCacheScope in core	Clear after successful refresh begins the next turn; also clear synchronously before project release. A failed refresh keeps the preceding successful turn's maps.
+Successful full refresh
+Selection: a.ts only
+Backend preparation fails
+Release pending or rejects
+Full refresh supplies a.ts and b.ts
+
+Assume both files are unchanged and this backend refresh succeeds. Prepared identities may be reused; the semantic maps begin a new turn.
+
+Source bytes
+a.ts · retained
+b.ts · retained
+Core byte cache matches the supplied authoritative revision set.
+Prepared index
+a.ts · prepared
+b.ts · prepared
+Same revisions reuse prepared entries; candidate publication is local to this index.
+Project graph
+configured membership
+inferred fallback
+Unchanged files and observed inputs let the current graph remain published.
+Semantic maps
+six empty maps
+beginTurn clears previous entries after successful refresh.
+Open this lifetime boundary ↗
+
+Illustration: two files and symbolic values stand in for real bytes, nodes, and queries. It distinguishes byte-cache eviction from prepared-index retention; it does not simulate a language backend.
+
+The publication boundary is smaller than “the workspace”
+Prior published index
+→
+Prepare + validate candidate
+→
+TypeScript commit
+→
+Assign new index
+
+A backend preparation failure rolls back that preparation. ensureFiles performs one selection transaction per missing file, so earlier successful files remain when a later one fails. Source refresh, project-graph refresh, and other backend commits are separate. A workspace scope is not returned after a failed refresh.
+
+Backend publication ↗ Later backend failure after an earlier commit ↗
+↑ The state decisions
+
+06 / TWO DIFFERENT RECOVERIES
+
+Bring the answer back.
+Keep the work's identity.
+
+The server's ledger owns accepted identity. Its spool owns completed bytes. The client owns a receiver and capture. A receiver survives fetch connections; a new execute attachment uses a fresh capture for the same accepted request.
+
+Fetch resumes this transfer
+Reattach to the accepted request
+Same receiver. New socket.
+Default: 1 fetch resume per execute attempt
+Daemon process
+
+Ledger: accepted request R
+Spool: completed records for R
+
+0
+1
+2
+3
+Read the stored transfer from offset 2.
+→
+Caller process
+
+Keep receiver, manifest and captured records.
+Create a new wire decoder for this connection.
+
+0
+1
+2
+3
+Records 0 and 1 were appended. The first not-yet-appended record is 2.
+
+await append(record 2) → nextOffset becomes 3
+
+Receiving a frame is not enough to advance the offset. Finish requires the manifest’s record count, byte total, and digest to match captured output. The completed output is handed to the caller for disposal.
+
+Open the recovery implementation ↗Open duplicate acceptance ↗
+
+Illustration: record numbers stand in for output records, not byte offsets. Default budgets are shown; this is not a socket execution.
+
+Six jobs the old transport façade held together
+Codec + validator
+Frame sizes, binary headers, digests, message shape and correlation
+Socket client
+Demand-driven reads; ordered writes; timeout and closure
+Socket server
+Endpoint binding; per-connection chains; draining and forced close
+Lifecycle client
+One-response exchanges and result acknowledgement
+Execution client
+Acceptance, transfer, reattachment, terminal outcome
+Receiver + capture
+Manifest identity, durable append position, verified result, cleanup
+The worker can change while the daemon stays
+Generation N
+old reports fenced out
+→
+One shared replacement operation
+resource policy decides whether to replace
+→
+Generation N+1
+warm-up sampling, then explicit readiness
+
+The activity projector uses the worker's generation during replacement, the resource supervisor's sampled spool size, and the legacy pong file count independently of readiness. Worker close and forced termination remain separate operations.
+
+Generation manager ↗ Snapshot projection ↗
+↑ The transport decisions
+
+07 / BELOW THE MAP
+
+Follow a claim
+to the actual delta.
+
+Frozen from the supplied Git revisions. The page makes no correctness verdict. PR descriptions report their own verification; this experiment does not rerun or certify those suites.
+
+Base
+b6801ebdd2421d0ca2e4bdd61ec0f04c24ddd73e
+Head
+d07002357d3e9596bfaae910a1ac63b77981620b
+Combined delta, with rename detection
+254 files changed, 27533 insertions(+), 8698 deletions(-)
+Mechanical test-title screen: 40 baseline titles absent verbatim at head
+Find a changed file
+
+261 of 261 source pairs · includes unchanged context and one explicitly marked intermediate test snapshot
+
+M
+.github/PULL_REQUEST_TEMPLATE.md ↗
++26 / −68
+M
+AGENTS.md ↗
++13 / −9
+M
+apps/cli/package.json ↗
++1 / −0
+A
+apps/cli/src/cli-invocation-coordinator.test.ts ↗
++107 / −0
+A
+apps/cli/src/cli-invocation-coordinator.ts ↗
++44 / −0
+M
+apps/cli/src/cli-program-executor.test.ts ↗
++146 / −11
+M
+apps/cli/src/cli-program-executor.ts ↗
++6 / −5
+M
+apps/cli/src/cli.test.ts ↗
++71 / −67
+M
+apps/cli/src/cli.ts ↗
++15 / −10
+M
+apps/cli/src/command-execution-result.ts ↗
++28 / −19
+M
+apps/cli/src/command.ts ↗
++25 / −18
+A
+apps/cli/src/commands/daemon/register-daemon-command.test.ts ↗
++224 / −0
+M
+apps/cli/src/commands/daemon/register-daemon-command.ts ↗
++20 / −33
+A
+apps/cli/src/daemon-executor.test.ts ↗
++197 / −0
+A
+apps/cli/src/daemon-executor.ts ↗
++150 / −0
+D
+apps/cli/src/daemon/daemon-clock.test.ts ↗
++0 / −33
+D
+apps/cli/src/daemon/daemon-command-dispatcher.integration.test.ts ↗
++0 / −246
+D
+apps/cli/src/daemon/daemon-command-dispatcher.test.ts ↗
++0 / −377
+D
+apps/cli/src/daemon/daemon-command-dispatcher.ts ↗
++0 / −303
+D
+apps/cli/src/daemon/daemon-entry.test.ts ↗
++0 / −113
+D
+apps/cli/src/daemon/daemon-entry.ts ↗
++0 / −54
+D
+apps/cli/src/daemon/daemon-lifecycle-renderer.test.ts ↗
++0 / −60
+D
+apps/cli/src/daemon/daemon-lifetime.test.ts ↗
++0 / −51
+D
+apps/cli/src/daemon/daemon-navigation-worker.test.ts ↗
++0 / −158
+D
+apps/cli/src/daemon/daemon-result-chunk-codec.ts ↗
++0 / −162
+D
+apps/cli/src/daemon/daemon-runtime-values.ts ↗
++0 / −24
+D
+apps/cli/src/daemon/invocation-route.ts ↗
++0 / −9
+D
+apps/cli/src/daemon/invocation-workspace-selector.test.ts ↗
++0 / −76
+D
+apps/cli/src/daemon/local-daemon-transport.ts ↗
++0 / −1488
+D
+apps/cli/src/daemon/retained-workspace-program.ts ↗
++0 / −35
+D
+apps/cli/src/daemon/workspace-daemon.ts ↗
++0 / −1199
+A
+apps/cli/src/default-dependencies.test.ts ↗
++44 / −0
+A
+apps/cli/src/invocation-route.ts ↗
++15 / −0
+A
+apps/cli/src/invocation-workspace-selector.test.ts ↗
++99 / −0
+R061
+apps/cli/src/daemon/invocation-workspace-selector.ts → apps/cli/src/invocation-workspace-selector.ts ↗
++32 / −17
+M
+apps/cli/src/program-dependencies.ts ↗
++12 / −3
+M
+apps/cli/src/program.test.ts ↗
++16 / −4
+M
+apps/cli/src/program.ts ↗
++35 / −10
+A
+apps/cli/src/state-directory-resolver.test.ts ↗
++95 / −0
+A
+apps/cli/src/state-directory-resolver.ts ↗
++29 / −0
+D
+apps/cli/src/workspace-request-scope.test.ts ↗
++0 / −157
+D
+apps/cli/src/workspace-request-scope.ts ↗
++0 / −55
+M
+apps/cli/test/benchmark/daemon-benchmark-gate.ts ↗
++1 / −1
+M
+apps/cli/test/benchmark/daemon-scale-benchmark-harness.test.ts ↗
++10 / −17
+M
+apps/cli/test/benchmark/daemon-scale-benchmark-harness.ts ↗
++59 / −62
+M
+apps/cli/test/e2e/daemon/diagnostic-output.test.ts ↗
++27 / −78
+M
+apps/cli/test/e2e/daemon/nested-workspaces.test.ts ↗
++3 / −6
+M
+apps/cli/test/e2e/daemon/parity.test.ts ↗
++79 / −132
+M
+apps/cli/test/e2e/daemon/persistent-pressure.test.ts ↗
++42 / −68
+M
+apps/cli/test/e2e/daemon/start.test.ts ↗
++3 / −7
+M
+apps/cli/test/e2e/daemon/state-isolation.test.ts ↗
++25 / −36
+M
+apps/cli/test/e2e/daemon/status.test.ts ↗
++11 / −662
+M
+apps/cli/test/e2e/daemon/stop.test.ts ↗
++12 / −274
+M
+apps/cli/test/e2e/navigation-mode-cleanup.test.ts ↗
++2 / −3
+M
+apps/cli/test/e2e/telemetry/telemetry.test.ts ↗
++4 / −3
+D
+apps/cli/test/helpers/daemon-accepted-caller.ts ↗
++0 / −30
+M
+apps/cli/test/helpers/daemon-malicious-output.cjs ↗
++1 / −1
+A
+apps/cli/test/helpers/daemon-resource-policy.ts ↗
++34 / −0
+D
+apps/cli/test/helpers/daemon-startup-caller-exit.ts ↗
++0 / −215
+D
+apps/cli/test/helpers/daemon-state-files.ts ↗
++0 / −21
+A
+apps/cli/test/helpers/daemon-testing.ts ↗
++16 / −0
+M
+apps/cli/test/helpers/e2e-process-cleanup.test.ts ↗
++6 / −7
+M
+apps/cli/test/helpers/e2e-process-cleanup.ts ↗
++59 / −20
+M
+apps/cli/test/integration/commands/helpers/fake-program-dependencies.ts ↗
++13 / −0
+M
+apps/cli/test/integration/commands/overview/overview-command.test.ts ↗
++89 / −12
+M
+apps/cli/test/integration/commands/run-command.test.ts ↗
++30 / −0
+M
+apps/cli/tsconfig.json ↗
++1 / −0
+M
+eslint.config.mjs ↗
++27 / −15
+A
+meta-tests/src/cli-daemon-reachability.test.ts ↗
++184 / −0
+A
+meta-tests/src/daemon-compatibility-copy.test.ts ↗
++12 / −0
+A
+meta-tests/src/daemon-package.test.ts ↗
++265 / −0
+A
+meta-tests/src/daemon-storage-boundary.test.ts ↗
++1346 / −0
+M
+meta-tests/src/lint-rule.test.ts ↗
++103 / −0
+M
+meta-tests/src/project-refs.test.ts ↗
++26 / −3
+A
+meta-tests/src/renderer-package.test.ts ↗
++49 / −0
+M
+packages/backend-typescript/src/call-graph/find-callees.ts ↗
++1 / −1
+M
+packages/backend-typescript/src/definition/find-definitions.ts ↗
++1 / −1
+M
+packages/backend-typescript/src/identity/workspace-declaration-index.test.ts ↗
++27 / −25
+M
+packages/backend-typescript/src/index.ts ↗
++0 / −3
+M
+packages/backend-typescript/src/resolve/resolve-symbols.ts ↗
++1 / −1
+M
+packages/backend-typescript/src/typescript-backend/typescript-backend.ts ↗
++11 / −12
+M
+packages/backend-typescript/src/typescript-backend/typescript-project-graph.test.ts ↗
++71 / −1
+M
+packages/backend-typescript/src/typescript-backend/typescript-project-graph.ts ↗
++126 / −194
+M
+packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts ↗
++195 / −1
+M
+packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts ↗
++55 / −64
+M
+packages/backend-typescript/src/typescript-backend/typescript-workspace-state.test.ts ↗
++279 / −53
+M
+packages/backend-typescript/src/typescript-backend/typescript-workspace-state.ts ↗
++134 / −302
+M
+packages/backend-typescript/test/integration/typescript-backend.test.ts ↗
++37 / −0
+A
+packages/core/src/backend/revisioned-backend-state.test.ts ↗
++360 / −0
+A
+packages/core/src/backend/revisioned-backend-state.ts ↗
++293 / −0
+A
+packages/core/src/backend/turn-scoped-cache-scope.test.ts ↗
++92 / −0
+A
+packages/core/src/backend/turn-scoped-cache-scope.ts ↗
++46 / −0
+M
+packages/core/src/index.ts ↗
++30 / −0
+A
+packages/core/src/workspace/project-graph.test.ts ↗
++555 / −0
+A
+packages/core/src/workspace/project-graph.ts ↗
++340 / −0
+A
+packages/core/src/workspace/workspace-session.test.ts ↗
++296 / −0
+A
+packages/core/src/workspace/workspace-session.ts ↗
++81 / −0
+A
+packages/core/src/workspace/workspace-source-cache.test.ts ↗
++233 / −0
+R094
+packages/backend-typescript/src/typescript-backend/workspace-source-cache.ts → packages/core/src/workspace/workspace-source-cache.ts ↗
++2 / −1
+A
+packages/daemon/package.json ↗
++38 / −0
+A
+packages/daemon/src/client/daemon-client-contracts.ts ↗
++36 / −0
+A
+packages/daemon/src/client/daemon-client-control.test.ts ↗
++112 / −0
+A
+packages/daemon/src/client/daemon-client-public.test.ts ↗
++43 / −0
+A
+packages/daemon/src/client/daemon-client-runtime.ts ↗
++298 / −0
+A
+packages/daemon/src/client/daemon-client.test.ts ↗
++447 / −0
+A
+packages/daemon/src/client/daemon-client.ts ↗
++64 / −0
+A
+packages/daemon/src/client/daemon-routing-policy.test.ts ↗
++219 / −0
+A
+packages/daemon/src/client/daemon-routing-policy.ts ↗
++137 / −0
+A
+packages/daemon/src/daemon-admission.test.ts ↗
++150 / −0
+A
+packages/daemon/src/daemon-admission.ts ↗
++129 / −0
+A
+packages/daemon/src/daemon-command-name.test.ts ↗
++43 / −0
+A
+packages/daemon/src/daemon-command-name.ts ↗
++32 / −0
+A
+packages/daemon/src/daemon-diagnostics.ts ↗
++40 / −0
+A
+packages/daemon/src/daemon-execution-failure.test.ts ↗
++122 / −0
+A
+packages/daemon/src/daemon-execution-failure.ts ↗
++35 / −0
+A
+packages/daemon/src/daemon-executor-module-loader.test.ts ↗
++136 / −0
+A
+packages/daemon/src/daemon-executor.ts ↗
++216 / −0
+A
+packages/daemon/src/daemon-lifecycle-report.ts ↗
++92 / −0
+A
+packages/daemon/src/daemon-policy.test.ts ↗
++163 / −0
+A
+packages/daemon/src/daemon-policy.ts ↗
++341 / −0
+R076
+apps/cli/src/daemon/completion-spool.test.ts → packages/daemon/src/delivery/completion-spool.test.ts ↗
++72 / −17
+R076
+apps/cli/src/daemon/completion-spool.ts → packages/daemon/src/delivery/completion-spool.ts ↗
++88 / −25
+A
+packages/daemon/src/delivery/delivery-session.test.ts ↗
++646 / −0
+A
+packages/daemon/src/delivery/delivery-session.ts ↗
++519 / −0
+R083
+apps/cli/src/daemon/daemon-logger.test.ts → packages/daemon/src/diagnostics/logger.test.ts ↗
++68 / −5
+R090
+apps/cli/src/daemon/daemon-logger.ts → packages/daemon/src/diagnostics/logger.ts ↗
++23 / −39
+R097
+apps/cli/src/daemon/daemon-operation-observer.test.ts → packages/daemon/src/diagnostics/operation-observer.test.ts ↗
++2 / −5
+R094
+apps/cli/src/daemon/daemon-operation-observer.ts → packages/daemon/src/diagnostics/operation-observer.ts ↗
++7 / −7
+A
+packages/daemon/src/entry-boundary.test.ts ↗
++52 / −0
+A
+packages/daemon/src/execution/accepted-execution-session-contracts.ts ↗
++66 / −0
+A
+packages/daemon/src/execution/accepted-execution-session.test.ts ↗
++330 / −0
+A
+packages/daemon/src/execution/accepted-execution-session.ts ↗
++194 / −0
+R050
+apps/cli/src/daemon/accepted-request-ledger.test.ts → packages/daemon/src/execution/accepted-request-ledger.test.ts ↗
++71 / −36
+R074
+apps/cli/src/daemon/accepted-request-ledger.ts → packages/daemon/src/execution/accepted-request-ledger.ts ↗
++54 / −19
+R099
+apps/cli/src/daemon/workspace-request-queue.test.ts → packages/daemon/src/execution/request-queue.test.ts ↗
++1 / −1
+R090
+apps/cli/src/daemon/workspace-request-queue.ts → packages/daemon/src/execution/request-queue.ts ↗
++10 / −5
+A
+packages/daemon/src/host-contract.test.ts ↗
++380 / −0
+A
+packages/daemon/src/index.ts ↗
++33 / −0
+A
+packages/daemon/src/lifecycle/daemon-clock.test.ts ↗
++801 / −0
+R100
+apps/cli/src/daemon/daemon-clock.ts → packages/daemon/src/lifecycle/daemon-clock.ts ↗
++0 / −0
+A
+packages/daemon/src/lifecycle/daemon-lifetime.test.ts ↗
++79 / −0
+R065
+apps/cli/src/daemon/daemon-lifetime.ts → packages/daemon/src/lifecycle/daemon-lifetime.ts ↗
++11 / −9
+A
+packages/daemon/src/package-boundary.test.ts ↗
++37 / −0
+A
+packages/daemon/src/process-entry.ts ↗
++43 / −0
+A
+packages/daemon/src/process/activity-projector.test.ts ↗
++327 / −0
+A
+packages/daemon/src/process/activity-projector.ts ↗
++126 / −0
+R088
+apps/cli/src/daemon/daemon-controller.test.ts → packages/daemon/src/process/controller.test.ts ↗
++38 / −50
+R075
+apps/cli/src/daemon/daemon-controller.ts → packages/daemon/src/process/controller.ts ↗
++74 / −78
+A
+packages/daemon/src/process/process-coordinator-construction.test.ts ↗
++218 / −0
+R073
+apps/cli/src/daemon/workspace-daemon-requests.test.ts → packages/daemon/src/process/process-coordinator-requests.test.ts ↗
++740 / −44
+R088
+apps/cli/src/daemon/workspace-daemon.test.ts → packages/daemon/src/process/process-coordinator.test.ts ↗
++60 / −41
+A
+packages/daemon/src/process/process-coordinator.ts ↗
++676 / −0
+R052
+apps/cli/src/daemon/daemon-process-launcher.test.ts → packages/daemon/src/process/process-launcher.test.ts ↗
++123 / −27
+R070
+apps/cli/src/daemon/daemon-process-launcher.ts → packages/daemon/src/process/process-launcher.ts ↗
++67 / −38
+R094
+apps/cli/src/daemon/daemon-process-termination-observer.test.ts → packages/daemon/src/process/process-termination-observer.test.ts ↗
++2 / −2
+R092
+apps/cli/src/daemon/daemon-process-termination-observer.ts → packages/daemon/src/process/process-termination-observer.ts ↗
++5 / −2
+A
+packages/daemon/src/process/runtime-values.ts ↗
++11 / −0
+R095
+apps/cli/src/daemon/daemon-record-observer.test.ts → packages/daemon/src/registry/record-observer.test.ts ↗
++5 / −8
+R092
+apps/cli/src/daemon/daemon-record-observer.ts → packages/daemon/src/registry/record-observer.ts ↗
++9 / −5
+R074
+apps/cli/src/daemon/daemon-registry.test.ts → packages/daemon/src/registry/registry.test.ts ↗
++299 / −41
+R073
+apps/cli/src/daemon/daemon-registry.ts → packages/daemon/src/registry/registry.ts ↗
++244 / −107
+R089
+apps/cli/src/daemon/daemon-startup-coordinator.test.ts → packages/daemon/src/registry/startup-coordinator.test.ts ↗
++124 / −72
+R082
+apps/cli/src/daemon/daemon-startup-coordinator.ts → packages/daemon/src/registry/startup-coordinator.ts ↗
++69 / −69
+R082
+apps/cli/src/daemon/daemon-workspace-identity.test.ts → packages/daemon/src/registry/workspace-identity.test.ts ↗
++11 / −8
+R100
+apps/cli/src/daemon/daemon-workspace-identity.ts → packages/daemon/src/registry/workspace-identity.ts ↗
++0 / −0
+R068
+apps/cli/src/daemon/daemon-resource-monitor.test.ts → packages/daemon/src/resources/resource-supervisor.test.ts ↗
++92 / −93
+R071
+apps/cli/src/daemon/daemon-resource-monitor.ts → packages/daemon/src/resources/resource-supervisor.ts ↗
++14 / −69
+A
+packages/daemon/src/testing/daemon-testing-inspector.test.ts ↗
++145 / −0
+A
+packages/daemon/src/testing/daemon-testing-inspector.ts ↗
++167 / −0
+A
+packages/daemon/src/testing/index.ts ↗
++7 / −0
+A
+packages/daemon/src/transport/client-result-capture.test.ts ↗
++262 / −0
+A
+packages/daemon/src/transport/client-result-capture.ts ↗
++231 / −0
+A
+packages/daemon/src/transport/contracts.ts ↗
++71 / −0
+R074
+apps/cli/src/daemon/daemon-result-chunk-codec.test.ts → packages/daemon/src/transport/daemon-result-chunk-codec.test.ts ↗
++11 / −6
+A
+packages/daemon/src/transport/daemon-transport-composition.test.ts ↗
++34 / −0
+R058
+apps/cli/src/daemon/local-daemon-transport-execution.test.ts → packages/daemon/src/transport/daemon-transport-execution.test.ts ↗
++601 / −96
+A
+packages/daemon/src/transport/daemon-transport-socket-client.test.ts ↗
++361 / −0
+R075
+apps/cli/src/daemon/local-daemon-transport-validation.test.ts → packages/daemon/src/transport/daemon-transport-validation.test.ts ↗
++147 / −46
+R081
+apps/cli/src/daemon/local-daemon-transport.test.ts → packages/daemon/src/transport/daemon-transport.test.ts ↗
++33 / −65
+A
+packages/daemon/src/transport/daemon-transport.ts ↗
++87 / −0
+A
+packages/daemon/src/transport/execution-client.test.ts ↗
++298 / −0
+A
+packages/daemon/src/transport/execution-client.ts ↗
++447 / −0
+A
+packages/daemon/src/transport/lifecycle-client.test.ts ↗
++401 / −0
+A
+packages/daemon/src/transport/lifecycle-client.ts ↗
++183 / −0
+A
+packages/daemon/src/transport/protocol-validator.test.ts ↗
++322 / −0
+A
+packages/daemon/src/transport/protocol-validator.ts ↗
++672 / −0
+R092
+apps/cli/src/daemon/daemon-protocol.ts → packages/daemon/src/transport/protocol.ts ↗
++17 / −43
+A
+packages/daemon/src/transport/result-transfer-receiver.test.ts ↗
++287 / −0
+A
+packages/daemon/src/transport/result-transfer-receiver.ts ↗
++153 / −0
+A
+packages/daemon/src/transport/socket-client.test.ts ↗
++270 / −0
+A
+packages/daemon/src/transport/socket-client.ts ↗
++171 / −0
+A
+packages/daemon/src/transport/socket-server.test.ts ↗
++484 / −0
+A
+packages/daemon/src/transport/socket-server.ts ↗
++181 / −0
+A
+packages/daemon/src/transport/transport-error.ts ↗
++38 / −0
+A
+packages/daemon/src/transport/wire-codec.test.ts ↗
++126 / −0
+A
+packages/daemon/src/transport/wire-codec.ts ↗
++289 / −0
+A
+packages/daemon/src/worker-entry.ts ↗
++1 / −0
+R050
+apps/cli/src/daemon/daemon-navigation-worker-entry.ts → packages/daemon/src/worker/navigation-worker-entry.ts ↗
++161 / −64
+A
+packages/daemon/src/worker/navigation-worker.test.ts ↗
++462 / −0
+R084
+apps/cli/src/daemon/daemon-navigation-worker.ts → packages/daemon/src/worker/navigation-worker.ts ↗
++36 / −20
+A
+packages/daemon/src/worker/worker-generation-manager.test.ts ↗
++470 / −0
+A
+packages/daemon/src/worker/worker-generation-manager.ts ↗
++250 / −0
+R074
+apps/cli/src/daemon/daemon-navigation-worker-protocol.test.ts → packages/daemon/src/worker/worker-protocol.test.ts ↗
++50 / −5
+R079
+apps/cli/src/daemon/daemon-navigation-worker-protocol.ts → packages/daemon/src/worker/worker-protocol.ts ↗
++54 / −31
+A
+packages/daemon/test/actors/daemon-accepted-caller.ts ↗
++43 / −0
+R085
+apps/cli/test/helpers/daemon-live-silent.ts → packages/daemon/test/actors/daemon-live-silent.ts ↗
++2 / −2
+R083
+apps/cli/test/helpers/daemon-malformed-activity.ts → packages/daemon/test/actors/daemon-malformed-activity.ts ↗
++4 / −4
+R050
+apps/cli/test/helpers/workspace-daemon-stuck.ts → packages/daemon/test/actors/daemon-process-coordinator-controlled.ts ↗
++118 / −45
+R064
+apps/cli/test/helpers/workspace-daemon-persistent-pressure.ts → packages/daemon/test/actors/daemon-process-coordinator-persistent-pressure.ts ↗
++49 / −20
+A
+packages/daemon/test/actors/daemon-startup-mutation-owner.ts ↗
++65 / −0
+R081
+apps/cli/test/helpers/daemon-startup-publisher.ts → packages/daemon/test/actors/daemon-startup-publisher.ts ↗
++8 / −5
+A
+packages/daemon/test/fixtures/executor-module.mjs ↗
++58 / −0
+A
+packages/daemon/test/fixtures/executor-module.test.ts ↗
++75 / −0
+A
+packages/daemon/test/fixtures/executor-module.ts ↗
++95 / −0
+A
+packages/daemon/test/fixtures/observable-executor-module.mjs ↗
++46 / −0
+A
+packages/daemon/test/helpers/adversarial-daemon-peer-harness.ts ↗
++229 / −0
+A
+packages/daemon/test/helpers/canonical-path.ts ↗
++17 / −0
+A
+packages/daemon/test/helpers/daemon-controller.ts ↗
++49 / −0
+R093
+apps/cli/test/helpers/daemon-navigation-worker-fixture.mjs → packages/daemon/test/helpers/daemon-navigation-worker-fixture.mjs ↗
++10 / −0
+A
+packages/daemon/test/helpers/daemon-policy.ts ↗
++21 / −0
+A
+packages/daemon/test/helpers/daemon-process-coordinator-stuck.ts ↗
++99 / −0
+A
+packages/daemon/test/helpers/daemon-process-coordinator.ts ↗
++133 / −0
+A
+packages/daemon/test/helpers/daemon-process-terminator.ts ↗
++24 / −0
+R085
+apps/cli/test/helpers/daemon-registry-cleaner.ts → packages/daemon/test/helpers/daemon-registry-cleaner.ts ↗
++2 / −2
+A
+packages/daemon/test/helpers/daemon-registry.ts ↗
++24 / −0
+A
+packages/daemon/test/helpers/daemon-resource-policy.ts ↗
++34 / −0
+A
+packages/daemon/test/helpers/daemon-startup-coordinator.ts ↗
++53 / −0
+R082
+apps/cli/test/helpers/daemon-startup-mutation-owner.ts → packages/daemon/test/helpers/daemon-startup-mutation-owner.ts ↗
++8 / −5
+A
+packages/daemon/test/helpers/daemon-transport.ts ↗
++106 / −0
+A
+packages/daemon/test/helpers/executor-output.ts ↗
++33 / −0
+A
+packages/daemon/test/helpers/injected-daemon-executor-fixture.mjs ↗
++49 / −0
+A
+packages/daemon/test/helpers/resource-sampling-daemon-executor-fixture.mjs ↗
++31 / −0
+A
+packages/daemon/test/integration/adversarial-daemon-peers.test.ts ↗
++76 / −0
+A
+packages/daemon/test/integration/built-entry-artifacts.test.ts ↗
++79 / −0
+A
+packages/daemon/test/integration/built-process-entry.test.ts ↗
++284 / −0
+A
+packages/daemon/test/integration/built-process-launcher.test.ts ↗
++61 / −0
+A
+packages/daemon/test/public-import.test.ts ↗
++77 / −0
+A
+packages/daemon/test/testing-public-import.test.ts ↗
++20 / −0
+A
+packages/daemon/tsconfig.json ↗
++7 / −0
+A
+packages/daemon/tsconfig.test.json ↗
++14 / −0
+A
+packages/daemon/vitest.config.ts ↗
++7 / −0
+M
+packages/renderer/package.json ↗
++2 / −1
+M
+packages/renderer/src/index.ts ↗
++1 / −0
+A
+packages/renderer/src/lifecycle/daemon-lifecycle-renderer.test.ts ↗
++210 / −0
+R097
+apps/cli/src/daemon/daemon-lifecycle-renderer.ts → packages/renderer/src/lifecycle/daemon-lifecycle-renderer.ts ↗
++1 / −5
+M
+packages/renderer/tsconfig.json ↗
++1 / −1
+M
+packages/telemetry/src/index.ts ↗
++1 / −1
+M
+packages/telemetry/src/state-dir.test.ts ↗
++9 / −55
+M
+packages/telemetry/src/state-dir.ts ↗
++1 / −30
+M
+plans/000/symnav-stages.md ↗
++10 / −4
+M
+plans/005/daemon-follow-ups-functional-spec.md ↗
++56 / −14
+A
+plans/005/daemon-policy.md ↗
++66 / −0
+M
+pnpm-lock.yaml ↗
++15 / −0
+M
+tsconfig.json ↗
++1 / −0
+context
+README.md ↗
++0 / −0
+context
+plans/005/daemon-architecture-functional-spec.md ↗
++0 / −0
+context
+plans/005/daemon-functional-spec.md ↗
++0 / −0
+context
+plans/000/symnav-functional-spec.md ↗
++0 / −0
+context
+packages/core/src/workspace/workspace-catalog.ts ↗
++0 / −0
+context
+packages/core/src/backend/backend-router.ts ↗
++0 / −0
+stage
+During #148: meta-tests/src/daemon-compatibility-copy.test.ts ↗
++1 / −1
+
+A WAY TO CHECK YOUR OWN MAP
+
+Explain where a second command's speed comes from, and why a broken socket doesn't mean “run it again.”
+Show the two ideas
+↑ Back to the place, now that you know the names
+EXPERIMENT 14 · OUTSIDER PERSONA
+Experiment notes
+Assigned brief
+Read-only · all interactions stay in memory
+
+[SVG text in document order]
+
