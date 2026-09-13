@@ -1119,3 +1119,12 @@ no changes added to commit (use "git add" and/or "git commit -a")
 - 2026-09-13 13:34:18 +03: COMMIT OK 67-blast-radius-terrain: [main 79b3445] Add experiment 67 blast-radius-terrain
 - 2026-09-13 13:34:18 +03: START 71-pixel-city-stack attempt 1 via codex, pid 79896
 - 2026-09-13 13:34:28 +03: FINISH 62-policy-stained-glass via codex, exit 0, README present
+- 2026-09-13 13:34:29 +03: COMMIT OK 62-policy-stained-glass: [main 44b4b96] Add experiment 62 policy-stained-glass
+- 2026-09-13 13:34:29 +03: START 72-admission-circuit-board attempt 1 via claude-opus, pid 81004
+- 2026-09-13 13:34:39 +03: README MISSING 72-admission-circuit-board after worker exit 1
+- 2026-09-13 13:34:39 +03: REQUEUE 72-admission-circuit-board after attempt 1: worker exited 1 without README
+- 2026-09-13 13:34:39 +03: START 72-admission-circuit-board attempt 2 via claude-opus, pid 81630
+- 2026-09-13 13:34:49 +03: README MISSING 72-admission-circuit-board after worker exit 1
+- 2026-09-13 13:34:49 +03: REQUEUE 72-admission-circuit-board after attempt 2: worker exited 1 without README
+- 2026-09-13 13:34:49 +03: START 72-admission-circuit-board attempt 3 via codex, pid 82229
+- 2026-09-13 13:34:59 +03: FINISH 68-semantic-zoom-microscope via codex, exit 0, README present
