@@ -1,0 +1,39 @@
+{
+  "body": "## Context\n\nThe [daemon architecture spec](https://github.com/mohasarc/symnav/blob/main/plans/005/daemon-architecture-functional-spec.md) assigns turn-scoped semantic-cache lifetime to core. Building on #126, this layer moves only cache lifetime out of TypeScript while preserving all six algorithms, key spaces, promise/value identities, and failure behavior.\n\n## Shape\n\nBefore \u2014 TypeScript owned each cache and its clearing sequence:\n\n```mermaid\nflowchart LR\n    Backend[\"TypeScriptBackend\"] -->|calls refresh/release| Service[\"TypeScriptSemanticQueryService<br/>query algorithms + manual clearing\"]\n    Service -->|owns| Maps[\"six independent Maps\"]\n    Service -->|starts release| Graph[\"TypeScriptProjectGraph\"]\n    style Service fill:#fff2cc,stroke:#bf9000\n    style Maps fill:#ffdddd,stroke:#cc0000\n```\n\nAfter \u2014 core owns cache lifetime and the backend is the release barrier:\n\n```mermaid\nflowchart LR\n    Backend[\"TypeScriptBackend<br/>awaited release boundary\"] -->|calls refresh/release| Service[\"TypeScriptSemanticQueryService<br/>query algorithms\"]\n    Service -->|owns| Scope[\"TurnScopedCacheScope<br/>synchronous lifecycle\"]\n    Scope -->|owns| Handles[\"six isolated typed handles\"]\n    Service -->|awaits release| Graph[\"TypeScriptProjectGraph\"]\n    style Backend fill:#fff2cc,stroke:#bf9000\n    style Service fill:#fff2cc,stroke:#bf9000\n    style Scope fill:#ddffdd,stroke:#008800\n    style Handles fill:#ddffdd,stroke:#008800\n```\n\nLegend: green = added ownership; red = removed ownership; yellow = changed responsibility.\n\n## Where it lives\n\n```text\n.\n\u2514\u2500\u2500 packages/\n    \u251c\u2500\u2500 core/src/\n    \u2502   \u251c\u2500\u2500 ** index.ts\n    \u2502   \u2514\u2500\u2500 backend/\n    \u2502       \u251c\u2500\u2500 ++ turn-scoped-cache-scope.ts       # owns generic cache lifetime\n    \u2502       \u2514\u2500\u2500 ++ turn-scoped-cache-scope.test.ts  # locks identity, error, and clearing contracts\n    \u2514\u2500\u2500 backend-typescript/src/typescript-backend/\n        \u251c\u2500\u2500 ** typescript-semantic-query-service.ts       # adopts six isolated cache handles\n        \u251c\u2500\u2500 ** typescript-semantic-query-service.test.ts  # characterizes TypeScript cache behavior\n        \u2514\u2500\u2500 ** typescript-backend.ts                      # owns successful-turn and release barriers\n```\n\n## Public surface\n\nAdded to `@symnav/core`:\n\n```ts\nexport interface TurnScopedCache<Key, Value> {\n  getOrCreate(key: Key, createValue: () => Value): Value;\n}\n\nexport class TurnScopedCacheScope {\n  createCache<Key, Value>(): TurnScopedCache<Key, Value>;\n  beginTurn(): void;\n  releaseTransientResources(): void;\n}\n```\n\nChanged on exported `TypeScriptSemanticQueryService`:\n\n```ts\n// before: beginTurn(snapshot: WorkspaceSnapshot): void\nbeginTurn(files: readonly WorkspaceFile[]): void;\n\n// before: releaseTransientResources(): void\nreleaseTransientResources(): Promise<void>;\n```\n\n## Decisions\n\n- Chose one scope with six handles over one shared map, because the existing queries have independent key and value spaces.\n- Chose `Map.has` before `Map.get` over truthiness checks, because `undefined` is a valid cached value.\n- Chose synchronous cache clearing before project release over clearing after the await, because released semantics must be unavailable while release is pending or rejecting.\n- Chose to begin the next turn only after refresh succeeds over clearing at refresh entry, because failed refresh must preserve the current successful turn.\n\n## Look here\n\n- `packages/core/src/backend/turn-scoped-cache-scope.ts:14`\n- `packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts:129`\n- `packages/backend-typescript/src/typescript-backend/typescript-backend.ts:79`\n",
+  "commits": [
+    {
+      "sha": "44de06c631863ac27d78545d7cb9570b2ce19165",
+      "subject": "Characterize TypeScript semantic cache identities",
+      "body": ""
+    },
+    {
+      "sha": "67df0279bdf4d40bdfa05f813ab56475a9ffbf9c",
+      "subject": "Define turn-scoped cache handles",
+      "body": ""
+    },
+    {
+      "sha": "f515f73e93ae678f75189d02f184829e4ab895a9",
+      "subject": "Specify turn-scoped cache lifecycle",
+      "body": ""
+    },
+    {
+      "sha": "471a46653a6f381e4a6c7960a4f1094e2217fe3e",
+      "subject": "Implement turn-scoped cache lifecycle",
+      "body": ""
+    },
+    {
+      "sha": "9e656518954d8e6b81966d768badce82738d4efc",
+      "subject": "Specify awaited semantic resource release",
+      "body": ""
+    },
+    {
+      "sha": "64919bcbcf7fcc8202779b78c5f069b24662bb18",
+      "subject": "Adopt turn-scoped TypeScript query caches",
+      "body": ""
+    }
+  ],
+  "number": 127,
+  "title": "Scope semantic caches to one turn",
+  "base": "agent/daemon-architecture-refactor-part-03-project-membership-graph",
+  "head": "agent/daemon-architecture-refactor-part-04-query-cache-lifecycle"
+}

@@ -194,3 +194,12 @@ BUILD OK stack-head
 - 2026-09-13 05:00:08 +03: COMMIT OK 25-reader-sketch: [main 12ac19a] Add experiment 25 reader-sketch
 - 2026-09-13 05:00:09 +03: START 27-test-honesty attempt 1 via codex, pid 29503
 - 2026-09-13 05:01:59 +03: FINISH 23-zoom-canvas via codex, exit 0, README present
+- 2026-09-13 05:01:59 +03: COMMIT OK 23-zoom-canvas: [main 6ea73f0] Add experiment 23 zoom-canvas
+- 2026-09-13 05:01:59 +03: START 28-blast-radius-tool attempt 1 via claude-opus, pid 30477
+- 2026-09-13 05:02:09 +03: README MISSING 28-blast-radius-tool after worker exit 1
+- 2026-09-13 05:02:09 +03: REQUEUE 28-blast-radius-tool after attempt 1: worker exited 1 without README
+- 2026-09-13 05:02:09 +03: START 28-blast-radius-tool attempt 2 via claude-opus, pid 30643
+- 2026-09-13 05:02:19 +03: README MISSING 28-blast-radius-tool after worker exit 1
+- 2026-09-13 05:02:19 +03: REQUEUE 28-blast-radius-tool after attempt 2: worker exited 1 without README
+- 2026-09-13 05:02:19 +03: START 28-blast-radius-tool attempt 3 via codex, pid 30784
+- 2026-09-13 05:10:49 +03: FINISH 26-physical-analogy via codex, exit 0, README present
