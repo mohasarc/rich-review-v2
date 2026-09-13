@@ -1,0 +1,584 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Source book · Lifecycle music box</title><link rel="stylesheet" href="style.css"><body class="sourcebook"><a href="index.html">← Back to the instrument</a><h1>Source book</h1><p>Frozen receipts for PR #127. Base a1e325a5ff979bdfa25babc5554621c8c0f20497; head 64919bcbcf7fcc8202779b78c5f069b24662bb18. Lines below add fidelity to the complete score notes.</p><section id="backend-base"><h2>backend-base</h2><p>packages/backend-typescript/src/typescript-backend/typescript-backend.ts · base · L79–91</p><pre>  79    async refresh(request: BackendRefreshRequest): Promise&lt;BackendRefreshSummary&gt; {
+  80      this.sourceCache?.refresh(request.snapshot);
+  81      if (request.coverage === &quot;workspace&quot;) await this.projectGraph?.refresh(request.snapshot);
+  82      const summary = await this.state.refresh(request.snapshot.files, request.coverage);
+  83      this.semanticQueries.beginTurn(request.snapshot);
+  84      return summary;
+  85    }
+  86  
+  87    async releaseTransientResources(): Promise&lt;void&gt; {
+  88      this.semanticQueries.releaseTransientResources();
+  89    }
+  90  
+  91    async fileEntries(file: ResolvedPath): Promise&lt;OverviewFileEntries&gt; {</pre><a href="index.html#decisions">← Score notes</a></section><section id="service-base"><h2>service-base</h2><p>packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts · base · L49–53</p><pre>  49    beginTurn(snapshot: WorkspaceSnapshot): void {
+  50      this.files = snapshot.files;
+  51      this.clearQueryCaches();
+  52    }
+  53  </pre><a href="index.html#decisions">← Score notes</a></section><section id="release-base"><h2>release-base</h2><p>packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts · base · L125–129</p><pre> 125    releaseTransientResources(): void {
+ 126      this.clearQueryCaches();
+ 127      this.projects?.releaseTransientResources();
+ 128    }
+ 129  </pre><a href="index.html#decisions">← Score notes</a></section><section id="query-base"><h2>query-base</h2><p>packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts · base · L54–117</p><pre>  54    findDefinitions(identity: SymbolIdentity): Promise&lt;readonly SymbolOverviewNode[]&gt; {
+  55      const key = formatSymbolIdentity(identity);
+  56      const existing = this.definitionsByIdentity.get(key);
+  57      if (existing) return existing;
+  58      this.observer?.definitionSearch?.(identity);
+  59      const definitions = findDefinitions({
+  60        workspaceState: this.workspaceState,
+  61        files: this.files,
+  62        identity,
+  63      });
+  64      this.definitionsByIdentity.set(key, definitions);
+  65      return definitions;
+  66    }
+  67  
+  68    async findReferences(identity: SymbolIdentity): Promise&lt;readonly SymbolReference[]&gt; {
+  69      const locations = await this.referenceLocations(identity);
+  70      return locations.flatMap((location) =&gt; {
+  71        if (location.isDefinition) return [];
+  72        const node = this.workspaceState.nodeAt(location.relativePath, location.start);
+  73        if (!node) return [];
+  74        const sourceFile = node.getSourceFile();
+  75        const { line, character } = sourceFile.compilerNode.getLineAndCharacterOfPosition(
+  76          location.start,
+  77        );
+  78        return [
+  79          {
+  80            file: location.relativePath,
+  81            line: line + 1,
+  82            previewSource: TypeScriptSemanticQueryService.lineText(sourceFile, line),
+  83            matchStart: character,
+  84            matchEnd: character + location.length,
+  85            kind: classifyReferenceKind(node),
+  86          },
+  87        ];
+  88      });
+  89    }
+  90  
+  91    findCallTarget(identity: SymbolIdentity): Promise&lt;CallTargetResolution&gt; {
+  92      const key = formatSymbolIdentity(identity);
+  93      const existing = this.callTargetsByIdentity.get(key);
+  94      if (existing) return existing;
+  95      const resolution = this.resolveCallTarget(identity);
+  96      this.callTargetsByIdentity.set(key, resolution);
+  97      return resolution;
+  98    }
+  99  
+ 100    findCallers(identity: SymbolIdentity): Promise&lt;readonly CallEdge[]&gt; {
+ 101      const key = formatSymbolIdentity(identity);
+ 102      const existing = this.callersByIdentity.get(key);
+ 103      if (existing) return existing;
+ 104      const callers = this.referenceLocations(identity).then((locations) =&gt;
+ 105        new CallerFinder(this.workspaceState).find(locations),
+ 106      );
+ 107      this.callersByIdentity.set(key, callers);
+ 108      return callers;
+ 109    }
+ 110  
+ 111    findCallees(identity: SymbolIdentity): Promise&lt;readonly CallEdge[]&gt; {
+ 112      const key = formatSymbolIdentity(identity);
+ 113      const existing = this.calleesByIdentity.get(key);
+ 114      if (existing) return existing;
+ 115      const callees = findCallees({
+ 116        workspaceState: this.workspaceState,
+ 117        files: this.files,</pre><a href="index.html#decisions">← Score notes</a></section><section id="graph-base"><h2>graph-base</h2><p>packages/core/src/workspace/project-graph.ts · base · L144–152</p><pre> 144    async releaseTransientResources(): Promise&lt;void&gt; {
+ 145      if (!this.state) return;
+ 146      for (const project of this.state.configuredProjects) {
+ 147        const release = project.releaseTransientResources();
+ 148        if (release) await release;
+ 149      }
+ 150      const inferredRelease = this.state.inferredProject.releaseTransientResources();
+ 151      if (inferredRelease) await inferredRelease;
+ 152    }</pre><a href="index.html#decisions">← Score notes</a></section><section id="configured-base"><h2>configured-base</h2><p>packages/backend-typescript/src/typescript-backend/typescript-project-graph.ts · base · L78–85</p><pre>  78    releaseTransientResources(): void {
+  79      if (!this.loaded) return;
+  80      this.project.getLanguageService().compilerObject.cleanupSemanticCache();
+  81      this.observer?.semanticCacheReleased?.();
+  82      this.project = this.createProject();
+  83      this.loaded = false;
+  84    }
+  85  </pre><a href="index.html#decisions">← Score notes</a></section><section id="inferred-base"><h2>inferred-base</h2><p>packages/backend-typescript/src/typescript-backend/typescript-project-graph.ts · base · L78–85</p><pre>  78    releaseTransientResources(): void {
+  79      if (!this.loaded) return;
+  80      this.project.getLanguageService().compilerObject.cleanupSemanticCache();
+  81      this.observer?.semanticCacheReleased?.();
+  82      this.project = this.createProject();
+  83      this.loaded = false;
+  84    }
+  85  </pre><a href="index.html#decisions">← Score notes</a></section><section id="state-base"><h2>state-base</h2><p>packages/backend-typescript/src/typescript-backend/typescript-backend.ts · base · L79–85</p><pre>  79    async refresh(request: BackendRefreshRequest): Promise&lt;BackendRefreshSummary&gt; {
+  80      this.sourceCache?.refresh(request.snapshot);
+  81      if (request.coverage === &quot;workspace&quot;) await this.projectGraph?.refresh(request.snapshot);
+  82      const summary = await this.state.refresh(request.snapshot.files, request.coverage);
+  83      this.semanticQueries.beginTurn(request.snapshot);
+  84      return summary;
+  85    }</pre><a href="index.html#decisions">← Score notes</a></section><section id="source-base"><h2>source-base</h2><p>packages/backend-typescript/src/typescript-backend/typescript-backend.ts · base · L79–85</p><pre>  79    async refresh(request: BackendRefreshRequest): Promise&lt;BackendRefreshSummary&gt; {
+  80      this.sourceCache?.refresh(request.snapshot);
+  81      if (request.coverage === &quot;workspace&quot;) await this.projectGraph?.refresh(request.snapshot);
+  82      const summary = await this.state.refresh(request.snapshot.files, request.coverage);
+  83      this.semanticQueries.beginTurn(request.snapshot);
+  84      return summary;
+  85    }</pre><a href="index.html#decisions">← Score notes</a></section><section id="backend-head"><h2>backend-head</h2><p>packages/backend-typescript/src/typescript-backend/typescript-backend.ts · head · L79–91</p><pre>  79    async refresh(request: BackendRefreshRequest): Promise&lt;BackendRefreshSummary&gt; {
+  80      this.sourceCache?.refresh(request.snapshot);
+  81      if (request.coverage === &quot;workspace&quot;) await this.projectGraph?.refresh(request.snapshot);
+  82      const summary = await this.state.refresh(request.snapshot.files, request.coverage);
+  83      this.semanticQueries.beginTurn(request.snapshot.files);
+  84      return summary;
+  85    }
+  86  
+  87    async releaseTransientResources(): Promise&lt;void&gt; {
+  88      await this.semanticQueries.releaseTransientResources();
+  89    }
+  90  
+  91    async fileEntries(file: ResolvedPath): Promise&lt;OverviewFileEntries&gt; {</pre><a href="index.html#decisions">← Score notes</a></section><section id="service-head"><h2>service-head</h2><p>packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts · head · L63–67</p><pre>  63    beginTurn(files: readonly WorkspaceFile[]): void {
+  64      this.files = files;
+  65      this.cacheScope.beginTurn();
+  66    }
+  67  </pre><a href="index.html#decisions">← Score notes</a></section><section id="release-head"><h2>release-head</h2><p>packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts · head · L129–133</p><pre> 129    async releaseTransientResources(): Promise&lt;void&gt; {
+ 130      this.cacheScope.releaseTransientResources();
+ 131      await this.projects?.releaseTransientResources();
+ 132    }
+ 133  </pre><a href="index.html#decisions">← Score notes</a></section><section id="query-head"><h2>query-head</h2><p>packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts · head · L68–131</p><pre>  68    findDefinitions(identity: SymbolIdentity): Promise&lt;readonly SymbolOverviewNode[]&gt; {
+  69      const key = formatSymbolIdentity(identity);
+  70      return this.definitionsByIdentity.getOrCreate(key, () =&gt; {
+  71        this.observer?.definitionSearch?.(identity);
+  72        return findDefinitions({
+  73          workspaceState: this.workspaceState,
+  74          files: this.files,
+  75          identity,
+  76        });
+  77      });
+  78    }
+  79  
+  80    async findReferences(identity: SymbolIdentity): Promise&lt;readonly SymbolReference[]&gt; {
+  81      const locations = await this.referenceLocations(identity);
+  82      return locations.flatMap((location) =&gt; {
+  83        if (location.isDefinition) return [];
+  84        const node = this.workspaceState.nodeAt(location.relativePath, location.start);
+  85        if (!node) return [];
+  86        const sourceFile = node.getSourceFile();
+  87        const { line, character } = sourceFile.compilerNode.getLineAndCharacterOfPosition(
+  88          location.start,
+  89        );
+  90        return [
+  91          {
+  92            file: location.relativePath,
+  93            line: line + 1,
+  94            previewSource: TypeScriptSemanticQueryService.lineText(sourceFile, line),
+  95            matchStart: character,
+  96            matchEnd: character + location.length,
+  97            kind: classifyReferenceKind(node),
+  98          },
+  99        ];
+ 100      });
+ 101    }
+ 102  
+ 103    findCallTarget(identity: SymbolIdentity): Promise&lt;CallTargetResolution&gt; {
+ 104      const key = formatSymbolIdentity(identity);
+ 105      return this.callTargetsByIdentity.getOrCreate(key, () =&gt; this.resolveCallTarget(identity));
+ 106    }
+ 107  
+ 108    findCallers(identity: SymbolIdentity): Promise&lt;readonly CallEdge[]&gt; {
+ 109      const key = formatSymbolIdentity(identity);
+ 110      return this.callersByIdentity.getOrCreate(key, () =&gt;
+ 111        this.referenceLocations(identity).then((locations) =&gt;
+ 112          new CallerFinder(this.workspaceState).find(locations),
+ 113        ),
+ 114      );
+ 115    }
+ 116  
+ 117    findCallees(identity: SymbolIdentity): Promise&lt;readonly CallEdge[]&gt; {
+ 118      const key = formatSymbolIdentity(identity);
+ 119      return this.calleesByIdentity.getOrCreate(key, () =&gt;
+ 120        findCallees({
+ 121          workspaceState: this.workspaceState,
+ 122          files: this.files,
+ 123          identity,
+ 124          definitionResolver: this,
+ 125        }),
+ 126      );
+ 127    }
+ 128  
+ 129    async releaseTransientResources(): Promise&lt;void&gt; {
+ 130      this.cacheScope.releaseTransientResources();
+ 131      await this.projects?.releaseTransientResources();</pre><a href="index.html#decisions">← Score notes</a></section><section id="graph-head"><h2>graph-head</h2><p>packages/core/src/workspace/project-graph.ts · head · L144–152</p><pre> 144    async releaseTransientResources(): Promise&lt;void&gt; {
+ 145      if (!this.state) return;
+ 146      for (const project of this.state.configuredProjects) {
+ 147        const release = project.releaseTransientResources();
+ 148        if (release) await release;
+ 149      }
+ 150      const inferredRelease = this.state.inferredProject.releaseTransientResources();
+ 151      if (inferredRelease) await inferredRelease;
+ 152    }</pre><a href="index.html#decisions">← Score notes</a></section><section id="configured-head"><h2>configured-head</h2><p>packages/backend-typescript/src/typescript-backend/typescript-project-graph.ts · head · L78–85</p><pre>  78    releaseTransientResources(): void {
+  79      if (!this.loaded) return;
+  80      this.project.getLanguageService().compilerObject.cleanupSemanticCache();
+  81      this.observer?.semanticCacheReleased?.();
+  82      this.project = this.createProject();
+  83      this.loaded = false;
+  84    }
+  85  </pre><a href="index.html#decisions">← Score notes</a></section><section id="inferred-head"><h2>inferred-head</h2><p>packages/backend-typescript/src/typescript-backend/typescript-project-graph.ts · head · L78–85</p><pre>  78    releaseTransientResources(): void {
+  79      if (!this.loaded) return;
+  80      this.project.getLanguageService().compilerObject.cleanupSemanticCache();
+  81      this.observer?.semanticCacheReleased?.();
+  82      this.project = this.createProject();
+  83      this.loaded = false;
+  84    }
+  85  </pre><a href="index.html#decisions">← Score notes</a></section><section id="state-head"><h2>state-head</h2><p>packages/backend-typescript/src/typescript-backend/typescript-backend.ts · head · L79–85</p><pre>  79    async refresh(request: BackendRefreshRequest): Promise&lt;BackendRefreshSummary&gt; {
+  80      this.sourceCache?.refresh(request.snapshot);
+  81      if (request.coverage === &quot;workspace&quot;) await this.projectGraph?.refresh(request.snapshot);
+  82      const summary = await this.state.refresh(request.snapshot.files, request.coverage);
+  83      this.semanticQueries.beginTurn(request.snapshot.files);
+  84      return summary;
+  85    }</pre><a href="index.html#decisions">← Score notes</a></section><section id="source-head"><h2>source-head</h2><p>packages/backend-typescript/src/typescript-backend/typescript-backend.ts · head · L79–85</p><pre>  79    async refresh(request: BackendRefreshRequest): Promise&lt;BackendRefreshSummary&gt; {
+  80      this.sourceCache?.refresh(request.snapshot);
+  81      if (request.coverage === &quot;workspace&quot;) await this.projectGraph?.refresh(request.snapshot);
+  82      const summary = await this.state.refresh(request.snapshot.files, request.coverage);
+  83      this.semanticQueries.beginTurn(request.snapshot.files);
+  84      return summary;
+  85    }</pre><a href="index.html#decisions">← Score notes</a></section><section id="lifetime-base"><h2>lifetime-base</h2><p>packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts · base · L219–227</p><pre> 219    private clearQueryCaches(): void {
+ 220      this.definitionsByIdentity.clear();
+ 221      this.referencesByIdentity.clear();
+ 222      this.callTargetsByIdentity.clear();
+ 223      this.callersByIdentity.clear();
+ 224      this.calleesByIdentity.clear();
+ 225      this.definitionsByPosition.clear();
+ 226    }
+ 227  </pre><a href="index.html#decisions">← Score notes</a></section><section id="lifetime-head"><h2>lifetime-head</h2><p>packages/core/src/backend/turn-scoped-cache-scope.ts · head · L1–46</p><pre>   1  export interface TurnScopedCache&lt;Key, Value&gt; {
+   2    getOrCreate(key: Key, createValue: () =&gt; Value): Value;
+   3  }
+   4  
+   5  interface ClearableTurnScopedCache {
+   6    clear(): void;
+   7  }
+   8  
+   9  class TurnScopedCacheHandle&lt;Key, Value&gt;
+  10    implements TurnScopedCache&lt;Key, Value&gt;, ClearableTurnScopedCache
+  11  {
+  12    private readonly values = new Map&lt;Key, Value&gt;();
+  13  
+  14    getOrCreate(key: Key, createValue: () =&gt; Value): Value {
+  15      if (this.values.has(key)) return this.values.get(key) as Value;
+  16      const value = createValue();
+  17      this.values.set(key, value);
+  18      return value;
+  19    }
+  20  
+  21    clear(): void {
+  22      this.values.clear();
+  23    }
+  24  }
+  25  
+  26  export class TurnScopedCacheScope {
+  27    private readonly caches: ClearableTurnScopedCache[] = [];
+  28  
+  29    createCache&lt;Key, Value&gt;(): TurnScopedCache&lt;Key, Value&gt; {
+  30      const cache = new TurnScopedCacheHandle&lt;Key, Value&gt;();
+  31      this.caches.push(cache);
+  32      return cache;
+  33    }
+  34  
+  35    beginTurn(): void {
+  36      this.clear();
+  37    }
+  38  
+  39    releaseTransientResources(): void {
+  40      this.clear();
+  41    }
+  42  
+  43    private clear(): void {
+  44      for (const cache of this.caches) cache.clear();
+  45    }
+  46  }</pre><a href="index.html#decisions">← Score notes</a></section><section id="handles-head"><h2>handles-head</h2><p>packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts · head · L29–57</p><pre>  29  export class TypeScriptSemanticQueryService implements PositionDefinitionResolver {
+  30    private files: readonly WorkspaceFile[] = [];
+  31    private readonly cacheScope = new TurnScopedCacheScope();
+  32    private readonly definitionsByIdentity = this.cacheScope.createCache&lt;
+  33      string,
+  34      Promise&lt;readonly SymbolOverviewNode[]&gt;
+  35    &gt;();
+  36    private readonly referencesByIdentity = this.cacheScope.createCache&lt;
+  37      string,
+  38      Promise&lt;readonly SemanticReferenceLocation[]&gt;
+  39    &gt;();
+  40    private readonly callTargetsByIdentity = this.cacheScope.createCache&lt;
+  41      string,
+  42      Promise&lt;CallTargetResolution&gt;
+  43    &gt;();
+  44    private readonly callersByIdentity = this.cacheScope.createCache&lt;
+  45      string,
+  46      Promise&lt;readonly CallEdge[]&gt;
+  47    &gt;();
+  48    private readonly calleesByIdentity = this.cacheScope.createCache&lt;
+  49      string,
+  50      Promise&lt;readonly CallEdge[]&gt;
+  51    &gt;();
+  52    private readonly definitionsByPosition = this.cacheScope.createCache&lt;
+  53      string,
+  54      readonly SemanticNodeLocation[]
+  55    &gt;();
+  56  
+  57    constructor(</pre><a href="index.html#decisions">← Score notes</a></section><section id="projection-head"><h2>projection-head</h2><p>packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts · head · L134–169</p><pre> 134    definitionNodesOf(node: Node): readonly Node[] {
+ 135      if (!Node.isIdentifier(node) &amp;&amp; !Node.isPrivateIdentifier(node)) return [];
+ 136      const relativePath = this.workspaceState.relativePathOf(node.getSourceFile());
+ 137      if (!relativePath) return [];
+ 138      const key = `${relativePath}:${node.getStart()}`;
+ 139      const locations = this.definitionsByPosition.getOrCreate(key, () =&gt; {
+ 140        this.observer?.callTargetResolution?.(relativePath, node.getStart());
+ 141        return node.getDefinitionNodes().flatMap((definition) =&gt; {
+ 142          const definitionRelativePath = this.workspaceState.relativePathOf(
+ 143            definition.getSourceFile(),
+ 144          );
+ 145          return definitionRelativePath
+ 146            ? [
+ 147                {
+ 148                  relativePath: definitionRelativePath,
+ 149                  start: definition.getStart(),
+ 150                  kind: definition.getKind(),
+ 151                },
+ 152              ]
+ 153            : [];
+ 154        });
+ 155      });
+ 156      return locations.flatMap((location) =&gt; {
+ 157        const sourceFile = this.projects?.sourceFileFor(location.relativePath);
+ 158        const definition = this.nodeAtSemanticLocation(location, sourceFile);
+ 159        return definition ? [definition] : [];
+ 160      });
+ 161    }
+ 162  
+ 163    private referenceLocations(
+ 164      identity: SymbolIdentity,
+ 165    ): Promise&lt;readonly SemanticReferenceLocation[]&gt; {
+ 166      const key = formatSymbolIdentity(identity);
+ 167      return this.referencesByIdentity.getOrCreate(key, () =&gt; {
+ 168        this.observer?.referenceSearch?.(identity);
+ 169        return Promise.resolve(this.findReferenceLocations(identity));</pre><a href="index.html#decisions">← Score notes</a></section><section id="exports-head"><h2>exports-head</h2><p>packages/core/src/index.ts · head · L152–152</p><pre> 152  export { TurnScopedCacheScope, type TurnScopedCache } from &quot;./backend/turn-scoped-cache-scope.js&quot;;</pre><a href="index.html#decisions">← Score notes</a></section><section id="core-tests"><h2>core-tests</h2><p>packages/core/src/backend/turn-scoped-cache-scope.test.ts · head · L5–91</p><pre>   5  describe(&quot;TurnScopedCacheScope&quot;, () =&gt; {
+   6    it(&quot;returns each exact factory value once per key and handle&quot;, () =&gt; {
+   7      const scope = new TurnScopedCacheScope();
+   8      const first = scope.createCache&lt;string, readonly string[] | undefined&gt;();
+   9      const second = scope.createCache&lt;string, readonly string[] | undefined&gt;();
+  10      const firstValue: readonly string[] = [];
+  11      const secondValue: readonly string[] = [];
+  12      const firstFactory = vi.fn(() =&gt; firstValue);
+  13      const undefinedFactory = vi.fn(() =&gt; undefined);
+  14      const secondFactory = vi.fn(() =&gt; secondValue);
+  15  
+  16      expect(first.getOrCreate(&quot;value&quot;, firstFactory)).toBe(firstValue);
+  17      expect(first.getOrCreate(&quot;value&quot;, firstFactory)).toBe(firstValue);
+  18      expect(first.getOrCreate(&quot;undefined&quot;, undefinedFactory)).toBeUndefined();
+  19      expect(first.getOrCreate(&quot;undefined&quot;, undefinedFactory)).toBeUndefined();
+  20      expect(second.getOrCreate(&quot;value&quot;, secondFactory)).toBe(secondValue);
+  21  
+  22      expect(firstFactory).toHaveBeenCalledOnce();
+  23      expect(undefinedFactory).toHaveBeenCalledOnce();
+  24      expect(secondFactory).toHaveBeenCalledOnce();
+  25    });
+  26  
+  27    it(&quot;clears every handle at turn and release boundaries&quot;, () =&gt; {
+  28      const scope = new TurnScopedCacheScope();
+  29      const first = scope.createCache&lt;string, object&gt;();
+  30      const second = scope.createCache&lt;string, object&gt;();
+  31      const firstFactory = vi.fn(() =&gt; ({}));
+  32      const secondFactory = vi.fn(() =&gt; ({}));
+  33      const initialFirst = first.getOrCreate(&quot;shared&quot;, firstFactory);
+  34      const initialSecond = second.getOrCreate(&quot;shared&quot;, secondFactory);
+  35  
+  36      scope.beginTurn();
+  37  
+  38      expect(first.getOrCreate(&quot;shared&quot;, firstFactory)).not.toBe(initialFirst);
+  39      expect(second.getOrCreate(&quot;shared&quot;, secondFactory)).not.toBe(initialSecond);
+  40  
+  41      const nextFirst = first.getOrCreate(&quot;shared&quot;, firstFactory);
+  42      const nextSecond = second.getOrCreate(&quot;shared&quot;, secondFactory);
+  43      scope.releaseTransientResources();
+  44      scope.releaseTransientResources();
+  45  
+  46      expect(first.getOrCreate(&quot;shared&quot;, firstFactory)).not.toBe(nextFirst);
+  47      expect(second.getOrCreate(&quot;shared&quot;, secondFactory)).not.toBe(nextSecond);
+  48      expect(firstFactory).toHaveBeenCalledTimes(3);
+  49      expect(secondFactory).toHaveBeenCalledTimes(3);
+  50    });
+  51  
+  52    it(&quot;retains promise settlement and retries synchronous factory failures&quot;, async () =&gt; {
+  53      const scope = new TurnScopedCacheScope();
+  54      const promises = scope.createCache&lt;string, Promise&lt;string&gt;&gt;();
+  55      const values = scope.createCache&lt;string, string&gt;();
+  56      const rejection = new Error(&quot;rejected&quot;);
+  57      const rejected = Promise.reject(rejection);
+  58      const rejectedFactory = vi.fn(() =&gt; rejected);
+  59      const throwingFactory = vi.fn(() =&gt; {
+  60        throw new Error(&quot;synchronous failure&quot;);
+  61      });
+  62  
+  63      const first = promises.getOrCreate(&quot;key&quot;, rejectedFactory);
+  64      const second = promises.getOrCreate(&quot;key&quot;, rejectedFactory);
+  65  
+  66      expect(second).toBe(first);
+  67      await expect(first).rejects.toBe(rejection);
+  68      expect(promises.getOrCreate(&quot;key&quot;, rejectedFactory)).toBe(first);
+  69      expect(rejectedFactory).toHaveBeenCalledOnce();
+  70      expect(() =&gt; values.getOrCreate(&quot;key&quot;, throwingFactory)).toThrow(&quot;synchronous failure&quot;);
+  71      expect(() =&gt; values.getOrCreate(&quot;key&quot;, throwingFactory)).toThrow(&quot;synchronous failure&quot;);
+  72      expect(throwingFactory).toHaveBeenCalledTimes(2);
+  73    });
+  74  
+  75    it(&quot;does not let an old promise settlement replace a new turn entry&quot;, async () =&gt; {
+  76      const scope = new TurnScopedCacheScope();
+  77      const cache = scope.createCache&lt;string, Promise&lt;string&gt;&gt;();
+  78      let settleOld: ((value: string) =&gt; void) | undefined;
+  79      const oldPromise = new Promise&lt;string&gt;((resolve) =&gt; {
+  80        settleOld = resolve;
+  81      });
+  82      const newPromise = Promise.resolve(&quot;new&quot;);
+  83      expect(cache.getOrCreate(&quot;key&quot;, () =&gt; oldPromise)).toBe(oldPromise);
+  84  
+  85      scope.beginTurn();
+  86      expect(cache.getOrCreate(&quot;key&quot;, () =&gt; newPromise)).toBe(newPromise);
+  87      settleOld?.(&quot;old&quot;);
+  88  
+  89      await expect(oldPromise).resolves.toBe(&quot;old&quot;);
+  90      await expect(cache.getOrCreate(&quot;key&quot;, () =&gt; Promise.resolve(&quot;other&quot;))).resolves.toBe(&quot;new&quot;);
+  91    });</pre><a href="index.html#decisions">← Score notes</a></section><section id="service-tests"><h2>service-tests</h2><p>packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts · head · L164–224</p><pre> 164    it(&quot;clears caches before awaiting project release and rejects at the backend boundary&quot;, async () =&gt; {
+ 165      const releaseFailure = new Error(&quot;project release failed&quot;);
+ 166      let rejectProjectRelease: ((reason: unknown) =&gt; void) | undefined;
+ 167      const projectRelease = new Promise&lt;void&gt;((_resolve, reject) =&gt; {
+ 168        rejectProjectRelease = reject;
+ 169      });
+ 170      void projectRelease.catch(() =&gt; undefined);
+ 171      const firstProjectRelease = vi.fn(() =&gt; projectRelease);
+ 172      const laterProjectRelease = vi.fn();
+ 173      const projectGraph = {
+ 174        releaseTransientResources: vi.fn(async () =&gt; {
+ 175          await firstProjectRelease();
+ 176          laterProjectRelease();
+ 177        }),
+ 178      } as unknown as TypeScriptProjectGraph;
+ 179      const state = {
+ 180        refresh: vi.fn(() =&gt; Promise.resolve({ added: 0, changed: 0, removed: 0, unchanged: 0 })),
+ 181        ensureFiles: vi.fn(() =&gt; Promise.resolve()),
+ 182        locate: vi.fn(() =&gt; []),
+ 183      } as unknown as TypeScriptWorkspaceState;
+ 184      let definitionSearches = 0;
+ 185      const backend = new TypeScriptBackend(new InMemoryFileSystem({}), state, projectGraph, {
+ 186        definitionSearch: () =&gt; {
+ 187          definitionSearches += 1;
+ 188        },
+ 189      });
+ 190      const snapshot: WorkspaceSnapshot = { root: &quot;/repo&quot;, files: [] };
+ 191      const target = identity(&quot;src/app.ts&quot;, &quot;target&quot;);
+ 192      await backend.refresh({ snapshot, coverage: &quot;selection&quot; });
+ 193      const beforeRelease = await backend.findDefinitions([], target);
+ 194  
+ 195      const release = backend.releaseTransientResources();
+ 196      let releaseSettled = false;
+ 197      void release.then(
+ 198        () =&gt; {
+ 199          releaseSettled = true;
+ 200        },
+ 201        () =&gt; {
+ 202          releaseSettled = true;
+ 203        },
+ 204      );
+ 205      const afterRelease = await backend.findDefinitions([], target);
+ 206  
+ 207      expect(afterRelease).not.toBe(beforeRelease);
+ 208      expect(definitionSearches).toBe(2);
+ 209      expect(projectGraph.releaseTransientResources).toHaveBeenCalledOnce();
+ 210      await Promise.resolve();
+ 211      expect(releaseSettled).toBe(false);
+ 212  
+ 213      rejectProjectRelease?.(releaseFailure);
+ 214      await expect(release).rejects.toBe(releaseFailure);
+ 215      expect(firstProjectRelease).toHaveBeenCalledOnce();
+ 216      expect(laterProjectRelease).not.toHaveBeenCalled();
+ 217    });
+ 218  
+ 219    it(&quot;shares one reference search across caller and reference projections&quot;, async () =&gt; {
+ 220      const fileSystem = new InMemoryFileSystem({
+ 221        &quot;/repo/src/lib.ts&quot;: &quot;export function target(): void {}\n&quot;,
+ 222        &quot;/repo/src/app.ts&quot;: [
+ 223          'import { target } from &quot;./lib.js&quot;;',
+ 224          &quot;export function caller(): void { target(); }&quot;,</pre><a href="index.html#decisions">← Score notes</a></section><section id="intent"><h2>intent</h2><p>inputs/pr-127/pr.json · bundle · L1</p><pre>   1  ## Context
+   2  
+   3  The [daemon architecture spec](https://github.com/mohasarc/symnav/blob/main/plans/005/daemon-architecture-functional-spec.md) assigns turn-scoped semantic-cache lifetime to core. Building on #126, this layer moves only cache lifetime out of TypeScript while preserving all six algorithms, key spaces, promise/value identities, and failure behavior.
+   4  
+   5  ## Shape
+   6  
+   7  Before — TypeScript owned each cache and its clearing sequence:
+   8  
+   9  ```mermaid
+  10  flowchart LR
+  11      Backend[&quot;TypeScriptBackend&quot;] --&gt;|calls refresh/release| Service[&quot;TypeScriptSemanticQueryService&lt;br/&gt;query algorithms + manual clearing&quot;]
+  12      Service --&gt;|owns| Maps[&quot;six independent Maps&quot;]
+  13      Service --&gt;|starts release| Graph[&quot;TypeScriptProjectGraph&quot;]
+  14      style Service fill:#fff2cc,stroke:#bf9000
+  15      style Maps fill:#ffdddd,stroke:#cc0000
+  16  ```
+  17  
+  18  After — core owns cache lifetime and the backend is the release barrier:
+  19  
+  20  ```mermaid
+  21  flowchart LR
+  22      Backend[&quot;TypeScriptBackend&lt;br/&gt;awaited release boundary&quot;] --&gt;|calls refresh/release| Service[&quot;TypeScriptSemanticQueryService&lt;br/&gt;query algorithms&quot;]
+  23      Service --&gt;|owns| Scope[&quot;TurnScopedCacheScope&lt;br/&gt;synchronous lifecycle&quot;]
+  24      Scope --&gt;|owns| Handles[&quot;six isolated typed handles&quot;]
+  25      Service --&gt;|awaits release| Graph[&quot;TypeScriptProjectGraph&quot;]
+  26      style Backend fill:#fff2cc,stroke:#bf9000
+  27      style Service fill:#fff2cc,stroke:#bf9000
+  28      style Scope fill:#ddffdd,stroke:#008800
+  29      style Handles fill:#ddffdd,stroke:#008800
+  30  ```
+  31  
+  32  Legend: green = added ownership; red = removed ownership; yellow = changed responsibility.
+  33  
+  34  ## Where it lives
+  35  
+  36  ```text
+  37  .
+  38  └── packages/
+  39      ├── core/src/
+  40      │   ├── ** index.ts
+  41      │   └── backend/
+  42      │       ├── ++ turn-scoped-cache-scope.ts       # owns generic cache lifetime
+  43      │       └── ++ turn-scoped-cache-scope.test.ts  # locks identity, error, and clearing contracts
+  44      └── backend-typescript/src/typescript-backend/
+  45          ├── ** typescript-semantic-query-service.ts       # adopts six isolated cache handles
+  46          ├── ** typescript-semantic-query-service.test.ts  # characterizes TypeScript cache behavior
+  47          └── ** typescript-backend.ts                      # owns successful-turn and release barriers
+  48  ```
+  49  
+  50  ## Public surface
+  51  
+  52  Added to `@symnav/core`:
+  53  
+  54  ```ts
+  55  export interface TurnScopedCache&lt;Key, Value&gt; {
+  56    getOrCreate(key: Key, createValue: () =&gt; Value): Value;
+  57  }
+  58  
+  59  export class TurnScopedCacheScope {
+  60    createCache&lt;Key, Value&gt;(): TurnScopedCache&lt;Key, Value&gt;;
+  61    beginTurn(): void;
+  62    releaseTransientResources(): void;
+  63  }
+  64  ```
+  65  
+  66  Changed on exported `TypeScriptSemanticQueryService`:
+  67  
+  68  ```ts
+  69  // before: beginTurn(snapshot: WorkspaceSnapshot): void
+  70  beginTurn(files: readonly WorkspaceFile[]): void;
+  71  
+  72  // before: releaseTransientResources(): void
+  73  releaseTransientResources(): Promise&lt;void&gt;;
+  74  ```
+  75  
+  76  ## Decisions
+  77  
+  78  - Chose one scope with six handles over one shared map, because the existing queries have independent key and value spaces.
+  79  - Chose `Map.has` before `Map.get` over truthiness checks, because `undefined` is a valid cached value.
+  80  - Chose synchronous cache clearing before project release over clearing after the await, because released semantics must be unavailable while release is pending or rejecting.
+  81  - Chose to begin the next turn only after refresh succeeds over clearing at refresh entry, because failed refresh must preserve the current successful turn.
+  82  
+  83  ## Look here
+  84  
+  85  - `packages/core/src/backend/turn-scoped-cache-scope.ts:14`
+  86  - `packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts:129`
+  87  - `packages/backend-typescript/src/typescript-backend/typescript-backend.ts:79`
+  88  </pre><a href="index.html#decisions">← Score notes</a></section></body></html>
