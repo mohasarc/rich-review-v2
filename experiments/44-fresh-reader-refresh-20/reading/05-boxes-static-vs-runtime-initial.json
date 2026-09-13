@@ -1,0 +1,2296 @@
+{
+  "folder": "05-boxes-static-vs-runtime",
+  "title": "PR 131 · Where policy becomes behavior",
+  "url": "http://127.0.0.1:56708/experiments/05-boxes-static-vs-runtime/index.html",
+  "details": [
+    {
+      "summary": "01\nMake composition mandatory\nSTATED",
+      "text": "01Make composition mandatorystatedRecorded reason.PR decision: omitted composition must not recreate local defaults. Read supplied PR body ↗BEFOREnew LocalDaemonTransport()A consumer can silently choose its own thresholds.→AFTERnew LocalDaemonTransport(policy.values)Transport, delivery and output are required inputs. Public policy types@symnav/daemon← importsApp compositionprogram / command actions / entriesconstructs →App mechanismsrequired slices The CLI creates a complete snapshot; daemon and worker entries deserialize it. The snapshot bridge predates #131. This PR changes the consumers and their call sites, not the package dependency table or the policy implementation. BoundaryActual shape at this revisionHigh-level constructorsRequire DaemonPolicyValues sections or a complete DaemonPolicy.Leaf validation / decodingStill takes individual maximum-byte numbers. Callers project those from policy.Existing exceptionsRegistry startupOwnerIsWithinGrace(owner, graceMs, now) still accepts a grace override. Transport retains writeChunkSize, a wire-fragment size.Port substitutionsInjected worker, storage, clock, memory sampler and logger remain possible.local-daemon-transport.ts:289 ↗workspace-daemon.ts:46 ↗daemon-command-dispatcher.ts:274 ↗daemon-registry.ts:385 ↗AGENTS.md:82 ↗program.ts:77 ↗↑ Decision index↑ Static map↑ Runtime map"
+    },
+    {
+      "summary": "02\nUse one set of byte capacities\nSTATED",
+      "text": "02Use one set of byte capacitiesstatedRecorded reason.PR requires output/resource slices; the policy record gives separate reasons for bounded chunks, small inline results, per-request retention and daemon-wide spool pressure. daemon-policy.md ↗64 KiBone raw chunk≤256 KiBinline raw output≤256 MiBone result≤512 MiBall retained completions Worker capture→Worker send + receive validation→Daemon spool→Socket codec + client capture That chain shares the chunk ceiling. Stored output remembers its ceiling for later file decoding; spool storage also receives it on reads. CliProgramExecutor takes output policy from dependencies and loses its separate output-options argument. Frame kindCeilingSourceOrdinary JSON8 MiB payloadtransport.maximumJsonPayloadBytesExecution control256 KiB payloadtransport.maximumExecutionControlPayloadBytesBinary transfer framecontrol ceiling + raw chunk ceilingFrame decoder combines transport + output inputs. Worker-message validation runs on both sides of the thread boundary. The main-thread wrapper now deserializes its supplied configuration to read the chunk cap; the worker uses its own deserialized copy. Message routes and frame format are retained.command-execution-result.ts:149 ↗cli-program-executor.ts:27 ↗completion-spool.ts:302 ↗daemon-navigation-worker.ts:80 ↗daemon-navigation-worker-entry.ts:196 ↗daemon-result-chunk-codec.ts:145 ↗↑ Decision index↑ Static map↑ Runtime map"
+    },
+    {
+      "summary": "03\nRead the derived memory limits\nSTATED",
+      "text": "03Read the derived memory limitsstatedRecorded reason.PR requires resource slices so consumers cannot fall back to local defaults. The policy record states the memory and replacement recipes and reasons. daemon-policy.md ↗BEFOREeffectiveMemoryBytes↓DaemonResourcePolicy.fromSystemMemory(...)The app recomputes thresholds. WorkspaceDaemon also has a memory-cap fallback.→AFTERpolicy.values.resources↓supervisor / worker limits / reportsThe supplied derived thresholds are used directly. 250 msRSS supervision25 msactive worker heap sampling2 / 10 minreplacements; the next drains The memory derivation itself is unchanged: select a positive lower constraint when present; derive hard RSS and worker heap limits with their existing clamps; derive soft/resume levels below hard RSS. The policy retains effectiveMemoryBytes as the derivation input, but these app consumers no longer reconstruct thresholds from it. WorkspaceDaemon sends workerMaxOldGenerationSizeMiB to Node’s maxOldGenerationSizeMb option, and uses hardProcessRssBytes in readiness and resource reports. The package retains the unit-specific field name; Node’s option spelling is an API boundary.daemon-entry.ts:26 ↗daemon-resource-monitor.ts:26 ↗workspace-daemon.ts:138 ↗daemon-navigation-worker-entry.ts:120 ↗daemon-policy.ts:92 ↗↑ Decision index↑ Static map↑ Runtime map"
+    },
+    {
+      "summary": "04\nKeep distinct clocks and retention limits\nSTATED",
+      "text": "04Keep distinct clocks and retention limitsstatedRecorded reason.The policy record explicitly preserves each cadence, reserves time for forced termination, bounds diagnostics, and records intentional deadline absences. daemon-policy.md ↗MechanismFields now read from policy Startup coordination15 s owner grace; 100 ms heartbeat; 10 ms authorization poll; 20 ms readiness observation; 5 min previous-instance termination. Shutdown / idle30 min idle; 5 s stop; force reserve min(500 ms, floor(stop window / 2)); 20 ms controller poll. Direct process termination500 ms exit wait after each of SIGTERM and SIGKILL; independent 20 ms exit polling. Drain acknowledgements250 ms grace, polled every 5 ms. Diagnostic logging10 MiB rotation; 4 backups; 1,024 queued events. Disconnected operation traces5 min retention; 1,024 retained traces by default. The existing minimum-capacity clamp of one remains. No total deadlinehealthy startupaccepted completionworker output acknowledgementunacknowledged result retention The record also leaves startup-silence handling without a deadline. Coordination grace measures ownership/recovery, not a healthy warm-up’s total duration. The reserve formula and polling mechanisms stay in the app; the input values come from policy.daemon-startup-coordinator.ts:65 ↗daemon-controller.ts:73 ↗daemon-process-launcher.ts:62 ↗daemon-lifetime.ts:11 ↗daemon-logger.ts:265 ↗workspace-daemon.ts:925 ↗daemon-policy.md:56 ↗↑ Decision index↑ Static map↑ Runtime map"
+    },
+    {
+      "summary": "05\nChoose the timeout by caller purpose\nSTATED",
+      "text": "05Choose the timeout by caller purposestatedRecorded reason.PR decision: status observation and ordinary execution-status requests have distinct deadlines; choose by composition purpose instead of request kind. Read supplied PR body ↗daemon status actionresponseTimeoutPurpose:\"status-observer\"100 ms idleidentify / ping observationsordinary transportpurpose omittedor \"ordinary\"250 ms idlelifecycle / execution-status / result ackexecute submissionexecutionAdmissionTimeoutMs5 s idle → accepted → offNo completion deadline after acceptance. The constructor selects requestTimeoutMs once. The status command sets the purpose when composing its transport. ExecutionStatus uses the ordinary value on an ordinary transport; the code does not branch on the word “status” in a request kind. Before #131 the status action achieved its 100 ms choice with a raw numeric override. The timers use socket.setTimeout: socket activity resets them, and acceptance disables the admission timer. The numbers describe socket inactivity limits. New tests give ordinary and observer timeouts deliberately different values and use delayed socket responses. They distinguish caller purpose from message vocabulary.register-daemon-command.ts:111 ↗local-daemon-transport.ts:291 ↗local-daemon-transport.ts:526 ↗local-daemon-transport-validation.test.ts:59 ↗↑ Decision index↑ Static map↑ Runtime map"
+    },
+    {
+      "summary": "06\nPut numbers on existing retry scopes\nSTATED",
+      "text": "06Put numbers on existing retry scopesstatedRecorded reason.PR decision: every reattached execute attempt needs its own fetch-resume allowance. The policy record preserves one child-failure retry and accepted-request recovery without local replay. Read supplied PR body ↗execute() · reattachmentCount · default limit 1executeOnce #1submit same request → acceptedresumeCount = 0manifest + interrupted delivery → result-fetchauthenticated accepted close→ reattach →executeOnce #2same requestId / instance / tokenfresh resumeCount = 0its own manifest-gated fetch allowance This is a scope diagram, not a promise that every failure takes the same route. Reattachment requires a typed closed error, accepted delivery and the matching authenticated instance. Fetch resume requires acceptance, a manifest and a nonterminal transfer. The underlying request ledger prevents treating reattachment as a new local execution. The PR describes moving away from a shared boolean. In the actual base source, resumeStarted was local to executeOnce and completeWithOneReattachment wrapped it. The nesting already existed; numeric policy inputs replace the fixed allowances. CounterLifetimeDefaultchildFailureRetryLimitOne ensureRunning call; catches child exit / lost warm-up only.1 extra launchpostAcceptanceExecutionReattachmentLimitOuter completion loop.1 extra execute attemptresultTransferResumeLimitPerExecutionAttemptEach executeOnce invocation.1 fetch initiation allowance Added tests exercise zero and two child retries, and an initial accepted close followed by a reattached attempt that resumes its result. That delivery test records two executes and one fetch; it does not exercise a fetch on both attempts.local-daemon-transport.ts:402 ↗local-daemon-transport.ts:474 ↗daemon-startup-coordinator.ts:77 ↗daemon-startup-coordinator.test.ts:515 ↗local-daemon-transport-execution.test.ts:846 ↗↑ Decision index↑ Static map↑ Runtime map"
+    },
+    {
+      "summary": "07\nLet a later completion failure escape\nUNEXPLAINED",
+      "text": "07Let a later completion failure escapeunexplainedRationale gap.No reason for changing error selection appears in the PR body, six commit messages, architecture spec or policy record inspected. BEFOREaccepted close E1→ reattach→ completion rejects E2→ throw E1→AFTERaccepted close E1→ reattach→ completion rejects E2→ throw E2* *When E2 is ineligible for another reattachment or the reattachment budget is exhausted. The base method awaits reattached.completion inside a catch that rethrows the original firstError. The head assigns the promise, then awaits it in the next loop iteration; firstError now refers to that iteration’s error. If executeOnce itself rejects before returning a receipt, the nested catch still throws the preceding completion error. This is a control-flow comparison of the captured methods, not a recorded end-to-end failure.local-daemon-transport.ts:402 ↗↑ Decision index↑ Static map↑ Runtime map"
+    },
+    {
+      "summary": "08\nLeave fetch failure as a terminal path\nUNEXPLAINED",
+      "text": "08Leave fetch failure as a terminal pathunexplainedRationale gap.The PR states independent numeric budgets, but does not explain retaining this one-shot fetch-completion failure path. execute socket interruption→check + incrementresumeCount→fetchCompletion()rejects →fail() The guard and increment changed from a boolean to a number. The fetch promise still ends in .catch(fail); fetchCompletion has no recursive fetch or resume-counter loop. The outer reattachment mechanism separately considers eligible accepted-close failures. Read the numeric field as a limit checked at this call site. This artifact does not simulate “N guaranteed fetch retries” from its name. The default allowance stays one.local-daemon-transport.ts:474 ↗local-daemon-transport.ts:646 ↗↑ Decision index↑ Static map↑ Runtime map"
+    },
+    {
+      "summary": "09\nMove compatibility knobs into tests\nSTATED",
+      "text": "09Move compatibility knobs into testsstatedRecorded reason.PR decision: tests need small thresholds without restoring runtime tuning seams, so use test-only adapters instead of production compatibility overloads. Read supplied PR body ↗Old test syntaxstopTimeoutMs / outputInlineBytes / …→Test adaptermaps legacy option names→Policy test factorymerge + validate complete snapshot→Production constructorrequired section Adapter fileTranslation / roledaemon-controllerStop timeout and controller poll interval.daemon-process-terminatorSignal exit wait and process poll.daemon-registrySupplies startup policy while preserving platform/rename test arguments.daemon-resource-policyMaps central resource fields into the old record shape.daemon-startup-coordinatorTermination / observation options and explicit policy.local-daemon-transportTransport/output option mapping and output-directory preparation.workspace-daemonResource, output, lifetime, heartbeat and trace settings. The policy-testing subpath and its factory already exist in base. The factory merges sections and passes the whole result through fromSerialized validation. The new helpers are app test code; they do not move the mechanisms into the daemon package.local-daemon-transport.ts:18 ↗workspace-daemon.ts:28 ↗daemon-logger.test.ts:19 ↗policy-testing.ts:8 ↗↑ Decision index↑ Static map↑ Runtime map"
+    },
+    {
+      "summary": "10\nChange test inputs and recorded data\nUNEXPLAINED",
+      "text": "10Change test inputs and recorded dataunexplainedRationale gap.The adapter strategy is stated; the particular normalizations, directory creation and fixture values have no separately stated reason in the inspected inputs. TEST HELPER INPUToutputInlineBytes: 0one 64 KiB recordBase output crosses a zero-byte inline threshold and spills.→TEST HELPER IN HEADinlineRawBytes: max(64 KiB, 0)one 64 KiB recordThe record fits inline. The helper creates the directory. In “disposes partial client output when daemon delivery fails after its manifest” and the acknowledgement-failure cases, one 64 KiB record equals the helper’s new inline threshold. Their empty-directory assertions remain. They still observe failure/disposal behavior, but do not demonstrate spilled-file removal in these cases. Changed fixture conditionWhat the code now doesTransport output directorymkdirSync(..., recursive: true) happens in the helper before runtime construction.Workspace tiny spool limitsDerives result cap from aggregate cap when needed; converts zero inline plus a result cap to at least one byte; reduces chunk cap to fit.Legacy memoryCapBytes helper optionThe helper accepts and spreads the option but never reads it. The runtime now derives its reported cap from the supplied resources section.Benchmark resource recordThe new resource-policy adapter adds replacementWindowMs and replacementLimit to its record. The benchmark harness includes that record in its returned report.Ordered-output spill comparisonUses inline 32 rather than 1 and constrains chunk size with the policy.Spool unsafe-path / corruption casesZero-inline setups become positive inline limits, with extra records to cross into file storage.Request worker fixtureA two-byte output becomes two one-byte chunks. The existing validator requires 0 < chunk ≤ inline ≤ result ≤ aggregate. That explains the constraint these fixtures face; it is not an authored reason for these exact adjustments.local-daemon-transport.ts:47 ↗local-daemon-transport-execution.test.ts:722 ↗command-execution-result.ts:272 ↗workspace-daemon.ts:35 ↗daemon-resource-policy.ts:30 ↗daemon-scale-benchmark-harness.ts:135 ↗cli-program-executor.test.ts:121 ↗completion-spool.test.ts:175 ↗workspace-daemon-requests.test.ts:1886 ↗↑ Decision index↑ Static map↑ Runtime map"
+    },
+    {
+      "summary": "11\nRetire the local derivation suite and unused knob\nUNEXPLAINED",
+      "text": "11Retire the local derivation suite and unused knobunexplainedRationale gap.The broad routing change is stated; no separate reason for the exact test deletions or removing the unused startupTimeoutMs field was found. Test changeEvidence retained / added at this revisionDeleted app resource-policy describe blockFive memory cases, constrained-memory assertions and the exported 250 ms constant assertion disappear with DaemonResourcePolicy.Already in packages/daemonComplete literal defaults; memory selection and threshold tables; snapshot validation. This suite is unchanged in #131, not newly added replacement coverage.New direct consumption checksResource cadence/thresholds, spool chunk cap, logger queue cap, transport JSON cap and one-byte output progress.New deadline/attempt casesObserver identify/ping vs ordinary execution-status; zero/two child retries; reattached attempt followed by fetch.Removed startupTimeoutMs inputsThe base constructor assigned a private field with no reads. Tests still check that healthy startup keeps waiting; the small timeout knob is gone.Updated expected valuesSpool, lifetime and diagnostic checks obtain limits from policy instead of retired exported constants. The deleted app memory table included a 256 MiB input; the package table includes a 1-byte minimum case, 512 MiB, 1 GiB, 16 GiB and 64 GiB. The policy’s clamp and default assertions are visible in that unchanged suite. This page records where the evidence lives and how it changed; it does not issue a test or correctness verdict.daemon-resource-monitor.test.ts:9 ↗daemon-policy.test.ts:9 ↗daemon-startup-coordinator.ts:65 ↗daemon-startup-coordinator.test.ts:91 ↗cli-program-executor.test.ts:134 ↗↑ Decision index↑ Static map↑ Runtime map"
+    },
+    {
+      "summary": "12\nEnforce retired names with a source scan\nUNEXPLAINED",
+      "text": "12Enforce retired names with a source scanunexplainedRationale gap.The PR says the meta-test rejects retired defaults and bypasses; it gives no reason for choosing a substring blacklist as the enforcement mechanism. App production source text→retiredSeam strings→expect(sources).not.toContain(...) The expanded list includes output/resource/log/startup constants, optional numeric option spellings, startupTimeoutMs, DaemonPolicyCodec and DaemonResourcePolicy. Test helpers are outside this production-source scan and can retain the old names. The graph’s green edges are based on the changed call sites and imports. The blacklist alone cannot establish those routes, nor does it remove the existing explicit registry grace argument or transport writeChunkSize seam described in decision 01.daemon-package.test.ts:192 ↗↑ Decision index↑ Static map↑ Runtime map"
+    },
+    {
+      "summary": "All 39 policy fields, their values and recorded reasons\nThe record exists before #131; these are inputs, not 39 new defaults.",
+      "text": "All 39 policy fields, their values and recorded reasonsThe record exists before #131; these are inputs, not 39 new defaults. Find a policy field or consumer Policy fieldDefault / derivationApplies toStated reasontransport.singleResponseTimeoutMs250 msOrdinary lifecycle and execution-status exchangesBound one-response local socket waitstransport.statusResponseTimeoutMs100 msStatus observer lifecycle exchangeKeep status aggregation responsive independently of routingtransport.executionAdmissionTimeoutMs5 sExecute submission until acceptanceBound admission without timing accepted completiontransport.maximumJsonPayloadBytes8 MiBOrdinary JSON control framesBound decoded control inputtransport.maximumExecutionControlPayloadBytes256 KiBExecution transfer control framesKeep binary-transfer control bounded separatelystartup.coordinationGraceMs15 sStartup ownership and missing-owner observationPreserve election recovery gracestartup.heartbeatIntervalMs100 msStartup-owner heartbeatMaintain live ownership while warmingstartup.authorizationPollIntervalMs10 msProcess authorization waitPreserve the distinct fast authorization cadencestartup.observationPollIntervalMs20 msLauncher readiness observationPreserve current readiness polling cadencestartup.previousInstanceTerminationTimeoutMs5 minReplacement of a previous instanceAllow controlled termination before new ownership proceedsstartup.childFailureRetryLimit1 retryExplicit startup child failurePreserve one fresh launch after a failed childshutdown.idleTimeoutMs30 minWarm daemon idle lifetimeRelease retained resources after inactivityshutdown.stopTimeoutMs5 sUser-requested stopBound graceful stop and forced escalation togethershutdown.forcedTerminationReserveMaximumMs500 msStop escalation reserveLeave bounded time for authenticated force terminationshutdown.controllerPollIntervalMs20 msController process/registry observationPreserve control-plane polling cadenceshutdown.processSignalExitTimeoutMs500 ms after SIGTERM and 500 ms after SIGKILLDirect process terminationGive each signal a bounded exit intervalshutdown.processExitPollIntervalMs20 msDirect process terminationPreserve process-exit polling cadence independentlyshutdown.resourceDrainAcknowledgementGraceMs250 msCompletion acknowledgement during drainPermit an attached client to acknowledge before cleanupshutdown.resourceDrainAcknowledgementPollIntervalMs5 msCompletion acknowledgement during drainPreserve the distinct fast acknowledgement cadencedelivery.postAcceptanceExecutionReattachmentLimit1 reattachmentAuthenticated close after acceptanceRecover the accepted request without local replaydelivery.resultTransferResumeLimitPerExecutionAttempt1 fetch resume per execute attemptInterrupted manifest transferResume one transfer independently for each execute attemptoutput.maximumChunkRawBytes64 KiBWorker and result chunksBound one raw output recordoutput.inlineRawBytes256 KiBInline result storageAvoid files for small resultsoutput.maximumResultRawBytes256 MiBOne completed resultBound retained output for one requestoutput.maximumAggregateSpoolRawBytes512 MiBAll retained completions for one daemonBound aggregate spool pressureresources.effectiveMemoryBytesSelected raw effective bytesResource reports and derived thresholdsPreserve non-MiB-aligned system information exactlyresources.hardProcessRssBytesHard-process-RSS recipeProcess replacement and worker launchTrigger controlled replacement before OOMresources.softProcessRssBytesfloor(hardProcessRssMiB * 0.8) * MiBTransient resource sheddingShed before hard replacementresources.resumeProcessRssBytesfloor(hardProcessRssMiB * 0.7) * MiBAdmission resumptionRequire lower RSS before resuming workresources.workerMaxOldGenerationSizeMiBWorker-old-generation recipeWorker resource limitsPass the derived V8 limit unchangedresources.supervisionIntervalMs250 msProcess RSS and spool samplingDetect sustained pressure without per-operation overheadresources.replacementWindowMs10 minReplacement circuitCount only recent replacementsresources.replacementLimit2 replacements; third drainsReplacement circuitStop persistent replacement churnresources.workerHeapSampleIntervalMs25 msActive worker heap high-water samplingObserve short-lived heap peaksdiagnostics.logRotateBytes10 MiBDiagnostic log rotationBound active diagnostic file sizediagnostics.logBackupCount4 backups plus active logDiagnostic log rotationRetain a bounded diagnostic historydiagnostics.maximumQueuedEvents1,024Pending diagnostic writesBound memory when storage is slowdiagnostics.disconnectedTraceRetentionMs5 minDisconnected operation tracesRetain reconnect evidence without changing result retentiondiagnostics.maximumDisconnectedTraces1,024 with effective minimum 1Disconnected operation tracesBound diagnostic-only retention Memory recipes and deliberate deadline absences are included in the captured policy document. Open the complete record ↗"
+    },
+    {
+      "summary": "All 60 changed files, attached to their decisions\n19 production files · 41 test, fixture, benchmark and guard files",
+      "text": "All 60 changed files, attached to their decisions19 production files · 41 test, fixture, benchmark and guard filesapps/cli/src/cli-program-executor.test.ts ↗+57 / −6Change test inputs and recorded data ↗apps/cli/src/cli-program-executor.ts ↗+3 / −2Use one set of byte capacities ↗apps/cli/src/command-execution-result.ts ↗+20 / −15Use one set of byte capacities ↗apps/cli/src/commands/daemon/register-daemon-command.ts ↗+21 / −5Make composition mandatory ↗apps/cli/src/daemon/completion-spool.test.ts ↗+72 / −17Change test inputs and recorded data ↗apps/cli/src/daemon/completion-spool.ts ↗+15 / −18Use one set of byte capacities ↗apps/cli/src/daemon/daemon-command-dispatcher.integration.test.ts ↗+2 / −2Move compatibility knobs into tests ↗apps/cli/src/daemon/daemon-command-dispatcher.ts ↗+4 / −3Make composition mandatory ↗apps/cli/src/daemon/daemon-controller.test.ts ↗+2 / −3Move compatibility knobs into tests ↗apps/cli/src/daemon/daemon-controller.ts ↗+16 / −8Keep distinct clocks and retention limits ↗apps/cli/src/daemon/daemon-entry.ts ↗+5 / −8Make composition mandatory ↗apps/cli/src/daemon/daemon-lifetime.test.ts ↗+18 / −8Move compatibility knobs into tests ↗apps/cli/src/daemon/daemon-lifetime.ts ↗+5 / −3Keep distinct clocks and retention limits ↗apps/cli/src/daemon/daemon-logger.test.ts ↗+66 / −3Move compatibility knobs into tests ↗apps/cli/src/daemon/daemon-logger.ts ↗+10 / −10Keep distinct clocks and retention limits ↗apps/cli/src/daemon/daemon-navigation-worker-entry.ts ↗+9 / −4Read the derived memory limits ↗apps/cli/src/daemon/daemon-navigation-worker-protocol.test.ts ↗+7 / −3Move compatibility knobs into tests ↗apps/cli/src/daemon/daemon-navigation-worker-protocol.ts ↗+2 / −3Use one set of byte capacities ↗apps/cli/src/daemon/daemon-navigation-worker.ts ↗+6 / −2Use one set of byte capacities ↗apps/cli/src/daemon/daemon-process-launcher.ts ↗+9 / −6Keep distinct clocks and retention limits ↗apps/cli/src/daemon/daemon-registry.test.ts ↗+2 / −2Move compatibility knobs into tests ↗apps/cli/src/daemon/daemon-registry.ts ↗+15 / −7Keep distinct clocks and retention limits ↗apps/cli/src/daemon/daemon-resource-monitor.test.ts ↗+66 / −91Retire the local derivation suite and unused knob ↗apps/cli/src/daemon/daemon-resource-monitor.ts ↗+6 / −62Read the derived memory limits ↗apps/cli/src/daemon/daemon-result-chunk-codec.test.ts ↗+4 / −4Move compatibility knobs into tests ↗apps/cli/src/daemon/daemon-result-chunk-codec.ts ↗+21 / −13Use one set of byte capacities ↗apps/cli/src/daemon/daemon-startup-coordinator.test.ts ↗+57 / −30Retire the local derivation suite and unused knob ↗apps/cli/src/daemon/daemon-startup-coordinator.ts ↗+26 / −22Keep distinct clocks and retention limits ↗apps/cli/src/daemon/local-daemon-transport-execution.test.ts ↗+115 / −40Change test inputs and recorded data ↗apps/cli/src/daemon/local-daemon-transport-validation.test.ts ↗+115 / −1Choose the timeout by caller purpose ↗apps/cli/src/daemon/local-daemon-transport.test.ts ↗+1 / −1Move compatibility knobs into tests ↗apps/cli/src/daemon/local-daemon-transport.ts ↗+60 / −37Put numbers on existing retry scopes ↗apps/cli/src/daemon/workspace-daemon-requests.test.ts ↗+17 / −6Change test inputs and recorded data ↗apps/cli/src/daemon/workspace-daemon.test.ts ↗+6 / −5Move compatibility knobs into tests ↗apps/cli/src/daemon/workspace-daemon.ts ↗+27 / −51Make composition mandatory ↗apps/cli/test/benchmark/daemon-scale-benchmark-harness.ts ↗+3 / −3Move compatibility knobs into tests ↗apps/cli/test/e2e/daemon/diagnostic-output.test.ts ↗+7 / −8Move compatibility knobs into tests ↗apps/cli/test/e2e/daemon/parity.test.ts ↗+2 / −2Move compatibility knobs into tests ↗apps/cli/test/e2e/daemon/persistent-pressure.test.ts ↗+2 / −2Move compatibility knobs into tests ↗apps/cli/test/e2e/daemon/state-isolation.test.ts ↗+1 / −1Move compatibility knobs into tests ↗apps/cli/test/e2e/daemon/status.test.ts ↗+3 / −2Move compatibility knobs into tests ↗apps/cli/test/e2e/daemon/stop.test.ts ↗+2 / −2Move compatibility knobs into tests ↗apps/cli/test/helpers/daemon-accepted-caller.ts ↗+1 / −1Move compatibility knobs into tests ↗apps/cli/test/helpers/daemon-controller.ts ↗+46 / −0Move compatibility knobs into tests ↗apps/cli/test/helpers/daemon-live-silent.ts ↗+1 / −1Move compatibility knobs into tests ↗apps/cli/test/helpers/daemon-malformed-activity.ts ↗+1 / −1Move compatibility knobs into tests ↗apps/cli/test/helpers/daemon-process-terminator.ts ↗+24 / −0Move compatibility knobs into tests ↗apps/cli/test/helpers/daemon-registry-cleaner.ts ↗+1 / −1Move compatibility knobs into tests ↗apps/cli/test/helpers/daemon-registry.ts ↗+22 / −0Move compatibility knobs into tests ↗apps/cli/test/helpers/daemon-resource-policy.ts ↗+34 / −0Move compatibility knobs into tests ↗apps/cli/test/helpers/daemon-startup-caller-exit.ts ↗+3 / −3Move compatibility knobs into tests ↗apps/cli/test/helpers/daemon-startup-coordinator.ts ↗+48 / −0Move compatibility knobs into tests ↗apps/cli/test/helpers/daemon-startup-mutation-owner.ts ↗+1 / −1Move compatibility knobs into tests ↗apps/cli/test/helpers/daemon-startup-publisher.ts ↗+1 / −1Move compatibility knobs into tests ↗apps/cli/test/helpers/e2e-process-cleanup.ts ↗+3 / −5Move compatibility knobs into tests ↗apps/cli/test/helpers/local-daemon-transport.ts ↗+64 / −0Move compatibility knobs into tests ↗apps/cli/test/helpers/workspace-daemon-persistent-pressure.ts ↗+4 / −4Move compatibility knobs into tests ↗apps/cli/test/helpers/workspace-daemon-stuck.ts ↗+4 / −4Move compatibility knobs into tests ↗apps/cli/test/helpers/workspace-daemon.ts ↗+99 / −0Move compatibility knobs into tests ↗meta-tests/src/daemon-package.test.ts ↗+34 / −1Enforce retired names with a source scan ↗"
+    }
+  ],
+  "controls": [
+    {
+      "tag": "A",
+      "text": "Skip to decisions",
+      "attrs": {
+        "href": "#decision-index"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Whole change",
+      "attrs": {
+        "href": "#decision-index"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Static map ↗",
+      "attrs": {
+        "href": "#static-map"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Runtime map ↗",
+      "attrs": {
+        "href": "#runtime-map"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Mechanisms & evidence",
+      "attrs": {
+        "href": "#mechanisms"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "01\nSTATED\nMake composition mandatory\n\nConsumers require policy sections instead of optional operational numbers and local defaults. Code stays in the CLI package; the policy packag",
+      "attrs": {
+        "href": "#decision-contract"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "02\nSTATED\nUse one set of byte capacities\n\nCapture, spool, file decoding, worker validation and socket framing receive policy-backed caps. Chunk, inline, per-result and aggregate li",
+      "attrs": {
+        "href": "#decision-output"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "03\nSTATED\nRead the derived memory limits\n\nThe app’s duplicate memory-policy class and reconstruction disappear. RSS thresholds, worker heap limit, sampling cadence and replacement ",
+      "attrs": {
+        "href": "#decision-resources"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "04\nSTATED\nKeep distinct clocks and retention limits\n\nStartup, shutdown, idle life, acknowledgement waiting, log rotation/queueing and trace retention take their own policy fields. ",
+      "attrs": {
+        "href": "#decision-clocks"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "05\nSTATED\nChoose the timeout by caller purpose\n\nSocket inactivity timers use 100 ms for status observation and 250 ms for ordinary lifecycle / execution-status. Execute admission u",
+      "attrs": {
+        "href": "#decision-deadlines"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "06\nSTATED\nPut numbers on existing retry scopes\n\nStartup child retries and accepted-execute reattachments become numeric loops. Fetch resume has a per-execute counter. Defaults are ",
+      "attrs": {
+        "href": "#decision-attempts"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "07\nUNEXPLAINED\nLet a later completion failure escape\n\nThe reattachment rewrite changes error selection: a later completion rejection can replace the original accepted-close error. ",
+      "attrs": {
+        "href": "#decision-failures"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "08\nUNEXPLAINED\nLeave fetch failure as a terminal path\n\nThe numeric resume check sits on the original execute socket. A failed result-fetch still goes to fail; increasing the field ",
+      "attrs": {
+        "href": "#decision-fetches"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "09\nSTATED\nMove compatibility knobs into tests\n\nSeven new test helpers translate legacy options into policies; a logger adapter is local to its test. Existing tests and benchmarks s",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "10\nUNEXPLAINED\nChange test inputs and recorded data\n\nTiny-limit normalization removes spilled-file evidence from some single-chunk cleanup tests. Helpers create output directories,",
+      "attrs": {
+        "href": "#decision-fixtures"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "11\nUNEXPLAINED\nRetire the local derivation suite and unused knob\n\nThe app’s memory derivation suite, including its literal 250 ms assertion, is deleted; related package tests alrea",
+      "attrs": {
+        "href": "#decision-tests"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "12\nUNEXPLAINED\nEnforce retired names with a source scan\n\nThe meta-test expands a production-source blacklist of retired constants, option names and the duplicate policy class. This",
+      "attrs": {
+        "href": "#decision-guards"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "Before",
+      "attrs": {
+        "data-version": "base"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "After",
+      "attrs": {
+        "data-version": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "Changes",
+      "attrs": {
+        "data-version": "delta"
+      }
+    },
+    {
+      "tag": "SELECT",
+      "text": "all policy routes\noutput & framing\nresource limits\nlifecycle & diagnostics\ndeadlines & attempts\ntest adapters",
+      "attrs": {
+        "id": "focus-picker"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Open the required-input decision ↗",
+      "attrs": {
+        "href": "#decision-contract"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "DaemonPolicy: open decision Make composition mandatory",
+      "attrs": {
+        "href": "#decision-contract",
+        "data-topic": "all"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "DaemonPolicyValues: open decision Make composition mandatory",
+      "attrs": {
+        "href": "#decision-contract",
+        "data-topic": "all"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "Policy test factory: open decision Move compatibility knobs into tests",
+      "attrs": {
+        "href": "#decision-adapters",
+        "data-topic": "adapters"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "Composition: dependencies, command actions, process & worker entries: open decision Make composition mandatory",
+      "attrs": {
+        "href": "#decision-contract",
+        "data-topic": "all"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "Local defaults: open decision Make composition mandatory",
+      "attrs": {
+        "href": "#decision-contract",
+        "data-topic": "all"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "Output & spool: open decision Use one set of byte capacities",
+      "attrs": {
+        "href": "#decision-output",
+        "data-topic": "output"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "Resource supervision: open decision Read the derived memory limits",
+      "attrs": {
+        "href": "#decision-resources",
+        "data-topic": "resources"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "Lifecycle & diagnostics: open decision Keep distinct clocks and retention limits",
+      "attrs": {
+        "href": "#decision-clocks",
+        "data-topic": "clocks"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "Transport: open decision Choose the timeout by caller purpose",
+      "attrs": {
+        "href": "#decision-deadlines",
+        "data-topic": "delivery"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "Tests & fixtures: open decision Retire the local derivation suite and unused knob",
+      "attrs": {
+        "href": "#decision-tests",
+        "data-topic": "adapters"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "7 helper adapters + local logger adapter: open decision Move compatibility knobs into tests",
+      "attrs": {
+        "href": "#decision-adapters",
+        "data-topic": "adapters"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Open the recovery scopes ↗",
+      "attrs": {
+        "href": "#decision-attempts"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "Policy snapshot: open decision Make composition mandatory",
+      "attrs": {
+        "href": "#decision-contract",
+        "data-topic": "all"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "Same policy values: open decision Make composition mandatory",
+      "attrs": {
+        "href": "#decision-contract",
+        "data-topic": "all"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "Same policy values: open decision Make composition mandatory",
+      "attrs": {
+        "href": "#decision-contract",
+        "data-topic": "all"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "Controller + coordinator: open decision Keep distinct clocks and retention limits",
+      "attrs": {
+        "href": "#decision-clocks",
+        "data-topic": "clocks"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "Local defaults / knobs: open decision Make composition mandatory",
+      "attrs": {
+        "href": "#decision-contract",
+        "data-topic": "all"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "Transport · client: open decision Choose the timeout by caller purpose",
+      "attrs": {
+        "href": "#decision-deadlines",
+        "data-topic": "delivery"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "WorkspaceDaemon + logger: open decision Keep distinct clocks and retention limits",
+      "attrs": {
+        "href": "#decision-clocks",
+        "data-topic": "clocks"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "",
+      "attrs": {
+        "href": "#decision-resources",
+        "data-topic": "all"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "Spool + resource supervisor: open decision Read the derived memory limits",
+      "attrs": {
+        "href": "#decision-resources",
+        "data-topic": "resources output"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "Transport · server: open decision Use one set of byte capacities",
+      "attrs": {
+        "href": "#decision-output",
+        "data-topic": "output delivery"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "CliProgramExecutor + protocol: open decision Use one set of byte capacities",
+      "attrs": {
+        "href": "#decision-output",
+        "data-topic": "output"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "",
+      "attrs": {
+        "href": "#decision-output",
+        "data-topic": "all"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "Heap sampler: open decision Read the derived memory limits",
+      "attrs": {
+        "href": "#decision-resources",
+        "data-topic": "resources"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "Temporary output files: open decision Use one set of byte capacities",
+      "attrs": {
+        "href": "#decision-output",
+        "data-topic": "output"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "Local state files: registry / completion spool / diagnostics: open decision Keep distinct clocks and retention limits",
+      "attrs": {
+        "href": "#decision-clocks",
+        "data-topic": "clocks output"
+      }
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "01\nMake composition mandatory\nSTATED",
+      "attrs": {}
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "PR"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/local-daemon-transport.ts",
+        "data-find": "constructor(policy:",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/workspace-daemon.ts",
+        "data-find": "export interface WorkspaceDaemonOptions",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-command-dispatcher.ts",
+        "data-find": "private static createRuntime",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-registry.ts",
+        "data-find": "startupOwnerIsWithinGrace(",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "AGENTS.md",
+        "data-find": "## Dependency direction",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/program.ts",
+        "data-find": "DaemonPolicy.currentSystem",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-index"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#static-map"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#runtime-map"
+      }
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "02\nUse one set of byte capacities\nSTATED",
+      "attrs": {}
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "plans/005/daemon-policy.md",
+        "data-find": "",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/command-execution-result.ts",
+        "data-find": "constructor(options: OrderedCommandOutputOptions)",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/cli-program-executor.ts",
+        "data-find": "new OrderedCommandOutput",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/completion-spool.ts",
+        "data-find": "constructor(private readonly options: DaemonCompletionSpoolStoreOptions)",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-navigation-worker.ts",
+        "data-find": "this.maximumChunkRawBytes =",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-navigation-worker-entry.ts",
+        "data-find": "private send(",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-result-chunk-codec.ts",
+        "data-find": "const maximum = binary",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-index"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#static-map"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#runtime-map"
+      }
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "03\nRead the derived memory limits\nSTATED",
+      "attrs": {}
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "plans/005/daemon-policy.md",
+        "data-find": "",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-entry.ts",
+        "data-find": "const policy =",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-resource-monitor.ts",
+        "data-find": "export interface DaemonResourceSupervisorOptions",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/workspace-daemon.ts",
+        "data-find": "const resourcePolicy =",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-navigation-worker-entry.ts",
+        "data-find": "const heapMonitor =",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "packages/daemon/src/daemon-policy.ts",
+        "data-find": "const effectiveMemoryBytes =",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-index"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#static-map"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#runtime-map"
+      }
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "04\nKeep distinct clocks and retention limits\nSTATED",
+      "attrs": {}
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "plans/005/daemon-policy.md",
+        "data-find": "",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-startup-coordinator.ts",
+        "data-find": "this.coordinationGraceMs =",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-controller.ts",
+        "data-find": "const forceWaitMs =",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-process-launcher.ts",
+        "data-find": "constructor(policy:",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-lifetime.ts",
+        "data-find": "constructor(",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-logger.ts",
+        "data-find": "const policy = options.policy",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/workspace-daemon.ts",
+        "data-find": "private async waitForCompletionAcknowledgements",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "plans/005/daemon-policy.md",
+        "data-find": "| healthy startup",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-index"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#static-map"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#runtime-map"
+      }
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "05\nChoose the timeout by caller purpose\nSTATED",
+      "attrs": {}
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "PR"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/commands/daemon/register-daemon-command.ts",
+        "data-find": "responseTimeoutPurpose",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/local-daemon-transport.ts",
+        "data-find": "this.requestTimeoutMs =",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/local-daemon-transport.ts",
+        "data-find": "socket.setTimeout(0)",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/local-daemon-transport-validation.test.ts",
+        "data-find": "uses the status-observer timeout",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-index"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#static-map"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#runtime-map"
+      }
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "06\nPut numbers on existing retry scopes\nSTATED",
+      "attrs": {}
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "PR"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/local-daemon-transport.ts",
+        "data-find": "private async completeWithReattachments",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/local-daemon-transport.ts",
+        "data-find": "const resume =",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-startup-coordinator.ts",
+        "data-find": "let failureCount =",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-startup-coordinator.test.ts",
+        "data-find": "does not retry a child failure",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/local-daemon-transport-execution.test.ts",
+        "data-find": "gives the reattached execute attempt",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-index"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#static-map"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#runtime-map"
+      }
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "07\nLet a later completion failure escape\nUNEXPLAINED",
+      "attrs": {}
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/local-daemon-transport.ts",
+        "data-find": "private async completeWithReattachments",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-index"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#static-map"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#runtime-map"
+      }
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "08\nLeave fetch failure as a terminal path\nUNEXPLAINED",
+      "attrs": {}
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/local-daemon-transport.ts",
+        "data-find": "const resume =",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/local-daemon-transport.ts",
+        "data-find": "private fetchCompletion(",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-index"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#static-map"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#runtime-map"
+      }
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "09\nMove compatibility knobs into tests\nSTATED",
+      "attrs": {}
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "PR"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/helpers/local-daemon-transport.ts",
+        "data-find": "export class",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/helpers/workspace-daemon.ts",
+        "data-find": "export class",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-logger.test.ts",
+        "data-find": "class DaemonLogger",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "packages/daemon/src/policy-testing.ts",
+        "data-find": "static withOverrides",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-index"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#static-map"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#runtime-map"
+      }
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "10\nChange test inputs and recorded data\nUNEXPLAINED",
+      "attrs": {}
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/helpers/local-daemon-transport.ts",
+        "data-find": "inlineRawBytes: Math.max",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/local-daemon-transport-execution.test.ts",
+        "data-find": "disposes partial client output",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/command-execution-result.ts",
+        "data-find": "this.rawBytes + record.bytes.byteLength > this.inlineBytes",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/helpers/workspace-daemon.ts",
+        "data-find": "const aggregateBytes =",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/helpers/daemon-resource-policy.ts",
+        "data-find": "replacementWindowMs: resources.replacementWindowMs",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/benchmark/daemon-scale-benchmark-harness.ts",
+        "data-find": "const resourcePolicy =",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/cli-program-executor.test.ts",
+        "data-find": "const spilled =",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/completion-spool.test.ts",
+        "data-find": "const blockedStore =",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/workspace-daemon-requests.test.ts",
+        "data-find": "this.executionCount === 1",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-index"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#static-map"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#runtime-map"
+      }
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "11\nRetire the local derivation suite and unused knob\nUNEXPLAINED",
+      "attrs": {}
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-resource-monitor.test.ts",
+        "data-find": "describe(\"DaemonResourceSupervisor\"",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "packages/daemon/src/daemon-policy.test.ts",
+        "data-find": "const expectedDefaults",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-startup-coordinator.ts",
+        "data-find": "this.coordinationGraceMs =",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-startup-coordinator.test.ts",
+        "data-find": "shares one readiness record",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/cli-program-executor.test.ts",
+        "data-find": "smallest valid chunk capacity",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-index"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#static-map"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#runtime-map"
+      }
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "12\nEnforce retired names with a source scan\nUNEXPLAINED",
+      "attrs": {}
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "meta-tests/src/daemon-package.test.ts",
+        "data-find": "retires scattered operational defaults",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-index"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#static-map"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#runtime-map"
+      }
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "All 39 policy fields, their values and recorded reasons\nThe record exists before #131; these are inputs, not 39 new defaults.",
+      "attrs": {}
+    },
+    {
+      "tag": "INPUT",
+      "text": "",
+      "attrs": {
+        "id": "policy-search",
+        "type": "search"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "plans/005/daemon-policy.md",
+        "data-mode": "head"
+      }
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "All 60 changed files, attached to their decisions\n19 production files · 41 test, fixture, benchmark and guard files",
+      "attrs": {}
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/cli-program-executor.test.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-fixtures"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/cli-program-executor.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-output"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/command-execution-result.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-output"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/commands/daemon/register-daemon-command.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-contract"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/completion-spool.test.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-fixtures"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/completion-spool.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-output"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-command-dispatcher.integration.test.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-command-dispatcher.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-contract"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-controller.test.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-controller.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-clocks"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-entry.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-contract"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-lifetime.test.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-lifetime.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-clocks"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-logger.test.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-logger.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-clocks"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-navigation-worker-entry.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-resources"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-navigation-worker-protocol.test.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-navigation-worker-protocol.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-output"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-navigation-worker.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-output"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-process-launcher.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-clocks"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-registry.test.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-registry.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-clocks"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-resource-monitor.test.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-tests"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-resource-monitor.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-resources"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-result-chunk-codec.test.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-result-chunk-codec.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-output"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-startup-coordinator.test.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-tests"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/daemon-startup-coordinator.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-clocks"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/local-daemon-transport-execution.test.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-fixtures"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/local-daemon-transport-validation.test.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-deadlines"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/local-daemon-transport.test.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/local-daemon-transport.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-attempts"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/workspace-daemon-requests.test.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-fixtures"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/workspace-daemon.test.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/src/daemon/workspace-daemon.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-contract"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/benchmark/daemon-scale-benchmark-harness.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/e2e/daemon/diagnostic-output.test.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/e2e/daemon/parity.test.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/e2e/daemon/persistent-pressure.test.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/e2e/daemon/state-isolation.test.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/e2e/daemon/status.test.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/e2e/daemon/stop.test.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/helpers/daemon-accepted-caller.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/helpers/daemon-controller.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/helpers/daemon-live-silent.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/helpers/daemon-malformed-activity.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/helpers/daemon-process-terminator.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/helpers/daemon-registry-cleaner.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/helpers/daemon-registry.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/helpers/daemon-resource-policy.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/helpers/daemon-startup-caller-exit.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/helpers/daemon-startup-coordinator.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/helpers/daemon-startup-mutation-owner.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/helpers/daemon-startup-publisher.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/helpers/e2e-process-cleanup.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/helpers/local-daemon-transport.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/helpers/workspace-daemon-persistent-pressure.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/helpers/workspace-daemon-stuck.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "apps/cli/test/helpers/workspace-daemon.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-adapters"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "attrs": {
+        "data-evidence": "meta-tests/src/daemon-package.test.ts",
+        "data-find": "",
+        "data-mode": "patch"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "attrs": {
+        "href": "#decision-guards"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Back to top ↑",
+      "attrs": {
+        "href": "#top"
+      }
+    },
+    {
+      "tag": "BUTTON",
+      "text": "Read the supplied PR body",
+      "attrs": {
+        "id": "open-intent"
+      }
+    }
+  ]
+}

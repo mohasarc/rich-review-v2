@@ -1,0 +1,1202 @@
+{
+  "folder": "32-kit",
+  "title": "PR 127 · Six caches get one lifetime owner · Review kit",
+  "url": "http://127.0.0.1:56708/experiments/32-kit/index.html",
+  "details": [
+    {
+      "summary": "The spec assigns language-independent lifetime to core · head L53–64",
+      "text": "The spec assigns language-independent lifetime to core · head L53–64 plans/005/daemon-architecture-functional-spec.md64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 53### A language backend holds only language-specific logic5455A concept that another language could share lives in core as a base the backend extends. The backend supplies only what depends on the language's toolchain.5657```text58Shared in core: file revision tracking, prepared-file index, declarations-by-identity,59transactional index publication, project-membership graph with input invalidation,60turn-scoped query cache lifecycle.61TypeScript-only: extraction from TypeScript syntax trees, tsconfig parsing (extends,62references, path aliases, include/exclude), program and language-service creation,63semantic query bodies.64```"
+    },
+    {
+      "summary": "Core exports the scope and handle type · head L146–154",
+      "text": "Core exports the scope and handle type · head L146–154 packages/core/src/index.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 146 RevisionedBackendPreparedFile,147} from \"./backend/revisioned-backend-state.js\";148export {149 RevisionedBackendPreparation,150 RevisionedBackendState,151} from \"./backend/revisioned-backend-state.js\";152export { TurnScopedCacheScope, type TurnScopedCache } from \"./backend/turn-scoped-cache-scope.js\";153export { BackendRouter } from \"./backend/backend-router.js\";154export { UserFacingError } from \"./errors.js\";"
+    },
+    {
+      "summary": "The complete new core implementation · head L1–46",
+      "text": "The complete new core implementation · head L1–46 packages/core/src/backend/turn-scoped-cache-scope.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 1export interface TurnScopedCache<Key, Value> {2 getOrCreate(key: Key, createValue: () => Value): Value;3}45interface ClearableTurnScopedCache {6 clear(): void;7}89class TurnScopedCacheHandle<Key, Value>10 implements TurnScopedCache<Key, Value>, ClearableTurnScopedCache11{12 private readonly values = new Map<Key, Value>();1314 getOrCreate(key: Key, createValue: () => Value): Value {15 if (this.values.has(key)) return this.values.get(key) as Value;16 const value = createValue();17 this.values.set(key, value);18 return value;19 }2021 clear(): void {22 this.values.clear();23 }24}2526export class TurnScopedCacheScope {27 private readonly caches: ClearableTurnScopedCache[] = [];2829 createCache<Key, Value>(): TurnScopedCache<Key, Value> {30 const cache = new TurnScopedCacheHandle<Key, Value>();31 this.caches.push(cache);32 return cache;33 }3435 beginTurn(): void {36 this.clear();37 }3839 releaseTransientResources(): void {40 this.clear();41 }4243 private clear(): void {44 for (const cache of this.caches) cache.clear();45 }46}"
+    },
+    {
+      "summary": "The service constructs the scope and starts turns · head L29–66",
+      "text": "The service constructs the scope and starts turns · head L29–66 packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 29export class TypeScriptSemanticQueryService implements PositionDefinitionResolver {30 private files: readonly WorkspaceFile[] = [];31 private readonly cacheScope = new TurnScopedCacheScope();32 private readonly definitionsByIdentity = this.cacheScope.createCache<33 string,34 Promise<readonly SymbolOverviewNode[]>35 >();36 private readonly referencesByIdentity = this.cacheScope.createCache<37 string,38 Promise<readonly SemanticReferenceLocation[]>39 >();40 private readonly callTargetsByIdentity = this.cacheScope.createCache<41 string,42 Promise<CallTargetResolution>43 >();44 private readonly callersByIdentity = this.cacheScope.createCache<45 string,46 Promise<readonly CallEdge[]>47 >();48 private readonly calleesByIdentity = this.cacheScope.createCache<49 string,50 Promise<readonly CallEdge[]>51 >();52 private readonly definitionsByPosition = this.cacheScope.createCache<53 string,54 readonly SemanticNodeLocation[]55 >();5657 constructor(58 private readonly projects: TypeScriptProjectGraph | undefined,59 private readonly workspaceState: TypeScriptWorkspaceState,60 private readonly observer?: TypeScriptSemanticQueryObserver,61 ) {}6263 beginTurn(files: readonly WorkspaceFile[]): void {64 this.files = files;65 this.cacheScope.beginTurn();66 }"
+    },
+    {
+      "summary": "PR reason: independent key and value spaces · bundle L78–78",
+      "text": "PR reason: independent key and value spaces · bundle L78–78 inputs/pr-127/pr.json · body64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 78- Chose one scope with six handles over one shared map, because the existing queries have independent key and value spaces."
+    },
+    {
+      "summary": "Six handle declarations · head L29–55",
+      "text": "Six handle declarations · head L29–55 packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 29export class TypeScriptSemanticQueryService implements PositionDefinitionResolver {30 private files: readonly WorkspaceFile[] = [];31 private readonly cacheScope = new TurnScopedCacheScope();32 private readonly definitionsByIdentity = this.cacheScope.createCache<33 string,34 Promise<readonly SymbolOverviewNode[]>35 >();36 private readonly referencesByIdentity = this.cacheScope.createCache<37 string,38 Promise<readonly SemanticReferenceLocation[]>39 >();40 private readonly callTargetsByIdentity = this.cacheScope.createCache<41 string,42 Promise<CallTargetResolution>43 >();44 private readonly callersByIdentity = this.cacheScope.createCache<45 string,46 Promise<readonly CallEdge[]>47 >();48 private readonly calleesByIdentity = this.cacheScope.createCache<49 string,50 Promise<readonly CallEdge[]>51 >();52 private readonly definitionsByPosition = this.cacheScope.createCache<53 string,54 readonly SemanticNodeLocation[]55 >();"
+    },
+    {
+      "summary": "A new Map for each created handle · head L9–33",
+      "text": "A new Map for each created handle · head L9–33 packages/core/src/backend/turn-scoped-cache-scope.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 9class TurnScopedCacheHandle<Key, Value>10 implements TurnScopedCache<Key, Value>, ClearableTurnScopedCache11{12 private readonly values = new Map<Key, Value>();1314 getOrCreate(key: Key, createValue: () => Value): Value {15 if (this.values.has(key)) return this.values.get(key) as Value;16 const value = createValue();17 this.values.set(key, value);18 return value;19 }2021 clear(): void {22 this.values.clear();23 }24}2526export class TurnScopedCacheScope {27 private readonly caches: ClearableTurnScopedCache[] = [];2829 createCache<Key, Value>(): TurnScopedCache<Key, Value> {30 const cache = new TurnScopedCacheHandle<Key, Value>();31 this.caches.push(cache);32 return cache;33 }"
+    },
+    {
+      "summary": "PR reason: undefined is a valid cached value · bundle L79–79",
+      "text": "PR reason: undefined is a valid cached value · bundle L79–79 inputs/pr-127/pr.json · body64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 79- Chose `Map.has` before `Map.get` over truthiness checks, because `undefined` is a valid cached value."
+    },
+    {
+      "summary": "The complete getOrCreate body · head L12–19",
+      "text": "The complete getOrCreate body · head L12–19 packages/core/src/backend/turn-scoped-cache-scope.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 12 private readonly values = new Map<Key, Value>();1314 getOrCreate(key: Key, createValue: () => Value): Value {15 if (this.values.has(key)) return this.values.get(key) as Value;16 const value = createValue();17 this.values.set(key, value);18 return value;19 }"
+    },
+    {
+      "summary": "Assertions for exact values, undefined and isolation · head L6–27",
+      "text": "Assertions for exact values, undefined and isolation · head L6–27 packages/core/src/backend/turn-scoped-cache-scope.test.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 6 it(\"returns each exact factory value once per key and handle\", () => {7 const scope = new TurnScopedCacheScope();8 const first = scope.createCache<string, readonly string[] | undefined>();9 const second = scope.createCache<string, readonly string[] | undefined>();10 const firstValue: readonly string[] = [];11 const secondValue: readonly string[] = [];12 const firstFactory = vi.fn(() => firstValue);13 const undefinedFactory = vi.fn(() => undefined);14 const secondFactory = vi.fn(() => secondValue);1516 expect(first.getOrCreate(\"value\", firstFactory)).toBe(firstValue);17 expect(first.getOrCreate(\"value\", firstFactory)).toBe(firstValue);18 expect(first.getOrCreate(\"undefined\", undefinedFactory)).toBeUndefined();19 expect(first.getOrCreate(\"undefined\", undefinedFactory)).toBeUndefined();20 expect(second.getOrCreate(\"value\", secondFactory)).toBe(secondValue);2122 expect(firstFactory).toHaveBeenCalledOnce();23 expect(undefinedFactory).toHaveBeenCalledOnce();24 expect(secondFactory).toHaveBeenCalledOnce();25 });2627 it(\"clears every handle at turn and release boundaries\", () => {"
+    },
+    {
+      "summary": "Previous formatted identity key · base L53–65",
+      "text": "Previous formatted identity key · base L53–65 packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.tsa1e325a5ff979bdfa25babc5554621c8c0f20497 · Full captured source 5354 findDefinitions(identity: SymbolIdentity): Promise<readonly SymbolOverviewNode[]> {55 const key = formatSymbolIdentity(identity);56 const existing = this.definitionsByIdentity.get(key);57 if (existing) return existing;58 this.observer?.definitionSearch?.(identity);59 const definitions = findDefinitions({60 workspaceState: this.workspaceState,61 files: this.files,62 identity,63 });64 this.definitionsByIdentity.set(key, definitions);65 return definitions;"
+    },
+    {
+      "summary": "Retained formatted identity key · head L68–77",
+      "text": "Retained formatted identity key · head L68–77 packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 68 findDefinitions(identity: SymbolIdentity): Promise<readonly SymbolOverviewNode[]> {69 const key = formatSymbolIdentity(identity);70 return this.definitionsByIdentity.getOrCreate(key, () => {71 this.observer?.definitionSearch?.(identity);72 return findDefinitions({73 workspaceState: this.workspaceState,74 files: this.files,75 identity,76 });77 });"
+    },
+    {
+      "summary": "Previous file-position key · base L131–137",
+      "text": "Previous file-position key · base L131–137 packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.tsa1e325a5ff979bdfa25babc5554621c8c0f20497 · Full captured source 131 if (!Node.isIdentifier(node) && !Node.isPrivateIdentifier(node)) return [];132 const relativePath = this.workspaceState.relativePathOf(node.getSourceFile());133 if (!relativePath) return [];134 const key = `${relativePath}:${node.getStart()}`;135 let locations = this.definitionsByPosition.get(key);136 if (!locations) {137 this.observer?.callTargetResolution?.(relativePath, node.getStart());"
+    },
+    {
+      "summary": "Retained file-position key · head L134–140",
+      "text": "Retained file-position key · head L134–140 packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 134 definitionNodesOf(node: Node): readonly Node[] {135 if (!Node.isIdentifier(node) && !Node.isPrivateIdentifier(node)) return [];136 const relativePath = this.workspaceState.relativePathOf(node.getSourceFile());137 if (!relativePath) return [];138 const key = `${relativePath}:${node.getStart()}`;139 const locations = this.definitionsByPosition.getOrCreate(key, () => {140 this.observer?.callTargetResolution?.(relativePath, node.getStart());"
+    },
+    {
+      "summary": "PR intent: preserve identities and failure behavior · bundle L1–3",
+      "text": "PR intent: preserve identities and failure behavior · bundle L1–3 inputs/pr-127/pr.json · body64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 1## Context23The [daemon architecture spec](https://github.com/mohasarc/symnav/blob/main/plans/005/daemon-architecture-functional-spec.md) assigns turn-scoped semantic-cache lifetime to core. Building on #126, this layer moves only cache lifetime out of TypeScript while preserving all six algorithms, key spaces, promise/value identities, and failure behavior."
+    },
+    {
+      "summary": "A throwing factory never reaches set · head L14–19",
+      "text": "A throwing factory never reaches set · head L14–19 packages/core/src/backend/turn-scoped-cache-scope.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 14 getOrCreate(key: Key, createValue: () => Value): Value {15 if (this.values.has(key)) return this.values.get(key) as Value;16 const value = createValue();17 this.values.set(key, value);18 return value;19 }"
+    },
+    {
+      "summary": "Reference discovery is evaluated before Promise.resolve · head L163–177",
+      "text": "Reference discovery is evaluated before Promise.resolve · head L163–177 packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 163 private referenceLocations(164 identity: SymbolIdentity,165 ): Promise<readonly SemanticReferenceLocation[]> {166 const key = formatSymbolIdentity(identity);167 return this.referencesByIdentity.getOrCreate(key, () => {168 this.observer?.referenceSearch?.(identity);169 return Promise.resolve(this.findReferenceLocations(identity));170 });171 }172173 private findReferenceLocations(identity: SymbolIdentity): readonly SemanticReferenceLocation[] {174 const declarationNodes = this.workspaceState175 .locateSemanticCopies(identity)176 .map((located) => located.node);177 if (declarationNodes.length === 0) throw new SymbolNotFoundError(identity);"
+    },
+    {
+      "summary": "Previous reference caching uses the same evaluation order · base L161–174",
+      "text": "Previous reference caching uses the same evaluation order · base L161–174 packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.tsa1e325a5ff979bdfa25babc5554621c8c0f20497 · Full captured source 161 private referenceLocations(162 identity: SymbolIdentity,163 ): Promise<readonly SemanticReferenceLocation[]> {164 const key = formatSymbolIdentity(identity);165 const existing = this.referencesByIdentity.get(key);166 if (existing) return existing;167 this.observer?.referenceSearch?.(identity);168 const locations = Promise.resolve(this.findReferenceLocations(identity));169 this.referencesByIdentity.set(key, locations);170 return locations;171 }172173 private findReferenceLocations(identity: SymbolIdentity): readonly SemanticReferenceLocation[] {174 const declarationNodes = this.workspaceState"
+    },
+    {
+      "summary": "Assertions for cached rejection and synchronous retry · head L55–74",
+      "text": "Assertions for cached rejection and synchronous retry · head L55–74 packages/core/src/backend/turn-scoped-cache-scope.test.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 55 const values = scope.createCache<string, string>();56 const rejection = new Error(\"rejected\");57 const rejected = Promise.reject(rejection);58 const rejectedFactory = vi.fn(() => rejected);59 const throwingFactory = vi.fn(() => {60 throw new Error(\"synchronous failure\");61 });6263 const first = promises.getOrCreate(\"key\", rejectedFactory);64 const second = promises.getOrCreate(\"key\", rejectedFactory);6566 expect(second).toBe(first);67 await expect(first).rejects.toBe(rejection);68 expect(promises.getOrCreate(\"key\", rejectedFactory)).toBe(first);69 expect(rejectedFactory).toHaveBeenCalledOnce();70 expect(() => values.getOrCreate(\"key\", throwingFactory)).toThrow(\"synchronous failure\");71 expect(() => values.getOrCreate(\"key\", throwingFactory)).toThrow(\"synchronous failure\");72 expect(throwingFactory).toHaveBeenCalledTimes(2);73 });74"
+    },
+    {
+      "summary": "TypeScript-level failure characterizations · head L95–133",
+      "text": "TypeScript-level failure characterizations · head L95–133 packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 95 it(\"retains asynchronous definition and callee failures for the turn\", async () => {96 const failure = new Error(\"semantic failure\");97 const ensureFiles = vi.fn(() => Promise.reject(failure));98 const state = { ensureFiles } as unknown as TypeScriptWorkspaceState;99 const queries = new TypeScriptSemanticQueryService(undefined, state);100 const target = identity(\"src/app.ts\", \"target\");101 queries.beginTurn([]);102103 const definitions = queries.findDefinitions(target);104 const callees = queries.findCallees(target);105106 expect(queries.findDefinitions(target)).toBe(definitions);107 expect(queries.findCallees(target)).toBe(callees);108 await expect(definitions).rejects.toBe(failure);109 await expect(callees).rejects.toBe(failure);110 expect(ensureFiles).toHaveBeenCalledTimes(2);111 });112113 it(\"retries synchronous reference discovery failures\", async () => {114 const failure = new Error(\"reference failure\");115 const locateSemanticCopies = vi.fn(() => {116 throw failure;117 });118 const state = { locateSemanticCopies } as unknown as TypeScriptWorkspaceState;119 let referenceSearches = 0;120 const queries = new TypeScriptSemanticQueryService(undefined, state, {121 referenceSearch: () => {122 referenceSearches += 1;123 },124 });125 const target = identity(\"src/app.ts\", \"target\");126 queries.beginTurn([]);127128 await expect(queries.findReferences(target)).rejects.toBe(failure);129 await expect(queries.findReferences(target)).rejects.toBe(failure);130131 expect(locateSemanticCopies).toHaveBeenCalledTimes(2);132 expect(referenceSearches).toBe(2);133 });"
+    },
+    {
+      "summary": "PR reason: preserve the current successful turn on failed refresh · bundle L81–81",
+      "text": "PR reason: preserve the current successful turn on failed refresh · bundle L81–81 inputs/pr-127/pr.json · body64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 81- Chose to begin the next turn only after refresh succeeds over clearing at refresh entry, because failed refresh must preserve the current successful turn."
+    },
+    {
+      "summary": "Before: beginTurn follows the awaited refresh · base L79–85",
+      "text": "Before: beginTurn follows the awaited refresh · base L79–85 packages/backend-typescript/src/typescript-backend/typescript-backend.tsa1e325a5ff979bdfa25babc5554621c8c0f20497 · Full captured source 79 async refresh(request: BackendRefreshRequest): Promise<BackendRefreshSummary> {80 this.sourceCache?.refresh(request.snapshot);81 if (request.coverage === \"workspace\") await this.projectGraph?.refresh(request.snapshot);82 const summary = await this.state.refresh(request.snapshot.files, request.coverage);83 this.semanticQueries.beginTurn(request.snapshot);84 return summary;85 }"
+    },
+    {
+      "summary": "After: same order, files-only input · head L79–85",
+      "text": "After: same order, files-only input · head L79–85 packages/backend-typescript/src/typescript-backend/typescript-backend.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 79 async refresh(request: BackendRefreshRequest): Promise<BackendRefreshSummary> {80 this.sourceCache?.refresh(request.snapshot);81 if (request.coverage === \"workspace\") await this.projectGraph?.refresh(request.snapshot);82 const summary = await this.state.refresh(request.snapshot.files, request.coverage);83 this.semanticQueries.beginTurn(request.snapshot.files);84 return summary;85 }"
+    },
+    {
+      "summary": "New failed-refresh assertion · head L135–162",
+      "text": "New failed-refresh assertion · head L135–162 packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 135 it(\"preserves the current turn when backend refresh fails\", async () => {136 const failure = new Error(\"refresh failure\");137 let refreshFails = false;138 const state = {139 refresh: vi.fn(() => {140 if (refreshFails) return Promise.reject(failure);141 return Promise.resolve({ added: 0, changed: 0, removed: 0, unchanged: 0 });142 }),143 ensureFiles: vi.fn(() => Promise.resolve()),144 locate: vi.fn(() => []),145 } as unknown as TypeScriptWorkspaceState;146 let definitionSearches = 0;147 const backend = new TypeScriptBackend(new InMemoryFileSystem({}), state, undefined, {148 definitionSearch: () => {149 definitionSearches += 1;150 },151 });152 const snapshot: WorkspaceSnapshot = { root: \"/repo\", files: [] };153 const target = identity(\"src/app.ts\", \"target\");154 await backend.refresh({ snapshot, coverage: \"workspace\" });155 const definitions = await backend.findDefinitions([], target);156 refreshFails = true;157158 await expect(backend.refresh({ snapshot, coverage: \"workspace\" })).rejects.toBe(failure);159160 await expect(backend.findDefinitions([], target)).resolves.toBe(definitions);161 expect(definitionSearches).toBe(1);162 });"
+    },
+    {
+      "summary": "PR reason: clear before pending or rejecting release · bundle L80–80",
+      "text": "PR reason: clear before pending or rejecting release · bundle L80–80 inputs/pr-127/pr.json · body64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 80- Chose synchronous cache clearing before project release over clearing after the await, because released semantics must be unavailable while release is pending or rejecting."
+    },
+    {
+      "summary": "Before: project release is not awaited · base L125–128",
+      "text": "Before: project release is not awaited · base L125–128 packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.tsa1e325a5ff979bdfa25babc5554621c8c0f20497 · Full captured source 125 releaseTransientResources(): void {126 this.clearQueryCaches();127 this.projects?.releaseTransientResources();128 }"
+    },
+    {
+      "summary": "After: clear, then await project release · head L129–132",
+      "text": "After: clear, then await project release · head L129–132 packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 129 async releaseTransientResources(): Promise<void> {130 this.cacheScope.releaseTransientResources();131 await this.projects?.releaseTransientResources();132 }"
+    },
+    {
+      "summary": "Before: backend does not chain the service release · base L87–89",
+      "text": "Before: backend does not chain the service release · base L87–89 packages/backend-typescript/src/typescript-backend/typescript-backend.tsa1e325a5ff979bdfa25babc5554621c8c0f20497 · Full captured source 87 async releaseTransientResources(): Promise<void> {88 this.semanticQueries.releaseTransientResources();89 }"
+    },
+    {
+      "summary": "After: backend awaits service release · head L87–89",
+      "text": "After: backend awaits service release · head L87–89 packages/backend-typescript/src/typescript-backend/typescript-backend.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 87 async releaseTransientResources(): Promise<void> {88 await this.semanticQueries.releaseTransientResources();89 }"
+    },
+    {
+      "summary": "The stack's unchanged-failure-path requirement · head L17–28",
+      "text": "The stack's unchanged-failure-path requirement · head L17–28 plans/005/daemon-architecture-functional-spec.md64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 17### Behavior is unchanged1819This is a refactor. Every command, daemon lifecycle action, diagnostic record, telemetry event, and failure path behaves as it does today.2021```text22Given the same workspace, arguments, environment, and daemon state, output bytes,23exit code, execution mode, and lifecycle outcome are identical before and after.24```2526Correct: a restructuring change passes the existing e2e parity and daemon suites without touching a single expectation. Incorrect: a restructuring change \"fixes\" a queue, eviction, timeout, or path while moving code.2728There is no \"it was obviously a bug\" override. Behavior defects found during restructuring are recorded in `daemon-follow-ups-functional-spec.md` and changed separately."
+    },
+    {
+      "summary": "Controlled pending release, cache refill, then rejection · head L164–217",
+      "text": "Controlled pending release, cache refill, then rejection · head L164–217 packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 164 it(\"clears caches before awaiting project release and rejects at the backend boundary\", async () => {165 const releaseFailure = new Error(\"project release failed\");166 let rejectProjectRelease: ((reason: unknown) => void) | undefined;167 const projectRelease = new Promise<void>((_resolve, reject) => {168 rejectProjectRelease = reject;169 });170 void projectRelease.catch(() => undefined);171 const firstProjectRelease = vi.fn(() => projectRelease);172 const laterProjectRelease = vi.fn();173 const projectGraph = {174 releaseTransientResources: vi.fn(async () => {175 await firstProjectRelease();176 laterProjectRelease();177 }),178 } as unknown as TypeScriptProjectGraph;179 const state = {180 refresh: vi.fn(() => Promise.resolve({ added: 0, changed: 0, removed: 0, unchanged: 0 })),181 ensureFiles: vi.fn(() => Promise.resolve()),182 locate: vi.fn(() => []),183 } as unknown as TypeScriptWorkspaceState;184 let definitionSearches = 0;185 const backend = new TypeScriptBackend(new InMemoryFileSystem({}), state, projectGraph, {186 definitionSearch: () => {187 definitionSearches += 1;188 },189 });190 const snapshot: WorkspaceSnapshot = { root: \"/repo\", files: [] };191 const target = identity(\"src/app.ts\", \"target\");192 await backend.refresh({ snapshot, coverage: \"selection\" });193 const beforeRelease = await backend.findDefinitions([], target);194195 const release = backend.releaseTransientResources();196 let releaseSettled = false;197 void release.then(198 () => {199 releaseSettled = true;200 },201 () => {202 releaseSettled = true;203 },204 );205 const afterRelease = await backend.findDefinitions([], target);206207 expect(afterRelease).not.toBe(beforeRelease);208 expect(definitionSearches).toBe(2);209 expect(projectGraph.releaseTransientResources).toHaveBeenCalledOnce();210 await Promise.resolve();211 expect(releaseSettled).toBe(false);212213 rejectProjectRelease?.(releaseFailure);214 await expect(release).rejects.toBe(releaseFailure);215 expect(firstProjectRelease).toHaveBeenCalledOnce();216 expect(laterProjectRelease).not.toHaveBeenCalled();217 });"
+    },
+    {
+      "summary": "PR intent: preserve all six algorithms · bundle L1–3",
+      "text": "PR intent: preserve all six algorithms · bundle L1–3 inputs/pr-127/pr.json · body64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 1## Context23The [daemon architecture spec](https://github.com/mohasarc/symnav/blob/main/plans/005/daemon-architecture-functional-spec.md) assigns turn-scoped semantic-cache lifetime to core. Building on #126, this layer moves only cache lifetime out of TypeScript while preserving all six algorithms, key spaces, promise/value identities, and failure behavior."
+    },
+    {
+      "summary": "The spec reserves semantic query bodies for TypeScript · head L53–64",
+      "text": "The spec reserves semantic query bodies for TypeScript · head L53–64 plans/005/daemon-architecture-functional-spec.md64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 53### A language backend holds only language-specific logic5455A concept that another language could share lives in core as a base the backend extends. The backend supplies only what depends on the language's toolchain.5657```text58Shared in core: file revision tracking, prepared-file index, declarations-by-identity,59transactional index publication, project-membership graph with input invalidation,60turn-scoped query cache lifecycle.61TypeScript-only: extraction from TypeScript syntax trees, tsconfig parsing (extends,62references, path aliases, include/exclude), program and language-service creation,63semantic query bodies.64```"
+    },
+    {
+      "summary": "Reference projections and shared reference locations · head L80–114",
+      "text": "Reference projections and shared reference locations · head L80–114 packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 80 async findReferences(identity: SymbolIdentity): Promise<readonly SymbolReference[]> {81 const locations = await this.referenceLocations(identity);82 return locations.flatMap((location) => {83 if (location.isDefinition) return [];84 const node = this.workspaceState.nodeAt(location.relativePath, location.start);85 if (!node) return [];86 const sourceFile = node.getSourceFile();87 const { line, character } = sourceFile.compilerNode.getLineAndCharacterOfPosition(88 location.start,89 );90 return [91 {92 file: location.relativePath,93 line: line + 1,94 previewSource: TypeScriptSemanticQueryService.lineText(sourceFile, line),95 matchStart: character,96 matchEnd: character + location.length,97 kind: classifyReferenceKind(node),98 },99 ];100 });101 }102103 findCallTarget(identity: SymbolIdentity): Promise<CallTargetResolution> {104 const key = formatSymbolIdentity(identity);105 return this.callTargetsByIdentity.getOrCreate(key, () => this.resolveCallTarget(identity));106 }107108 findCallers(identity: SymbolIdentity): Promise<readonly CallEdge[]> {109 const key = formatSymbolIdentity(identity);110 return this.callersByIdentity.getOrCreate(key, () =>111 this.referenceLocations(identity).then((locations) =>112 new CallerFinder(this.workspaceState).find(locations),113 ),114 );"
+    },
+    {
+      "summary": "Position caching followed by node rehydration · head L134–161",
+      "text": "Position caching followed by node rehydration · head L134–161 packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 134 definitionNodesOf(node: Node): readonly Node[] {135 if (!Node.isIdentifier(node) && !Node.isPrivateIdentifier(node)) return [];136 const relativePath = this.workspaceState.relativePathOf(node.getSourceFile());137 if (!relativePath) return [];138 const key = `${relativePath}:${node.getStart()}`;139 const locations = this.definitionsByPosition.getOrCreate(key, () => {140 this.observer?.callTargetResolution?.(relativePath, node.getStart());141 return node.getDefinitionNodes().flatMap((definition) => {142 const definitionRelativePath = this.workspaceState.relativePathOf(143 definition.getSourceFile(),144 );145 return definitionRelativePath146 ? [147 {148 relativePath: definitionRelativePath,149 start: definition.getStart(),150 kind: definition.getKind(),151 },152 ]153 : [];154 });155 });156 return locations.flatMap((location) => {157 const sourceFile = this.projects?.sourceFileFor(location.relativePath);158 const definition = this.nodeAtSemanticLocation(location, sourceFile);159 return definition ? [definition] : [];160 });161 }"
+    },
+    {
+      "summary": "Empty result caching and fresh array assertions · head L61–93",
+      "text": "Empty result caching and fresh array assertions · head L61–93 packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 61 it(\"caches empty position results while rehydrating nodes for every access\", async () => {62 const fileSystem = new InMemoryFileSystem({63 \"/repo/src/app.ts\": [64 \"export function target(): void {}\",65 \"export function caller(): void { target(); missing(); }\",66 \"\",67 ].join(\"\\n\"),68 });69 const files = workspaceFiles(fileSystem, \"src/app.ts\");70 const state = new TypeScriptWorkspaceState(fileSystem);71 await state.refresh(files);72 const resolvedPositions: number[] = [];73 const queries = new TypeScriptSemanticQueryService(undefined, state, {74 callTargetResolution: (_relativePath, start) => resolvedPositions.push(start),75 });76 queries.beginTurn(files);77 const sourceFile = state.sourceFile(\"src/app.ts\");78 const identifiers = sourceFile?.getDescendantsOfKind(SyntaxKind.Identifier) ?? [];79 const targetCall = [...identifiers].reverse().find((node) => node.getText() === \"target\");80 const missingCall = [...identifiers].reverse().find((node) => node.getText() === \"missing\");81 if (!targetCall || !missingCall) throw new Error(\"expected call identifiers\");8283 const firstDefinitions = queries.definitionNodesOf(targetCall);84 const secondDefinitions = queries.definitionNodesOf(targetCall);85 const firstMissing = queries.definitionNodesOf(missingCall);86 const secondMissing = queries.definitionNodesOf(missingCall);8788 expect(firstDefinitions).not.toBe(secondDefinitions);89 expect(firstDefinitions[0]).toBe(secondDefinitions[0]);90 expect(firstMissing).toEqual([]);91 expect(secondMissing).toEqual([]);92 expect(resolvedPositions).toEqual([targetCall.getStart(), missingCall.getStart()]);93 });"
+    },
+    {
+      "summary": "Retained shared-reference-search test · head L219–239",
+      "text": "Retained shared-reference-search test · head L219–239 packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 219 it(\"shares one reference search across caller and reference projections\", async () => {220 const fileSystem = new InMemoryFileSystem({221 \"/repo/src/lib.ts\": \"export function target(): void {}\\n\",222 \"/repo/src/app.ts\": [223 'import { target } from \"./lib.js\";',224 \"export function caller(): void { target(); }\",225 \"\",226 ].join(\"\\n\"),227 });228 const referenceSearches: SymbolIdentity[] = [];229 const backend = new TypeScriptBackend(fileSystem, undefined, undefined, {230 referenceSearch: (identity) => referenceSearches.push(identity),231 });232 const files = workspaceFiles(fileSystem, \"src/app.ts\", \"src/lib.ts\");233 const target = identity(\"src/lib.ts\", \"target\");234 await backend.refresh({ snapshot: { root: \"/repo\", files }, coverage: \"workspace\" });235236 await expect(backend.findCallers(files, target)).resolves.toHaveLength(1);237 await expect(backend.findReferences(files, target)).resolves.toHaveLength(2);238 expect(referenceSearches).toEqual([target]);239 });"
+    },
+    {
+      "summary": "The miss observer remains in the factory · head L68–77",
+      "text": "The miss observer remains in the factory · head L68–77 packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 68 findDefinitions(identity: SymbolIdentity): Promise<readonly SymbolOverviewNode[]> {69 const key = formatSymbolIdentity(identity);70 return this.definitionsByIdentity.getOrCreate(key, () => {71 this.observer?.definitionSearch?.(identity);72 return findDefinitions({73 workspaceState: this.workspaceState,74 files: this.files,75 identity,76 });77 });"
+    },
+    {
+      "summary": "Public-surface section lists the change · bundle L66–74",
+      "text": "Public-surface section lists the change · bundle L66–74 inputs/pr-127/pr.json · body64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 66Changed on exported `TypeScriptSemanticQueryService`:6768```ts69// before: beginTurn(snapshot: WorkspaceSnapshot): void70beginTurn(files: readonly WorkspaceFile[]): void;7172// before: releaseTransientResources(): void73releaseTransientResources(): Promise<void>;74```"
+    },
+    {
+      "summary": "Before: full WorkspaceSnapshot · base L49–52",
+      "text": "Before: full WorkspaceSnapshot · base L49–52 packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.tsa1e325a5ff979bdfa25babc5554621c8c0f20497 · Full captured source 49 beginTurn(snapshot: WorkspaceSnapshot): void {50 this.files = snapshot.files;51 this.clearQueryCaches();52 }"
+    },
+    {
+      "summary": "After: readonly WorkspaceFile[] · head L63–66",
+      "text": "After: readonly WorkspaceFile[] · head L63–66 packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 63 beginTurn(files: readonly WorkspaceFile[]): void {64 this.files = files;65 this.cacheScope.beginTurn();66 }"
+    },
+    {
+      "summary": "Updated production call · head L79–85",
+      "text": "Updated production call · head L79–85 packages/backend-typescript/src/typescript-backend/typescript-backend.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 79 async refresh(request: BackendRefreshRequest): Promise<BackendRefreshSummary> {80 this.sourceCache?.refresh(request.snapshot);81 if (request.coverage === \"workspace\") await this.projectGraph?.refresh(request.snapshot);82 const summary = await this.state.refresh(request.snapshot.files, request.coverage);83 this.semanticQueries.beginTurn(request.snapshot.files);84 return summary;85 }"
+    },
+    {
+      "summary": "SemanticQueryService is exported from the package · head L10–16",
+      "text": "SemanticQueryService is exported from the package · head L10–16 packages/backend-typescript/src/index.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 10 type TypeScriptFileExtractor,11} from \"./typescript-backend/typescript-workspace-state.js\";12export type { TypeScriptSemanticQueryObserver } from \"./typescript-backend/typescript-semantic-query-observer.js\";13export {14 TypeScriptSemanticQueryService,15 type SemanticReferenceLocation,16} from \"./typescript-backend/typescript-semantic-query-service.js\";"
+    },
+    {
+      "summary": "Public API, persistent handle registry, clearing implementation · head L1–46",
+      "text": "Public API, persistent handle registry, clearing implementation · head L1–46 packages/core/src/backend/turn-scoped-cache-scope.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 1export interface TurnScopedCache<Key, Value> {2 getOrCreate(key: Key, createValue: () => Value): Value;3}45interface ClearableTurnScopedCache {6 clear(): void;7}89class TurnScopedCacheHandle<Key, Value>10 implements TurnScopedCache<Key, Value>, ClearableTurnScopedCache11{12 private readonly values = new Map<Key, Value>();1314 getOrCreate(key: Key, createValue: () => Value): Value {15 if (this.values.has(key)) return this.values.get(key) as Value;16 const value = createValue();17 this.values.set(key, value);18 return value;19 }2021 clear(): void {22 this.values.clear();23 }24}2526export class TurnScopedCacheScope {27 private readonly caches: ClearableTurnScopedCache[] = [];2829 createCache<Key, Value>(): TurnScopedCache<Key, Value> {30 const cache = new TurnScopedCacheHandle<Key, Value>();31 this.caches.push(cache);32 return cache;33 }3435 beginTurn(): void {36 this.clear();37 }3839 releaseTransientResources(): void {40 this.clear();41 }4243 private clear(): void {44 for (const cache of this.caches) cache.clear();45 }46}"
+    },
+    {
+      "summary": "Composition at the TypeScript service · head L29–35",
+      "text": "Composition at the TypeScript service · head L29–35 packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 29export class TypeScriptSemanticQueryService implements PositionDefinitionResolver {30 private files: readonly WorkspaceFile[] = [];31 private readonly cacheScope = new TurnScopedCacheScope();32 private readonly definitionsByIdentity = this.cacheScope.createCache<33 string,34 Promise<readonly SymbolOverviewNode[]>35 >();"
+    },
+    {
+      "summary": "The spec describes a shared base · head L53–63",
+      "text": "The spec describes a shared base · head L53–63 plans/005/daemon-architecture-functional-spec.md64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 53### A language backend holds only language-specific logic5455A concept that another language could share lives in core as a base the backend extends. The backend supplies only what depends on the language's toolchain.5657```text58Shared in core: file revision tracking, prepared-file index, declarations-by-identity,59transactional index publication, project-membership graph with input invalidation,60turn-scoped query cache lifecycle.61TypeScript-only: extraction from TypeScript syntax trees, tsconfig parsing (extends,62references, path aliases, include/exclude), program and language-service creation,63semantic query bodies."
+    },
+    {
+      "summary": "The same handles work after repeated release · head L29–52",
+      "text": "The same handles work after repeated release · head L29–52 packages/core/src/backend/turn-scoped-cache-scope.test.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 29 const first = scope.createCache<string, object>();30 const second = scope.createCache<string, object>();31 const firstFactory = vi.fn(() => ({}));32 const secondFactory = vi.fn(() => ({}));33 const initialFirst = first.getOrCreate(\"shared\", firstFactory);34 const initialSecond = second.getOrCreate(\"shared\", secondFactory);3536 scope.beginTurn();3738 expect(first.getOrCreate(\"shared\", firstFactory)).not.toBe(initialFirst);39 expect(second.getOrCreate(\"shared\", secondFactory)).not.toBe(initialSecond);4041 const nextFirst = first.getOrCreate(\"shared\", firstFactory);42 const nextSecond = second.getOrCreate(\"shared\", secondFactory);43 scope.releaseTransientResources();44 scope.releaseTransientResources();4546 expect(first.getOrCreate(\"shared\", firstFactory)).not.toBe(nextFirst);47 expect(second.getOrCreate(\"shared\", secondFactory)).not.toBe(nextSecond);48 expect(firstFactory).toHaveBeenCalledTimes(3);49 expect(secondFactory).toHaveBeenCalledTimes(3);50 });5152 it(\"retains promise settlement and retries synchronous factory failures\", async () => {"
+    },
+    {
+      "summary": "Old promise settles without replacing the new turn entry · head L76–91",
+      "text": "Old promise settles without replacing the new turn entry · head L76–91 packages/core/src/backend/turn-scoped-cache-scope.test.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 76 const scope = new TurnScopedCacheScope();77 const cache = scope.createCache<string, Promise<string>>();78 let settleOld: ((value: string) => void) | undefined;79 const oldPromise = new Promise<string>((resolve) => {80 settleOld = resolve;81 });82 const newPromise = Promise.resolve(\"new\");83 expect(cache.getOrCreate(\"key\", () => oldPromise)).toBe(oldPromise);8485 scope.beginTurn();86 expect(cache.getOrCreate(\"key\", () => newPromise)).toBe(newPromise);87 settleOld?.(\"old\");8889 await expect(oldPromise).resolves.toBe(\"old\");90 await expect(cache.getOrCreate(\"key\", () => Promise.resolve(\"other\"))).resolves.toBe(\"new\");91 });"
+    },
+    {
+      "summary": "A query can refill during pending release · head L197–217",
+      "text": "A query can refill during pending release · head L197–217 packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 197 void release.then(198 () => {199 releaseSettled = true;200 },201 () => {202 releaseSettled = true;203 },204 );205 const afterRelease = await backend.findDefinitions([], target);206207 expect(afterRelease).not.toBe(beforeRelease);208 expect(definitionSearches).toBe(2);209 expect(projectGraph.releaseTransientResources).toHaveBeenCalledOnce();210 await Promise.resolve();211 expect(releaseSettled).toBe(false);212213 rejectProjectRelease?.(releaseFailure);214 await expect(release).rejects.toBe(releaseFailure);215 expect(firstProjectRelease).toHaveBeenCalledOnce();216 expect(laterProjectRelease).not.toHaveBeenCalled();217 });"
+    },
+    {
+      "summary": "Release does not reset the retained files · head L129–132",
+      "text": "Release does not reset the retained files · head L129–132 packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 129 async releaseTransientResources(): Promise<void> {130 this.cacheScope.releaseTransientResources();131 await this.projects?.releaseTransientResources();132 }"
+    },
+    {
+      "summary": "Commit subjects characterize identities and specify lifecycle/release · bundle L1–22",
+      "text": "Commit subjects characterize identities and specify lifecycle/release · bundle L1–22 inputs/pr-127/pr.json · commits64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 144de06c631863ac27d78545d7cb9570b2ce191652Characterize TypeScript semantic cache identities34567df0279bdf4d40bdfa05f813ab56475a9ffbf9c6Define turn-scoped cache handles789f515f73e93ae678f75189d02f184829e4ab895a910Specify turn-scoped cache lifecycle111213471a46653a6f381e4a6c7960a4f1094e2217fe3e14Implement turn-scoped cache lifecycle1516179e656518954d8e6b81966d768badce82738d4efc18Specify awaited semantic resource release19202164919bcbcf7fcc8202779b78c5f069b24662bb1822Adopt turn-scoped TypeScript query caches"
+    },
+    {
+      "summary": "Four new core cases · head L1–92",
+      "text": "Four new core cases · head L1–92 packages/core/src/backend/turn-scoped-cache-scope.test.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 1import { describe, expect, it, vi } from \"vitest\";23import { TurnScopedCacheScope } from \"./turn-scoped-cache-scope.js\";45describe(\"TurnScopedCacheScope\", () => {6 it(\"returns each exact factory value once per key and handle\", () => {7 const scope = new TurnScopedCacheScope();8 const first = scope.createCache<string, readonly string[] | undefined>();9 const second = scope.createCache<string, readonly string[] | undefined>();10 const firstValue: readonly string[] = [];11 const secondValue: readonly string[] = [];12 const firstFactory = vi.fn(() => firstValue);13 const undefinedFactory = vi.fn(() => undefined);14 const secondFactory = vi.fn(() => secondValue);1516 expect(first.getOrCreate(\"value\", firstFactory)).toBe(firstValue);17 expect(first.getOrCreate(\"value\", firstFactory)).toBe(firstValue);18 expect(first.getOrCreate(\"undefined\", undefinedFactory)).toBeUndefined();19 expect(first.getOrCreate(\"undefined\", undefinedFactory)).toBeUndefined();20 expect(second.getOrCreate(\"value\", secondFactory)).toBe(secondValue);2122 expect(firstFactory).toHaveBeenCalledOnce();23 expect(undefinedFactory).toHaveBeenCalledOnce();24 expect(secondFactory).toHaveBeenCalledOnce();25 });2627 it(\"clears every handle at turn and release boundaries\", () => {28 const scope = new TurnScopedCacheScope();29 const first = scope.createCache<string, object>();30 const second = scope.createCache<string, object>();31 const firstFactory = vi.fn(() => ({}));32 const secondFactory = vi.fn(() => ({}));33 const initialFirst = first.getOrCreate(\"shared\", firstFactory);34 const initialSecond = second.getOrCreate(\"shared\", secondFactory);3536 scope.beginTurn();3738 expect(first.getOrCreate(\"shared\", firstFactory)).not.toBe(initialFirst);39 expect(second.getOrCreate(\"shared\", secondFactory)).not.toBe(initialSecond);4041 const nextFirst = first.getOrCreate(\"shared\", firstFactory);42 const nextSecond = second.getOrCreate(\"shared\", secondFactory);43 scope.releaseTransientResources();44 scope.releaseTransientResources();4546 expect(first.getOrCreate(\"shared\", firstFactory)).not.toBe(nextFirst);47 expect(second.getOrCreate(\"shared\", secondFactory)).not.toBe(nextSecond);48 expect(firstFactory).toHaveBeenCalledTimes(3);49 expect(secondFactory).toHaveBeenCalledTimes(3);50 });5152 it(\"retains promise settlement and retries synchronous factory failures\", async () => {53 const scope = new TurnScopedCacheScope();54 const promises = scope.createCache<string, Promise<string>>();55 const values = scope.createCache<string, string>();56 const rejection = new Error(\"rejected\");57 const rejected = Promise.reject(rejection);58 const rejectedFactory = vi.fn(() => rejected);59 const throwingFactory = vi.fn(() => {60 throw new Error(\"synchronous failure\");61 });6263 const first = promises.getOrCreate(\"key\", rejectedFactory);64 const second = promises.getOrCreate(\"key\", rejectedFactory);6566 expect(second).toBe(first);67 await expect(first).rejects.toBe(rejection);68 expect(promises.getOrCreate(\"key\", rejectedFactory)).toBe(first);69 expect(rejectedFactory).toHaveBeenCalledOnce();70 expect(() => values.getOrCreate(\"key\", throwingFactory)).toThrow(\"synchronous failure\");71 expect(() => values.getOrCreate(\"key\", throwingFactory)).toThrow(\"synchronous failure\");72 expect(throwingFactory).toHaveBeenCalledTimes(2);73 });7475 it(\"does not let an old promise settlement replace a new turn entry\", async () => {76 const scope = new TurnScopedCacheScope();77 const cache = scope.createCache<string, Promise<string>>();78 let settleOld: ((value: string) => void) | undefined;79 const oldPromise = new Promise<string>((resolve) => {80 settleOld = resolve;81 });82 const newPromise = Promise.resolve(\"new\");83 expect(cache.getOrCreate(\"key\", () => oldPromise)).toBe(oldPromise);8485 scope.beginTurn();86 expect(cache.getOrCreate(\"key\", () => newPromise)).toBe(newPromise);87 settleOld?.(\"old\");8889 await expect(oldPromise).resolves.toBe(\"old\");90 await expect(cache.getOrCreate(\"key\", () => Promise.resolve(\"other\"))).resolves.toBe(\"new\");91 });92});"
+    },
+    {
+      "summary": "Six new TypeScript cases · head L29–217",
+      "text": "Six new TypeScript cases · head L29–217 packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 29 it(\"shares each identity query promise independently within one turn\", async () => {30 const fileSystem = new InMemoryFileSystem({31 \"/repo/src/app.ts\": [32 \"export function target(): void {}\",33 \"export function caller(): void { target(); }\",34 \"\",35 ].join(\"\\n\"),36 });37 const files = workspaceFiles(fileSystem, \"src/app.ts\");38 const snapshot: WorkspaceSnapshot = { root: \"/repo\", files };39 const state = new TypeScriptWorkspaceState(fileSystem);40 await state.refresh(files);41 const queries = new TypeScriptSemanticQueryService(undefined, state);42 const target = identity(\"src/app.ts\", \"target\");43 const caller = identity(\"src/app.ts\", \"caller\");44 queries.beginTurn(snapshot.files);4546 const definitions = queries.findDefinitions(target);47 const callTarget = queries.findCallTarget(target);48 const callers = queries.findCallers(target);49 const callees = queries.findCallees(caller);5051 expect(queries.findDefinitions(target)).toBe(definitions);52 expect(queries.findCallTarget(target)).toBe(callTarget);53 expect(queries.findCallers(target)).toBe(callers);54 expect(queries.findCallees(caller)).toBe(callees);55 await expect(definitions).resolves.toHaveLength(1);56 await expect(callTarget).resolves.toMatchObject({ outcome: \"resolved\" });57 await expect(callers).resolves.toHaveLength(1);58 await expect(callees).resolves.toHaveLength(1);59 });6061 it(\"caches empty position results while rehydrating nodes for every access\", async () => {62 const fileSystem = new InMemoryFileSystem({63 \"/repo/src/app.ts\": [64 \"export function target(): void {}\",65 \"export function caller(): void { target(); missing(); }\",66 \"\",67 ].join(\"\\n\"),68 });69 const files = workspaceFiles(fileSystem, \"src/app.ts\");70 const state = new TypeScriptWorkspaceState(fileSystem);71 await state.refresh(files);72 const resolvedPositions: number[] = [];73 const queries = new TypeScriptSemanticQueryService(undefined, state, {74 callTargetResolution: (_relativePath, start) => resolvedPositions.push(start),75 });76 queries.beginTurn(files);77 const sourceFile = state.sourceFile(\"src/app.ts\");78 const identifiers = sourceFile?.getDescendantsOfKind(SyntaxKind.Identifier) ?? [];79 const targetCall = [...identifiers].reverse().find((node) => node.getText() === \"target\");80 const missingCall = [...identifiers].reverse().find((node) => node.getText() === \"missing\");81 if (!targetCall || !missingCall) throw new Error(\"expected call identifiers\");8283 const firstDefinitions = queries.definitionNodesOf(targetCall);84 const secondDefinitions = queries.definitionNodesOf(targetCall);85 const firstMissing = queries.definitionNodesOf(missingCall);86 const secondMissing = queries.definitionNodesOf(missingCall);8788 expect(firstDefinitions).not.toBe(secondDefinitions);89 expect(firstDefinitions[0]).toBe(secondDefinitions[0]);90 expect(firstMissing).toEqual([]);91 expect(secondMissing).toEqual([]);92 expect(resolvedPositions).toEqual([targetCall.getStart(), missingCall.getStart()]);93 });9495 it(\"retains asynchronous definition and callee failures for the turn\", async () => {96 const failure = new Error(\"semantic failure\");97 const ensureFiles = vi.fn(() => Promise.reject(failure));98 const state = { ensureFiles } as unknown as TypeScriptWorkspaceState;99 const queries = new TypeScriptSemanticQueryService(undefined, state);100 const target = identity(\"src/app.ts\", \"target\");101 queries.beginTurn([]);102103 const definitions = queries.findDefinitions(target);104 const callees = queries.findCallees(target);105106 expect(queries.findDefinitions(target)).toBe(definitions);107 expect(queries.findCallees(target)).toBe(callees);108 await expect(definitions).rejects.toBe(failure);109 await expect(callees).rejects.toBe(failure);110 expect(ensureFiles).toHaveBeenCalledTimes(2);111 });112113 it(\"retries synchronous reference discovery failures\", async () => {114 const failure = new Error(\"reference failure\");115 const locateSemanticCopies = vi.fn(() => {116 throw failure;117 });118 const state = { locateSemanticCopies } as unknown as TypeScriptWorkspaceState;119 let referenceSearches = 0;120 const queries = new TypeScriptSemanticQueryService(undefined, state, {121 referenceSearch: () => {122 referenceSearches += 1;123 },124 });125 const target = identity(\"src/app.ts\", \"target\");126 queries.beginTurn([]);127128 await expect(queries.findReferences(target)).rejects.toBe(failure);129 await expect(queries.findReferences(target)).rejects.toBe(failure);130131 expect(locateSemanticCopies).toHaveBeenCalledTimes(2);132 expect(referenceSearches).toBe(2);133 });134135 it(\"preserves the current turn when backend refresh fails\", async () => {136 const failure = new Error(\"refresh failure\");137 let refreshFails = false;138 const state = {139 refresh: vi.fn(() => {140 if (refreshFails) return Promise.reject(failure);141 return Promise.resolve({ added: 0, changed: 0, removed: 0, unchanged: 0 });142 }),143 ensureFiles: vi.fn(() => Promise.resolve()),144 locate: vi.fn(() => []),145 } as unknown as TypeScriptWorkspaceState;146 let definitionSearches = 0;147 const backend = new TypeScriptBackend(new InMemoryFileSystem({}), state, undefined, {148 definitionSearch: () => {149 definitionSearches += 1;150 },151 });152 const snapshot: WorkspaceSnapshot = { root: \"/repo\", files: [] };153 const target = identity(\"src/app.ts\", \"target\");154 await backend.refresh({ snapshot, coverage: \"workspace\" });155 const definitions = await backend.findDefinitions([], target);156 refreshFails = true;157158 await expect(backend.refresh({ snapshot, coverage: \"workspace\" })).rejects.toBe(failure);159160 await expect(backend.findDefinitions([], target)).resolves.toBe(definitions);161 expect(definitionSearches).toBe(1);162 });163164 it(\"clears caches before awaiting project release and rejects at the backend boundary\", async () => {165 const releaseFailure = new Error(\"project release failed\");166 let rejectProjectRelease: ((reason: unknown) => void) | undefined;167 const projectRelease = new Promise<void>((_resolve, reject) => {168 rejectProjectRelease = reject;169 });170 void projectRelease.catch(() => undefined);171 const firstProjectRelease = vi.fn(() => projectRelease);172 const laterProjectRelease = vi.fn();173 const projectGraph = {174 releaseTransientResources: vi.fn(async () => {175 await firstProjectRelease();176 laterProjectRelease();177 }),178 } as unknown as TypeScriptProjectGraph;179 const state = {180 refresh: vi.fn(() => Promise.resolve({ added: 0, changed: 0, removed: 0, unchanged: 0 })),181 ensureFiles: vi.fn(() => Promise.resolve()),182 locate: vi.fn(() => []),183 } as unknown as TypeScriptWorkspaceState;184 let definitionSearches = 0;185 const backend = new TypeScriptBackend(new InMemoryFileSystem({}), state, projectGraph, {186 definitionSearch: () => {187 definitionSearches += 1;188 },189 });190 const snapshot: WorkspaceSnapshot = { root: \"/repo\", files: [] };191 const target = identity(\"src/app.ts\", \"target\");192 await backend.refresh({ snapshot, coverage: \"selection\" });193 const beforeRelease = await backend.findDefinitions([], target);194195 const release = backend.releaseTransientResources();196 let releaseSettled = false;197 void release.then(198 () => {199 releaseSettled = true;200 },201 () => {202 releaseSettled = true;203 },204 );205 const afterRelease = await backend.findDefinitions([], target);206207 expect(afterRelease).not.toBe(beforeRelease);208 expect(definitionSearches).toBe(2);209 expect(projectGraph.releaseTransientResources).toHaveBeenCalledOnce();210 await Promise.resolve();211 expect(releaseSettled).toBe(false);212213 rejectProjectRelease?.(releaseFailure);214 await expect(release).rejects.toBe(releaseFailure);215 expect(firstProjectRelease).toHaveBeenCalledOnce();216 expect(laterProjectRelease).not.toHaveBeenCalled();217 });"
+    },
+    {
+      "summary": "Five previous cases · base L25–207",
+      "text": "Five previous cases · base L25–207 packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.tsa1e325a5ff979bdfa25babc5554621c8c0f20497 · Full captured source 25 it(\"shares one reference search across caller and reference projections\", async () => {26 const fileSystem = new InMemoryFileSystem({27 \"/repo/src/lib.ts\": \"export function target(): void {}\\n\",28 \"/repo/src/app.ts\": [29 'import { target } from \"./lib.js\";',30 \"export function caller(): void { target(); }\",31 \"\",32 ].join(\"\\n\"),33 });34 const referenceSearches: SymbolIdentity[] = [];35 const backend = new TypeScriptBackend(fileSystem, undefined, undefined, {36 referenceSearch: (identity) => referenceSearches.push(identity),37 });38 const files = workspaceFiles(fileSystem, \"src/app.ts\", \"src/lib.ts\");39 const target = identity(\"src/lib.ts\", \"target\");40 await backend.refresh({ snapshot: { root: \"/repo\", files }, coverage: \"workspace\" });4142 await expect(backend.findCallers(files, target)).resolves.toHaveLength(1);43 await expect(backend.findReferences(files, target)).resolves.toHaveLength(2);44 expect(referenceSearches).toEqual([target]);45 });4647 it(\"shares caches within one turn and clears them for the next turn\", async () => {48 const fileSystem = new InMemoryFileSystem({49 \"/repo/src/lib.ts\": \"export function target(): void {}\\n\",50 \"/repo/src/app.ts\": [51 'import { target } from \"./lib.js\";',52 \"export function caller(): void { target(); }\",53 \"\",54 ].join(\"\\n\"),55 });56 let referenceSearches = 0;57 const backend = new TypeScriptBackend(fileSystem, undefined, undefined, {58 referenceSearch: () => {59 referenceSearches += 1;60 },61 });62 const files = workspaceFiles(fileSystem, \"src/app.ts\", \"src/lib.ts\");63 const snapshot: WorkspaceSnapshot = { root: \"/repo\", files };64 const target = identity(\"src/lib.ts\", \"target\");65 await backend.refresh({ snapshot, coverage: \"workspace\" });6667 await backend.findReferences(files, target);68 await backend.findReferences(files, target);69 expect(referenceSearches).toBe(1);7071 await backend.refresh({ snapshot, coverage: \"workspace\" });72 await backend.findReferences(files, target);73 expect(referenceSearches).toBe(2);74 });7576 it(\"resolves each call position once while grouping repeated targets\", async () => {77 const fileSystem = new InMemoryFileSystem({78 \"/repo/src/app.ts\": [79 \"export function target(value: string): string;\",80 \"export function target(value: number): string;\",81 \"export function target(value: string | number): string { return String(value); }\",82 \"export function caller(): string { return `${target(1)}:${target('x')}`; }\",83 \"\",84 ].join(\"\\n\"),85 });86 const resolvedPositions: string[] = [];87 const backend = new TypeScriptBackend(fileSystem, undefined, undefined, {88 callTargetResolution: (relativePath, start) =>89 resolvedPositions.push(`${relativePath}:${start}`),90 });91 const files = workspaceFiles(fileSystem, \"src/app.ts\");92 const caller = identity(\"src/app.ts\", \"caller\");93 await backend.refresh({ snapshot: { root: \"/repo\", files }, coverage: \"workspace\" });9495 const first = await backend.findCallees(files, caller);96 const second = await backend.findCallees(files, caller);9798 expect(first).toBe(second);99 expect(first.map((edge) => edge.symbol.kind.nativeLabel)).toEqual([100 \"function-overload-signature\",101 \"function-overload-signature\",102 ]);103 expect(resolvedPositions).toHaveLength(2);104 expect(new Set(resolvedPositions).size).toBe(2);105 });106107 it(\"queries each declaration position once across diamond graph paths\", async () => {108 const fileSystem = new InMemoryFileSystem({109 \"/repo/src/graph.ts\": [110 \"export function leaf(): void {}\",111 \"export function left(): void { leaf(); }\",112 \"export function right(): void { leaf(); }\",113 \"export function root(): void { left(); right(); }\",114 \"\",115 ].join(\"\\n\"),116 });117 const resolvedPositions: string[] = [];118 const backend = new TypeScriptBackend(fileSystem, undefined, undefined, {119 callTargetResolution: (relativePath, start) =>120 resolvedPositions.push(`${relativePath}:${start}`),121 });122 const files = workspaceFiles(fileSystem, \"src/graph.ts\");123 await backend.refresh({ snapshot: { root: \"/repo\", files }, coverage: \"workspace\" });124 const [root] = await backend.findDefinitions(files, identity(\"src/graph.ts\", \"root\"));125 if (!root) throw new Error(\"expected root declaration\");126127 const paths = await new GraphTraverser({ backend, files, root, depth: 2 }).traverseOutgoing();128129 expect(paths).toHaveLength(2);130 expect(paths.map((path) => path.steps.at(-1)?.symbol.identity)).toEqual([131 identity(\"src/graph.ts\", \"leaf\"),132 identity(\"src/graph.ts\", \"leaf\"),133 ]);134 expect(resolvedPositions).toHaveLength(4);135 expect(new Set(resolvedPositions).size).toBe(4);136 });137138 it(\"rebuilds released fresh semantics once in an unchanged turn\", async () => {139 const fixture = new MutableSemanticFixture();140 mutableFixtures.push(fixture);141 let referenceSearches = 0;142 let semanticReleases = 0;143 let semanticProjectLoads = 0;144 const backend = new TypeScriptBackend(fixture.fileSystem, undefined, undefined, {145 referenceSearch: () => {146 referenceSearches += 1;147 },148 semanticCacheReleased: () => {149 semanticReleases += 1;150 },151 semanticProjectLoaded: () => {152 semanticProjectLoads += 1;153 },154 });155 let snapshot = await fixture.snapshot();156 let files = snapshot.files;157 const stable = identity(\"src/stable.ts\", \"stableTarget\");158 const original = identity(\"src/lib.ts\", \"originalTarget\");159 await backend.refresh({ snapshot, coverage: \"workspace\" });160 const [preparedDeclaration] = await backend.findDefinitions(files, stable);161 const stableFile = files.find((file) => file.relative === \"src/stable.ts\");162 if (!stableFile) throw new Error(\"expected stable source\");163 const preparedEntries = await backend.fileEntries(stableFile);164 await expect(backend.findReferences(files, original)).resolves.toHaveLength(2);165 expect(semanticProjectLoads).toBe(1);166167 fixture.writeConfiguration(\"@fresh\");168 fixture.write(\"src/lib.ts\", \"export function freshTarget(): void {}\\n\");169 fixture.write(170 \"src/app.ts\",171 [172 'import { freshTarget } from \"@fresh\";',173 \"export function caller(): void { freshTarget(); }\",174 \"\",175 ].join(\"\\n\"),176 );177 snapshot = await fixture.snapshot();178 files = snapshot.files;179 await backend.refresh({ snapshot, coverage: \"workspace\" });180181 await expect(182 backend.resolveSymbols(files, \"originalTarget\", { mode: \"exact\" }),183 ).resolves.toEqual([]);184 await expect(backend.findDefinitions(files, stable)).resolves.toContain(preparedDeclaration);185 await expect(backend.fileEntries(stableFile)).resolves.toBe(preparedEntries);186187 const fresh = identity(\"src/lib.ts\", \"freshTarget\");188 const preparedReferences = await backend.findReferences(files, fresh);189 const preparedCallers = await backend.findCallers(files, fresh);190 const preparedCallees = await backend.findCallees(files, fresh);191 expect(semanticProjectLoads).toBe(2);192 expect(referenceSearches).toBe(2);193194 await backend.releaseTransientResources();195 await backend.refresh({ snapshot, coverage: \"workspace\" });196197 expect(semanticReleases).toBe(1);198 expect(semanticProjectLoads).toBe(2);199 await expect(backend.findDefinitions(files, stable)).resolves.toContain(preparedDeclaration);200 await expect(backend.fileEntries(stableFile)).resolves.toBe(preparedEntries);201202 await expect(backend.findReferences(files, fresh)).resolves.toEqual(preparedReferences);203 expect(semanticProjectLoads).toBe(3);204 await expect(backend.findCallers(files, fresh)).resolves.toEqual(preparedCallers);205 await expect(backend.findCallees(files, fresh)).resolves.toEqual(preparedCallees);206 expect(semanticProjectLoads).toBe(3);207 expect(referenceSearches).toBe(3);"
+    },
+    {
+      "summary": "The same five cases after the insertion · head L219–402",
+      "text": "The same five cases after the insertion · head L219–402 packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts64919bcbcf7fcc8202779b78c5f069b24662bb18 · Full captured source 219 it(\"shares one reference search across caller and reference projections\", async () => {220 const fileSystem = new InMemoryFileSystem({221 \"/repo/src/lib.ts\": \"export function target(): void {}\\n\",222 \"/repo/src/app.ts\": [223 'import { target } from \"./lib.js\";',224 \"export function caller(): void { target(); }\",225 \"\",226 ].join(\"\\n\"),227 });228 const referenceSearches: SymbolIdentity[] = [];229 const backend = new TypeScriptBackend(fileSystem, undefined, undefined, {230 referenceSearch: (identity) => referenceSearches.push(identity),231 });232 const files = workspaceFiles(fileSystem, \"src/app.ts\", \"src/lib.ts\");233 const target = identity(\"src/lib.ts\", \"target\");234 await backend.refresh({ snapshot: { root: \"/repo\", files }, coverage: \"workspace\" });235236 await expect(backend.findCallers(files, target)).resolves.toHaveLength(1);237 await expect(backend.findReferences(files, target)).resolves.toHaveLength(2);238 expect(referenceSearches).toEqual([target]);239 });240241 it(\"shares caches within one turn and clears them for the next turn\", async () => {242 const fileSystem = new InMemoryFileSystem({243 \"/repo/src/lib.ts\": \"export function target(): void {}\\n\",244 \"/repo/src/app.ts\": [245 'import { target } from \"./lib.js\";',246 \"export function caller(): void { target(); }\",247 \"\",248 ].join(\"\\n\"),249 });250 let referenceSearches = 0;251 const backend = new TypeScriptBackend(fileSystem, undefined, undefined, {252 referenceSearch: () => {253 referenceSearches += 1;254 },255 });256 const files = workspaceFiles(fileSystem, \"src/app.ts\", \"src/lib.ts\");257 const snapshot: WorkspaceSnapshot = { root: \"/repo\", files };258 const target = identity(\"src/lib.ts\", \"target\");259 await backend.refresh({ snapshot, coverage: \"workspace\" });260261 await backend.findReferences(files, target);262 await backend.findReferences(files, target);263 expect(referenceSearches).toBe(1);264265 await backend.refresh({ snapshot, coverage: \"workspace\" });266 await backend.findReferences(files, target);267 expect(referenceSearches).toBe(2);268 });269270 it(\"resolves each call position once while grouping repeated targets\", async () => {271 const fileSystem = new InMemoryFileSystem({272 \"/repo/src/app.ts\": [273 \"export function target(value: string): string;\",274 \"export function target(value: number): string;\",275 \"export function target(value: string | number): string { return String(value); }\",276 \"export function caller(): string { return `${target(1)}:${target('x')}`; }\",277 \"\",278 ].join(\"\\n\"),279 });280 const resolvedPositions: string[] = [];281 const backend = new TypeScriptBackend(fileSystem, undefined, undefined, {282 callTargetResolution: (relativePath, start) =>283 resolvedPositions.push(`${relativePath}:${start}`),284 });285 const files = workspaceFiles(fileSystem, \"src/app.ts\");286 const caller = identity(\"src/app.ts\", \"caller\");287 await backend.refresh({ snapshot: { root: \"/repo\", files }, coverage: \"workspace\" });288289 const first = await backend.findCallees(files, caller);290 const second = await backend.findCallees(files, caller);291292 expect(first).toBe(second);293 expect(first.map((edge) => edge.symbol.kind.nativeLabel)).toEqual([294 \"function-overload-signature\",295 \"function-overload-signature\",296 ]);297 expect(resolvedPositions).toHaveLength(2);298 expect(new Set(resolvedPositions).size).toBe(2);299 });300301 it(\"queries each declaration position once across diamond graph paths\", async () => {302 const fileSystem = new InMemoryFileSystem({303 \"/repo/src/graph.ts\": [304 \"export function leaf(): void {}\",305 \"export function left(): void { leaf(); }\",306 \"export function right(): void { leaf(); }\",307 \"export function root(): void { left(); right(); }\",308 \"\",309 ].join(\"\\n\"),310 });311 const resolvedPositions: string[] = [];312 const backend = new TypeScriptBackend(fileSystem, undefined, undefined, {313 callTargetResolution: (relativePath, start) =>314 resolvedPositions.push(`${relativePath}:${start}`),315 });316 const files = workspaceFiles(fileSystem, \"src/graph.ts\");317 await backend.refresh({ snapshot: { root: \"/repo\", files }, coverage: \"workspace\" });318 const [root] = await backend.findDefinitions(files, identity(\"src/graph.ts\", \"root\"));319 if (!root) throw new Error(\"expected root declaration\");320321 const paths = await new GraphTraverser({ backend, files, root, depth: 2 }).traverseOutgoing();322323 expect(paths).toHaveLength(2);324 expect(paths.map((path) => path.steps.at(-1)?.symbol.identity)).toEqual([325 identity(\"src/graph.ts\", \"leaf\"),326 identity(\"src/graph.ts\", \"leaf\"),327 ]);328 expect(resolvedPositions).toHaveLength(4);329 expect(new Set(resolvedPositions).size).toBe(4);330 });331332 it(\"rebuilds released fresh semantics once in an unchanged turn\", async () => {333 const fixture = new MutableSemanticFixture();334 mutableFixtures.push(fixture);335 let referenceSearches = 0;336 let semanticReleases = 0;337 let semanticProjectLoads = 0;338 const backend = new TypeScriptBackend(fixture.fileSystem, undefined, undefined, {339 referenceSearch: () => {340 referenceSearches += 1;341 },342 semanticCacheReleased: () => {343 semanticReleases += 1;344 },345 semanticProjectLoaded: () => {346 semanticProjectLoads += 1;347 },348 });349 let snapshot = await fixture.snapshot();350 let files = snapshot.files;351 const stable = identity(\"src/stable.ts\", \"stableTarget\");352 const original = identity(\"src/lib.ts\", \"originalTarget\");353 await backend.refresh({ snapshot, coverage: \"workspace\" });354 const [preparedDeclaration] = await backend.findDefinitions(files, stable);355 const stableFile = files.find((file) => file.relative === \"src/stable.ts\");356 if (!stableFile) throw new Error(\"expected stable source\");357 const preparedEntries = await backend.fileEntries(stableFile);358 await expect(backend.findReferences(files, original)).resolves.toHaveLength(2);359 expect(semanticProjectLoads).toBe(1);360361 fixture.writeConfiguration(\"@fresh\");362 fixture.write(\"src/lib.ts\", \"export function freshTarget(): void {}\\n\");363 fixture.write(364 \"src/app.ts\",365 [366 'import { freshTarget } from \"@fresh\";',367 \"export function caller(): void { freshTarget(); }\",368 \"\",369 ].join(\"\\n\"),370 );371 snapshot = await fixture.snapshot();372 files = snapshot.files;373 await backend.refresh({ snapshot, coverage: \"workspace\" });374375 await expect(376 backend.resolveSymbols(files, \"originalTarget\", { mode: \"exact\" }),377 ).resolves.toEqual([]);378 await expect(backend.findDefinitions(files, stable)).resolves.toContain(preparedDeclaration);379 await expect(backend.fileEntries(stableFile)).resolves.toBe(preparedEntries);380381 const fresh = identity(\"src/lib.ts\", \"freshTarget\");382 const preparedReferences = await backend.findReferences(files, fresh);383 const preparedCallers = await backend.findCallers(files, fresh);384 const preparedCallees = await backend.findCallees(files, fresh);385 expect(semanticProjectLoads).toBe(2);386 expect(referenceSearches).toBe(2);387388 await backend.releaseTransientResources();389 await backend.refresh({ snapshot, coverage: \"workspace\" });390391 expect(semanticReleases).toBe(1);392 expect(semanticProjectLoads).toBe(2);393 await expect(backend.findDefinitions(files, stable)).resolves.toContain(preparedDeclaration);394 await expect(backend.fileEntries(stableFile)).resolves.toBe(preparedEntries);395396 await expect(backend.findReferences(files, fresh)).resolves.toEqual(preparedReferences);397 expect(semanticProjectLoads).toBe(3);398 await expect(backend.findCallers(files, fresh)).resolves.toEqual(preparedCallers);399 await expect(backend.findCallees(files, fresh)).resolves.toEqual(preparedCallees);400 expect(semanticProjectLoads).toBe(3);401 expect(referenceSearches).toBe(3);402 });"
+    }
+  ],
+  "controls": [
+    {
+      "tag": "A",
+      "text": "Skip to content",
+      "attrs": {
+        "href": "#main"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "TypeScriptBackend; refresh / release. Open explanation.",
+      "attrs": {
+        "data-exit": "",
+        "id": "ownership-before-backend-exit",
+        "href": "#detail-d05"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "TypeScript query algorithms. Open explanation.",
+      "attrs": {
+        "data-exit": "",
+        "id": "ownership-before-algorithms-exit",
+        "href": "#detail-d07"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "Six Maps + manual clearing. Open explanation.",
+      "attrs": {
+        "data-exit": "",
+        "id": "ownership-before-maps-exit",
+        "href": "#detail-d02"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "TypeScriptBackend; refresh / await release. Open explanation.",
+      "attrs": {
+        "data-exit": "",
+        "id": "ownership-after-backend-exit",
+        "href": "#detail-d06"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "TypeScript query algorithms. Open explanation.",
+      "attrs": {
+        "data-exit": "",
+        "id": "ownership-after-algorithms-exit",
+        "href": "#detail-d07"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "Six typed handle references. Open explanation.",
+      "attrs": {
+        "data-exit": "",
+        "id": "ownership-after-handles-exit",
+        "href": "#detail-d02"
+      }
+    },
+    {
+      "tag": "a",
+      "text": "TurnScopedCacheScope. Open explanation.",
+      "attrs": {
+        "data-exit": "",
+        "id": "ownership-after-scope-exit",
+        "href": "#detail-d01"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "See how it works ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "d01-exit",
+        "href": "#detail-d01"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Reason source ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "d01-reason",
+        "href": "#ev-d01"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "See how it works ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "d02-exit",
+        "href": "#detail-d02"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Reason source ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "d02-reason",
+        "href": "#ev-d02"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "See how it works ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "d03-exit",
+        "href": "#detail-d03"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Reason source ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "d03-reason",
+        "href": "#ev-d03"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "See how it works ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "d04-exit",
+        "href": "#detail-d04"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Reason source ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "d04-reason",
+        "href": "#ev-d04"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "See how it works ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "d05-exit",
+        "href": "#detail-d05"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Reason source ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "d05-reason",
+        "href": "#ev-d05"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "See how it works ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "d06-exit",
+        "href": "#detail-d06"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Reason source ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "d06-reason",
+        "href": "#ev-d06"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "See how it works ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "d07-exit",
+        "href": "#detail-d07"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Reason source ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "d07-reason",
+        "href": "#ev-d07"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "See how it works ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "d08-exit",
+        "href": "#detail-d08"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "See how it works ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "d09-exit",
+        "href": "#detail-d09"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "See how it works ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "d10-exit",
+        "href": "#detail-d10"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Reason source ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "d10-reason",
+        "href": "#ev-d10"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Continue through the mechanisms ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "linear-start",
+        "href": "#detail-d01"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "← Return to decision 01",
+      "attrs": {
+        "data-return": "",
+        "href": "#d01"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Follow the reusable scope ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "detail-d01-cross",
+        "href": "#detail-d09"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Read the source evidence ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "mechanism-d01-evidence",
+        "href": "#ev-d01"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Next: Keep six independent caches ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "next-d01",
+        "href": "#detail-d02"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "← Return to decision 02",
+      "attrs": {
+        "data-return": "",
+        "href": "#d02"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Read the source evidence ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "mechanism-d02-evidence",
+        "href": "#ev-d02"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Next: Return the exact cached value ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "next-d02",
+        "href": "#detail-d03"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "← Return to decision 03",
+      "attrs": {
+        "data-return": "",
+        "href": "#d03"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Separate cache identity from projections ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "detail-d03-cross",
+        "href": "#detail-d07"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Read the source evidence ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "mechanism-d03-evidence",
+        "href": "#ev-d03"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Next: Keep two different failure paths ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "next-d03",
+        "href": "#detail-d04"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "← Return to decision 04",
+      "attrs": {
+        "data-return": "",
+        "href": "#d04"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Read the source evidence ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "mechanism-d04-evidence",
+        "href": "#ev-d04"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Next: Start a turn after refresh succeeds ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "next-d04",
+        "href": "#detail-d05"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "← Return to decision 05",
+      "attrs": {
+        "data-return": "",
+        "href": "#d05"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Read the source evidence ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "mechanism-d05-evidence",
+        "href": "#ev-d05"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Next: Clear immediately; make release wait ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "next-d05",
+        "href": "#detail-d06"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "← Return to decision 06",
+      "attrs": {
+        "data-return": "",
+        "href": "#d06"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "What clearing does to existing handles ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "detail-d06-cross",
+        "href": "#detail-d09"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Read the source evidence ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "mechanism-d06-evidence",
+        "href": "#ev-d06"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Next: Keep TypeScript's query work ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "next-d06",
+        "href": "#detail-d07"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "← Return to decision 07",
+      "attrs": {
+        "data-return": "",
+        "href": "#d07"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Read the source evidence ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "mechanism-d07-evidence",
+        "href": "#ev-d07"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Next: Accept files instead of a snapshot ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "next-d07",
+        "href": "#detail-d08"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "← Return to decision 08",
+      "attrs": {
+        "data-return": "",
+        "href": "#d08"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Read the source evidence ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "mechanism-d08-evidence",
+        "href": "#ev-d08"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Next: Compose a scope that can be reused ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "next-d08",
+        "href": "#detail-d09"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "← Return to decision 09",
+      "attrs": {
+        "data-return": "",
+        "href": "#d09"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Read the source evidence ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "mechanism-d09-evidence",
+        "href": "#ev-d09"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Next: Add tests around preserved contracts ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "next-d09",
+        "href": "#detail-d10"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "← Return to decision 10",
+      "attrs": {
+        "data-return": "",
+        "href": "#d10"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Read the source evidence ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "mechanism-d10-evidence",
+        "href": "#ev-d10"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "Continue into source evidence ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "next-d10",
+        "href": "#ev-d01"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "← Return to the mechanism",
+      "attrs": {
+        "data-return": "",
+        "href": "#detail-d01"
+      }
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "The spec assigns language-independent lifetime to core · head L53–64",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Core exports the scope and handle type · head L146–154",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "The complete new core implementation · head L1–46",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "The service constructs the scope and starts turns · head L29–66",
+      "attrs": {}
+    },
+    {
+      "tag": "A",
+      "text": "Next evidence: decision 02 ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "evidence-next-d01",
+        "href": "#ev-d02"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "← Return to the mechanism",
+      "attrs": {
+        "data-return": "",
+        "href": "#detail-d02"
+      }
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "PR reason: independent key and value spaces · bundle L78–78",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Six handle declarations · head L29–55",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "A new Map for each created handle · head L9–33",
+      "attrs": {}
+    },
+    {
+      "tag": "A",
+      "text": "Next evidence: decision 03 ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "evidence-next-d02",
+        "href": "#ev-d03"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "← Return to the mechanism",
+      "attrs": {
+        "data-return": "",
+        "href": "#detail-d03"
+      }
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "PR reason: undefined is a valid cached value · bundle L79–79",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "The complete getOrCreate body · head L12–19",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Assertions for exact values, undefined and isolation · head L6–27",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Previous formatted identity key · base L53–65",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Retained formatted identity key · head L68–77",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Previous file-position key · base L131–137",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Retained file-position key · head L134–140",
+      "attrs": {}
+    },
+    {
+      "tag": "A",
+      "text": "Next evidence: decision 04 ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "evidence-next-d03",
+        "href": "#ev-d04"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "← Return to the mechanism",
+      "attrs": {
+        "data-return": "",
+        "href": "#detail-d04"
+      }
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "PR intent: preserve identities and failure behavior · bundle L1–3",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "A throwing factory never reaches set · head L14–19",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Reference discovery is evaluated before Promise.resolve · head L163–177",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Previous reference caching uses the same evaluation order · base L161–174",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Assertions for cached rejection and synchronous retry · head L55–74",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "TypeScript-level failure characterizations · head L95–133",
+      "attrs": {}
+    },
+    {
+      "tag": "A",
+      "text": "Next evidence: decision 05 ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "evidence-next-d04",
+        "href": "#ev-d05"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "← Return to the mechanism",
+      "attrs": {
+        "data-return": "",
+        "href": "#detail-d05"
+      }
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "PR reason: preserve the current successful turn on failed refresh · bundle L81–81",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Before: beginTurn follows the awaited refresh · base L79–85",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "After: same order, files-only input · head L79–85",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "New failed-refresh assertion · head L135–162",
+      "attrs": {}
+    },
+    {
+      "tag": "A",
+      "text": "Next evidence: decision 06 ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "evidence-next-d05",
+        "href": "#ev-d06"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "← Return to the mechanism",
+      "attrs": {
+        "data-return": "",
+        "href": "#detail-d06"
+      }
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "PR reason: clear before pending or rejecting release · bundle L80–80",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Before: project release is not awaited · base L125–128",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "After: clear, then await project release · head L129–132",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Before: backend does not chain the service release · base L87–89",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "After: backend awaits service release · head L87–89",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "The stack's unchanged-failure-path requirement · head L17–28",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Controlled pending release, cache refill, then rejection · head L164–217",
+      "attrs": {}
+    },
+    {
+      "tag": "A",
+      "text": "Next evidence: decision 07 ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "evidence-next-d06",
+        "href": "#ev-d07"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "← Return to the mechanism",
+      "attrs": {
+        "data-return": "",
+        "href": "#detail-d07"
+      }
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "PR intent: preserve all six algorithms · bundle L1–3",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "The spec reserves semantic query bodies for TypeScript · head L53–64",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Reference projections and shared reference locations · head L80–114",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Position caching followed by node rehydration · head L134–161",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Empty result caching and fresh array assertions · head L61–93",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Retained shared-reference-search test · head L219–239",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "The miss observer remains in the factory · head L68–77",
+      "attrs": {}
+    },
+    {
+      "tag": "A",
+      "text": "Next evidence: decision 08 ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "evidence-next-d07",
+        "href": "#ev-d08"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "← Return to the mechanism",
+      "attrs": {
+        "data-return": "",
+        "href": "#detail-d08"
+      }
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Public-surface section lists the change · bundle L66–74",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Before: full WorkspaceSnapshot · base L49–52",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "After: readonly WorkspaceFile[] · head L63–66",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Updated production call · head L79–85",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "SemanticQueryService is exported from the package · head L10–16",
+      "attrs": {}
+    },
+    {
+      "tag": "A",
+      "text": "Next evidence: decision 09 ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "evidence-next-d08",
+        "href": "#ev-d09"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "← Return to the mechanism",
+      "attrs": {
+        "data-return": "",
+        "href": "#detail-d09"
+      }
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Public API, persistent handle registry, clearing implementation · head L1–46",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Composition at the TypeScript service · head L29–35",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "The spec describes a shared base · head L53–63",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "The same handles work after repeated release · head L29–52",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Old promise settles without replacing the new turn entry · head L76–91",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "A query can refill during pending release · head L197–217",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Release does not reset the retained files · head L129–132",
+      "attrs": {}
+    },
+    {
+      "tag": "A",
+      "text": "Next evidence: decision 10 ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "evidence-next-d09",
+        "href": "#ev-d10"
+      }
+    },
+    {
+      "tag": "A",
+      "text": "← Return to the mechanism",
+      "attrs": {
+        "data-return": "",
+        "href": "#detail-d10"
+      }
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Commit subjects characterize identities and specify lifecycle/release · bundle L1–22",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Four new core cases · head L1–92",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Six new TypeScript cases · head L29–217",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "Five previous cases · base L25–207",
+      "attrs": {}
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "The same five cases after the insertion · head L219–402",
+      "attrs": {}
+    },
+    {
+      "tag": "A",
+      "text": "Return to the whole change ↗",
+      "attrs": {
+        "data-exit": "",
+        "id": "evidence-next-d10",
+        "href": "#overview"
+      }
+    }
+  ]
+}
