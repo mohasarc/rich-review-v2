@@ -139,3 +139,13 @@ BUILD OK stack-head
 - 2026-09-13 03:57:23 +03: COMMIT OK 15-message-choreography-sim: [main 860ece6] Add experiment 15 message-choreography-sim
 - 2026-09-13 03:57:23 +03: START 19-type-level-only attempt 1 via codex, pid 80360
 - 2026-09-13 03:58:23 +03: FINISH 14-outsider-persona via codex, exit 0, README present
+- 2026-09-13 03:58:23 +03: COMMIT OK 14-outsider-persona: [main eec6016] Add experiment 14 outsider-persona
+- 2026-09-13 03:58:23 +03: START 20-contract-table attempt 1 via claude-opus, pid 81152
+- 2026-09-13 03:58:33 +03: README MISSING 20-contract-table after worker exit 1
+- 2026-09-13 03:58:33 +03: REQUEUE 20-contract-table after attempt 1: worker exited 1 without README
+- 2026-09-13 03:58:33 +03: START 20-contract-table attempt 2 via claude-opus, pid 81253
+- 2026-09-13 03:58:43 +03: README MISSING 20-contract-table after worker exit 1
+- 2026-09-13 03:58:43 +03: REQUEUE 20-contract-table after attempt 2: worker exited 1 without README
+- 2026-09-13 03:58:43 +03: START 20-contract-table attempt 3 via codex, pid 81344
+- 2026-09-13 03:59:29 +03: MONITOR OK supervisor=1153, finished=15, running=5, queued=22, dirty-worktrees=0, missing-readmes=0, free-disk=33.0GiB
+- 2026-09-13 04:01:24 +03: FINISH 16-drag-the-box via codex, exit 0, README present
