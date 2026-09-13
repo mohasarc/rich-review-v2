@@ -121,11 +121,11 @@ def generate_more() -> None:
         critique_hint = section(critique.read_text(errors="replace"), "What I would do next").replace("\n", " ").strip() or critique_hint
     starts = next_number()
     generated = [
-        ("follow-next", "pr-127", f"Try this earlier next step: {suggestions[0][1]}", "free", f"follows {suggestions[0][0]}'s next step"),
-        ("recombine-angles", "pr-148", f"Combine these without flattening the pyramid: {choices[0][1]} + {choices[1][1]}", "page", f"recombines choices from {choices[0][0]} and {choices[1][0]}"),
-        ("angle-new-subject", "stack", "Apply the strongest small-change worked-example style to the full stack; use several linked small pyramids", "page", "moves a strong small-PR angle to the stack"),
-        ("critique-response", "pr-131", f"Respond directly to this latest critique direction: {critique_hint}", "free", f"responds to {critique_source}"),
-        ("be-weird", "any", "Invent a physical or sensory interaction no finished experiment used; keep the top layer complete", "free", "one-in-five be-weird slot"),
+        ("weird-follow-next", "pr-127", f"Turn this earlier next step into an unfamiliar visual or physical instrument: {suggestions[0][1]}", "free", f"weirdly follows {suggestions[0][0]}'s next step"),
+        ("compound-visual-grammar", "pr-148", f"Recombine these through one visual grammar where color, shape, and position carry different facts: {choices[0][1]} + {choices[1][1]}", "page", f"visually recombines choices from {choices[0][0]} and {choices[1][0]}"),
+        ("library-rescue", "stack", "Find a weak hand-built diagram in an earlier experiment and rebuild the underlying explanation with a mature layout, rendering, animation, or simulation library; make the representation materially different", "page", "tests whether established tooling improves a weak diagram"),
+        ("science-gets-weird", "pr-131", f"Use the science-chapter pattern—specimen, controlled experiment, prediction, observed result—but express it through a strange spatial, sensory, or game-like form. Consider this critique direction: {critique_hint}", "free", f"combines textbook pedagogy with {critique_source}"),
+        ("be-weirder", "any", "Invent a representational grammar no finished experiment uses. Compound at least three higher-level concepts through color, shape, position, motion, sound, texture, or interaction. Prefer a mature library over hand-built diagram geometry.", "free", "dedicated weird-interface slot"),
     ]
     for offset, (slug, subjects, angle, kind, reason) in enumerate(generated):
         number = starts + offset
