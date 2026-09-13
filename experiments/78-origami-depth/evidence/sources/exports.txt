@@ -1,0 +1,166 @@
+export type {
+  SymbolRole,
+  SymbolKind,
+  LineRange,
+  Header,
+  ResultWithDiagnostics,
+  ResolveResult,
+  DefinitionResult,
+} from "./intermediate-representation/types.js";
+export type {
+  FoldOverviewNode,
+  OverviewFileEntries,
+  OverviewNode,
+  OverviewNodeBase,
+  ReExportOverviewNode,
+  SymbolOverviewNode,
+} from "./intermediate-representation/overview-tree.js";
+export { OverviewTree } from "./intermediate-representation/overview-tree.js";
+export type {
+  OverviewExpansionCandidate,
+  OverviewExpansionRequest,
+  OverviewExpansionResult,
+} from "./overview/overview-expansion-result.js";
+export {
+  AmbiguousLineTargetError,
+  AmbiguousOverviewError,
+  AmbiguousOverviewTargetError,
+  InvalidOverviewExpansionRequestError,
+  OverviewTargetNotFoundError,
+} from "./overview/errors.js";
+export type { ExpandOverviewArgs } from "./overview/overview-expander.js";
+export { OverviewExpander } from "./overview/overview-expander.js";
+export type {
+  NavigationDiagnosticSeverity,
+  NavigationDiagnostic,
+  DiagnosticSink,
+} from "./diagnostics/navigation-diagnostic.js";
+export { CollectingDiagnosticSink } from "./diagnostics/navigation-diagnostic.js";
+export type {
+  SymbolPathSegment,
+  SymbolIdentity,
+} from "./intermediate-representation/symbol-identity.js";
+export type {
+  ReferenceKind,
+  SymbolReference,
+  RefsResult,
+} from "./intermediate-representation/references.js";
+export type { SourceMatch } from "./intermediate-representation/source-match.js";
+export type { CallTargetResolution } from "./intermediate-representation/call-target.js";
+export type { HistoryEntry, RecentHistoryQuery, GitHistory } from "./git/git-history.js";
+export type {
+  EdgeConfidence,
+  CallSite,
+  CallEdge,
+} from "./intermediate-representation/call-edge.js";
+export type { GraphPathStep, GraphPath } from "./graph/graph-path.js";
+export { DEFAULT_GRAPH_DEPTH, MAX_GRAPH_DEPTH } from "./graph/graph-path.js";
+export { GraphDepthExceededError, InvalidGraphRequestError } from "./graph/errors.js";
+export type { GraphTraverserArgs } from "./graph/graph-traverser.js";
+export { GraphTraverser } from "./graph/graph-traverser.js";
+export type {
+  GraphDirection,
+  GraphDirectionPage,
+  GraphResult,
+} from "./intermediate-representation/graph-result.js";
+export type { BuildGraphResultArgs } from "./intermediate-representation/graph-result-builder.js";
+export { GraphResultBuilder } from "./intermediate-representation/graph-result-builder.js";
+export type { BuildRefsResultArgs } from "./intermediate-representation/refs-result-builder.js";
+export { RefsResultBuilder } from "./intermediate-representation/refs-result-builder.js";
+export type {
+  CappedCertainCallEdges,
+  ContextReferenceSummary,
+  ContextResult,
+} from "./intermediate-representation/context-result.js";
+export { DEFAULT_CONTEXT_CAP } from "./intermediate-representation/context-result.js";
+export type { BuildContextResultArgs } from "./intermediate-representation/context-result-builder.js";
+export { ContextResultBuilder } from "./intermediate-representation/context-result-builder.js";
+export type { PageRequest, Page } from "./pagination/paginator.js";
+export { DEFAULT_PAGE_SIZE, Paginator } from "./pagination/paginator.js";
+export { InvalidPageRequestError, PageOutOfRangeError } from "./pagination/errors.js";
+export { isPositiveInteger } from "./validation/is-positive-integer.js";
+export { InvalidRegexError, compileRegex } from "./validation/compile-regex.js";
+export {
+  InvalidSymbolIdError,
+  SEGMENT_SEPARATOR,
+  formatSymbolIdentity,
+  formatSymbolPath,
+  parseSegment,
+} from "./intermediate-representation/canonical-identity.js";
+export type { SymbolTargetPattern } from "./target/symbol-target-pattern.js";
+export { InvalidSymbolTargetError, SymbolTargetGrammar } from "./target/symbol-target-pattern.js";
+export type { SymbolTargetRequest } from "./target/symbol-target-request.js";
+export {
+  SymbolTargetRequestMatcher,
+  SymbolTargetRequestParser,
+} from "./target/symbol-target-request.js";
+export type {
+  ResolveSymbolTargetArgs,
+  ResolvedSymbolTarget,
+} from "./target/symbol-target-resolver.js";
+export { SymbolTargetResolver } from "./target/symbol-target-resolver.js";
+export type { SymbolTargetCandidate } from "./target/symbol-target-result.js";
+export {
+  AmbiguousSymbolTargetError,
+  SymbolTargetLineMismatchError,
+  SymbolTargetNotFoundError,
+} from "./target/symbol-target-result.js";
+export { InvalidSymbolTargetRequestError } from "./target/invalid-symbol-target-request-error.js";
+export { splitHeaderLines } from "./intermediate-representation/split-header-lines.js";
+export { assignDisambiguators } from "./intermediate-representation/assign-disambiguators.js";
+export type { FileMetadata, FileSystem } from "./workspace/file-system.js";
+export { NodeFileSystem } from "./workspace/node-file-system.js";
+export { WorkspaceSourceCache } from "./workspace/workspace-source-cache.js";
+export { ProjectGraph, ProjectInputCollector } from "./workspace/project-graph.js";
+export type {
+  ParsedProjectConfiguration,
+  PreparedProjectGraph,
+  ProjectConfigurationMembership,
+  ProjectGraphPreparationRequest,
+  ProjectGraphRefreshSummary,
+  ProjectInput,
+  ProjectInputObservation,
+  ProjectWithTransientResources,
+} from "./workspace/project-graph.js";
+export type {
+  ResolvedPath,
+  Workspace,
+  WorkspaceFile,
+  WorkspaceSnapshot,
+} from "./workspace/workspace.js";
+export { createWorkspace } from "./workspace/workspace.js";
+export { WorkspaceCatalog } from "./workspace/workspace-catalog.js";
+export { InMemoryFileSystem } from "./workspace/in-memory/in-memory-file-system.js";
+export type {
+  BackendRefreshCoverage,
+  BackendRefreshRequest,
+  BackendRefreshSummary,
+  LanguageBackend,
+  ResolveSymbolsMode,
+  ResolveSymbolsOptions,
+} from "./backend/language-backend.js";
+export type {
+  IndexedBackendDeclaration,
+  RevisionedBackendFileChange,
+  RevisionedBackendPreparationRequest,
+  RevisionedBackendPreparedFile,
+} from "./backend/revisioned-backend-state.js";
+export {
+  RevisionedBackendPreparation,
+  RevisionedBackendState,
+} from "./backend/revisioned-backend-state.js";
+export { TurnScopedCacheScope, type TurnScopedCache } from "./backend/turn-scoped-cache-scope.js";
+export { BackendRouter } from "./backend/backend-router.js";
+export { UserFacingError } from "./errors.js";
+export {
+  AmbiguousSymbolError,
+  NoSupportedFilesError,
+  SymbolNotFoundError,
+  UnsupportedFileError,
+} from "./backend/errors.js";
+export {
+  FileNotFoundError,
+  NestedWorkspacePathError,
+  OutsideWorkspaceError,
+} from "./workspace/errors.js";
+export { DirectoryInputError } from "./workspace/errors.js";
