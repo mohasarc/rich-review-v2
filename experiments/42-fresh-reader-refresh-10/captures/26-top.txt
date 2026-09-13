@@ -1,0 +1,405 @@
+Skip the analogy
+FIELD MANUAL / 26
+Whole change
+Mechanism
+Evidence
+symnav · PR 127
+
+SCOPE SEMANTIC CACHES TO ONE TURN
+
+Six drawers.
+One clearing handle.
+127
+
+6 FILES
++391 / −67
+
+Core takes over the lifetime of six semantic caches. TypeScript keeps the queries and chooses when to clear; the backend now waits for project release to finish.
+
+LOSSY ANALOGY · POST OFFICE A drawer is a cache, a ticket is a stored value or promise. No mail delivery is being modeled.
+
+BEFORE TypeScript counter
+
+Same query clerk
+query service · knows symbol lookups
+definitions
+↧
+references
+↧
+call targets
+↧
+callers
+↧
+callees
+↧
+positions
+↧
+
+The clerk empties
+all six by hand.
+
+BACKEND RELEASE · ARCHIVE = PROJECT GRAPH
+empty → tell archive → return
+archive’s promise is not passed back
+
+AFTER TypeScript counter
+
+Same query clerk
+query service · same lookup routines
+definitions
+—
+references
+—
+call targets
+—
+callers
+—
+callees
+—
+positions
+—
+↳ one core-made clearing handle
+
+Still six drawers.
+Empty them together.
+
+BACKEND RELEASE · ARCHIVE = PROJECT GRAPH
+empty → tell archive → wait
+finish or failure reaches the backend
+
+Where the picture breaks: clearing removes cache entries, not work already running. A caller can still hold an old promise. The counter is not locked during release, so a later query can refill a drawer.
+
+01 / THE WHOLE CHANGE
+ALL DECISIONS BEFORE THE DETAIL
+Eight things to carry away.
+
+Stated = a reason exists in the supplied PR or plan. Unexplained = the choice is present, but no reason was found in the inspected inputs.
+
+1
+Move the clearing mechanism into core.
+STATED
+
+The language-neutral scope is reusable. Each TypeScript service still constructs and owns its own scope; algorithms, source cache and project graph stay in their existing roles.
+
+Package & instance boundaries ↘
+2
+Keep six independent address spaces.
+STATED
+
+One scope, six typed handles, one map per handle. Existing keys and value types stay separate; a shared key never makes two query kinds share an entry.
+
+Open all six drawers ↘
+3
+Keep the exact entries and failure behavior.
+STATED
+
+Reuse values and promises, including empties; the new generic primitive also accepts undefined. Rejected promises stay cached; synchronous factory throws are retried. Reference and position locations are still rehydrated on access.
+
+Tickets, failures & projections ↘
+4
+Finish refresh before starting a turn.
+STATED
+
+Successful refresh clears all six, even for unchanged files. A failed refresh never reaches that clearing step, preserving the current semantic-cache turn. This ordering already existed.
+
+Replay success or failure ↘
+5
+Clear first; await project release next.
+STATED
+
+Clearing stays synchronous. The service now returns a promise and the backend awaits it, so a pending or rejected graph release reaches the caller. The graph’s existing release order is unchanged.
+
+Replay the changed barrier ↘
+6
+Clearing is reusable, not terminal.
+UNEXPLAINED
+
+No turn token, cancellation, closed flag or query lock. Both signals empty the same registered handles; repeated clearing is allowed. Old promises can settle without replacing new entries, and queries can refill during release.
+
+The analogy’s limits ↘
+7
+Expose a small cache API; pass fewer inputs.
+UNEXPLAINED
+
+Core exports the scope and lookup-only handle type. Handles expose no clearing operation. The service’s beginTurn takes a file list instead of a full snapshot; this is documented without a separate rationale.
+
+Exact public signatures ↘
+8
+Characterize, then extract.
+STATED
+
+Four new core tests and six new service tests pin the preservation contract. Five previous service tests remain with their assertions intact. The new pending/rejected-release case uses a graph test double; the real fixture also remains.
+
+Test scope & source receipts ↘
+
+You have the complete shape. Below: the same decisions, with the drawers open.
+
+02 / MECHANISM
+↑ Back to decision 1
+The new boundary is in the code.
+
+Core is a library package. Nothing moves to a separate process.
+
+@symnav/backend-typescript
+TypeScriptBackend
+refresh succeeds → beginTurn
+release → await service
+↓ calls
+TypeScriptSemanticQueryService
+six query routines · existing keys · projections
+one scope instance + six handles
+files + workspace state + project graph references
+constructs & calls →
+clearing implementation
+crosses this boundary
+was six manual clears
+inside the service
+@symnav/core
+TurnScopedCacheScope
+registry of clearable handles
+beginTurn / release → clear every handle
+↓ creates & retains
+TurnScopedCacheHandle × 6
+private Map<Key, Value>
+getOrCreate · internal clear
+
+New export: scope + public handle interface.
+
+INSTANCE LENS
+one backend
+owns →
+one query service
+owns →
+one core scope
+owns →
+six handles
+
+Stated reason: the architecture spec assigns language-neutral lifecycle to core and semantic query bodies to TypeScript.
+
+Read the plan
+See construction
+Before
+DECISION 2 / ISOLATION
+↑ Back to the whole change
+Same address, different drawer.
+
+LOSSY ANALOGY Each drawer holds many keyed tickets. Six drawers do not mean six total entries.
+
+01
+Definitions
+↗
+02
+References
+↗
+03
+Call targets
+↗
+04
+Callers
+↗
+05
+Callees
+↗
+06
+Positions
+↗
+
+DEFINITIONSBYIDENTITY
+
+Where is this symbol defined?
+KEY
+formatSymbolIdentity(identity)
+STORED ENTRY
+Promise<readonly SymbolOverviewNode[]>
+ON REPEAT
+The service returns the same stored promise.
+
+findDefinitions still runs in TypeScript. Its observer fires inside the factory, so a hit does not repeat the search.
+
+Inspect this lookup ↗
+
+Stated reason: the PR rejects one shared map because the queries have independent key and value spaces. Callers and references may reuse the internal reference lookup without merging their caches.
+
+Reason in PR
+All six types
+DECISION 3 / IDENTITY & FAILURE
+↑ Back to the whole change
+Keep the ticket exactly as received.
+
+LOSSY ANALOGY A promise is a claim ticket, not the parcel it may eventually produce.
+
+key present?
+yes →
+return stored value
+no ↓
+call factory
+then →
+store exact return value
+WHAT OCCUPIES A CACHE ENTRY
+Factory behavior	What the handle retains	Next lookup for that key
+Returns an object or array	The same object, including an empty array	Same identity; factory is skipped
+Returns undefined	A present entry whose value is undefined	Same value; Map.has prevents a repeat call
+Returns a promise that rejects	That exact promise, still cached after rejection	Same rejection; no automatic retry
+Throws before returning a value	No entry: execution never reaches set	The factory is called again
+
+The undefined row describes the new generic core contract. The six TypeScript caches store promises or arrays; this PR does not turn a previously uncached TypeScript undefined result into a hit.
+
+A stored location is not a stored live node.
+
+Position definitions keep location records, including an empty list, then find nodes again for every access. Reference lookups similarly share location work while building reference projections per call.
+
+cached locations
+→
+current node lookup
+→
+new output array
+
+Exact identity applies to the cached entry. It does not promise that every public async wrapper or projected result returns the same promise or array.
+
+Stated reason: preserve the existing algorithms, identities and failure behavior. The PR specifically chooses Map.has because undefined is a valid cached value.
+
+Lookup implementation
+Location projections
+Failure assertions
+DECISIONS 4 + 5 / THE TWO BOUNDARIES
+↑ Back to the whole change
+When does the handle get pulled?
+A
+Refresh
+
+source-cache refresh → graph refresh for workspace coverage → await workspace-state refresh → beginTurn(files)
+
+Failure before beginTurn → keep current cache entries.
+
+B
+Release
+
+clear every handle immediately → await project graph release → backend resolves or rejects
+
+No wait before clearing. No cache restoration on rejection.
+
+“Preserve the turn” means the semantic cache and service file-list handoff. It is not a claim that every earlier refresh side effect is rolled back.
+
+A little counter rehearsal
+
+ILLUSTRATIVE MODEL · NOT RUNTIME EXECUTION
+
+Replay
+Successful refresh, unchanged files
+Failed refresh
+Project release is pending, then finishes
+Project release is pending, then rejects
+Old promise settles after a new turn
+
+Drawers are compressed into one ticket slot. Pending graph release is deliberately held open, as in the added test double. These are event steps, not elapsed-time measurements.
+
+← Previous
+
+1 / 4 · A completed refresh has established the current turn.
+
+Next →
+BEFORE
+TypeScript clears maps
+P1 · current ticket
+PROJECT GRAPH
+ready
+BACKEND CALL
+no operation pending
+AFTER
+Core scope clears handles
+P1 · current ticket
+PROJECT GRAPH
+ready
+BACKEND CALL
+no operation pending
+
+Both versions already reuse entries within a turn. This PR extracts the clearing mechanism.
+
+Backend after
+Backend before
+Service after
+Service before
+
+Stated reasons: failed refresh must preserve the last successful turn; released entries must be unavailable through the cache while project release is pending or rejecting.
+
+Reasons in PR
+Boundary tests
+Unchanged graph release order
+
+The inherited graph releases configured projects in order, awaiting returned promises, then the inferred project. This PR connects that completion to the backend; the concrete TypeScript project cleanup itself is synchronous.
+
+DECISION 6 / LIMITS OF THE PICTURE
+↑ Back to the whole change
+An empty drawer is not a closed counter.
+No cancellation
+
+Clearing drops the map’s reference. An old promise can still settle for its existing caller. The cache installs no settlement callback, so that settlement cannot insert an old result over a new entry.
+
+Old / new promise test
+No closed state
+
+The scope retains the same handles after either clearing signal. Lookup works again immediately, including during project release. A second clear simply clears those maps again.
+
+The whole lifecycle
+
+Unexplained: no separate reason was found for choosing a reusable clearing registry without turn identifiers, cancellation, handle removal or a release lock. These are limits of this implementation, not extra facilities supplied by the metaphor.
+
+Replay an old promise ↗
+DECISION 7 / PUBLIC SEAM
+↑ Back to the whole change
+What can a caller actually touch?
+New in @symnav/core
+
+Public signatures as recorded in the PR:
+
+The handle interface is lookup-only. Clearing exists internally and is reached through the scope.
+
+Exact generic declarationsCore export
+Changed on the semantic service
+BEFORE
+beginTurn(snapshot: WorkspaceSnapshot): void
+AFTER
+beginTurn(files: readonly WorkspaceFile[]): void
+BEFORE
+releaseTransientResources(): void
+AFTER
+releaseTransientResources(): Promise<void>
+File-list handoffPublic surface in PR
+
+Unexplained: the exact small API and snapshot-to-files narrowing have no separate recorded rationale. They are disclosed in the PR, so this page does not label them unrequested. The promise return is the awaited-release decision described above.
+
+↑ Release decision
+03 / THE RECEIPTS
+↑ Back to decision 8
+The tests describe the contract.
++4
+new core tests
++6
+new service tests
+5
+previous service tests retained
+0
+removed or weakened assertions
+in this diff
+BEHAVIOR PINNED BY THE CHANGED TEST FILES
+Boundary or contract	Evidence shape	Inspect locally
+Exact values, undefined, handle isolation	Generic factories and identity assertions	Core test 1
+Both clears, repeated release, handle reuse	Two maps filled again after each boundary	Core test 2
+Rejection retention, sync-throw retry, late promise settlement	Controlled factories and promises	Core tests 3–4
+Query identities, position rehydration, semantic failures	In-memory TypeScript + injected failing workspace methods	New service cases 1–4
+Failed refresh keeps the semantic turn	Injected workspace refresh failure	New service case 5
+Clear now, release pending, backend rejects	Controlled graph test double; later release step does not run after rejection	New service case 6
+Shared searches, next-turn clearing, repeated positions, diamond paths, real fixture rebuild	Five existing tests kept intact	Retained tests
+
+The held-open release rehearsal corresponds to the new graph double. The retained fixture exercises real TypeScript resource rebuilding. Neither the rehearsal nor this page claims an end-to-end daemon execution test.
+
+Focused run: all 15 tests passed across the two changed test files at the head revision. Raw test report.
+
+Stated intent: the PR promises preserved algorithms, identities and failure behavior. Its first commit is “Characterize TypeScript semantic cache identities”; later commits specify lifecycle and awaited release before adoption. Commit bodies are empty.
+
+Commit record
+PR context
+Open the six-file change manifest and all local sources
+↑ Back to the counter
+Experiment 26 · physical-analogy
+Experiment README

@@ -1,0 +1,1949 @@
+diff --git a/apps/cli/src/daemon/daemon-delivery-session.test.ts b/apps/cli/src/daemon/daemon-delivery-session.test.ts
+new file mode 100644
+index 000000000..57581370f
+--- /dev/null
++++ b/apps/cli/src/daemon/daemon-delivery-session.test.ts
+@@ -0,0 +1,646 @@
++import { mkdtemp, rm } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { DaemonPolicy, type DaemonPolicyValues } from "@symnav/daemon";
++import { AcceptedRequestLedger } from "./accepted-request-ledger.js";
++import type { DaemonClock } from "./daemon-clock.js";
++import {
++  CompletionSpoolReadError,
++  DaemonCompletionSpoolStore,
++  NodeCompletionSpoolStorage,
++  type CompletionSpoolStorage,
++} from "./completion-spool.js";
++import { DaemonDeliverySession, type DaemonDiagnosticRecorder } from "./daemon-delivery-session.js";
++import { DaemonOperationObserver } from "./daemon-operation-observer.js";
++import type { DaemonDiagnosticEvent, DaemonServerMessage } from "./daemon-protocol.js";
++import type { DaemonServerSend } from "./daemon-transport.js";
++
++describe("DaemonDeliverySession", () => {
++  const directories: string[] = [];
++
++  afterEach(async () => {
++    vi.useRealTimers();
++    await Promise.all(
++      directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
++    );
++  });
++
++  it("creates completion writers and records their spool timing", async () => {
++    const harness = await DeliverySessionHarness.create(directories);
++    const trace = harness.session.beginAcceptedTrace("request-1", "version", 2, 3);
++
++    const completion = await harness.session.createCompletion("request-1");
++    await completion.append({ sequence: 0, stream: "stdout", bytes: Buffer.from("result\n") });
++    harness.setMonotonicTimes(11, 17);
++    const manifest = await completion.finish(4);
++
++    expect(trace).toBeDefined();
++    expect(manifest).toMatchObject({
++      requestId: "request-1",
++      instanceId: "instance-1",
++      exitCode: 4,
++      rawBytes: 7,
++      recordCount: 1,
++    });
++    expect(harness.session.snapshot).toEqual({
++      spoolBytes: 7,
++      hasUnacknowledgedCompletions: false,
++    });
++    expect(harness.events).toEqual([
++      {
++        kind: "request-accepted",
++        requestId: "request-1",
++        command: "version",
++        queueDepth: 2,
++        workerGeneration: 3,
++      },
++      {
++        kind: "response-spooled",
++        requestId: "request-1",
++        rawBytes: 7,
++        recordCount: 1,
++        spoolMs: 6,
++      },
++    ]);
++  });
++
++  it("streams one completion to each attachment and counts connection closes", async () => {
++    const harness = await DeliverySessionHarness.create(directories);
++    const entry = harness.journal.accept("request-1", "version", harness.executionRequest);
++    if (entry.state.state !== "queued") throw new Error("Expected queued request");
++    harness.session.beginAcceptedTrace("request-1", "version", entry.state.queuePosition, 1);
++    const first = DeliverySend.create();
++    const duplicate = DeliverySend.create();
++
++    await harness.session.attach(
++      {
++        requestId: "request-1",
++        acceptedAt: entry.state.acceptedAt,
++        queuePosition: entry.state.queuePosition,
++      },
++      first.send,
++    );
++    await harness.session.attach(
++      {
++        requestId: "request-1",
++        acceptedAt: entry.state.acceptedAt,
++        queuePosition: entry.state.queuePosition,
++      },
++      duplicate.send,
++    );
++    const completion = await harness.session.createCompletion("request-1");
++    await completion.append({ sequence: 0, stream: "stdout", bytes: Buffer.from("result\n") });
++    await completion.finish(0);
++    harness.journal.markRunning("request-1", 2);
++    harness.journal.complete("request-1", "request-1", 3);
++    await Promise.all([first.resultEndReceived, duplicate.resultEndReceived]);
++
++    expect(first.frames.map(DeliverySend.frameKind)).toEqual([
++      "accepted",
++      "result-manifest",
++      "chunk",
++      "result-end",
++    ]);
++    expect(duplicate.frames.map(DeliverySend.frameKind)).toEqual([
++      "accepted",
++      "result-manifest",
++      "chunk",
++      "result-end",
++    ]);
++    first.close();
++    expect(harness.events.filter((event) => event.kind === "client-disconnected")).toHaveLength(0);
++    duplicate.close();
++    duplicate.close();
++    expect(harness.events.filter((event) => event.kind === "client-disconnected")).toHaveLength(1);
++    expect(harness.events.filter((event) => event.kind === "client-reattached")).toHaveLength(0);
++    expect(harness.events.filter((event) => event.kind === "delivery-terminal")).toHaveLength(1);
++  });
++
++  it("keeps the latest duplicate completion delivery as the request barrier", async () => {
++    const harness = await DeliverySessionHarness.create(directories);
++    const entry = harness.journal.accept("request-1", "version", harness.executionRequest);
++    if (entry.state.state !== "queued") throw new Error("Expected queued request");
++    harness.session.beginAcceptedTrace("request-1", "version", entry.state.queuePosition, 1);
++    const firstResultEnd = new DeferredSignal();
++    const secondResultEnd = new DeferredSignal();
++    const first = DeliverySend.create((message) =>
++      "kind" in message && message.kind === "result-end" ? firstResultEnd.wait : undefined,
++    );
++    const duplicate = DeliverySend.create((message) =>
++      "kind" in message && message.kind === "result-end" ? secondResultEnd.wait : undefined,
++    );
++    await harness.session.attach(
++      {
++        requestId: "request-1",
++        acceptedAt: entry.state.acceptedAt,
++        queuePosition: entry.state.queuePosition,
++      },
++      first.send,
++    );
++    await harness.session.attach(
++      {
++        requestId: "request-1",
++        acceptedAt: entry.state.acceptedAt,
++        queuePosition: entry.state.queuePosition,
++      },
++      duplicate.send,
++    );
++    const completion = await harness.session.createCompletion("request-1");
++    await completion.finish(0);
++    harness.journal.markRunning("request-1", 2);
++    harness.journal.complete("request-1", "request-1", 3);
++    const latestDelivery = harness.session.trackedCompletion("request-1");
++    if (latestDelivery === undefined) throw new Error("Expected tracked completion delivery");
++    let settled = false;
++    void latestDelivery.then(() => {
++      settled = true;
++    });
++
++    firstResultEnd.release();
++    await first.resultEndReceived;
++    await new Promise((resolve) => setImmediate(resolve));
++
++    expect(settled).toBe(false);
++    expect(harness.session.trackedCompletion("request-1")).toBe(latestDelivery);
++    expect(duplicate.frames.some((frame) => DeliverySend.frameKind(frame) === "result-end")).toBe(
++      false,
++    );
++
++    secondResultEnd.release();
++    await latestDelivery;
++
++    expect(settled).toBe(true);
++    expect(harness.session.trackedCompletion("request-1")).toBeUndefined();
++  });
++
++  it("fetches retained completion output from the requested offset", async () => {
++    const harness = await DeliverySessionHarness.create(directories);
++    harness.accept("request-1");
++    const completion = await harness.session.createCompletion("request-1");
++    await completion.append({ sequence: 0, stream: "stdout", bytes: Buffer.from("first") });
++    await completion.append({ sequence: 1, stream: "stderr", bytes: Buffer.from("second") });
++    const manifest = await completion.finish(0);
++    harness.complete("request-1");
++    const fetched = DeliverySend.create();
++
++    await harness.session.fetch(
++      {
++        kind: "result-fetch",
++        protocolVersion: 5,
++        instanceId: "instance-1",
++        processToken: "token-1",
++        requestId: "request-1",
++        offset: 1,
++      },
++      fetched.send,
++    );
++
++    expect(fetched.frames.map(DeliverySend.frameKind)).toEqual([
++      "result-manifest",
++      "chunk",
++      "result-end",
++    ]);
++    expect(fetched.frames[1]).toMatchObject({ sequence: 1, offset: 1, stream: "stderr" });
++    expect(harness.journal.status("request-1")).toEqual({ state: "completed" });
++    expect(harness.session.snapshot.spoolBytes).toBe(11);
++    expect(manifest.transferId).toEqual(expect.any(String));
++  });
++
++  it("invalidates completed journal state before reporting a spool read failure", async () => {
++    const harness = await DeliverySessionHarness.create(directories);
++    harness.accept("request-1");
++    const completion = await harness.session.createCompletion("request-1");
++    await completion.append({ sequence: 0, stream: "stdout", bytes: Buffer.from("result") });
++    await completion.finish(0);
++    harness.complete("request-1");
++    const spool = await harness.spoolStore.open("request-1");
++    if (spool === undefined) throw new Error("Expected completion spool");
++    vi.spyOn(spool, "read").mockImplementation(async function* () {
++      throw new CompletionSpoolReadError(new Error("read failed"));
++    });
++    let stateWhenFailureWasSent: unknown;
++    const fetched = DeliverySend.create((message) => {
++      if ("kind" in message && message.kind === "execution-failed") {
++        stateWhenFailureWasSent = harness.journal.status("request-1");
++      }
++    });
++
++    await harness.session.fetch(
++      {
++        kind: "result-fetch",
++        protocolVersion: 5,
++        instanceId: "instance-1",
++        processToken: "token-1",
++        requestId: "request-1",
++        offset: 0,
++      },
++      fetched.send,
++    );
++
++    expect(stateWhenFailureWasSent).toEqual({ state: "failed", code: "internal" });
++    expect(fetched.frames.map(DeliverySend.frameKind)).toEqual([
++      "result-manifest",
++      "execution-failed",
++    ]);
++    expect(
++      harness.events.filter(
++        (event) => event.kind === "failure" && event.operation === "completion-delivery",
++      ),
++    ).toHaveLength(1);
++    expect(harness.session.snapshot.spoolBytes).toBe(0);
++  });
++
++  it("validates transfer identity before acknowledging physical and journal state", async () => {
++    const harness = await DeliverySessionHarness.create(directories);
++    harness.accept("request-1");
++    harness.session.beginAcceptedTrace("request-1", "version", 0, 1);
++    const completion = await harness.session.createCompletion("request-1");
++    await completion.append({ sequence: 0, stream: "stdout", bytes: Buffer.from("result") });
++    const manifest = await completion.finish(0);
++    harness.complete("request-1");
++
++    await expect(
++      harness.session.acknowledge({
++        kind: "result-ack",
++        protocolVersion: 5,
++        instanceId: "instance-1",
++        processToken: "token-1",
++        requestId: "request-1",
++        transferId: "wrong-transfer",
++      }),
++    ).rejects.toThrow("does not match completion transfer");
++    expect(harness.journal.isAcknowledged("request-1")).toBe(false);
++    expect(harness.session.snapshot.spoolBytes).toBe(6);
++
++    await expect(
++      harness.session.acknowledge({
++        kind: "result-ack",
++        protocolVersion: 5,
++        instanceId: "instance-1",
++        processToken: "token-1",
++        requestId: "request-1",
++        transferId: manifest.transferId,
++      }),
++    ).resolves.toEqual({
++      kind: "result-acknowledged",
++      instanceId: "instance-1",
++      processToken: "token-1",
++      requestId: "request-1",
++      transferId: manifest.transferId,
++    });
++    expect(harness.journal.isAcknowledged("request-1")).toBe(true);
++    expect(harness.session.snapshot.spoolBytes).toBe(0);
++    expect(harness.events.filter((event) => event.kind === "delivery-terminal")).toHaveLength(1);
++
++    await expect(
++      harness.session.acknowledge({
++        kind: "result-ack",
++        protocolVersion: 5,
++        instanceId: "instance-1",
++        processToken: "token-1",
++        requestId: "request-1",
++        transferId: manifest.transferId,
++      }),
++    ).rejects.toThrow("completion is unavailable");
++  });
++
++  it.each([
++    { cleanup: "succeeds", cleanupFails: false },
++    { cleanup: "fails", cleanupFails: true },
++  ])(
++    "acknowledges logically only after physical completion cleanup $cleanup",
++    async ({ cleanupFails }) => {
++      let harness: DeliverySessionHarness | undefined;
++      const storage = new GatedUnlinkStorage(
++        () => harness?.journal.isAcknowledged("request-1") ?? false,
++        cleanupFails,
++      );
++      const createdHarness = await DeliverySessionHarness.create(directories, {
++        inlineRawBytes: 1,
++        completionSpoolStorage: storage,
++      });
++      harness = createdHarness;
++      createdHarness.accept("request-1");
++      createdHarness.session.beginAcceptedTrace("request-1", "version", 0, 1);
++      const completion = await createdHarness.session.createCompletion("request-1");
++      await completion.append({ sequence: 0, stream: "stdout", bytes: Buffer.from("result") });
++      const manifest = await completion.finish(0);
++      createdHarness.complete("request-1");
++
++      const acknowledgement = createdHarness.session.acknowledge({
++        kind: "result-ack",
++        protocolVersion: 5,
++        instanceId: "instance-1",
++        processToken: "token-1",
++        requestId: "request-1",
++        transferId: manifest.transferId,
++      });
++      await storage.started;
++
++      expect(storage.acknowledgedWhenCleanupStarted).toBe(false);
++      expect(createdHarness.journal.isAcknowledged("request-1")).toBe(false);
++
++      storage.release();
++      await expect(acknowledgement).resolves.toMatchObject({ kind: "result-acknowledged" });
++      expect(createdHarness.journal.isAcknowledged("request-1")).toBe(true);
++      await expect(createdHarness.spoolStore.open("request-1")).resolves.toBeUndefined();
++      expect(
++        createdHarness.events.filter(
++          (event) => event.kind === "failure" && event.operation === "completion-cleanup",
++        ),
++      ).toHaveLength(cleanupFails ? 1 : 0);
++      expect(
++        createdHarness.events.filter((event) => event.kind === "delivery-terminal"),
++      ).toHaveLength(1);
++    },
++  );
++
++  it("bounds only disconnected traces and completes retained traces during shutdown", async () => {
++    vi.useFakeTimers();
++    const harness = await DeliverySessionHarness.create(directories, {
++      diagnostics: {
++        disconnectedTraceRetentionMs: 10,
++        maximumDisconnectedTraces: 0,
++      },
++    });
++    const connectedSend = DeliverySend.create();
++    const firstDisconnectedSend = DeliverySend.create();
++    const secondDisconnectedSend = DeliverySend.create();
++
++    for (const [requestId, send] of [
++      ["connected", connectedSend],
++      ["first-disconnected", firstDisconnectedSend],
++      ["second-disconnected", secondDisconnectedSend],
++    ] as const) {
++      const entry = harness.journal.accept(requestId, "version", harness.executionRequest);
++      if (entry.state.state !== "queued") throw new Error("Expected queued request");
++      harness.session.beginAcceptedTrace(requestId, "version", entry.state.queuePosition, 1);
++      await harness.session.attach(
++        {
++          requestId,
++          acceptedAt: entry.state.acceptedAt,
++          queuePosition: entry.state.queuePosition,
++        },
++        send.send,
++      );
++    }
++    firstDisconnectedSend.close();
++    secondDisconnectedSend.close();
++
++    expect(harness.events.filter((event) => event.kind === "operation-trace-expired")).toEqual([
++      { kind: "operation-trace-expired", requestId: "first-disconnected" },
++    ]);
++    await vi.advanceTimersByTimeAsync(10);
++    expect(harness.events.filter((event) => event.kind === "operation-trace-expired")).toEqual([
++      { kind: "operation-trace-expired", requestId: "first-disconnected" },
++      { kind: "operation-trace-expired", requestId: "second-disconnected" },
++    ]);
++
++    harness.session.completeRetainedTraces();
++
++    expect(harness.events.filter((event) => event.kind === "delivery-terminal")).toEqual([
++      expect.objectContaining({ requestId: "connected", outcome: "disconnected" }),
++    ]);
++  });
++
++  it("polls for acknowledgements only through the configured grace window", async () => {
++    vi.useFakeTimers();
++    vi.setSystemTime(1_000);
++    const harness = await DeliverySessionHarness.create(directories, {
++      shutdown: {
++        resourceDrainAcknowledgementGraceMs: 10,
++        resourceDrainAcknowledgementPollIntervalMs: 4,
++      },
++    });
++    harness.accept("request-1");
++    harness.complete("request-1");
++    let settled = false;
++
++    const waiting = harness.session.waitForCompletionAcknowledgements().then(() => {
++      settled = true;
++    });
++    await Promise.resolve();
++    expect(settled).toBe(false);
++    await vi.advanceTimersByTimeAsync(8);
++    expect(settled).toBe(false);
++    await vi.advanceTimersByTimeAsync(4);
++    await waiting;
++
++    expect(settled).toBe(true);
++    expect(harness.session.snapshot.hasUnacknowledgedCompletions).toBe(true);
++  });
++
++  it("cleans instance spools and records cleanup failure without rejecting shutdown", async () => {
++    const harness = await DeliverySessionHarness.create(directories, {
++      completionSpoolStorage: new FailingInstanceCleanupStorage(),
++    });
++    const completion = await harness.session.createCompletion("request-1");
++    await completion.append({ sequence: 0, stream: "stdout", bytes: Buffer.from("result") });
++    await completion.finish(0);
++
++    await expect(harness.session.cleanupInstance()).resolves.toBeUndefined();
++
++    expect(harness.session.snapshot.spoolBytes).toBe(0);
++    expect(
++      harness.events.filter(
++        (event) => event.kind === "failure" && event.operation === "completion-cleanup",
++      ),
++    ).toHaveLength(1);
++  });
++});
++
++class DeliverySessionHarness {
++  private constructor(
++    readonly session: DaemonDeliverySession,
++    readonly journal: AcceptedRequestLedger,
++    readonly spoolStore: DaemonCompletionSpoolStore,
++    readonly events: DaemonDiagnosticEvent[],
++    private readonly time: { monotonicNow: number; remaining: number[] },
++  ) {}
++
++  static async create(
++    directories: string[],
++    overrides: {
++      readonly completionSpoolStorage?: CompletionSpoolStorage;
++      readonly inlineRawBytes?: number;
++      readonly diagnostics?: {
++        readonly disconnectedTraceRetentionMs?: number;
++        readonly maximumDisconnectedTraces?: number;
++      };
++      readonly shutdown?: {
++        readonly resourceDrainAcknowledgementGraceMs?: number;
++        readonly resourceDrainAcknowledgementPollIntervalMs?: number;
++      };
++    } = {},
++  ): Promise<DeliverySessionHarness> {
++    const directory = await mkdtemp(join(tmpdir(), "symnav-delivery-session-"));
++    directories.push(directory);
++    const currentPolicy = DaemonPolicy.currentSystem().values;
++    const policy: DaemonPolicyValues = {
++      ...currentPolicy,
++      diagnostics: { ...currentPolicy.diagnostics, ...overrides.diagnostics },
++      shutdown: { ...currentPolicy.shutdown, ...overrides.shutdown },
++    };
++    const journal = new AcceptedRequestLedger(() => 1);
++    const events: DaemonDiagnosticEvent[] = [];
++    const time: { monotonicNow: number; remaining: number[] } = {
++      monotonicNow: 0,
++      remaining: [],
++    };
++    const clock: DaemonClock = {
++      wallNowMs: Date.now,
++      monotonicNowMs: () => {
++        time.monotonicNow = time.remaining.shift() ?? time.monotonicNow;
++        return time.monotonicNow;
++      },
++    };
++    const diagnostics: DaemonDiagnosticRecorder = {
++      record: (event) => events.push(event),
++    };
++    const observer = new DaemonOperationObserver(diagnostics, clock);
++    const spoolStore = new DaemonCompletionSpoolStore({
++      directory,
++      workspaceKey: "workspace-1",
++      instanceId: "instance-1",
++      policy: {
++        ...policy.output,
++        ...(overrides.inlineRawBytes === undefined
++          ? {}
++          : { inlineRawBytes: overrides.inlineRawBytes }),
++      },
++      ...(overrides.completionSpoolStorage === undefined
++        ? {}
++        : { storage: overrides.completionSpoolStorage }),
++    });
++    const harness = new DeliverySessionHarness(
++      new DaemonDeliverySession({
++        coordinates: { instanceId: "instance-1", processToken: "token-1" },
++        journal,
++        spoolStore,
++        observer,
++        diagnostics,
++        clock,
++        policy,
++      }),
++      journal,
++      spoolStore,
++      events,
++      time,
++    );
++    return harness;
++  }
++
++  setMonotonicTimes(...monotonicTimes: number[]): void {
++    this.time.remaining.push(...monotonicTimes);
++  }
++
++  accept(requestId: string): void {
++    this.journal.accept(requestId, "version", this.executionRequest);
++  }
++
++  complete(requestId: string): void {
++    this.journal.markRunning(requestId, 2);
++    this.journal.complete(requestId, requestId, 3);
++  }
++
++  get executionRequest() {
++    return {
++      argv: ["--version"],
++      cwd: "/workspace",
++      telemetryEnabled: false,
++      executionMode: "warm" as const,
++    };
++  }
++}
++
++class DeliverySend {
++  readonly frames: DaemonServerMessage[] = [];
++  readonly resultEndReceived: Promise<void>;
++  private readonly closeListeners = new Set<() => void>();
++  private resolveResultEndReceived!: () => void;
++  readonly send: DaemonServerSend;
++
++  private constructor(onMessage?: (message: DaemonServerMessage) => void | Promise<void>) {
++    this.resultEndReceived = new Promise((resolve) => {
++      this.resolveResultEndReceived = resolve;
++    });
++    this.send = Object.assign(
++      async (message: DaemonServerMessage) => {
++        await onMessage?.(message);
++        this.frames.push(message);
++        if ("kind" in message && message.kind === "result-end") {
++          this.resolveResultEndReceived();
++        }
++      },
++      {
++        onClose: (listener: () => void) => {
++          this.closeListeners.add(listener);
++          return () => this.closeListeners.delete(listener);
++        },
++      },
++    );
++  }
++
++  static create(onMessage?: (message: DaemonServerMessage) => void | Promise<void>): DeliverySend {
++    return new DeliverySend(onMessage);
++  }
++
++  close(): void {
++    for (const listener of this.closeListeners) listener();
++  }
++
++  static frameKind(frame: DaemonServerMessage): string {
++    return "kind" in frame ? frame.kind : "chunk";
++  }
++}
++
++class DeferredSignal {
++  readonly wait: Promise<void>;
++  private resolveWait!: () => void;
++
++  constructor() {
++    this.wait = new Promise((resolve) => {
++      this.resolveWait = resolve;
++    });
++  }
++
++  release(): void {
++    this.resolveWait();
++  }
++}
++
++class GatedUnlinkStorage extends NodeCompletionSpoolStorage {
++  readonly started: Promise<void>;
++  acknowledgedWhenCleanupStarted: boolean | undefined;
++  private readonly gate = new DeferredSignal();
++  private resolveStarted!: () => void;
++
++  constructor(
++    private readonly isAcknowledged: () => boolean,
++    private readonly cleanupFails: boolean,
++  ) {
++    super();
++    this.started = new Promise((resolve) => {
++      this.resolveStarted = resolve;
++    });
++  }
++
++  override async unlink(path: string): Promise<void> {
++    this.acknowledgedWhenCleanupStarted = this.isAcknowledged();
++    this.resolveStarted();
++    await this.gate.wait;
++    if (this.cleanupFails) throw new Error("unlink failed");
++    await super.unlink(path);
++  }
++
++  release(): void {
++    this.gate.release();
++  }
++}
++
++class FailingInstanceCleanupStorage extends NodeCompletionSpoolStorage {
++  override removeInstance(): Promise<void> {
++    return Promise.reject(new Error("instance cleanup failed"));
++  }
++}
+diff --git a/apps/cli/src/daemon/daemon-delivery-session.ts b/apps/cli/src/daemon/daemon-delivery-session.ts
+new file mode 100644
+index 000000000..f0ab51c8c
+--- /dev/null
++++ b/apps/cli/src/daemon/daemon-delivery-session.ts
+@@ -0,0 +1,516 @@
++import type {
++  DaemonCommandName,
++  DaemonExecutionFailureCode,
++  DaemonPolicyValues,
++  DaemonSequencedOutputRecord,
++} from "@symnav/daemon";
++import type { AcceptedRequestEntry, AcceptedRequestSubscriber } from "./accepted-request-ledger.js";
++import type { DaemonClock } from "./daemon-clock.js";
++import type { DaemonOperationObserver, DaemonOperationTrace } from "./daemon-operation-observer.js";
++import type {
++  DaemonDiagnosticEvent,
++  DaemonDeliveryOutcome,
++  DaemonExecutionOutcome,
++  DaemonExecutionServerFrame,
++  DaemonIdentityCoordinates,
++  DaemonResponse,
++  DaemonResultAcknowledgement,
++  DaemonResultFetchRequest,
++  DaemonRefreshSummary,
++  DaemonServerMessage,
++  DaemonWorkerPhaseDurations,
++} from "./daemon-protocol.js";
++import {
++  CompletionSpoolReadError,
++  type CompletionSpool,
++  type CompletionSpoolManifest,
++  type DaemonCompletionSpoolStore,
++} from "./completion-spool.js";
++import { DaemonLogger } from "./daemon-logger.js";
++import type { DaemonServerSend } from "./daemon-transport.js";
++
++export interface DaemonDiagnosticRecorder {
++  record(event: DaemonDiagnosticEvent): void;
++}
++
++export interface DaemonCompletionWriter {
++  append(record: DaemonSequencedOutputRecord): Promise<void>;
++  finish(exitCode: number): Promise<CompletionSpoolManifest>;
++  dispose(): Promise<void>;
++}
++
++export interface DaemonDeliverySnapshot {
++  readonly spoolBytes: number;
++  readonly hasUnacknowledgedCompletions: boolean;
++}
++
++export interface DaemonDeliveryAttachment {
++  readonly requestId: string;
++  readonly acceptedAt: number;
++  readonly queuePosition: number;
++}
++
++export interface AcceptedExecutionJournal {
++  readonly hasUnacknowledgedCompletions: boolean;
++  entryFor(requestId: string): AcceptedRequestEntry | undefined;
++  subscribe(requestId: string, subscriber: AcceptedRequestSubscriber): () => void;
++  invalidateCompletion(
++    requestId: string,
++    code: DaemonExecutionFailureCode,
++    completedAt: number,
++  ): void;
++  acknowledge(requestId: string): void;
++  terminateDelivery(requestId: string): boolean;
++  isDeliveryTerminated(requestId: string): boolean;
++}
++
++export type AuthenticatedDaemonResultFetchRequest = DaemonResultFetchRequest;
++export type AuthenticatedDaemonResultAcknowledgement = DaemonResultAcknowledgement;
++export type DaemonResultAcknowledged = Extract<
++  DaemonResponse,
++  { readonly kind: "result-acknowledged" }
++>;
++
++export interface DaemonDeliverySessionOptions {
++  readonly coordinates: Pick<DaemonIdentityCoordinates, "instanceId" | "processToken">;
++  readonly journal: AcceptedExecutionJournal;
++  readonly spoolStore: DaemonCompletionSpoolStore;
++  readonly observer: DaemonOperationObserver;
++  readonly diagnostics: DaemonDiagnosticRecorder;
++  readonly clock: DaemonClock;
++  readonly policy: Pick<DaemonPolicyValues, "delivery" | "diagnostics" | "shutdown">;
++}
++
++export class DaemonDeliverySession {
++  private readonly completionDeliveries = new Map<string, Promise<void>>();
++  private readonly operationTraces = new Map<string, DaemonOperationTrace>();
++  private readonly operationTraceExpirations = new Map<string, NodeJS.Timeout>();
++  private readonly operationTraceConnections = new Map<string, number>();
++
++  constructor(private readonly options: DaemonDeliverySessionOptions) {}
++
++  get snapshot(): DaemonDeliverySnapshot {
++    return {
++      spoolBytes: this.options.spoolStore.usage().rawBytes,
++      hasUnacknowledgedCompletions: this.options.journal.hasUnacknowledgedCompletions,
++    };
++  }
++
++  beginAcceptedTrace(
++    requestId: string,
++    command: DaemonCommandName,
++    queuePosition: number,
++    workerGeneration: number,
++  ): DaemonOperationTrace {
++    const trace = this.options.observer.start(requestId, command);
++    this.operationTraces.set(requestId, trace);
++    trace.accepted(queuePosition, workerGeneration);
++    return new RetainedDaemonOperationTrace(
++      trace,
++      () => this.operationTraces.get(requestId) === trace,
++    );
++  }
++
++  async createCompletion(requestId: string): Promise<DaemonCompletionWriter> {
++    const spool = await this.options.spoolStore.create(requestId);
++    return new ObservedDaemonCompletionWriter(
++      spool,
++      this.retainedOperationTrace(requestId),
++      this.options.clock,
++    );
++  }
++
++  async attach(attachment: DaemonDeliveryAttachment, send: DaemonServerSend): Promise<void> {
++    const entry = this.options.journal.entryFor(attachment.requestId);
++    if (entry === undefined) throw new Error("Accepted request result is missing");
++    const traceWasDisconnected = this.traceWasDisconnected(attachment.requestId);
++    const disconnectTraceConnection = this.attachOperationTraceConnection(
++      attachment.requestId,
++      send,
++    );
++    if (traceWasDisconnected) this.reattachOperationTrace(attachment.requestId);
++    try {
++      await this.deliver(send, {
++        kind: "accepted",
++        ...this.options.coordinates,
++        ...attachment,
++      });
++      if (entry.state.state === "completed") {
++        await this.deliverStoredCompletion(attachment.requestId, send);
++        return;
++      }
++      if (entry.state.state === "failed") {
++        await this.deliver(send, this.failedFrame(attachment.requestId, entry.state.code));
++        this.completeOperationTrace(attachment.requestId, "delivered");
++        return;
++      }
++    } catch (error) {
++      disconnectTraceConnection();
++      throw error;
++    }
++    let unsubscribe: (() => void) | undefined;
++    unsubscribe = this.options.journal.subscribe(attachment.requestId, (updated) => {
++      if (updated.state.state === "completed") {
++        this.trackCompletionDelivery(attachment.requestId, send, disconnectTraceConnection);
++        unsubscribe?.();
++      } else if (updated.state.state === "failed") {
++        void this.deliver(send, this.failedFrame(attachment.requestId, updated.state.code))
++          .then(() => this.completeOperationTrace(attachment.requestId, "delivered"))
++          .catch((error) =>
++            this.recordDeliveryFailure(attachment.requestId, error, disconnectTraceConnection),
++          );
++        unsubscribe?.();
++      }
++    });
++  }
++
++  trackedCompletion(requestId: string): Promise<void> | undefined {
++    return this.completionDeliveries.get(requestId);
++  }
++
++  async fetch(
++    request: AuthenticatedDaemonResultFetchRequest,
++    send: DaemonServerSend,
++  ): Promise<void> {
++    let disconnectTraceConnection: (() => void) | undefined;
++    if (this.options.journal.entryFor(request.requestId)?.state.state === "completed") {
++      const traceWasDisconnected = this.traceWasDisconnected(request.requestId);
++      disconnectTraceConnection = this.attachOperationTraceConnection(request.requestId, send);
++      if (traceWasDisconnected) this.reattachOperationTrace(request.requestId);
++    }
++    try {
++      await this.deliverStoredCompletion(request.requestId, send, request.offset);
++    } catch (error) {
++      disconnectTraceConnection?.();
++      throw error;
++    }
++  }
++
++  async acknowledge(
++    request: AuthenticatedDaemonResultAcknowledgement,
++  ): Promise<DaemonResultAcknowledged> {
++    const spool = await this.options.spoolStore.open(request.requestId);
++    if (spool === undefined) throw new Error("Accepted request completion is unavailable");
++    if (spool.completedManifest?.transferId !== request.transferId) {
++      throw new Error("Result acknowledgement does not match completion transfer");
++    }
++    await spool.acknowledge().catch((error) => {
++      this.recordFailure("completion-cleanup", error);
++    });
++    this.options.journal.acknowledge(request.requestId);
++    this.completeOperationTrace(request.requestId, "delivered");
++    return {
++      kind: "result-acknowledged",
++      ...this.options.coordinates,
++      requestId: request.requestId,
++      transferId: request.transferId,
++    };
++  }
++
++  completeRetainedTraces(): void {
++    for (const requestId of this.operationTraces.keys()) {
++      this.completeOperationTrace(requestId, "disconnected");
++    }
++  }
++
++  async waitForCompletionAcknowledgements(): Promise<void> {
++    const acknowledgementDeadline =
++      this.options.clock.wallNowMs() +
++      this.options.policy.shutdown.resourceDrainAcknowledgementGraceMs;
++    while (
++      this.options.journal.hasUnacknowledgedCompletions &&
++      this.options.clock.wallNowMs() < acknowledgementDeadline
++    ) {
++      await new Promise((resolve) =>
++        setTimeout(
++          resolve,
++          this.options.policy.shutdown.resourceDrainAcknowledgementPollIntervalMs,
++        ),
++      );
++    }
++  }
++
++  async cleanupInstance(): Promise<void> {
++    await this.options.spoolStore
++      .cleanupInstance(this.options.coordinates.instanceId)
++      .catch((error) => {
++        this.recordFailure("completion-cleanup", error);
++      });
++  }
++
++  private deliver(send: DaemonServerSend, frame: DaemonServerMessage): Promise<void> {
++    return send(frame);
++  }
++
++  private retainedOperationTrace(
++    requestId: string,
++    trace = this.operationTraces.get(requestId),
++  ): DaemonOperationTrace | undefined {
++    if (trace === undefined) return undefined;
++    return new RetainedDaemonOperationTrace(
++      trace,
++      () => this.operationTraces.get(requestId) === trace,
++    );
++  }
++
++  private async deliverStoredCompletion(
++    requestId: string,
++    send: DaemonServerSend,
++    offset = 0,
++  ): Promise<void> {
++    const spool = await this.options.spoolStore.open(requestId);
++    if (spool === undefined) throw new Error("Accepted request result is missing");
++    try {
++      await this.deliverCompletion(requestId, spool, offset, send);
++    } catch (error) {
++      if (!(error instanceof CompletionSpoolReadError)) throw error;
++      this.recordFailure("completion-delivery", error);
++      await spool.dispose().catch((cleanupError) => {
++        this.recordFailure("completion-cleanup", cleanupError);
++      });
++      this.options.journal.invalidateCompletion(
++        requestId,
++        "internal",
++        this.options.clock.wallNowMs(),
++      );
++      await this.deliver(send, this.failedFrame(requestId, "internal"));
++      this.completeOperationTrace(requestId, "failed");
++    }
++  }
++
++  private trackCompletionDelivery(
++    requestId: string,
++    send: DaemonServerSend,
++    disconnectTraceConnection: () => void,
++  ): void {
++    const delivery = this.deliverStoredCompletion(requestId, send).catch((error) =>
++      this.recordDeliveryFailure(requestId, error, disconnectTraceConnection),
++    );
++    this.completionDeliveries.set(requestId, delivery);
++    void delivery.finally(() => {
++      if (this.completionDeliveries.get(requestId) === delivery) {
++        this.completionDeliveries.delete(requestId);
++      }
++    });
++  }
++
++  private async deliverCompletion(
++    requestId: string,
++    spool: CompletionSpool,
++    offset: number,
++    send: DaemonServerSend,
++  ): Promise<void> {
++    const completedManifest = spool.completedManifest;
++    if (completedManifest === undefined) throw new Error("Completion manifest is missing");
++    await this.deliver(send, {
++      kind: "result-manifest",
++      ...this.options.coordinates,
++      requestId,
++      manifest: completedManifest,
++    });
++    for await (const record of spool.read(offset)) {
++      await this.deliver(send, {
++        transferId: completedManifest.transferId,
++        requestId,
++        offset: record.sequence,
++        sequence: record.sequence,
++        stream: record.stream,
++        bytes: record.bytes,
++      });
++    }
++    await this.deliver(send, {
++      kind: "result-end",
++      ...this.options.coordinates,
++      requestId,
++      transferId: completedManifest.transferId,
++      rawBytes: completedManifest.rawBytes,
++      recordCount: completedManifest.recordCount,
++      sha256: completedManifest.sha256,
++    });
++    this.terminateOperationDelivery(requestId, "delivered");
++  }
++
++  private failedFrame(
++    requestId: string,
++    code: DaemonExecutionFailureCode,
++  ): DaemonExecutionServerFrame {
++    return {
++      kind: "execution-failed",
++      ...this.options.coordinates,
++      requestId,
++      code,
++    };
++  }
++
++  private recordDeliveryFailure(
++    requestId: string,
++    error: unknown,
++    disconnectTraceConnection: () => void,
++  ): void {
++    disconnectTraceConnection();
++    this.recordFailure("completion-delivery", error);
++  }
++
++  private recordFailure(
++    operation: "completion-delivery" | "completion-cleanup",
++    error: unknown,
++  ): void {
++    this.options.diagnostics.record({
++      kind: "failure",
++      operation,
++      failureCode: "internal",
++      errorName: DaemonLogger.errorName(error),
++    });
++  }
++
++  private completeOperationTrace(requestId: string, outcome: DaemonDeliveryOutcome): void {
++    const expiration = this.operationTraceExpirations.get(requestId);
++    if (expiration !== undefined) clearTimeout(expiration);
++    this.operationTraceExpirations.delete(requestId);
++    this.operationTraceConnections.delete(requestId);
++    this.terminateOperationDelivery(requestId, outcome);
++    this.operationTraces.delete(requestId);
++  }
++
++  private terminateOperationDelivery(requestId: string, outcome: DaemonDeliveryOutcome): void {
++    if (!this.options.journal.terminateDelivery(requestId)) return;
++    const trace = this.operationTraces.get(requestId);
++    if (trace === undefined) this.options.observer.deliveryTerminated(requestId, outcome, 0);
++    else trace.deliveryTerminated(outcome);
++  }
++
++  private disconnectOperationTrace(requestId: string): void {
++    if (this.operationTraceExpirations.has(requestId)) return;
++    const trace = this.operationTraces.get(requestId);
++    if (trace === undefined) return;
++    trace.clientDisconnected();
++    const expiration = setTimeout(
++      () => this.expireOperationTrace(requestId),
++      this.options.policy.diagnostics.disconnectedTraceRetentionMs,
++    );
++    expiration.unref();
++    this.operationTraceExpirations.set(requestId, expiration);
++    this.enforceOperationTraceCapacity();
++  }
++
++  private attachOperationTraceConnection(requestId: string, send: DaemonServerSend): () => void {
++    const connectionCount = this.operationTraceConnections.get(requestId) ?? 0;
++    if (connectionCount === 0) {
++      const expiration = this.operationTraceExpirations.get(requestId);
++      if (expiration !== undefined) clearTimeout(expiration);
++      this.operationTraceExpirations.delete(requestId);
++    }
++    this.operationTraceConnections.set(requestId, connectionCount + 1);
++    let connectionClosed = false;
++    const disconnect = (): void => {
++      if (connectionClosed) return;
++      connectionClosed = true;
++      const remainingConnections = (this.operationTraceConnections.get(requestId) ?? 1) - 1;
++      if (remainingConnections > 0) {
++        this.operationTraceConnections.set(requestId, remainingConnections);
++        return;
++      }
++      this.operationTraceConnections.delete(requestId);
++      this.disconnectOperationTrace(requestId);
++    };
++    send.onClose(disconnect);
++    return disconnect;
++  }
++
++  private traceWasDisconnected(requestId: string): boolean {
++    if (this.operationTraceExpirations.has(requestId)) return true;
++    return (
++      !this.operationTraces.has(requestId) && !this.options.journal.isDeliveryTerminated(requestId)
++    );
++  }
++
++  private reattachOperationTrace(requestId: string): void {
++    if (this.options.journal.isDeliveryTerminated(requestId)) return;
++    const trace = this.operationTraces.get(requestId);
++    if (trace === undefined) this.options.observer.reattached(requestId);
++    else trace.reattached();
++  }
++
++  private expireOperationTrace(requestId: string): void {
++    this.operationTraceExpirations.delete(requestId);
++    this.operationTraceConnections.delete(requestId);
++    if (!this.operationTraces.delete(requestId)) return;
++    this.options.observer.traceExpired(requestId);
++  }
++
++  private enforceOperationTraceCapacity(): void {
++    const capacity = Math.max(1, this.options.policy.diagnostics.maximumDisconnectedTraces);
++    while (this.operationTraceExpirations.size > capacity) {
++      const oldestRequestId = this.operationTraceExpirations.keys().next().value as
++        | string
++        | undefined;
++      if (oldestRequestId === undefined) return;
++      const expiration = this.operationTraceExpirations.get(oldestRequestId);
++      if (expiration !== undefined) clearTimeout(expiration);
++      this.expireOperationTrace(oldestRequestId);
++    }
++  }
++}
++
++class RetainedDaemonOperationTrace implements DaemonOperationTrace {
++  constructor(
++    private readonly trace: DaemonOperationTrace,
++    private readonly retained: () => boolean,
++  ) {}
++
++  accepted(queueDepth: number, generation: number): void {
++    if (this.retained()) this.trace.accepted(queueDepth, generation);
++  }
++
++  turnStarted(generation: number): void {
++    if (this.retained()) this.trace.turnStarted(generation);
++  }
++
++  workerCompleted(durations: DaemonWorkerPhaseDurations, refresh: DaemonRefreshSummary): void {
++    if (this.retained()) this.trace.workerCompleted(durations, refresh);
++  }
++
++  spooled(manifest: CompletionSpoolManifest, durationMs: number): void {
++    if (this.retained()) this.trace.spooled(manifest, durationMs);
++  }
++
++  executionTerminated(outcome: DaemonExecutionOutcome): void {
++    if (this.retained()) this.trace.executionTerminated(outcome);
++  }
++
++  clientDisconnected(): void {
++    if (this.retained()) this.trace.clientDisconnected();
++  }
++
++  reattached(): void {
++    if (this.retained()) this.trace.reattached();
++  }
++
++  deliveryTerminated(outcome: DaemonDeliveryOutcome): void {
++    if (this.retained()) this.trace.deliveryTerminated(outcome);
++  }
++}
++
++class ObservedDaemonCompletionWriter implements DaemonCompletionWriter {
++  constructor(
++    private readonly spool: CompletionSpool,
++    private readonly trace: DaemonOperationTrace | undefined,
++    private readonly clock: Pick<DaemonClock, "monotonicNowMs">,
++  ) {}
++
++  append(record: DaemonSequencedOutputRecord): Promise<void> {
++    return this.spool.append(record);
++  }
++
++  async finish(exitCode: number): Promise<CompletionSpoolManifest> {
++    const startedAt = this.clock.monotonicNowMs();
++    const manifest = await this.spool.finish(exitCode);
++    const durationMs = Math.max(0, this.clock.monotonicNowMs() - startedAt);
++    this.trace?.spooled(manifest, durationMs);
++    return manifest;
++  }
++
++  dispose(): Promise<void> {
++    return this.spool.dispose();
++  }
++}
+diff --git a/apps/cli/src/daemon/workspace-daemon-requests.test.ts b/apps/cli/src/daemon/workspace-daemon-requests.test.ts
+index 16eaf12e5..cbfeb0053 100644
+--- a/apps/cli/src/daemon/workspace-daemon-requests.test.ts
++++ b/apps/cli/src/daemon/workspace-daemon-requests.test.ts
+@@ -486,6 +486,35 @@ describe("WorkspaceDaemon requests", () => {
+     ]);
+   });
+ 
++  it("keeps the latest duplicate result delivery as the process queue barrier", async () => {
++    const executor = new SerializedExecutor();
++    const harness = await RequestHarness.start(executor);
++    harnesses.push(harness);
++    const firstResultEnd = harness.transport.stallNextResultEnd();
++    const first = await harness.admit("duplicate-barrier");
++    await executor.started(1);
++    const secondResultEnd = harness.transport.stallNextResultEnd();
++    const duplicate = await harness.admit("duplicate-barrier");
++    const following = harness.execute("after-duplicate-barrier");
++
++    executor.complete(0);
++    await Promise.all([firstResultEnd.started, secondResultEnd.started]);
++    firstResultEnd.release();
++    await first.terminal;
++    await new Promise((resolve) => setImmediate(resolve));
++
++    expect(executor.startedCount).toBe(1);
++    expect(duplicate.frames.some((frame) => "kind" in frame && frame.kind === "result-end")).toBe(
++      false,
++    );
++
++    secondResultEnd.release();
++    await duplicate.terminal;
++    await executor.started(2);
++    executor.complete(1);
++    await following;
++  });
++
+   it("reports unknown, queued, running, completed, and failed execution status", async () => {
+     const executor = new SerializedExecutor();
+     const harness = await RequestHarness.start(executor);
+@@ -688,6 +717,30 @@ describe("WorkspaceDaemon requests", () => {
+     );
+   });
+ 
++  it("cleans instance spools only after graceful worker shutdown completes", async () => {
++    const transitions: string[] = [];
++    const worker = new ShutdownGatedNavigationWorker(new ImmediateExecutor(), transitions);
++    const storage = new ObservingInstanceCleanupStorage(transitions);
++    const harness = await RequestHarness.start(undefined, {
++      navigationWorker: worker,
++      completionSpoolStorage: storage,
++    });
++    harnesses.push(harness);
++
++    await harness.stop();
++    await worker.closeStarted;
++    const transitionsWhileWorkerWasBlocked = [...transitions];
++    worker.allowClose();
++    await harness.exited;
++
++    expect(transitionsWhileWorkerWasBlocked).toEqual(["worker-close-started"]);
++    expect(transitions).toEqual([
++      "worker-close-started",
++      "worker-close-completed",
++      "instance-spool-cleanup",
++    ]);
++  });
++
+   it("reports draining from the main thread while admitted work completes", async () => {
+     const executor = new SerializedExecutor();
+     const harness = await RequestHarness.start(executor);
+@@ -2034,9 +2087,11 @@ class RequestHarness {
+ 
+   retainedOperationTraceCount(): number {
+     const daemon = this.daemon as unknown as {
+-      readonly operationTraces: ReadonlyMap<string, unknown>;
++      readonly deliverySession: {
++        readonly operationTraces: ReadonlyMap<string, unknown>;
++      };
+     };
+-    return daemon.operationTraces.size;
++    return daemon.deliverySession.operationTraces.size;
+   }
+ 
+   async dispose(): Promise<void> {
+@@ -2093,6 +2148,10 @@ class RequestTransport {
+     | undefined;
+   private resultChunksInFlight = 0;
+   private maximumResultChunksInFlight = 0;
++  private readonly resultEndGates: {
++    readonly started: () => void;
++    readonly wait: Promise<void>;
++  }[] = [];
+ 
+   get isListening(): boolean {
+     return this.handler !== undefined;
+@@ -2128,6 +2187,7 @@ class RequestTransport {
+ 
+   async connect(request: DaemonRequest): Promise<RequestConnection> {
+     if (this.handler === undefined) throw new Error("Transport is not listening");
++    const resultEndGate = this.resultEndGates.shift();
+     const frames: DaemonServerMessage[] = [];
+     let connected = true;
+     const closeListeners = new Set<() => void>();
+@@ -2147,6 +2207,10 @@ class RequestTransport {
+         await this.resultChunkGate.wait;
+         this.resultChunksInFlight -= 1;
+       }
++      if ("kind" in response && response.kind === "result-end" && resultEndGate !== undefined) {
++        resultEndGate.started();
++        await resultEndGate.wait;
++      }
+       if (!connected) throw new Error("Request connection is closed");
+       frames.push(response);
+       if (!RequestTransport.isExecutionFrame(response)) return;
+@@ -2198,6 +2262,22 @@ class RequestTransport {
+     };
+   }
+ 
++  stallNextResultEnd(): {
++    readonly started: Promise<void>;
++    readonly release: () => void;
++  } {
++    let markStarted!: () => void;
++    let release!: () => void;
++    const started = new Promise<void>((resolve) => {
++      markStarted = resolve;
++    });
++    const wait = new Promise<void>((resolve) => {
++      release = resolve;
++    });
++    this.resultEndGates.push({ started: markStarted, wait });
++    return { started, release };
++  }
++
+   private static isExecutionFrame(
+     response: DaemonServerMessage,
+   ): response is DaemonExecutionServerFrame {
+@@ -2347,6 +2427,17 @@ class RequestFailingCompletionStorage extends NodeCompletionSpoolStorage {
+   }
+ }
+ 
++class ObservingInstanceCleanupStorage extends NodeCompletionSpoolStorage {
++  constructor(private readonly transitions: string[]) {
++    super();
++  }
++
++  override async removeInstance(path: string): Promise<void> {
++    this.transitions.push("instance-spool-cleanup");
++    await super.removeInstance(path);
++  }
++}
++
+ function emptyResult(): CommandExecutionResult {
+   return { output: new CommandOutputSnapshot([]), exitCode: 0 };
+ }
+@@ -2433,6 +2524,38 @@ class ExecutorNavigationWorker implements DaemonNavigationWorker {
+   }
+ }
+ 
++class ShutdownGatedNavigationWorker extends ExecutorNavigationWorker {
++  readonly closeStarted: Promise<void>;
++  private resolveCloseStarted!: () => void;
++  private allowCloseResolution!: () => void;
++  private readonly closeAllowed: Promise<void>;
++
++  constructor(
++    executor: DaemonCommandExecutor,
++    private readonly transitions: string[],
++  ) {
++    super(executor);
++    this.closeStarted = new Promise((resolve) => {
++      this.resolveCloseStarted = resolve;
++    });
++    this.closeAllowed = new Promise((resolve) => {
++      this.allowCloseResolution = resolve;
++    });
++  }
++
++  override async drainAndClose(): Promise<void> {
++    this.transitions.push("worker-close-started");
++    this.resolveCloseStarted();
++    await this.closeAllowed;
++    this.transitions.push("worker-close-completed");
++    await super.drainAndClose();
++  }
++
++  allowClose(): void {
++    this.allowCloseResolution();
++  }
++}
++
+ class DerivedNavigationWorkerExitedError extends DaemonNavigationWorkerExitedError {}
+ 
+ class ExecutionFailingNavigationWorker extends ExecutorNavigationWorker {
+diff --git a/apps/cli/src/daemon/workspace-daemon.ts b/apps/cli/src/daemon/workspace-daemon.ts
+index 9701e94d8..2716747a3 100644
+--- a/apps/cli/src/daemon/workspace-daemon.ts
++++ b/apps/cli/src/daemon/workspace-daemon.ts
+@@ -5,7 +5,6 @@ import {
+   DaemonExecutionFailures,
+   type DaemonAdmissionDecision,
+   type DaemonExecuteRejectionCode,
+-  type DaemonExecutionFailureCode,
+   type DaemonExecutorModuleUrl,
+   type DaemonPolicy,
+   type DaemonPolicyValues,
+@@ -13,19 +12,15 @@ import {
+ import { AcceptedRequestLedger } from "./accepted-request-ledger.js";
+ import { DaemonActivityProjector } from "./daemon-activity-projector.js";
+ import type {
+-  DaemonDeliveryOutcome,
+   DaemonExecutionServerFrame,
+   DaemonRecord,
+   DaemonRequest,
+   DaemonResponse,
+-  DaemonServerMessage,
+   DaemonServer,
+ } from "./daemon-protocol.js";
+ import {
+   CompletionSpoolCapacityError,
+-  CompletionSpoolReadError,
+   DaemonCompletionSpoolStore,
+-  type CompletionSpool,
+   type CompletionSpoolStorage,
+ } from "./completion-spool.js";
+ import { DAEMON_PROTOCOL_VERSION, DAEMON_RECORD_SCHEMA_VERSION } from "./daemon-protocol.js";
+@@ -33,6 +28,7 @@ import { DaemonLifetime } from "./daemon-lifetime.js";
+ import { DaemonLogger } from "./daemon-logger.js";
+ import { NodeDaemonClock, type DaemonClock } from "./daemon-clock.js";
+ import { DaemonOperationObserver, type DaemonOperationTrace } from "./daemon-operation-observer.js";
++import { DaemonDeliverySession, type DaemonCompletionWriter } from "./daemon-delivery-session.js";
+ import {
+   DaemonNavigationWorkerExitedError,
+   type DaemonNavigationWorker,
+@@ -83,8 +79,8 @@ export class WorkspaceDaemon {
+   private readonly policy: DaemonPolicy;
+   private readonly operationObserver: DaemonOperationObserver;
+   private readonly acceptedRequests: AcceptedRequestLedger;
++  private readonly deliverySession: DaemonDeliverySession;
+   private readonly admissionPolicy = new DaemonAdmissionPolicy();
+-  private readonly completionSpools: DaemonCompletionSpoolStore;
+   private readonly acceptances = new Map<
+     string,
+     { readonly acceptedAt: number; readonly queuePosition: number }
+@@ -101,10 +97,6 @@ export class WorkspaceDaemon {
+   private readonly forceEscalated: Promise<void>;
+   private resolveForceEscalated!: () => void;
+   private readonly resourceInterruptedRequests = new Set<string>();
+-  private readonly completionDeliveries = new Map<string, Promise<void>>();
+-  private readonly operationTraces = new Map<string, DaemonOperationTrace>();
+-  private readonly operationTraceExpirations = new Map<string, NodeJS.Timeout>();
+-  private readonly operationTraceConnections = new Map<string, number>();
+ 
+   constructor(private readonly options: WorkspaceDaemonOptions) {
+     const policy = options.policy;
+@@ -117,7 +109,7 @@ export class WorkspaceDaemon {
+     this.startedMonotonicAt = this.clock.monotonicNowMs();
+     this.requestQueue = new WorkspaceRequestQueue(() => this.clock.monotonicNowMs());
+     this.acceptedRequests = new AcceptedRequestLedger(this.now);
+-    this.completionSpools = new DaemonCompletionSpoolStore({
++    const completionSpools = new DaemonCompletionSpoolStore({
+       directory: options.identity.spoolDirectory,
+       workspaceKey: options.identity.workspaceKey,
+       instanceId: options.instanceId,
+@@ -178,7 +170,7 @@ export class WorkspaceDaemon {
+       ...(options.residentMemoryBytes === undefined
+         ? {}
+         : { residentMemoryBytes: options.residentMemoryBytes }),
+-      spoolBytes: () => this.completionSpools.usage().rawBytes,
++      spoolBytes: () => this.deliverySession.snapshot.spoolBytes,
+       scheduleAtTurnBoundary: (operation) => this.requestQueue.scheduleAtTurnBoundary(operation),
+       releaseTransientResources: async () => {
+         const response = await this.workerManager.releaseTransientResources();
+@@ -200,6 +192,18 @@ export class WorkspaceDaemon {
+       this.clock,
+       this.resourceSupervisor,
+     );
++    this.deliverySession = new DaemonDeliverySession({
++      coordinates: {
++        instanceId: options.instanceId,
++        processToken: options.processToken,
++      },
++      journal: this.acceptedRequests,
++      spoolStore: completionSpools,
++      observer: this.operationObserver,
++      diagnostics: this.logger,
++      clock: this.clock,
++      policy: policy.values,
++    });
+   }
+ 
+   async start(): Promise<void> {
+@@ -363,43 +367,11 @@ export class WorkspaceDaemon {
+       }
+     }
+     if (request.kind === "result-fetch") {
+-      let disconnectTraceConnection: (() => void) | undefined;
+-      if (this.acceptedRequests.entryFor(request.requestId)?.state.state === "completed") {
+-        const traceWasDisconnected = !this.operationTraceConnections.has(request.requestId);
+-        disconnectTraceConnection = this.attachOperationTraceConnection(request.requestId, send);
+-        if (traceWasDisconnected) this.reattachOperationTrace(request.requestId);
+-      }
+-      try {
+-        await this.deliverStoredCompletion(request.requestId, send, request.offset);
+-      } catch (error) {
+-        disconnectTraceConnection?.();
+-        throw error;
+-      }
++      await this.deliverySession.fetch(request, send);
+       return;
+     }
+     if (request.kind === "result-ack") {
+-      const spool = await this.completionSpools.open(request.requestId);
+-      if (spool === undefined) throw new Error("Accepted request completion is unavailable");
+-      if (spool.completedManifest?.transferId !== request.transferId) {
+-        throw new Error("Result acknowledgement does not match completion transfer");
+-      }
+-      await spool.acknowledge().catch((error) => {
+-        this.logger.record({
+-          kind: "failure",
+-          operation: "completion-cleanup",
+-          failureCode: "internal",
+-          errorName: DaemonLogger.errorName(error),
+-        });
+-      });
+-      this.acceptedRequests.acknowledge(request.requestId);
+-      this.completeOperationTrace(request.requestId, "delivered");
+-      return {
+-        kind: "result-acknowledged",
+-        instanceId: this.options.instanceId,
+-        processToken: this.options.processToken,
+-        requestId: request.requestId,
+-        transferId: request.transferId,
+-      };
++      return this.deliverySession.acknowledge(request);
+     }
+     if (request.kind === "execution-status") {
+       return {
+@@ -412,7 +384,7 @@ export class WorkspaceDaemon {
+     }
+     this.beginGracefulShutdown();
+     await this.requestQueue.drain();
+-    await this.waitForCompletionAcknowledgements();
++    await this.deliverySession.waitForCompletionAcknowledgements();
+     setTimeout(() => void this.shutdown("graceful"), 0);
+     return { kind: "stopped", instanceId: this.options.instanceId };
+   }
+@@ -445,7 +417,7 @@ export class WorkspaceDaemon {
+     this.beginGracefulShutdown();
+     if (request.kind === "terminate") {
+       await this.requestQueue.drain();
+-      await this.waitForCompletionAcknowledgements();
++      await this.deliverySession.waitForCompletionAcknowledgements();
+       setTimeout(() => void this.shutdown("graceful"), 0);
+     } else {
+       setTimeout(() => void this.shutdown("graceful", true), 0);
+@@ -504,68 +476,27 @@ export class WorkspaceDaemon {
+         acceptedAt: entry.state.acceptedAt,
+         queuePosition: entry.state.queuePosition,
+       });
+-      if (existing === undefined) {
+-        const trace = this.operationObserver.start(request.requestId, request.commandName);
+-        this.operationTraces.set(request.requestId, trace);
+-        trace.accepted(entry.state.queuePosition, this.resourceSupervisor.snapshot.generation);
+-      }
+     }
+     const acceptance = this.acceptances.get(request.requestId);
+     if (acceptance === undefined) throw new Error("Accepted request is missing admission metadata");
+-    const traceWasDisconnected = !this.operationTraceConnections.has(request.requestId);
+-    const disconnectTraceConnection = this.attachOperationTraceConnection(request.requestId, send);
+     if (existing === undefined) {
+       this.lastNavigationAt = this.now();
+       this.lifetime.navigationAccepted();
+-      void this.executeAccepted(request);
+-    } else if (traceWasDisconnected) {
+-      this.reattachOperationTrace(request.requestId);
++      const trace = this.deliverySession.beginAcceptedTrace(
++        request.requestId,
++        request.commandName,
++        entry.state.state === "queued" ? entry.state.queuePosition : acceptance.queuePosition,
++        this.resourceSupervisor.snapshot.generation,
++      );
++      void this.executeAccepted(request, trace);
+     }
+-    try {
+-      await this.deliver(send, {
+-        kind: "accepted",
+-        instanceId: this.options.instanceId,
+-        processToken: this.options.processToken,
++    await this.deliverySession.attach(
++      {
+         requestId: request.requestId,
+         ...acceptance,
+-      });
+-    } catch (error) {
+-      disconnectTraceConnection();
+-      throw error;
+-    }
+-    if (entry.state.state === "completed") {
+-      try {
+-        await this.deliverStoredCompletion(request.requestId, send);
+-      } catch (error) {
+-        disconnectTraceConnection();
+-        throw error;
+-      }
+-      return;
+-    }
+-    if (entry.state.state === "failed") {
+-      try {
+-        await this.deliver(send, this.failedFrame(request.requestId, entry.state.code));
+-      } catch (error) {
+-        disconnectTraceConnection();
+-        throw error;
+-      }
+-      this.completeOperationTrace(request.requestId, "delivered");
+-      return;
+-    }
+-    let unsubscribe: (() => void) | undefined;
+-    unsubscribe = this.acceptedRequests.subscribe(request.requestId, (updated) => {
+-      if (updated.state.state === "completed") {
+-        this.trackCompletionDelivery(request.requestId, send, disconnectTraceConnection);
+-        unsubscribe?.();
+-      } else if (updated.state.state === "failed") {
+-        void this.deliver(send, this.failedFrame(request.requestId, updated.state.code))
+-          .then(() => this.completeOperationTrace(request.requestId, "delivered"))
+-          .catch((error) =>
+-            this.recordDeliveryFailure(request.requestId, error, disconnectTraceConnection),
+-          );
+-        unsubscribe?.();
+-      }
+-    });
++      },
++      send,
++    );
+   }
+ 
+   private decideAdmission(
+@@ -606,8 +537,9 @@ export class WorkspaceDaemon {
+ 
+   private async executeAccepted(
+     request: Extract<DaemonRequest, { kind: "execute" }>,
++    trace: DaemonOperationTrace,
+   ): Promise<void> {
+-    let spool: CompletionSpool | undefined;
++    let completion: DaemonCompletionWriter | undefined;
+     try {
+       await this.requestQueue.enqueue(
+         {
+@@ -616,16 +548,14 @@ export class WorkspaceDaemon {
+           acceptedAt: this.clock.monotonicNowMs(),
+         },
+         async () => {
+-          this.operationTraces
+-            .get(request.requestId)
+-            ?.turnStarted(this.resourceSupervisor.snapshot.generation);
++          trace.turnStarted(this.resourceSupervisor.snapshot.generation);
+           try {
+-            spool = await this.completionSpools.create(request.requestId);
++            completion = await this.deliverySession.createCompletion(request.requestId);
+             this.acceptedRequests.markRunning(request.requestId, this.now());
+             const response = await this.workerManager.execute(
+               request.requestId,
+               { commandName: request.commandName, request: request.request },
+-              spool,
++              completion,
+             );
+             this.resourceSupervisor.workerHeapReported(
+               response.generation,
+@@ -633,7 +563,7 @@ export class WorkspaceDaemon {
+               response.resources.workerHeapLimitBytes,
+               response.resources.peakWorkerHeapUsedBytes,
+             );
+-            this.operationTraces.get(request.requestId)?.workerCompleted(
++            trace.workerCompleted(
+               {
+                 freshnessMs: response.durations.freshnessMs,
+                 navigationMs: response.durations.navigationMs,
+@@ -642,17 +572,13 @@ export class WorkspaceDaemon {
+               },
+               response.refresh,
+             );
+-            const spoolStartedAt = this.clock.monotonicNowMs();
+-            const manifest = await spool.finish(response.result.exitCode);
+-            this.operationTraces
+-              .get(request.requestId)
+-              ?.spooled(manifest, Math.max(0, this.clock.monotonicNowMs() - spoolStartedAt));
++            await completion.finish(response.result.exitCode);
+             const workspaceDeleted = await this.recordCompletion();
+-            this.operationTraces.get(request.requestId)?.executionTerminated("completed");
++            trace.executionTerminated("completed");
+             this.acceptedRequests.complete(request.requestId, request.requestId, this.now());
+-            await this.completionDeliveries.get(request.requestId);
++            await this.deliverySession.trackedCompletion(request.requestId);
+             if (workspaceDeleted) {
+-              await this.waitForCompletionAcknowledgements();
++              await this.deliverySession.waitForCompletionAcknowledgements();
+               setTimeout(() => void this.shutdown("workspace-deleted", true), 0);
+             }
+           } finally {
+@@ -661,7 +587,7 @@ export class WorkspaceDaemon {
+         },
+       );
+     } catch (error) {
+-      this.operationTraces.get(request.requestId)?.executionTerminated("failed");
++      trace.executionTerminated("failed");
+       this.logger.record({
+         kind: "failure",
+         operation: "request",
+@@ -677,7 +603,7 @@ export class WorkspaceDaemon {
+           : { shutdownFailureCode: this.shutdownFailureCode }),
+         shutdownStarted: this.shutdownStarted,
+       });
+-      await spool?.dispose().catch((cleanupError) => {
++      await completion?.dispose().catch((cleanupError) => {
+         this.logger.record({
+           kind: "failure",
+           operation: "completion-cleanup",
+@@ -735,209 +661,6 @@ export class WorkspaceDaemon {
+     });
+   }
+ 
+-  private failedFrame(
+-    requestId: string,
+-    code: DaemonExecutionFailureCode,
+-  ): DaemonExecutionServerFrame {
+-    return {
+-      kind: "execution-failed",
+-      instanceId: this.options.instanceId,
+-      processToken: this.options.processToken,
+-      requestId,
+-      code,
+-    };
+-  }
+-
+-  private deliver(send: DaemonServerSend, frame: DaemonServerMessage): Promise<void> {
+-    return send(frame);
+-  }
+-
+-  private async deliverStoredCompletion(
+-    requestId: string,
+-    send: DaemonServerSend,
+-    offset = 0,
+-  ): Promise<void> {
+-    const spool = await this.completionSpools.open(requestId);
+-    if (spool === undefined) throw new Error("Accepted request result is missing");
+-    try {
+-      await this.deliverCompletion(requestId, spool, offset, send);
+-    } catch (error) {
+-      if (!(error instanceof CompletionSpoolReadError)) throw error;
+-      this.logger.record({
+-        kind: "failure",
+-        operation: "completion-delivery",
+-        failureCode: "internal",
+-        errorName: DaemonLogger.errorName(error),
+-      });
+-      await spool.dispose().catch((cleanupError) => {
+-        this.logger.record({
+-          kind: "failure",
+-          operation: "completion-cleanup",
+-          failureCode: "internal",
+-          errorName: DaemonLogger.errorName(cleanupError),
+-        });
+-      });
+-      this.acceptedRequests.invalidateCompletion(requestId, "internal", this.now());
+-      await this.deliver(send, this.failedFrame(requestId, "internal"));
+-      this.completeOperationTrace(requestId, "failed");
+-    }
+-  }
+-
+-  private trackCompletionDelivery(
+-    requestId: string,
+-    send: DaemonServerSend,
+-    disconnectTraceConnection: () => void,
+-  ): void {
+-    const delivery = this.deliverStoredCompletion(requestId, send).catch((error) =>
+-      this.recordDeliveryFailure(requestId, error, disconnectTraceConnection),
+-    );
+-    this.completionDeliveries.set(requestId, delivery);
+-    void delivery.finally(() => {
+-      if (this.completionDeliveries.get(requestId) === delivery) {
+-        this.completionDeliveries.delete(requestId);
+-      }
+-    });
+-  }
+-
+-  private async deliverCompletion(
+-    requestId: string,
+-    spool: CompletionSpool,
+-    offset: number,
+-    send: DaemonServerSend,
+-  ): Promise<void> {
+-    const completedManifest = spool.completedManifest;
+-    if (completedManifest === undefined) throw new Error("Completion manifest is missing");
+-    await this.deliver(send, {
+-      kind: "result-manifest",
+-      instanceId: this.options.instanceId,
+-      processToken: this.options.processToken,
+-      requestId,
+-      manifest: completedManifest,
+-    });
+-    for await (const record of spool.read(offset)) {
+-      await this.deliver(send, {
+-        transferId: completedManifest.transferId,
+-        requestId,
+-        offset: record.sequence,
+-        sequence: record.sequence,
+-        stream: record.stream,
+-        bytes: record.bytes,
+-      });
+-    }
+-    await this.deliver(send, {
+-      kind: "result-end",
+-      instanceId: this.options.instanceId,
+-      processToken: this.options.processToken,
+-      requestId,
+-      transferId: completedManifest.transferId,
+-      rawBytes: completedManifest.rawBytes,
+-      recordCount: completedManifest.recordCount,
+-      sha256: completedManifest.sha256,
+-    });
+-    this.terminateOperationDelivery(requestId, "delivered");
+-  }
+-
+-  private recordDeliveryFailure(
+-    requestId: string,
+-    error: unknown,
+-    disconnectTraceConnection: () => void,
+-  ): void {
+-    disconnectTraceConnection();
+-    this.logger.record({
+-      kind: "failure",
+-      operation: "completion-delivery",
+-      failureCode: "internal",
+-      errorName: DaemonLogger.errorName(error),
+-    });
+-  }
+-
+-  private completeOperationTrace(requestId: string, outcome: DaemonDeliveryOutcome): void {
+-    const expiration = this.operationTraceExpirations.get(requestId);
+-    if (expiration !== undefined) clearTimeout(expiration);
+-    this.operationTraceExpirations.delete(requestId);
+-    this.operationTraceConnections.delete(requestId);
+-    this.terminateOperationDelivery(requestId, outcome);
+-    this.operationTraces.delete(requestId);
+-  }
+-
+-  private terminateOperationDelivery(requestId: string, outcome: DaemonDeliveryOutcome): void {
+-    if (!this.acceptedRequests.terminateDelivery(requestId)) return;
+-    const trace = this.operationTraces.get(requestId);
+-    if (trace === undefined) this.operationObserver.deliveryTerminated(requestId, outcome, 0);
+-    else trace.deliveryTerminated(outcome);
+-  }
+-
+-  private completeRetainedOperationTraces(): void {
+-    for (const requestId of this.operationTraces.keys()) {
+-      this.completeOperationTrace(requestId, "disconnected");
+-    }
+-  }
+-
+-  private disconnectOperationTrace(requestId: string): void {
+-    if (this.operationTraceExpirations.has(requestId)) return;
+-    const trace = this.operationTraces.get(requestId);
+-    if (trace === undefined) return;
+-    trace.clientDisconnected();
+-    const expiration = setTimeout(
+-      () => this.expireOperationTrace(requestId),
+-      this.policy.values.diagnostics.disconnectedTraceRetentionMs,
+-    );
+-    expiration.unref();
+-    this.operationTraceExpirations.set(requestId, expiration);
+-    this.enforceOperationTraceCapacity();
+-  }
+-
+-  private attachOperationTraceConnection(requestId: string, send: DaemonServerSend): () => void {
+-    const connectionCount = this.operationTraceConnections.get(requestId) ?? 0;
+-    if (connectionCount === 0) {
+-      const expiration = this.operationTraceExpirations.get(requestId);
+-      if (expiration !== undefined) clearTimeout(expiration);
+-      this.operationTraceExpirations.delete(requestId);
+-    }
+-    this.operationTraceConnections.set(requestId, connectionCount + 1);
+-    let connectionClosed = false;
+-    const disconnect = (): void => {
+-      if (connectionClosed) return;
+-      connectionClosed = true;
+-      const remainingConnections = (this.operationTraceConnections.get(requestId) ?? 1) - 1;
+-      if (remainingConnections > 0) {
+-        this.operationTraceConnections.set(requestId, remainingConnections);
+-        return;
+-      }
+-      this.operationTraceConnections.delete(requestId);
+-      this.disconnectOperationTrace(requestId);
+-    };
+-    send.onClose(disconnect);
+-    return disconnect;
+-  }
+-
+-  private reattachOperationTrace(requestId: string): void {
+-    if (this.acceptedRequests.isDeliveryTerminated(requestId)) return;
+-    const trace = this.operationTraces.get(requestId);
+-    if (trace === undefined) this.operationObserver.reattached(requestId);
+-    else trace.reattached();
+-  }
+-
+-  private expireOperationTrace(requestId: string): void {
+-    this.operationTraceExpirations.delete(requestId);
+-    this.operationTraceConnections.delete(requestId);
+-    if (!this.operationTraces.delete(requestId)) return;
+-    this.operationObserver.traceExpired(requestId);
+-  }
+-
+-  private enforceOperationTraceCapacity(): void {
+-    const capacity = Math.max(1, this.policy.values.diagnostics.maximumDisconnectedTraces);
+-    while (this.operationTraceExpirations.size > capacity) {
+-      const oldestRequestId = this.operationTraceExpirations.keys().next().value as
+-        | string
+-        | undefined;
+-      if (oldestRequestId === undefined) return;
+-      const expiration = this.operationTraceExpirations.get(oldestRequestId);
+-      if (expiration !== undefined) clearTimeout(expiration);
+-      this.expireOperationTrace(oldestRequestId);
+-    }
+-  }
+-
+   private async drainAndShutdown(reason: "idle"): Promise<void> {
+     await this.requestQueue.drain();
+     await this.shutdown(reason);
+@@ -949,7 +672,7 @@ export class WorkspaceDaemon {
+   }
+ 
+   private async initiateResourceDrain(): Promise<void> {
+-    await this.waitForCompletionAcknowledgements();
++    await this.deliverySession.waitForCompletionAcknowledgements();
+     void this.shutdown("resource", true).catch((error) => {
+       this.logger.record({
+         kind: "failure",
+@@ -960,19 +683,6 @@ export class WorkspaceDaemon {
+     });
+   }
+ 
+-  private async waitForCompletionAcknowledgements(): Promise<void> {
+-    const acknowledgementDeadline =
+-      Date.now() + this.policy.values.shutdown.resourceDrainAcknowledgementGraceMs;
+-    while (
+-      this.acceptedRequests.hasUnacknowledgedCompletions &&
+-      Date.now() < acknowledgementDeadline
+-    ) {
+-      await new Promise((resolve) =>
+-        setTimeout(resolve, this.policy.values.shutdown.resourceDrainAcknowledgementPollIntervalMs),
+-      );
+-    }
+-  }
+-
+   private async shutdown(
+     reason: "graceful" | "idle" | "resource" | "workspace-deleted",
+     force = false,
+@@ -1005,15 +715,8 @@ export class WorkspaceDaemon {
+         errorName: DaemonLogger.errorName(error),
+       });
+     }
+-    await this.completionSpools.cleanupInstance(this.options.instanceId).catch((error) => {
+-      this.logger.record({
+-        kind: "failure",
+-        operation: "completion-cleanup",
+-        failureCode: "internal",
+-        errorName: DaemonLogger.errorName(error),
+-      });
+-    });
+-    this.completeRetainedOperationTraces();
++    await this.deliverySession.cleanupInstance();
++    this.deliverySession.completeRetainedTraces();
+     await this.logger.close();
+     this.exit(0);
+   }

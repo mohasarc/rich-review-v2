@@ -1,0 +1,16 @@
+# Blind-phase supplemental notes
+
+Written before opening any bundle diff or worktree source.
+
+- Every primary finished experiment 01–37 was read; alternate #127 view of 01, #131 view of 20, 21's standalone video wrapper/transcript, 32's declared one-decision starter and 33's second opening are separate reading records (42 total).
+- The top-level decision inventories were read before external source. Prior knowledge accrued across pages: these are serial reader observations, not 42 independent fresh humans. README Entry point, Kind and Subjects were read for the census; their descriptive hints were visible.
+- Rendered text captures temporarily hide preformatted source blocks. Other author-included code-like prose and the table-formatted source in 32 were visible. I have not treated that as a clean room from all source concepts.
+- Descents are samples, not all paths. Full text captures exist for the selected interactions. Failed Playwright text selectors were my automation errors, not observed product failures.
+- Sampled routes: 03 retained runtime-load promise; 05 fetch and adapter details; 07 #127 and #149 timeline; 08 selected details; 09 fixtures; 10 request return followed by rejecting project release; 13 expanded decisions; 15 accepted-execution scene; 16 move/repair model; 17 rejecting-release scenario selected (recorded data, no fresh execution); 22 duplicate acceptance and worker replacement through fenced late exit; 23 public-client room; 24 pending-cleanup question; 25 removed timeout and fixtures; 27 adapters; 35 export and clock; 37 one deeper crossing. Linear mechanisms were also read where visible by default.
+- 23: overview says Node-free inputs and control; the public room first names optional policy among host inputs. Candidate rule-4 surprise: new caller authority appears one level down. 29 has the same optional-policy reveal in a linear deeper host list; 12 also needs comparison of top D01 and lower host list.
+- 25: top calls out removal of the old 5ms startup test premise; detail first explains the field was never read. Candidate rule-4 surprise: that qualifier changes what the removed stimulus meant.
+- 27: adapter detail admits an unchanged-looking call need not reach the same storage state, but neither top nor sampled detail states the actual lost disk-path witness set. Treat as an omission unless source disproves.
+- 35: export record reiterates its rationale is absent even from inspected plans. Await independent source check; another page (06) claims a migration-plan reason exists.
+- 24 release descent repeats an already surfaced new await/rejection barrier and explicit parity qualification. 10 rejection animation also repeats its top. 22 handoff repeats ready-before-old-termination and late-exit fencing already declared. No new decision noticed on 37's one sampled deeper crossing.
+- Stack guides disagree: 01/22 teach first configured project ownership, 14 teaches last configured project ownership. 01 also says an existing #127 test release call gained await whereas 32/37 say the five old tests are byte-identical. These are unresolved source questions, not conclusions.
+- 19 explicitly limits itself to declarations; 21 video and 32 starter explicitly redirect to a complete explanation. Their omitted runtime/test decisions are declared scope limits, not concealed discoveries.
