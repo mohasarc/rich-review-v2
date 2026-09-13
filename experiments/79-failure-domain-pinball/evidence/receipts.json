@@ -1,0 +1,1214 @@
+{
+  "pins": {
+    "head": "d07002357d3e9596bfaae910a1ac63b77981620b",
+    "main": "b6801ebdd2421d0ca2e4bdd61ec0f04c24ddd73e"
+  },
+  "receipts": {
+    "guards": {
+      "title": "Five guards; the first failure decides",
+      "build": "head",
+      "source": "head:packages/daemon/src/daemon-admission.ts",
+      "path": "packages/daemon/src/daemon-admission.ts",
+      "start": 1,
+      "end": 94,
+      "revision": "d07002357d3e9596bfaae910a1ac63b77981620b",
+      "text": "export type DaemonExecuteRejectionCode =\n  | \"not-ready\"\n  | \"draining\"\n  | \"resource-pressure\"\n  | \"incompatible\";\n\nexport type AcceptedRequestCompatibility = \"unseen\" | \"matching\" | \"conflicting\";\n\nexport type WorkspaceRequestQueueState = \"accepting\" | \"draining\" | \"closed\";\n\nexport type DaemonExecutionCoordinates = {\n  readonly instanceId: string;\n  readonly processToken: string;\n  readonly requestId: string;\n};\n\nexport type DaemonRejectedExecutionFrame = {\n  readonly kind: \"rejected\";\n  readonly instanceId: string;\n  readonly processToken: string;\n  readonly requestId: string;\n  readonly code: DaemonExecuteRejectionCode;\n  readonly retrySafe: boolean;\n};\n\nexport interface DaemonAdmissionContext {\n  readonly request: unknown;\n  readonly authenticated: boolean;\n  readonly workerReady: boolean;\n  readonly resourceAdmissionPaused: boolean;\n  readonly queueState: WorkspaceRequestQueueState;\n  readonly compatibility: AcceptedRequestCompatibility;\n}\n\nexport interface DaemonAdmissionGuard {\n  rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined;\n}\n\nexport type DaemonAdmissionRejectionCode = \"authentication\" | DaemonExecuteRejectionCode;\n\nexport type DaemonAdmissionDecision =\n  | { readonly kind: \"accept\" }\n  | { readonly kind: \"disconnect\"; readonly code: \"authentication\" }\n  | { readonly kind: \"reject\"; readonly code: DaemonExecuteRejectionCode };\n\nclass AuthenticationAdmissionGuard implements DaemonAdmissionGuard {\n  rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {\n    return context.authenticated ? undefined : \"authentication\";\n  }\n}\n\nclass WorkerReadinessAdmissionGuard implements DaemonAdmissionGuard {\n  rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {\n    return context.workerReady ? undefined : \"not-ready\";\n  }\n}\n\nclass ResourceAdmissionGuard implements DaemonAdmissionGuard {\n  rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {\n    return context.resourceAdmissionPaused ? \"resource-pressure\" : undefined;\n  }\n}\n\nclass QueueAdmissionGuard implements DaemonAdmissionGuard {\n  rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {\n    return context.queueState === \"accepting\" ? undefined : \"draining\";\n  }\n}\n\nclass CompatibilityAdmissionGuard implements DaemonAdmissionGuard {\n  rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {\n    return context.compatibility === \"conflicting\" ? \"incompatible\" : undefined;\n  }\n}\n\nexport class DaemonAdmissionPolicy {\n  private readonly guards: readonly DaemonAdmissionGuard[] = [\n    new AuthenticationAdmissionGuard(),\n    new WorkerReadinessAdmissionGuard(),\n    new ResourceAdmissionGuard(),\n    new QueueAdmissionGuard(),\n    new CompatibilityAdmissionGuard(),\n  ];\n\n  decide(context: DaemonAdmissionContext): DaemonAdmissionDecision {\n    for (const guard of this.guards) {\n      const rejection = guard.rejectionFor(context);\n      if (rejection === undefined) continue;\n      if (rejection === \"authentication\") return { kind: \"disconnect\", code: rejection };\n      return { kind: \"reject\", code: rejection };\n    }\n    return { kind: \"accept\" };\n  }\n}"
+    },
+    "retry": {
+      "title": "Retry safety belongs to the rejection code",
+      "build": "head",
+      "source": "head:packages/daemon/src/daemon-admission.ts",
+      "path": "packages/daemon/src/daemon-admission.ts",
+      "start": 96,
+      "end": 129,
+      "revision": "d07002357d3e9596bfaae910a1ac63b77981620b",
+      "text": "export class DaemonAdmissionRejections {\n  private static readonly retrySafety: Readonly<Record<DaemonExecuteRejectionCode, boolean>> =\n    Object.freeze({\n      \"not-ready\": true,\n      draining: true,\n      \"resource-pressure\": true,\n      incompatible: false,\n    });\n\n  static retrySafe(code: DaemonExecuteRejectionCode): boolean {\n    return DaemonAdmissionRejections.retrySafety[code];\n  }\n\n  static frame(\n    code: DaemonExecuteRejectionCode,\n    coordinates: DaemonExecutionCoordinates,\n  ): DaemonRejectedExecutionFrame {\n    return {\n      kind: \"rejected\",\n      ...coordinates,\n      code,\n      retrySafe: DaemonAdmissionRejections.retrySafe(code),\n    };\n  }\n\n  static assertConsistent(frame: DaemonRejectedExecutionFrame): void {\n    if (\n      !Object.hasOwn(DaemonAdmissionRejections.retrySafety, frame.code) ||\n      frame.retrySafe !== DaemonAdmissionRejections.retrySafety[frame.code]\n    ) {\n      throw new Error(\"Inconsistent daemon execution rejection\");\n    }\n  }\n}"
+    },
+    "transport": {
+      "title": "Delivery state gates local fallback",
+      "build": "head",
+      "source": "head:packages/daemon/src/transport/transport-error.ts",
+      "path": "packages/daemon/src/transport/transport-error.ts",
+      "start": 1,
+      "end": 38,
+      "revision": "d07002357d3e9596bfaae910a1ac63b77981620b",
+      "text": "import { DaemonAdmissionRejections, type DaemonExecuteRejectionCode } from \"../daemon-admission.js\";\n\nexport type DaemonDeliveryState = \"not-submitted\" | \"submitted-unconfirmed\" | \"accepted\";\n\nexport type DaemonTransportFailureCode =\n  | \"unreachable\"\n  | \"timeout\"\n  | \"corrupt\"\n  | \"incompatible\"\n  | \"authentication\"\n  | \"closed\"\n  | \"rejected\";\n\nexport class DaemonTransportError extends Error {\n  readonly authenticatedInstanceId?: string;\n  readonly retrySafe: boolean;\n\n  constructor(\n    readonly code: DaemonTransportFailureCode,\n    readonly delivery: DaemonDeliveryState,\n    message: string,\n    authenticatedInstanceId?: string,\n    authenticatedRejectionCode?: DaemonExecuteRejectionCode,\n  ) {\n    super(message);\n    this.name = \"DaemonTransportError\";\n    if (authenticatedInstanceId !== undefined) {\n      this.authenticatedInstanceId = authenticatedInstanceId;\n    }\n    this.retrySafe =\n      delivery === \"not-submitted\" ||\n      (code === \"rejected\" &&\n        delivery === \"submitted-unconfirmed\" &&\n        authenticatedInstanceId !== undefined &&\n        authenticatedRejectionCode !== undefined &&\n        DaemonAdmissionRejections.retrySafe(authenticatedRejectionCode));\n  }\n}"
+    },
+    "failure": {
+      "title": "Two vocabularies and terminal precedence",
+      "build": "head",
+      "source": "head:packages/daemon/src/daemon-execution-failure.ts",
+      "path": "packages/daemon/src/daemon-execution-failure.ts",
+      "start": 1,
+      "end": 35,
+      "revision": "d07002357d3e9596bfaae910a1ac63b77981620b",
+      "text": "const executionFailureCodes = [\n  \"worker-exit\",\n  \"controlled-resource\",\n  \"response-capacity\",\n  \"stopping\",\n  \"internal\",\n] as const;\n\nexport type DaemonExecutionFailureCode = (typeof executionFailureCodes)[number];\n\nexport type DaemonWorkerFailureCode = \"initialization\" | \"execution\" | \"protocol\" | \"resource\";\n\nexport interface DaemonExecutionFailureContext {\n  readonly resourceInterrupted: boolean;\n  readonly responseCapacityExceeded: boolean;\n  readonly workerExited: boolean;\n  readonly shutdownFailureCode?: \"stopping\" | \"controlled-resource\";\n  readonly shutdownStarted: boolean;\n}\n\nexport class DaemonExecutionFailures {\n  static isCode(value: unknown): value is DaemonExecutionFailureCode {\n    return executionFailureCodes.includes(value as DaemonExecutionFailureCode);\n  }\n\n  static classify(context: DaemonExecutionFailureContext): DaemonExecutionFailureCode {\n    if (context.resourceInterrupted) return \"controlled-resource\";\n    if (context.responseCapacityExceeded) return \"response-capacity\";\n    if (context.workerExited) {\n      return context.shutdownFailureCode === \"stopping\" ? \"stopping\" : \"worker-exit\";\n    }\n    if (context.shutdownFailureCode !== undefined) return context.shutdownFailureCode;\n    return context.shutdownStarted ? \"stopping\" : \"internal\";\n  }\n}"
+    },
+    "identity": {
+      "title": "An existing entry attaches without a new execution",
+      "build": "head",
+      "source": "head:packages/daemon/src/execution/accepted-execution-session.ts",
+      "path": "packages/daemon/src/execution/accepted-execution-session.ts",
+      "start": 44,
+      "end": 69,
+      "revision": "d07002357d3e9596bfaae910a1ac63b77981620b",
+      "text": "\n  accept(request: AuthenticatedDaemonExecuteRequest): AcceptedExecutionAdmission {\n    const existing = this.options.ledger.entryFor(request.requestId);\n    const entry = this.options.ledger.accept(\n      request.requestId,\n      request.commandName,\n      request.request,\n    );\n    const acceptance = Object.freeze({\n      requestId: request.requestId,\n      acceptedAt: entry.acceptedAt,\n      queuePosition: entry.queuePosition,\n    });\n    if (existing !== undefined) {\n      return Object.freeze({ newlyAccepted: false, entry, acceptance });\n    }\n    this.lastNavigationAt = this.options.clock.wallNowMs();\n    this.options.lifetime.navigationAccepted();\n    const trace = this.options.delivery.beginAcceptedTrace(\n      request.requestId,\n      request.commandName,\n      entry.queuePosition,\n      this.options.resourceSupervisor.snapshot.generation,\n    );\n    void this.executeAccepted(request, trace);\n    return Object.freeze({ newlyAccepted: true, entry, acceptance });"
+    },
+    "classify": {
+      "title": "Concrete error identities become classification facts",
+      "build": "head",
+      "source": "head:packages/daemon/src/execution/accepted-execution-session.ts",
+      "path": "packages/daemon/src/execution/accepted-execution-session.ts",
+      "start": 149,
+      "end": 170,
+      "revision": "d07002357d3e9596bfaae910a1ac63b77981620b",
+      "text": "    } catch (error) {\n      trace.executionTerminated(\"failed\");\n      this.recordFailure(\"request\", \"internal\", error);\n      const shutdown = this.options.processLifecycle.shutdownSnapshot();\n      const code = DaemonExecutionFailures.classify({\n        resourceInterrupted: this.resourceInterruptedRequests.delete(request.requestId),\n        responseCapacityExceeded: error instanceof CompletionSpoolCapacityError,\n        workerExited: error instanceof DaemonNavigationWorkerExitedError,\n        ...(shutdown.failureCode === undefined\n          ? {}\n          : { shutdownFailureCode: shutdown.failureCode }),\n        shutdownStarted: shutdown.started,\n      });\n      await completion?.dispose().catch((cleanupError) => {\n        this.recordFailure(\"completion-cleanup\", \"internal\", cleanupError);\n      });\n      this.options.ledger.fail(request.requestId, code, this.options.clock.wallNowMs());\n    } finally {\n      if (this.options.queue.isIdle) this.options.lifetime.queueBecameIdle();\n    }\n  }\n"
+    },
+    "reattach": {
+      "title": "Same-request reattachment; fresh capture per attempt",
+      "build": "head",
+      "source": "head:packages/daemon/src/transport/execution-client.ts",
+      "path": "packages/daemon/src/transport/execution-client.ts",
+      "start": 49,
+      "end": 96,
+      "revision": "d07002357d3e9596bfaae910a1ac63b77981620b",
+      "text": "    request: DaemonExecuteRequest,\n    completion: DaemonExecutionReceipt[\"completion\"],\n  ): DaemonExecutionReceipt[\"completion\"] {\n    let currentCompletion = completion;\n    let originalAcceptedClose: DaemonTransportError | undefined;\n    let reattachmentCount = 0;\n    while (true) {\n      try {\n        return await currentCompletion;\n      } catch (error) {\n        if (!DaemonExecutionClient.isAcceptedConnectionClose(error, request)) throw error;\n        originalAcceptedClose ??= error;\n        if (\n          reattachmentCount >= this.options.deliveryPolicy.postAcceptanceExecutionReattachmentLimit\n        )\n          throw originalAcceptedClose;\n        try {\n          const reattached = await this.executeOnce(endpoint, request);\n          currentCompletion = reattached.completion;\n          reattachmentCount += 1;\n        } catch {\n          throw originalAcceptedClose;\n        }\n      }\n    }\n  }\n\n  private executeOnce(\n    endpoint: string,\n    request: DaemonExecuteRequest,\n  ): Promise<DaemonExecutionReceipt> {\n    this.options.validator.request(request);\n    return new Promise((resolve, reject) => {\n      const decoder = this.options.codec.transferDecoder();\n      const transfer = new DaemonResultTransferReceiver(\n        request.requestId,\n        this.options.createOutput(),\n      );\n      let connection: Awaited<ReturnType<DaemonSocketClient[\"connect\"]>> | undefined;\n      let delivery: DaemonDeliveryState = \"not-submitted\";\n      let acceptance: DaemonExecutionAcceptance | undefined;\n      let terminal = false;\n      let outerSettled = false;\n      let completionSettled = false;\n      let resumeCount = 0;\n      let resolveCompletion!: (value: Awaited<DaemonExecutionReceipt[\"completion\"]>) => void;\n      let rejectCompletion!: (error: DaemonTransportError) => void;\n      const completion = new Promise<Awaited<DaemonExecutionReceipt[\"completion\"]>>("
+    },
+    "resume": {
+      "title": "A separate fetch budget within the attempt",
+      "build": "head",
+      "source": "head:packages/daemon/src/transport/execution-client.ts",
+      "path": "packages/daemon/src/transport/execution-client.ts",
+      "start": 115,
+      "end": 149,
+      "revision": "d07002357d3e9596bfaae910a1ac63b77981620b",
+      "text": "      const resume = (): boolean => {\n        if (\n          resumeCount >= this.options.deliveryPolicy.resultTransferResumeLimitPerExecutionAttempt ||\n          completionSettled ||\n          acceptance === undefined ||\n          transfer.manifest === undefined ||\n          terminal\n        ) {\n          return false;\n        }\n        resumeCount += 1;\n        connection?.destroy();\n        transfer.beginConnection();\n        void this.fetchCompletion(endpoint, request, transfer)\n          .then((completionValue) => {\n            if (completionSettled) return;\n            completionSettled = true;\n            resolveCompletion(completionValue);\n          })\n          .catch((error: unknown) => {\n            if (DaemonExecutionClient.isAcceptedConnectionClose(error, request) && resume()) {\n              return;\n            }\n            fail(\n              error instanceof DaemonResultFetchEndedError\n                ? new DaemonTransportError(\"corrupt\", \"accepted\", error.message)\n                : error,\n            );\n          });\n        return true;\n      };\n      const publishAcceptance = (): void => {\n        if (acceptance === undefined || outerSettled) return;\n        outerSettled = true;\n        connection?.disableTimeout();"
+    },
+    "fetch": {
+      "title": "Fetch starts at the next record offset",
+      "build": "head",
+      "source": "head:packages/daemon/src/transport/execution-client.ts",
+      "path": "packages/daemon/src/transport/execution-client.ts",
+      "start": 303,
+      "end": 336,
+      "revision": "d07002357d3e9596bfaae910a1ac63b77981620b",
+      "text": "    request: DaemonExecuteRequest,\n    transfer: DaemonResultTransferReceiver,\n  ): DaemonExecutionReceipt[\"completion\"] {\n    const decoder = this.options.codec.transferDecoder();\n    let connection: Awaited<ReturnType<DaemonSocketClient[\"connect\"]>>;\n    try {\n      connection = await this.options.sockets.connect(endpoint);\n    } catch (error) {\n      const message = error instanceof Error ? error.message : String(error);\n      throw new DaemonTransportError(\"closed\", \"accepted\", message, request.instanceId);\n    }\n    try {\n      connection.write(\n        this.options.codec.encodeControl({\n          kind: \"result-fetch\",\n          protocolVersion: request.protocolVersion,\n          instanceId: request.instanceId,\n          processToken: request.processToken,\n          requestId: request.requestId,\n          offset: transfer.nextOffset,\n        }),\n      );\n    } catch (error) {\n      connection.destroy();\n      throw DaemonExecutionClient.transportError(error, \"accepted\");\n    }\n    let ended = false;\n    try {\n      for await (const bytes of connection.incoming) {\n        try {\n          let completedResult = false;\n          let failedCode: DaemonExecutionFailureCode | undefined;\n          for (const value of decoder.append(bytes)) {\n            if (ended) throw new Error(\"Daemon resumed with a duplicate terminal frame\");"
+    },
+    "close": {
+      "title": "Only an authenticated accepted close reattaches",
+      "build": "head",
+      "source": "head:packages/daemon/src/transport/execution-client.ts",
+      "path": "packages/daemon/src/transport/execution-client.ts",
+      "start": 400,
+      "end": 411,
+      "revision": "d07002357d3e9596bfaae910a1ac63b77981620b",
+      "text": "  private static isAcceptedConnectionClose(\n    error: unknown,\n    request: DaemonExecuteRequest,\n  ): error is DaemonTransportError {\n    return (\n      error instanceof DaemonTransportError &&\n      error.code === \"closed\" &&\n      error.delivery === \"accepted\" &&\n      error.authenticatedInstanceId === request.instanceId\n    );\n  }\n"
+    },
+    "ack": {
+      "title": "Complete, validate, acknowledge, then expose the result",
+      "build": "head",
+      "source": "head:packages/daemon/src/transport/execution-client.ts",
+      "path": "packages/daemon/src/transport/execution-client.ts",
+      "start": 208,
+      "end": 236,
+      "revision": "d07002357d3e9596bfaae910a1ac63b77981620b",
+      "text": "        if (completedResult) {\n          const result = await transfer.finish();\n          const completedManifest = transfer.manifest;\n          if (completedManifest === undefined) throw new Error(\"Completion manifest is missing\");\n          try {\n            await this.options.lifecycle.acknowledgeResult(\n              endpoint,\n              request,\n              completedManifest.transferId,\n            );\n          } catch (error) {\n            await result.output.dispose();\n            throw error;\n          }\n          if (!completionSettled) {\n            completionSettled = true;\n            connection?.end();\n            resolveCompletion({ status: \"completed\", result });\n          }\n        }\n        if (failedCode !== undefined && !completionSettled) {\n          completionSettled = true;\n          connection?.end();\n          await transfer.dispose();\n          resolveCompletion({ status: \"failed\", code: failedCode });\n        }\n      };\n      const receive = async (): Promise<void> => {\n        try {"
+    },
+    "manifest": {
+      "title": "End and digest validation precede completion",
+      "build": "head",
+      "source": "head:packages/daemon/src/transport/result-transfer-receiver.ts",
+      "path": "packages/daemon/src/transport/result-transfer-receiver.ts",
+      "start": 89,
+      "end": 136,
+      "revision": "d07002357d3e9596bfaae910a1ac63b77981620b",
+      "text": "      this.terminalReceived ||\n      manifest === undefined ||\n      frame.instanceId !== manifest.instanceId ||\n      frame.requestId !== this.requestId ||\n      frame.transferId !== manifest.transferId ||\n      frame.rawBytes !== manifest.rawBytes ||\n      frame.recordCount !== manifest.recordCount ||\n      frame.sha256 !== manifest.sha256 ||\n      this.nextRecordOffset !== manifest.recordCount\n    ) {\n      throw new Error(\"Daemon result transfer did not match its manifest\");\n    }\n    this.terminalReceived = true;\n  }\n\n  async finish(): Promise<DaemonExecutorExecutionResult> {\n    const manifest = this.expectedManifest;\n    if (!this.terminalReceived || manifest === undefined) {\n      throw new Error(\"Daemon result transfer is incomplete\");\n    }\n    try {\n      const captured = await this.output.finish(manifest.exitCode);\n      if (!DaemonResultTransferReceiver.summariesMatch(captured.summary, manifest)) {\n        this.disposal = captured.result.output.dispose();\n        await this.disposal;\n        throw new Error(\"Daemon result transfer failed digest validation\");\n      }\n      this.completed = true;\n      return captured.result;\n    } catch (error) {\n      await this.dispose();\n      throw error;\n    }\n  }\n\n  dispose(): Promise<void> {\n    if (this.completed) return Promise.resolve();\n    this.disposal ??= this.output.dispose();\n    return this.disposal;\n  }\n\n  private static manifestsMatch(\n    expected: CompletionSpoolManifest,\n    actual: CompletionSpoolManifest,\n  ): boolean {\n    return (\n      actual.transferId === expected.transferId &&\n      actual.requestId === expected.requestId &&"
+    },
+    "limits": {
+      "title": "Two independent defaults, each one",
+      "build": "head",
+      "source": "head:packages/daemon/src/daemon-policy.ts",
+      "path": "packages/daemon/src/daemon-policy.ts",
+      "start": 125,
+      "end": 136,
+      "revision": "d07002357d3e9596bfaae910a1ac63b77981620b",
+      "text": "        controllerPollIntervalMs: 20,\n        processSignalExitTimeoutMs: 500,\n        processExitPollIntervalMs: 20,\n        resourceDrainAcknowledgementGraceMs: 250,\n        resourceDrainAcknowledgementPollIntervalMs: 5,\n      },\n      delivery: {\n        postAcceptanceExecutionReattachmentLimit: 1,\n        resultTransferResumeLimitPerExecutionAttempt: 1,\n      },\n      output: {\n        maximumChunkRawBytes: 64 * 1024,"
+    },
+    "budget-reasons": {
+      "title": "The policy record states both recovery purposes",
+      "build": "head",
+      "source": "head:plans/005/daemon-policy.md",
+      "path": "plans/005/daemon-policy.md",
+      "start": 27,
+      "end": 28,
+      "revision": "d07002357d3e9596bfaae910a1ac63b77981620b",
+      "text": "| `delivery.postAcceptanceExecutionReattachmentLimit` | 1 reattachment | Authenticated close after acceptance | Recover the accepted request without local replay | Reattachment tests |\n| `delivery.resultTransferResumeLimitPerExecutionAttempt` | 1 fetch resume per execute attempt | Interrupted manifest transfer | Resume one transfer independently for each execute attempt | Two-scope resume tests |"
+    },
+    "admission-deadline": {
+      "title": "Admission has a five-second deadline",
+      "build": "head",
+      "source": "head:plans/005/daemon-policy.md",
+      "path": "plans/005/daemon-policy.md",
+      "start": 9,
+      "end": 9,
+      "revision": "d07002357d3e9596bfaae910a1ac63b77981620b",
+      "text": "| `transport.executionAdmissionTimeoutMs` | 5 s | Execute submission until acceptance | Bound admission without timing accepted completion | Long-command transport characterization |"
+    },
+    "completion-deadline": {
+      "title": "Accepted completion has no deadline",
+      "build": "head",
+      "source": "head:plans/005/daemon-policy.md",
+      "path": "plans/005/daemon-policy.md",
+      "start": 58,
+      "end": 58,
+      "revision": "d07002357d3e9596bfaae910a1ac63b77981620b",
+      "text": "| post-accept completion | None | Accepted work is not replayed or failed because it runs long. |"
+    },
+    "fallback": {
+      "title": "Warm completion never falls through to local execution",
+      "build": "head",
+      "source": "head:packages/daemon/src/client/daemon-client-runtime.ts",
+      "path": "packages/daemon/src/client/daemon-client-runtime.ts",
+      "start": 208,
+      "end": 246,
+      "revision": "d07002357d3e9596bfaae910a1ac63b77981620b",
+      "text": "\n  private async executeWarm(\n    record: DaemonRecord,\n    request: DaemonClientExecuteRequest,\n  ): Promise<DaemonClientExecuteResult> {\n    let receipt: Awaited<ReturnType<DaemonClientTransport[\"execute\"]>>;\n    try {\n      receipt = await this.routingTransport.execute(record.endpoint, {\n        kind: \"execute\",\n        protocolVersion: DAEMON_PROTOCOL_VERSION,\n        instanceId: record.instanceId,\n        processToken: record.processToken,\n        requestId: randomUUID(),\n        commandName: request.commandName,\n        request: DaemonClientRuntime.executorRequest(request, \"warm\"),\n      });\n    } catch (error) {\n      if (error instanceof DaemonTransportError && error.retrySafe) {\n        return this.executeLocally(request, \"fallback\");\n      }\n      return { mode: \"warm\", result: DaemonControlledResult.acceptedRequestDidNotComplete() };\n    }\n    try {\n      const completion = await receipt.completion;\n      if (completion.status === \"failed\") {\n        return { mode: \"warm\", result: DaemonClientRuntime.controlledFailure(completion.code) };\n      }\n      if (!DaemonClientRuntime.isCompleteResult(completion.result)) {\n        await DaemonClientRuntime.disposeMalformedOutput(completion.result);\n        return { mode: \"warm\", result: DaemonControlledResult.acceptedRequestDidNotComplete() };\n      }\n      return { mode: \"warm\", result: completion.result };\n    } catch {\n      return { mode: \"warm\", result: DaemonControlledResult.acceptedRequestDidNotComplete() };\n    }\n  }\n\n  private async executeLocally(\n    request: DaemonClientExecuteRequest,"
+    },
+    "admission-host": {
+      "title": "Admission caller",
+      "build": "head",
+      "source": "head:packages/daemon/src/process/process-coordinator.ts",
+      "path": "packages/daemon/src/process/process-coordinator.ts",
+      "start": 468,
+      "end": 518,
+      "revision": "d07002357d3e9596bfaae910a1ac63b77981620b",
+      "text": "        fileCount: worker.fileCount ?? 0,\n      },\n    }).pong;\n  }\n\n  private async acceptExecution(\n    request: Extract<DaemonRequest, { kind: \"execute\" }>,\n    send: DaemonServerSend,\n  ): Promise<DaemonResponse | void> {\n    const decision = this.decideAdmission(request);\n    if (decision.kind === \"disconnect\") {\n      throw new Error(\"Daemon execution request does not match process instance\");\n    }\n    if (decision.kind === \"reject\") return this.rejection(request, decision.code);\n    const admission = this.acceptedExecutionSession.accept(request);\n    await this.deliverySession.attach(\n      {\n        ...admission.acceptance,\n      },\n      send,\n    );\n  }\n\n  private decideAdmission(\n    request: Extract<DaemonRequest, { kind: \"execute\" }>,\n  ): DaemonAdmissionDecision {\n    const authenticated = request.processToken === this.options.coordinates.processToken;\n    if (!authenticated) {\n      return this.admissionPolicy.decide({\n        request,\n        authenticated,\n        workerReady: true,\n        resourceAdmissionPaused: false,\n        queueState: \"accepting\",\n        compatibility: \"unseen\",\n      });\n    }\n    void this.resourceSupervisor.sample(\"admission\").catch((error) => {\n      this.logger.record({\n        kind: \"failure\",\n        operation: \"resource-sample\",\n        failureCode: \"operation-failed\",\n        errorName: DaemonLogger.errorName(error),\n      });\n    });\n    return this.admissionPolicy.decide({\n      request,\n      authenticated,\n      workerReady: this.workerManager.snapshot.ready,\n      resourceAdmissionPaused: this.resourceSupervisor.snapshot.admissionPaused,\n      queueState: this.acceptedExecutionSession.snapshot.queue.state,"
+    },
+    "old-failure": {
+      "title": "Main: the same precedence in the CLI daemon",
+      "build": "main",
+      "source": "main:apps/cli/src/daemon/workspace-daemon.ts",
+      "path": "apps/cli/src/daemon/workspace-daemon.ts",
+      "start": 650,
+      "end": 674,
+      "revision": "b6801ebdd2421d0ca2e4bdd61ec0f04c24ddd73e",
+      "text": "      this.operationTraces.get(request.requestId)?.executionTerminated(\"failed\");\n      this.logger.record({\n        kind: \"failure\",\n        operation: \"request\",\n        failureCode: \"internal\",\n        errorName: DaemonLogger.errorName(error),\n      });\n      const code =\n        (this.resourceInterruptedRequests.delete(request.requestId)\n          ? \"controlled-resource\"\n          : undefined) ??\n        (error instanceof CompletionSpoolCapacityError\n          ? \"response-capacity\"\n          : error instanceof DaemonNavigationWorkerExitedError\n            ? this.shutdownFailureCode === \"stopping\"\n              ? \"stopping\"\n              : \"worker-exit\"\n            : (this.shutdownFailureCode ?? (this.shutdownStarted ? \"stopping\" : \"internal\")));\n      await spool?.dispose().catch((cleanupError) => {\n        this.logger.record({\n          kind: \"failure\",\n          operation: \"completion-cleanup\",\n          failureCode: \"internal\",\n          errorName: DaemonLogger.errorName(cleanupError),\n        });"
+    },
+    "old-client": {
+      "title": "Main: CLI owns the warm fallback decision",
+      "build": "main",
+      "source": "main:apps/cli/src/daemon/daemon-command-dispatcher.ts",
+      "path": "apps/cli/src/daemon/daemon-command-dispatcher.ts",
+      "start": 201,
+      "end": 258,
+      "revision": "b6801ebdd2421d0ca2e4bdd61ec0f04c24ddd73e",
+      "text": "    record: DaemonRecord,\n    request: CliExecutionRequest,\n  ): Promise<DispatchedCommandResult> {\n    let receipt: DaemonExecutionReceipt;\n    try {\n      receipt = await runtime.transport.execute(record.endpoint, {\n        kind: \"execute\",\n        protocolVersion: record.protocolVersion,\n        instanceId: record.instanceId,\n        processToken: record.processToken,\n        requestId: this.requestId(),\n        request: { ...request, executionMode: \"warm\" },\n      });\n    } catch (error) {\n      if (DaemonCommandDispatcher.isRetrySafeFailure(error)) {\n        return this.executeLocally(request, \"fallback\");\n      }\n      return { mode: \"warm\", result: ControlledCommandResult.acceptedRequestDidNotComplete() };\n    }\n    try {\n      const completion = await receipt.completion;\n      if (completion.status === \"failed\") {\n        return {\n          mode: \"warm\",\n          result: DaemonCommandDispatcher.controlledFailure(completion.code),\n        };\n      }\n      if (!DaemonCommandDispatcher.isCompleteResult(completion.result)) {\n        return { mode: \"warm\", result: ControlledCommandResult.acceptedRequestDidNotComplete() };\n      }\n      return {\n        mode: \"warm\",\n        result: completion.result,\n      };\n    } catch {\n      return { mode: \"warm\", result: ControlledCommandResult.acceptedRequestDidNotComplete() };\n    }\n  }\n\n  private executeRoute(\n    route: Exclude<DaemonRouteSnapshot, { readonly kind: \"warm\" }>,\n    request: CliExecutionRequest,\n  ): Promise<DispatchedCommandResult> {\n    return this.executeLocally(request, route.kind === \"fallback\" ? \"fallback\" : \"cold\");\n  }\n\n  private executeLocally(\n    request: CliExecutionRequest,\n    mode: \"cold\" | \"fallback\",\n  ): Promise<DispatchedCommandResult> {\n    const executor = this.executorFactory(\n      this.options.createDependencies(this.options.stateDirectory),\n    );\n    return executor\n      .execute({ ...request, executionMode: mode })\n      .then((result) => ({ mode, result }));\n  }\n"
+    },
+    "cutover": {
+      "title": "Tip: host coordinates through DaemonClient",
+      "build": "head",
+      "source": "head:apps/cli/src/cli-invocation-coordinator.ts",
+      "path": "apps/cli/src/cli-invocation-coordinator.ts",
+      "start": 1,
+      "end": 44,
+      "revision": "d07002357d3e9596bfaae910a1ac63b77981620b",
+      "text": "import type { DaemonClient, DaemonClientExecuteResult } from \"@symnav/daemon\";\nimport type { CliProgramExecutor } from \"./cli-program-executor.js\";\nimport type { CliExecutionRequest } from \"./command-execution-result.js\";\nimport { InvocationWorkspaceSelector } from \"./invocation-workspace-selector.js\";\n\nexport interface CliInvocationCoordinatorOptions {\n  readonly daemonClient: DaemonClient;\n  readonly createLocalExecutor: () => CliProgramExecutor;\n  readonly resolveWorkspaceRoot: (startDirectory: string) => Promise<string>;\n}\n\nexport class CliInvocationCoordinator {\n  private readonly selector = new InvocationWorkspaceSelector();\n\n  constructor(private readonly options: CliInvocationCoordinatorOptions) {}\n\n  async execute(request: CliExecutionRequest): Promise<DaemonClientExecuteResult> {\n    const selected = this.selector.select(request.argv, request.cwd);\n    if (selected.route.kind !== \"workspace\") {\n      return this.executeLocally(request);\n    }\n    const workspaceRequest: CliExecutionRequest = { ...request, argv: selected.argv };\n    let workspaceRoot: string;\n    try {\n      workspaceRoot = await this.options.resolveWorkspaceRoot(selected.route.startDirectory);\n    } catch {\n      return this.executeLocally(workspaceRequest);\n    }\n    return this.options.daemonClient.execute({\n      workspaceRoot,\n      commandName: selected.route.commandName,\n      argv: selected.argv,\n      cwd: request.cwd,\n      telemetryEnabled: request.telemetryEnabled,\n    });\n  }\n\n  private async executeLocally(request: CliExecutionRequest): Promise<DaemonClientExecuteResult> {\n    const result = await this.options\n      .createLocalExecutor()\n      .execute({ ...request, executionMode: \"cold\" });\n    return { mode: \"cold\", result };\n  }\n}"
+    },
+    "failure-tests": {
+      "title": "Classification witnesses, including competing failures",
+      "build": "head",
+      "source": "head:packages/daemon/src/daemon-execution-failure.test.ts",
+      "path": "packages/daemon/src/daemon-execution-failure.test.ts",
+      "start": 35,
+      "end": 122,
+      "revision": "d07002357d3e9596bfaae910a1ac63b77981620b",
+      "text": "      \"consumed resource interruption\",\n      {\n        resourceInterrupted: true,\n        responseCapacityExceeded: true,\n        workerExited: true,\n        shutdownFailureCode: \"stopping\",\n        shutdownStarted: true,\n      },\n      \"controlled-resource\",\n    ],\n    [\n      \"spool capacity\",\n      {\n        resourceInterrupted: false,\n        responseCapacityExceeded: true,\n        workerExited: true,\n        shutdownFailureCode: \"stopping\",\n        shutdownStarted: true,\n      },\n      \"response-capacity\",\n    ],\n    [\n      \"worker exit during graceful shutdown\",\n      {\n        resourceInterrupted: false,\n        responseCapacityExceeded: false,\n        workerExited: true,\n        shutdownFailureCode: \"stopping\",\n        shutdownStarted: true,\n      },\n      \"stopping\",\n    ],\n    [\n      \"worker exit during controlled shutdown\",\n      {\n        resourceInterrupted: false,\n        responseCapacityExceeded: false,\n        workerExited: true,\n        shutdownFailureCode: \"controlled-resource\",\n        shutdownStarted: true,\n      },\n      \"worker-exit\",\n    ],\n    [\n      \"worker exit without shutdown\",\n      {\n        resourceInterrupted: false,\n        responseCapacityExceeded: false,\n        workerExited: true,\n        shutdownStarted: false,\n      },\n      \"worker-exit\",\n    ],\n    [\n      \"first shutdown failure\",\n      {\n        resourceInterrupted: false,\n        responseCapacityExceeded: false,\n        workerExited: false,\n        shutdownFailureCode: \"controlled-resource\",\n        shutdownStarted: true,\n      },\n      \"controlled-resource\",\n    ],\n    [\n      \"shutdown begun\",\n      {\n        resourceInterrupted: false,\n        responseCapacityExceeded: false,\n        workerExited: false,\n        shutdownStarted: true,\n      },\n      \"stopping\",\n    ],\n    [\n      \"internal fallback\",\n      {\n        resourceInterrupted: false,\n        responseCapacityExceeded: false,\n        workerExited: false,\n        shutdownStarted: false,\n      },\n      \"internal\",\n    ],\n  ])(\"classifies %s with preserved precedence\", (_name, context, expected) => {\n    expect(DaemonExecutionFailures.classify(context)).toBe(expected);\n  });\n});"
+    },
+    "recovery-tests": {
+      "title": "Identical reattachment request and two captures",
+      "build": "head",
+      "source": "head:packages/daemon/src/transport/execution-client.test.ts",
+      "path": "packages/daemon/src/transport/execution-client.test.ts",
+      "start": 74,
+      "end": 130,
+      "revision": "d07002357d3e9596bfaae910a1ac63b77981620b",
+      "text": "  it(\"reattaches an accepted close with the identical execute request\", async () => {\n    const policy = DaemonPolicy.currentSystem();\n    const codec = executionCodec();\n    const request = executionRequest();\n    const first = new ScriptedDaemonSocketConnection([\n      codec.encodeControl({\n        kind: \"accepted\",\n        instanceId: request.instanceId,\n        processToken: request.processToken,\n        requestId: request.requestId,\n        acceptedAt: 10,\n        queuePosition: 0,\n      } satisfies DaemonExecutionServerFrame),\n    ]);\n    const second = new ScriptedDaemonSocketConnection([\n      Buffer.concat([\n        codec.encodeControl({\n          kind: \"accepted\",\n          instanceId: request.instanceId,\n          processToken: request.processToken,\n          requestId: request.requestId,\n          acceptedAt: 10,\n          queuePosition: 0,\n        } satisfies DaemonExecutionServerFrame),\n        codec.encodeControl({\n          kind: \"execution-failed\",\n          instanceId: request.instanceId,\n          processToken: request.processToken,\n          requestId: request.requestId,\n          code: \"internal\",\n        } satisfies DaemonExecutionServerFrame),\n      ]),\n    ]);\n    const sockets = new RecordingDaemonSocketClient([first, second]);\n    const outputs: RecordingDaemonOutputCapture[] = [];\n    const client = new DaemonExecutionClient({\n      sockets,\n      lifecycle: new RecordingResultAcknowledger(),\n      codec,\n      validator: new DaemonProtocolValidator(),\n      createOutput: () => {\n        const output = new RecordingDaemonOutputCapture();\n        outputs.push(output);\n        return output;\n      },\n      transportPolicy: policy.values.transport,\n      deliveryPolicy: policy.values.delivery,\n    });\n\n    const receipt = await client.execute(\"daemon-endpoint\", request);\n\n    await expect(receipt.completion).resolves.toEqual({ status: \"failed\", code: \"internal\" });\n    expect(sockets.calls).toHaveLength(2);\n    expect(first.writes).toEqual([codec.encodeControl(request)]);\n    expect(second.writes).toEqual([codec.encodeControl(request)]);\n    expect(outputs.map((output) => output.disposeCount)).toEqual([1, 1]);\n  });"
+    },
+    "guard-tests": {
+      "title": "Pairwise order and compatible work",
+      "build": "head",
+      "source": "head:packages/daemon/src/daemon-admission.test.ts",
+      "path": "packages/daemon/src/daemon-admission.test.ts",
+      "start": 59,
+      "end": 87,
+      "revision": "d07002357d3e9596bfaae910a1ac63b77981620b",
+      "text": "      code: \"draining\",\n    });\n  });\n\n  it.each([\"unseen\", \"matching\"] as const)(\"accepts %s compatible work\", (compatibility) => {\n    expect(new DaemonAdmissionPolicy().decide(AdmissionContexts.create({ compatibility }))).toEqual(\n      { kind: \"accept\" },\n    );\n  });\n});\n\ndescribe(\"DaemonAdmissionRejections\", () => {\n  const retrySafety = [\n    [\"not-ready\", true],\n    [\"resource-pressure\", true],\n    [\"draining\", true],\n    [\"incompatible\", false],\n  ] as const satisfies readonly (readonly [DaemonExecuteRejectionCode, boolean])[];\n\n  it.each(retrySafety)(\"derives %s retry safety\", (code, retrySafe) => {\n    expect(DaemonAdmissionRejections.retrySafe(code)).toBe(retrySafe);\n  });\n\n  it.each(retrySafety)(\"constructs and validates %s frames\", (code, retrySafe) => {\n    const coordinates: DaemonExecutionCoordinates = {\n      instanceId: \"instance\",\n      processToken: \"token\",\n      requestId: \"request\",\n    };"
+    }
+  },
+  "prs": {
+    "133": {
+      "body": "## Context\n\nExecution failures previously used an app-owned outer union, a colliding worker-thread alias, and repeated validators and classification branches. This change gives `@symnav/daemon` one outer authority while preserving every serialized string and client outcome.\n\n## Shape\n\nBefore \u2014 outer execution failures had several app-owned authorities, while worker failures reused the same type name:\n\n```mermaid\nflowchart LR\n    Protocol[\"daemon-protocol<br/>outer failure union\"]\n    Workspace[\"WorkspaceDaemon<br/>inline terminal precedence\"]\n    Transport[\"LocalDaemonTransport<br/>duplicate validator\"]\n    Logger[\"DaemonLogger<br/>duplicate value set\"]\n    Ledger[\"ledger, status, wire,<br/>and client paths\"]\n    Worker[\"worker protocol<br/>colliding failure alias\"]\n\n    Workspace -->|\"uses outer type\"| Protocol\n    Transport -->|\"uses copied values\"| Protocol\n    Logger -->|\"uses copied values\"| Protocol\n    Ledger -->|\"uses outer type\"| Protocol\n\n    style Protocol fill:#ffdddd,stroke:#cc0000\n    style Workspace fill:#fff2cc,stroke:#bf9000\n    style Transport fill:#fff2cc,stroke:#bf9000\n    style Logger fill:#fff2cc,stroke:#bf9000\n    style Ledger fill:#fff2cc,stroke:#bf9000\n    style Worker fill:#ffdddd,stroke:#cc0000\n```\n\nAfter \u2014 daemon owns the closed outer vocabulary and precedence; the CLI supplies app-owned error identity facts:\n\n```mermaid\nflowchart LR\n    Authority[\"@symnav/daemon<br/>DaemonExecutionFailures\"]\n    Boundary[\"WorkspaceDaemon<br/>instanceof facts\"]\n    Consumers[\"ledger, transport, logger,<br/>status, wire, and client\"]\n    WorkerType[\"@symnav/daemon<br/>DaemonWorkerFailureCode\"]\n    WorkerPath[\"worker protocol<br/>and entry\"]\n\n    Boundary -->|\"uses fact-only classifier\"| Authority\n    Consumers -->|\"uses type and validator\"| Authority\n    WorkerPath -->|\"uses distinct inner type\"| WorkerType\n\n    style Authority fill:#ddffdd,stroke:#008800\n    style Boundary fill:#fff2cc,stroke:#bf9000\n    style Consumers fill:#fff2cc,stroke:#bf9000\n    style WorkerType fill:#ddffdd,stroke:#008800\n    style WorkerPath fill:#fff2cc,stroke:#bf9000\n```\n\nLegend: green = added authority; red = removed authority or collision; yellow = changed path.\n\n- Outer classification preserves resource, capacity, worker-exit, and shutdown precedence.\n- Worker values remain `initialization`, `execution`, `protocol`, and `resource` on the wire.\n- Accepted terminal failures retain their controlled client result and never replay work.\n\n## Where it lives\n\n```text\n.\n\u251c\u2500\u2500 packages/daemon/\n\u2502   \u251c\u2500\u2500 src/\n\u2502   \u2502   \u251c\u2500\u2500 ++ daemon-execution-failure.ts       # owns outer validation, precedence, and both vocabularies\n\u2502   \u2502   \u251c\u2500\u2500 ++ daemon-execution-failure.test.ts  # locks closed sets and precedence\n\u2502   \u2502   \u251c\u2500\u2500 ** host-contract.test.ts             # locks source and declaration exports\n\u2502   \u2502   \u2514\u2500\u2500 ** index.ts                          # exposes root runtime and type contracts\n\u2502   \u2514\u2500\u2500 test/\n\u2502       \u2514\u2500\u2500 ** public-import.test.ts              # verifies consumer-visible imports\n\u2514\u2500\u2500 apps/cli/src/daemon/\n    \u251c\u2500\u2500 ** workspace-daemon.ts                   # derives app-owned identity facts\n    \u251c\u2500\u2500 ** daemon-navigation-worker-protocol.ts  # adopts distinct worker failure type\n    \u251c\u2500\u2500 ** daemon-navigation-worker-entry.ts     # emits unchanged worker values\n    \u251c\u2500\u2500 ** ... 5 outer consumer files            # protocol, ledger, transport, logging, and client mapping\n    \u2514\u2500\u2500 ** ... 5 colocated test files             # lock boundaries, subtype behavior, and no replay\n```\n\nLegend: `++` added, `**` changed, `~~` moved, `--` removed.\n\n## Public surface\n\nAdded at the `@symnav/daemon` root:\n\n```ts\nexport type DaemonExecutionFailureCode = (typeof executionFailureCodes)[number];\nexport type DaemonWorkerFailureCode = \"initialization\" | \"execution\" | \"protocol\" | \"resource\";\nexport interface DaemonExecutionFailureContext {\n  readonly resourceInterrupted: boolean;\n  readonly responseCapacityExceeded: boolean;\n  readonly workerExited: boolean;\n  readonly shutdownFailureCode?: \"stopping\" | \"controlled-resource\";\n  readonly shutdownStarted: boolean;\n}\nexport class DaemonExecutionFailures {\n  static isCode(value: unknown): value is DaemonExecutionFailureCode;\n  static classify(context: DaemonExecutionFailureContext): DaemonExecutionFailureCode;\n}\n```\n\n## Decisions\n\n- Chose one private outer tuple with a derived union over repeated app-local unions, because runtime validation and compile-time vocabulary must change together.\n- Chose a distinct worker type with no shared literals over retaining the colliding alias, because inner worker failures and outer request-completion failures are different domains.\n- Chose a pure context classifier over lifecycle-specific branching at the call site, because precedence is exhaustively testable without constructing a workspace daemon.\n- Chose app-owned `instanceof` fact derivation over constructor-name or `error.name` reflection, because it preserves subtype behavior without reversing package dependencies or accepting spoofed errors.\n\n## Look here\n\n- `packages/daemon/src/daemon-execution-failure.ts:26`\n- `apps/cli/src/daemon/workspace-daemon.ts:641`\n- `apps/cli/src/daemon/local-daemon-transport.ts:1347`\n",
+      "commits": [
+        {
+          "sha": "47e5d214286daefa168de651339618b8dd7841ee",
+          "subject": "Specify daemon failure vocabularies",
+          "body": ""
+        },
+        {
+          "sha": "b24fc749be2563a281f36a40739726801edf43e5",
+          "subject": "Define daemon execution failure authority",
+          "body": ""
+        },
+        {
+          "sha": "6dbd687b5d35aa163ceac507964f15368c9ed96f",
+          "subject": "Rename the worker failure code type",
+          "body": ""
+        },
+        {
+          "sha": "fd8175c90b930067b83d5cadb882cc148ffa6b18",
+          "subject": "Specify execution failure boundaries",
+          "body": ""
+        },
+        {
+          "sha": "04ef2e5d56a4d864631a0b122a9ea6a456e6f9b9",
+          "subject": "Centralize execution failure classification",
+          "body": ""
+        },
+        {
+          "sha": "b62f93c541f1cfef93b73c3acb17ad1fa47f195c",
+          "subject": "Resolve failure contract source URL portably",
+          "body": ""
+        }
+      ],
+      "number": 133,
+      "title": "Unify daemon execution failure vocabulary",
+      "base": "agent/daemon-architecture-refactor-part-09-command-vocabulary",
+      "head": "agent/daemon-architecture-refactor-part-10-execution-failure-vocabulary"
+    },
+    "134": {
+      "body": "## Context\n\nExecution admission mixed authentication, daemon state, duplicate compatibility, wire framing, and retry booleans in app-owned branches. `@symnav/daemon` now owns rejection order and retry meaning without changing disconnect, sampling, queue, duplicate, or fallback behavior.\n\n## Shape\n\nBefore \u2014 app code owned admission order, rejection frames, and retry interpretation:\n\n```mermaid\nflowchart LR\n    Workspace[\"WorkspaceDaemon<br/>hand-ordered branches +<br/>mutation-time duplicate check\"]\n    Protocol[\"daemon-protocol<br/>app-owned rejection union\"]\n    Transport[\"LocalDaemonTransport<br/>copied code validator +<br/>trusted retrySafe\"]\n    Fallback[\"dispatcher fallback<br/>local replay gate\"]\n\n    Workspace -->|\"uses caller-supplied retrySafe\"| Protocol\n    Transport -->|\"uses copied rejection set\"| Protocol\n    Fallback -->|\"uses wire retrySafe\"| Transport\n\n    style Workspace fill:#ffdddd,stroke:#cc0000\n    style Protocol fill:#ffdddd,stroke:#cc0000\n    style Transport fill:#ffdddd,stroke:#cc0000\n```\n\nAfter \u2014 daemon contracts own first-failure decisions, frame consistency, and code-derived retry safety:\n\n```mermaid\nflowchart LR\n    Ledger[\"AcceptedRequestLedger<br/>side-effect-free compatibility\"]\n    Workspace[\"WorkspaceDaemon<br/>projects admission context\"]\n    Policy[\"@symnav/daemon<br/>DaemonAdmissionPolicy\"]\n    Rejections[\"@symnav/daemon<br/>DaemonAdmissionRejections\"]\n    Transport[\"LocalDaemonTransport<br/>validates and projects code\"]\n    Fallback[\"dispatcher fallback<br/>local replay gate\"]\n\n    Workspace -->|\"uses compatibility\"| Ledger\n    Workspace -->|\"uses ordered decision\"| Policy\n    Workspace -->|\"uses derived frame\"| Rejections\n    Transport -->|\"uses consistency + retry table\"| Rejections\n    Fallback -->|\"uses derived retrySafe\"| Transport\n\n    style Ledger fill:#fff2cc,stroke:#bf9000\n    style Workspace fill:#fff2cc,stroke:#bf9000\n    style Policy fill:#ddffdd,stroke:#008800\n    style Rejections fill:#ddffdd,stroke:#008800\n    style Transport fill:#fff2cc,stroke:#bf9000\n```\n\nLegend: green = added authority; red = removed authority; yellow = changed path.\n\n- Guard precedence is authentication, worker readiness, resource pressure, queue state, then duplicate compatibility.\n- Authentication mismatch still disconnects without a rejection frame or resource sample.\n- Authenticated `not-ready`, `resource-pressure`, and `draining` rejections remain replayable; `incompatible` does not.\n\n## Where it lives\n\n```text\n.\n\u251c\u2500\u2500 packages/daemon/\n\u2502   \u251c\u2500\u2500 src/\n\u2502   \u2502   \u251c\u2500\u2500 ++ daemon-admission.ts             # owns guards, frames, validation, and retry safety\n\u2502   \u2502   \u251c\u2500\u2500 ++ daemon-admission.test.ts        # locks pairwise precedence and retry table\n\u2502   \u2502   \u251c\u2500\u2500 ** host-contract.test.ts           # locks exact source and declaration surface\n\u2502   \u2502   \u2514\u2500\u2500 ** index.ts                        # exposes admission contracts at package root\n\u2502   \u2514\u2500\u2500 test/\n\u2502       \u2514\u2500\u2500 ** public-import.test.ts            # verifies consumer-visible imports\n\u2514\u2500\u2500 apps/cli/src/daemon/\n    \u251c\u2500\u2500 ** workspace-daemon.ts                 # projects state into synchronous policy decisions\n    \u251c\u2500\u2500 ** accepted-request-ledger.ts          # reports compatibility without mutation\n    \u251c\u2500\u2500 ** local-daemon-transport.ts           # validates frames and derives retry projection\n    \u251c\u2500\u2500 ** daemon-protocol.ts                  # reuses daemon-owned frame vocabulary\n    \u251c\u2500\u2500 ** workspace-request-queue.ts          # reuses daemon-owned queue-state vocabulary\n    \u2514\u2500\u2500 ** ... 4 test files                    # preserve admission, wire, duplicate, and fallback behavior\n```\n\nLegend: `++` added, `**` changed, `~~` moved, `--` removed.\n\n## Public surface\n\nAdded at the `@symnav/daemon` root:\n\n```ts\nexport type DaemonExecuteRejectionCode =\n  | \"not-ready\"\n  | \"draining\"\n  | \"resource-pressure\"\n  | \"incompatible\";\nexport type AcceptedRequestCompatibility = \"unseen\" | \"matching\" | \"conflicting\";\nexport type WorkspaceRequestQueueState = \"accepting\" | \"draining\" | \"closed\";\nexport type DaemonExecutionCoordinates = {\n  readonly instanceId: string;\n  readonly processToken: string;\n  readonly requestId: string;\n};\nexport type DaemonRejectedExecutionFrame = {\n  readonly kind: \"rejected\";\n  readonly instanceId: string;\n  readonly processToken: string;\n  readonly requestId: string;\n  readonly code: DaemonExecuteRejectionCode;\n  readonly retrySafe: boolean;\n};\nexport interface DaemonAdmissionContext {\n  readonly request: unknown;\n  readonly authenticated: boolean;\n  readonly workerReady: boolean;\n  readonly resourceAdmissionPaused: boolean;\n  readonly queueState: WorkspaceRequestQueueState;\n  readonly compatibility: AcceptedRequestCompatibility;\n}\nexport interface DaemonAdmissionGuard {\n  rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined;\n}\nexport type DaemonAdmissionRejectionCode = \"authentication\" | DaemonExecuteRejectionCode;\nexport type DaemonAdmissionDecision =\n  | { readonly kind: \"accept\" }\n  | { readonly kind: \"disconnect\"; readonly code: \"authentication\" }\n  | { readonly kind: \"reject\"; readonly code: DaemonExecuteRejectionCode };\nexport class DaemonAdmissionPolicy {\n  decide(context: DaemonAdmissionContext): DaemonAdmissionDecision;\n}\nexport class DaemonAdmissionRejections {\n  static retrySafe(code: DaemonExecuteRejectionCode): boolean;\n  static frame(\n    code: DaemonExecuteRejectionCode,\n    coordinates: DaemonExecutionCoordinates,\n  ): DaemonRejectedExecutionFrame;\n  static assertConsistent(frame: DaemonRejectedExecutionFrame): void;\n}\n```\n\n## Decisions\n\n- Chose explicit guard classes over inline conditionals, because first-failure order is visible and exhaustively testable as one policy.\n- Chose side-effect-free ledger compatibility over mutation-time corruption handling, because conflicts must reject without changing accepted state.\n- Chose code-derived retry safety over trusting wire booleans, because contradictory frames must be corrupt rather than replayable.\n- Chose `unknown` for the temporary request field over importing the CLI request type, because `@symnav/daemon` must remain dependency-free until the daemon-owned executor contract replaces it.\n\n## Look here\n\n- `packages/daemon/src/daemon-admission.ts:85`\n- `apps/cli/src/daemon/workspace-daemon.ts:556`\n- `apps/cli/src/daemon/local-daemon-transport.ts:1293`\n",
+      "commits": [
+        {
+          "sha": "97edfebfbf6b452ada48b3e991febd33b7d85457",
+          "subject": "Characterize authentication admission disconnect",
+          "body": ""
+        },
+        {
+          "sha": "bb218351c1b20ed9b844328286809f7b00deb63f",
+          "subject": "Characterize ordered admission boundaries",
+          "body": ""
+        },
+        {
+          "sha": "e75156fdb3bd9a49f077593af8337bbd572e7f2b",
+          "subject": "Characterize nonawaited admission sampling",
+          "body": ""
+        },
+        {
+          "sha": "4bfd4c1c8a55d316815759a4e693e645bd8381e0",
+          "subject": "Specify daemon admission contracts",
+          "body": ""
+        },
+        {
+          "sha": "2f66bf873fc45a3bb32010457b169c31bd8d8ea2",
+          "subject": "Define daemon admission contracts",
+          "body": ""
+        },
+        {
+          "sha": "dc9495029d361e75ec17c1b64c7f728d7ab5cbf0",
+          "subject": "Specify ordered daemon admission policy",
+          "body": ""
+        },
+        {
+          "sha": "f35a9d55926cdbc87600be8cf4f0258cf874e6fb",
+          "subject": "Enforce ordered daemon admission policy",
+          "body": ""
+        },
+        {
+          "sha": "105256cd1232e9c09b729547d77a7d76fef526dd",
+          "subject": "Specify daemon admission rejection authority",
+          "body": ""
+        },
+        {
+          "sha": "e607252979c8a5f2d70ff6eecd5d004739404ab4",
+          "subject": "Define daemon admission rejection authority",
+          "body": ""
+        },
+        {
+          "sha": "37ead00236fbbf2292a219ade73184180ffd20fa",
+          "subject": "Specify code-derived admission retry safety",
+          "body": ""
+        },
+        {
+          "sha": "686c63904a56c44538af3b80ae38e8939a443fc2",
+          "subject": "Derive admission retry safety from rejection codes",
+          "body": ""
+        },
+        {
+          "sha": "2a98b1d597384340f32019c06bab006f083155ec",
+          "subject": "Specify side-effect-free duplicate compatibility",
+          "body": ""
+        },
+        {
+          "sha": "ad0d459435a1799eb24905055e71ef423f9ee241",
+          "subject": "Expose accepted-request compatibility",
+          "body": ""
+        },
+        {
+          "sha": "f80e430d4d88941000c5790de1fcac638ce32e8b",
+          "subject": "Route execution admission through ordered guards",
+          "body": ""
+        },
+        {
+          "sha": "f51201124276a143efd8ba1bb99f081cc0dded0a",
+          "subject": "Resolve admission contract source URL portably",
+          "body": ""
+        }
+      ],
+      "number": 134,
+      "title": "Make daemon admission rejection authoritative",
+      "base": "agent/daemon-architecture-refactor-part-10-execution-failure-vocabulary",
+      "head": "agent/daemon-architecture-refactor-part-11-admission-rejection"
+    },
+    "142": {
+      "body": "## Context\n\nOutbound execution still lived in `LocalDaemonTransport` after lifecycle and socket mechanics gained dedicated owners. Accepted work requires independent recovery budgets for result fetches within an attempt and identical-request reattachments across attempts.\n\n## Shape\n\nBefore \u2014 the transport fa\u00e7ade embedded the execution state machine:\n\n```mermaid\nflowchart LR\n    Callers[\"Daemon command callers\"] -->|\"execute\"| Facade[\"LocalDaemonTransport\"]\n    Facade -->|\"owns\"| Embedded[\"Embedded admission, transfer, acknowledgement, and recovery\"]\n    Embedded -->|\"uses\"| Socket[\"DaemonSocketClient\"]\n    Embedded -->|\"uses\"| Lifecycle[\"DaemonLifecycleClient\"]\n    Embedded -->|\"creates\"| Output[\"Result capture\"]\n\n    classDef removed fill:#ffebe9,stroke:#cf222e,color:#24292f\n    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n    class Embedded removed\n    class Facade changed\n```\n\nAfter \u2014 the fa\u00e7ade delegates the complete state machine to one execution client:\n\n```mermaid\nflowchart LR\n    Callers[\"Daemon command callers\"] -->|\"execute\"| Facade[\"LocalDaemonTransport\"]\n    Facade -->|\"delegates\"| Client[\"DaemonExecutionClient\"]\n    Client -->|\"uses\"| Socket[\"DaemonSocketClient\"]\n    Client -->|\"acknowledges through\"| Lifecycle[\"DaemonLifecycleClient\"]\n    Client -->|\"creates per attempt\"| Output[\"Result capture\"]\n\n    classDef added fill:#dafbe1,stroke:#1a7f37,color:#24292f\n    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n    class Client added\n    class Facade changed\n```\n\nLegend: green = added; yellow = changed; red = removed; default = unchanged.\n\n## Where it lives\n\n```text\n.\n\u2514\u2500\u2500 apps/cli/src/daemon/\n    \u251c\u2500\u2500 ++ daemon-execution-client.ts               # owns outbound execution and accepted recovery\n    \u251c\u2500\u2500 ++ daemon-execution-client.test.ts          # locks direct ownership and identical-request recovery\n    \u251c\u2500\u2500 ** local-daemon-transport.ts                # composes and delegates to execution client\n    \u2514\u2500\u2500 ** local-daemon-transport-execution.test.ts # retains transport-level delivery oracles\n```\n\nLegend: `++` added, `**` changed, `~~` moved, `--` removed.\n\n## Public surface\n\n```ts\nexport class DaemonExecutionClient implements DaemonExecutionRequester {\n  constructor(options: DaemonExecutionClientOptions);\n  execute(endpoint: string, request: DaemonExecuteRequest): Promise<DaemonExecutionReceipt>;\n}\n```\n\n## Decisions\n\n- Chose a dedicated execution client over a generic response chain, because admission, accepted completion, transfer, acknowledgement, and recovery share one state machine.\n- Chose a fresh output capture per execute attempt over reusing interrupted capture state, because duplicate-request reattachment starts a new delivery while result fetch resumes the current delivery.\n- Chose independent numeric policy counters over boolean recovery flags, because fetch resumes and accepted reattachments have separate configurable budgets.\n- Chose the lifecycle client's acknowledgement-only surface over widening `DaemonLifecycleRequester`, because only result completion needs acknowledgement.\n- Chose an internal fetch-ended error over changing the public exhausted-fetch failure, because final exhaustion must retain accepted-corruption behavior without replaying execution.\n\n## Look here\n\n- `apps/cli/src/daemon/daemon-execution-client.ts:46`\n- `apps/cli/src/daemon/daemon-execution-client.ts:75`\n- `apps/cli/src/daemon/daemon-execution-client.ts:300`\n",
+      "commits": [
+        {
+          "sha": "7eb8dd4ce839affcd1d34cdc7ffd0a4e41942f3f",
+          "subject": "Characterize execution admission deadlines",
+          "body": ""
+        },
+        {
+          "sha": "30c4b5474f5737b56f61cbcece57cc02307e9aab",
+          "subject": "Specify result fetch resume budgets",
+          "body": ""
+        },
+        {
+          "sha": "f1e1d4842e96106102f2a80ff48e4a1452ed7031",
+          "subject": "Honor repeated result fetch resumes",
+          "body": ""
+        },
+        {
+          "sha": "6acb1fb1a36f0f25eb37e5c820a71ab5454b7227",
+          "subject": "Characterize execution reattachment budgets",
+          "body": ""
+        },
+        {
+          "sha": "149f4b6a04fa6d6c6c9c0cc4be3cd8b512612a24",
+          "subject": "Characterize failed execution reattachment",
+          "body": ""
+        },
+        {
+          "sha": "5419a881e35b4fcf6dbc899b8cbafcdab0986f1c",
+          "subject": "Characterize isolated execution reattachment",
+          "body": ""
+        },
+        {
+          "sha": "9330f32b5ba86e7c93d071c1e46de28f5a93da21",
+          "subject": "Characterize execution output disposal",
+          "body": ""
+        },
+        {
+          "sha": "7d972ae215621adbe2decc8a1a0b76bf9de8d877",
+          "subject": "Assign daemon execution client ownership",
+          "body": ""
+        },
+        {
+          "sha": "815bfc9d6414b45341f8ffd369d9bcc0885fde6d",
+          "subject": "Extract one-attempt daemon execution",
+          "body": ""
+        },
+        {
+          "sha": "ea64fe2dff70c1593dadb1619fb62dd0b1c2ccd2",
+          "subject": "Specify accepted execution recovery ownership",
+          "body": ""
+        },
+        {
+          "sha": "2c8829f23c041ba2d08c6fb753ba618bcbdb2d47",
+          "subject": "Own accepted execution recovery",
+          "body": ""
+        },
+        {
+          "sha": "6939ec682a53dd3b4df79ae96a314380aac48c6f",
+          "subject": "Delegate daemon execution exchanges",
+          "body": ""
+        },
+        {
+          "sha": "76eaea78b1a27d0e59e30e708fc25265e70c70fb",
+          "subject": "Specify exhausted result fetch failure",
+          "body": ""
+        },
+        {
+          "sha": "40f90692114acf55fcec8524daca93a63e9b0cdd",
+          "subject": "Preserve exhausted result fetch failures",
+          "body": ""
+        },
+        {
+          "sha": "40dc23233febc557e98e482bee073f72f162b118",
+          "subject": "Specify original accepted-close failure",
+          "body": ""
+        },
+        {
+          "sha": "5e9ee2752b12f845a9f168072d37fd388462a748",
+          "subject": "Retain original accepted-close failure",
+          "body": ""
+        }
+      ],
+      "number": 142,
+      "title": "Preserve accepted execution recovery in one client",
+      "base": "agent/daemon-architecture-refactor-part-18",
+      "head": "agent/daemon-architecture-refactor-part-19"
+    },
+    "147": {
+      "body": "## Context\n\nImplements Phase 24 of the daemon architecture plan. This stack layer follows delivery-session PR #146 and isolates accepted execution before Phase 25 replaces the residual process coordinator. Exact local CI parity passed 2,414 tests with eight expected skips; focused session, transport, parity, scale, stop, commit-replay, and mutation checks preserve protocol, timing, and lifecycle behavior.\n\n## Shape\n\nBefore \u2014 `WorkspaceDaemon` coordinates accepted execution directly:\n\n```mermaid\nflowchart LR\n    Process[\"WorkspaceDaemon<br/>&lt;&lt;process and execution owner&gt;&gt;\"] -->|uses| Ledger[\"AcceptedRequestLedger<br/>&lt;&lt;request state&gt;&gt;\"]\n    Process -->|uses| Queue[\"WorkspaceRequestQueue<br/>&lt;&lt;FIFO turns&gt;&gt;\"]\n    Process -->|uses| Delivery[\"DaemonDeliverySession<br/>&lt;&lt;completion delivery&gt;&gt;\"]\n\n    classDef removed fill:#ffebe9,stroke:#cf222e,color:#24292f\n    class Process removed\n```\n\nAfter \u2014 one session coordinates accepted turns over existing owners:\n\n```mermaid\nflowchart LR\n    Process[\"WorkspaceDaemon<br/>&lt;&lt;process shell&gt;&gt;\"] -->|uses| Session[\"AcceptedExecutionSession<br/>&lt;&lt;turn coordinator&gt;&gt;\"]\n    Session -->|uses| Ledger[\"AcceptedRequestLedger<br/>&lt;&lt;request state&gt;&gt;\"]\n    Session -->|uses| Queue[\"WorkspaceRequestQueue<br/>&lt;&lt;FIFO turns&gt;&gt;\"]\n    Session -->|uses| Delivery[\"DaemonDeliverySession<br/>&lt;&lt;completion delivery&gt;&gt;\"]\n\n    classDef added fill:#dafbe1,stroke:#1a7f37,color:#24292f\n    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n    class Session added\n    class Process changed\n```\n\nLegend: green = added; red = removed; yellow = changed; unfilled = pre-existing and unchanged.\n\n## Where it lives\n\n```text\n.\n\u2514\u2500\u2500 apps/cli/src/daemon/\n    \u251c\u2500\u2500 ++ accepted-execution-session-contracts.ts # defines injected session ports and snapshots\n    \u251c\u2500\u2500 ++ accepted-execution-session.ts           # owns admission-to-turn serialization\n    \u251c\u2500\u2500 ++ accepted-execution-session.test.ts      # locks timing, barriers, failures, and duplicates\n    \u251c\u2500\u2500 ** accepted-request-ledger.ts               # retains immutable acceptance metadata\n    \u2514\u2500\u2500 ** workspace-daemon.ts                      # composes and delegates to the session\n```\n\nLegend: `++` added, `**` changed, `~~` moved, `--` removed.\n\n## Public surface\n\nAdded internal coordination surface:\n\n```ts\nexport class AcceptedExecutionSession {\n  constructor(options: AcceptedExecutionSessionOptions);\n  get snapshot(): AcceptedExecutionSnapshot;\n  compatibilityFor(request: DaemonExecuteRequest): AcceptedRequestCompatibility;\n  accept(request: AuthenticatedDaemonExecuteRequest): AcceptedExecutionAdmission;\n  status(requestId: string): DaemonExecutionStatus;\n  markActiveResourceInterrupted(cause: DaemonWorkerReplacementCause): void;\n  scheduleAtTurnBoundary(operation: () => Promise<void>): Promise<void>;\n  drain(): Promise<void>;\n  close(): void;\n}\n```\n\nChanged ledger entry surface:\n\n```ts\nexport interface AcceptedRequestEntry {\n  readonly acceptedAt: number;\n  readonly queuePosition: number;\n  readonly state: AcceptedRequestState;\n}\n```\n\nNo package export, CLI command, protocol shape, option, or environment surface changes.\n\n## Decisions\n\n- Chose immutable acceptance metadata on each ledger entry over a parallel process map, because queued, running, terminal, and acknowledged states share one original acceptance identity.\n- Chose an injected session over moving ledger, queue, delivery, worker, resource, lifetime, or shutdown state, because each dependency remains authoritative for its own mechanism.\n- Chose a narrow process-lifecycle port over exposing the process shell, because execution needs only shutdown classification, workspace presence, and post-delivery deletion transition.\n- Chose turn-boundary sampling inside each queued operation over post-hoc process scheduling, because sampling must gate the next FIFO turn after success or failure.\n- Chose duplicate attachment over acceptance replay, because request identity remains daemon-lifetime idempotent without another trace, queue turn, clock read, or lifetime reset.\n\n## Look here\n\n- `apps/cli/src/daemon/accepted-execution-session.ts:44`\n- `apps/cli/src/daemon/accepted-execution-session.ts:93`\n- `apps/cli/src/daemon/workspace-daemon.ts:193`\n",
+      "commits": [
+        {
+          "sha": "4143208490ac3ae8402287755a1aac9e219c79a1",
+          "subject": "Specify immutable request acceptance metadata",
+          "body": ""
+        },
+        {
+          "sha": "5866d667729f0a71454f46c522fd42c510900222",
+          "subject": "Retain acceptance metadata on ledger entries",
+          "body": ""
+        },
+        {
+          "sha": "9e4a8251c9e9615713cc3bca6571a000cff8b10d",
+          "subject": "Specify accepted execution session ownership",
+          "body": ""
+        },
+        {
+          "sha": "626697aa57ebc46625d7e3b0d97608299e78fd6d",
+          "subject": "Define accepted execution session contracts",
+          "body": ""
+        },
+        {
+          "sha": "6282cd65e09d9629b758260c43883b6060fe1db7",
+          "subject": "Own accepted execution turns in one session",
+          "body": ""
+        },
+        {
+          "sha": "ba53c8e1662fd86d198b95321c90d9c9bef10184",
+          "subject": "Delegate accepted execution from workspace daemon",
+          "body": ""
+        }
+      ],
+      "number": 147,
+      "title": "Serialize accepted daemon execution in one session",
+      "base": "agent/daemon-architecture-refactor-part-23",
+      "head": "agent/daemon-architecture-refactor-part-24"
+    },
+    "148": {
+      "body": "## Context\n\nDaemon process ownership still lived in CLI-local mechanisms, and hosts needed registry, transport, startup, and lifecycle knowledge to compose daemon execution. This group establishes the package-owned process and client boundary while leaving the active CLI consumer switch to the next PR.\n\n## Shape\n\nBefore \u2014 CLI-local mechanisms own process coordination and expose their composition burden to the host:\n\n```mermaid\nflowchart LR\n  H[CLI host] --> W[WorkspaceDaemon]\n  W --> M[CLI-local daemon mechanisms]\n  P[daemon package] --> C[Contracts and policy]\n  classDef removed fill:#ffebe9,stroke:#cf222e,color:#24292f\n  class W removed\n```\n\nAfter \u2014 package entries and a public client compose package-local mechanisms; the shipped CLI still follows its frozen compatibility graph:\n\n```mermaid\nflowchart LR\n  H[CLI host] --> F[Frozen compatibility graph]\n  P[daemon package] --> D[DaemonClient public facade]\n  D --> M[Private routing and lifecycle mechanisms]\n  E[Process and worker entries] --> M\n  classDef added fill:#dafbe1,stroke:#1a7f37,color:#24292f\n  classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n  class D,M,E added\n  class F changed\n```\n\nLegend: green = added; red = removed; yellow = changed; unfilled = pre-existing and unchanged.\n\n## Where it lives\n\n```text\n.\n\u251c\u2500\u2500 apps/cli/src/daemon/\n\u2502   \u251c\u2500\u2500 ~~ daemon-process-coordinator.ts # renamed from workspace-daemon.ts; owns process lifecycle\n\u2502   \u251c\u2500\u2500 ** daemon-clock.ts               # owns wall and monotonic time sources\n\u2502   \u251c\u2500\u2500 ** daemon-registry.ts            # owns startup-lock equality\n\u2502   \u2514\u2500\u2500 ** ... 9 files                   # coordinated compatibility mechanisms, then frozen\n\u251c\u2500\u2500 packages/daemon/\n\u2502   \u251c\u2500\u2500 ** package.json                  # exposes real process and worker entry subpaths\n\u2502   \u251c\u2500\u2500 src/\n\u2502   \u2502   \u251c\u2500\u2500 ++ client/ ... 8 files       # public facade and private routing/runtime composition\n\u2502   \u2502   \u251c\u2500\u2500 ++ delivery/, diagnostics/, execution/, lifecycle/\n\u2502   \u2502   \u251c\u2500\u2500 ++ process/, registry/, resources/, transport/, worker/ # package mechanism owners\n\u2502   \u2502   \u251c\u2500\u2500 ~~ ... 37 test files         # moved from apps/cli/src/daemon/\n\u2502   \u2502   \u251c\u2500\u2500 ++ process-entry.ts\n\u2502   \u2502   \u251c\u2500\u2500 ++ worker-entry.ts\n\u2502   \u2502   \u2514\u2500\u2500 ** index.ts                  # exports the host-facing client surface\n\u2502   \u2514\u2500\u2500 ++ test/ ... 24 files            # generic executor and built-entry integration fixtures\n\u251c\u2500\u2500 meta-tests/src/\n\u2502   \u2514\u2500\u2500 ++ daemon-compatibility-copy.test.ts # freezes 38 app-local production copies\n\u2514\u2500\u2500 plans/005/\n    \u2514\u2500\u2500 ** daemon-follow-ups-functional-spec.md # records deferred idle-accounting changes\n```\n\n## Public surface\n\n```ts\nexport type {\n  DaemonClientExecuteRequest,\n  DaemonClientExecuteResult,\n  DaemonClientOptions,\n  DaemonControlRequest,\n} from \"./client/daemon-client-contracts.js\";\nexport { DaemonClient } from \"./client/daemon-client.js\";\n\nexport class DaemonClient {\n  constructor(options: DaemonClientOptions);\n  execute(request: DaemonClientExecuteRequest): Promise<DaemonClientExecuteResult>;\n  control(\n    request: Extract<DaemonControlRequest, { readonly action: \"start\" }>,\n  ): Promise<DaemonStartResult>;\n  control(\n    request: Extract<DaemonControlRequest, { readonly action: \"status\" }>,\n  ): Promise<readonly RunningDaemonStatus[]>;\n  control(\n    request: Extract<DaemonControlRequest, { readonly action: \"stop\" }>,\n  ): Promise<DaemonStopResult>;\n}\n```\n\n## Decisions\n\n- Chose a Node-free public fa\u00e7ade with a dynamically loaded internal runtime over exposing Node-backed mechanisms, because host declarations must not acquire Node ambient dependencies.\n- Chose ordered lazy routing guards over eager registry and transport observation, because the first routing decision must prevent every later side effect.\n- Chose package staging with a frozen CLI compatibility graph over switching production consumers during relocation, because mechanism ownership and host invocation coordination need separate review boundaries.\n- Chose package-owned result capture and controlled failure outputs over host-provided storage or output factories, because warm transfer cleanup and replay safety belong to the daemon client.\n- Chose to preserve acceptance-based idle timing over correcting it during extraction, because readiness- and completion-based lifetime changes are explicitly deferred behavior.\n\n## Look here\n\n- `packages/daemon/src/process/process-coordinator.ts:84`\n- `packages/daemon/src/client/daemon-client-runtime.ts:139`\n- `packages/daemon/src/client/daemon-client.ts:20`\n",
+      "commits": [
+        {
+          "sha": "5fb83c449d05b9f567e42c5248bf60d06d3c11bd",
+          "subject": "Specify daemon lifetime clock ownership",
+          "body": ""
+        },
+        {
+          "sha": "61fa2d70f8beff2a3fb8724e42eada8382cb7bd0",
+          "subject": "Give daemon lifetime its wall clock",
+          "body": ""
+        },
+        {
+          "sha": "aec3f7c02a591e710c80814d99ef2b50051c970d",
+          "subject": "Specify registry startup ownership authority",
+          "body": ""
+        },
+        {
+          "sha": "c3796a65090baa7fc1a67491c4045a48a8040c8b",
+          "subject": "Centralize registry startup ownership checks",
+          "body": ""
+        },
+        {
+          "sha": "7e860218e55963852a0d5afe497ccde702e5f4a5",
+          "subject": "Rename workspace daemon as process coordinator",
+          "body": ""
+        },
+        {
+          "sha": "3d25c347f1778ecccf8ca9314e224bac71f9fa1c",
+          "subject": "Specify process request authentication order",
+          "body": ""
+        },
+        {
+          "sha": "7fd93d33c1f74da7541a37f14d5673a5d1d74518",
+          "subject": "Specify validated process coordinate adoption",
+          "body": ""
+        },
+        {
+          "sha": "0a3d57c6f6b2c8d807cd8d34c0163a8b7c915d72",
+          "subject": "Adopt validated process coordinates",
+          "body": ""
+        },
+        {
+          "sha": "bdaff55dc8f541e90a86da64512bd7941a59ade3",
+          "subject": "Specify daemon clock source ownership",
+          "body": ""
+        },
+        {
+          "sha": "f6f942ef7a57a6c1632752aef3e685f66a496de1",
+          "subject": "Route daemon timing through its clock",
+          "body": ""
+        },
+        {
+          "sha": "516cb9b91c44ab97117b31dde9777099d8d95cab",
+          "subject": "Characterize process callback composition",
+          "body": ""
+        },
+        {
+          "sha": "25ddbe22d120013e627a66772601e8cbd9b8d6dc",
+          "subject": "Specify canonical startup ownership authority",
+          "body": ""
+        },
+        {
+          "sha": "b46872384d0981f0df87d8885fc4e40c152a2c1c",
+          "subject": "Centralize all startup ownership decisions",
+          "body": ""
+        },
+        {
+          "sha": "4a0b280649a62c26f0f712166709e086dda74b74",
+          "subject": "Specify narrow startup ownership coordinates",
+          "body": ""
+        },
+        {
+          "sha": "f2bda0b61ff09ceaea12eb3a7d5f666d83d5ac48",
+          "subject": "Stage daemon mechanism compatibility copies",
+          "body": ""
+        },
+        {
+          "sha": "8a21dd5b425727b91cf61ad3ad78ad6748e36a13",
+          "subject": "Organize daemon mechanisms by ownership",
+          "body": ""
+        },
+        {
+          "sha": "36ef14651a616e10bb7f3097932d4ad088a81d09",
+          "subject": "Add daemon package executable entries",
+          "body": ""
+        },
+        {
+          "sha": "b855f6be930d9b2ddcab766caba19c6d41e45e03",
+          "subject": "Prove built daemon entry resolution",
+          "body": ""
+        },
+        {
+          "sha": "e0425f842d6c8051b91ef85b34444704fdefe693",
+          "subject": "Retire flat daemon staging copies",
+          "body": ""
+        },
+        {
+          "sha": "ed3baa7f1003a25b177a105102a84afc9630a645",
+          "subject": "Relocate daemon mechanism ownership tests",
+          "body": ""
+        },
+        {
+          "sha": "501c5b5e769966feb45170ce65c3b44a35820287",
+          "subject": "Retire app-owned daemon mechanism tests",
+          "body": ""
+        },
+        {
+          "sha": "68fbaace0bd962ad451c803c29d04901dfc9c866",
+          "subject": "Keep executor fixture package-independent",
+          "body": ""
+        },
+        {
+          "sha": "6629b30f879da58db646d14bd0d44768632fe7b2",
+          "subject": "Conform daemon staging tests to lint rules",
+          "body": ""
+        },
+        {
+          "sha": "dad9676feea612dac85c33e7b890355f3cb98fd1",
+          "subject": "Specify exhaustive daemon entry exports",
+          "body": ""
+        },
+        {
+          "sha": "e1dc8725f40e1e14f9959b5df8295dc003d21b7e",
+          "subject": "Prove built daemon process entry execution",
+          "body": ""
+        },
+        {
+          "sha": "0f31a619e806dcadd81207de6643b92bd353e716",
+          "subject": "Restore CLI executor version rejection oracle",
+          "body": ""
+        },
+        {
+          "sha": "70c7bea75c15581aa696adbddcb2a1ba8c2c598e",
+          "subject": "Specify ordered daemon routing decisions",
+          "body": ""
+        },
+        {
+          "sha": "d8703664779d06200f2190ee65632fc9afdd1b73",
+          "subject": "Own ordered daemon routing decisions",
+          "body": ""
+        },
+        {
+          "sha": "cd94bd488a39b14a29a4d9e0eb44b0c2164c5aef",
+          "subject": "Define daemon client host contracts",
+          "body": ""
+        },
+        {
+          "sha": "2c7a42178376434fe2cccc676d924096ce5d2678",
+          "subject": "Specify daemon client execution ownership",
+          "body": ""
+        },
+        {
+          "sha": "18e2f4ade3e424158bdf781f18ddf183a4fec7f8",
+          "subject": "Route execution through DaemonClient",
+          "body": ""
+        },
+        {
+          "sha": "ea52cfbb9b344f601ae9b3d14f2998018bed4ec1",
+          "subject": "Specify daemon client lifecycle control",
+          "body": ""
+        },
+        {
+          "sha": "c41d2e20074e907801b5556793ec5cfa260d1674",
+          "subject": "Own daemon lifecycle composition in DaemonClient",
+          "body": ""
+        },
+        {
+          "sha": "6762c7f819a80272e67c60b2b5b0b5c151e94bcd",
+          "subject": "Specify host-owned daemon readiness probe",
+          "body": ""
+        },
+        {
+          "sha": "a29be148b5b6b6a6ec58831fcb1e7b98cc60b5ad",
+          "subject": "Route host readiness probes through startup",
+          "body": ""
+        },
+        {
+          "sha": "f2a9d157c96cba64e65937909f63abbb5b4b63b6",
+          "subject": "Compose warm result capture in DaemonClient",
+          "body": ""
+        },
+        {
+          "sha": "f6030ed6f1dc188e9a8a05088ead957d7932cb8f",
+          "subject": "Expose the Node-free DaemonClient facade",
+          "body": ""
+        },
+        {
+          "sha": "bca036f0ad16ede54127ad25e9c31928af26dc76",
+          "subject": "Lock the public DaemonClient boundary",
+          "body": ""
+        },
+        {
+          "sha": "32152f1da945995fbc152a406320d3f8af342eac",
+          "subject": "Represent disabled daemon routing",
+          "body": ""
+        },
+        {
+          "sha": "4b414b37516fdeb314d067e0041b06ea1a17720f",
+          "subject": "Complete daemon client routing characterization",
+          "body": ""
+        },
+        {
+          "sha": "3cb60059251dd336fde21f8e1796fb1fcd550816",
+          "subject": "Specify missing warm output handling",
+          "body": ""
+        },
+        {
+          "sha": "73c0f1c8aaa1d2d4df9e22b2ceda0d4588fa6e5c",
+          "subject": "Lock daemon control overload return types",
+          "body": ""
+        },
+        {
+          "sha": "80d4afe0c24c96f30c47ff16a57d9068f04d4213",
+          "subject": "Specify portable daemon compatibility hashing",
+          "body": ""
+        },
+        {
+          "sha": "cef673008deef942b379543be48307ec2379d6b6",
+          "subject": "Normalize daemon compatibility source line endings",
+          "body": ""
+        },
+        {
+          "sha": "20838f8dbf413e04767543eb2380d0d114da6c60",
+          "subject": "Specify Windows process entry cleanup ownership",
+          "body": ""
+        }
+      ],
+      "number": 148,
+      "title": "Own daemon mechanisms behind DaemonClient",
+      "base": "agent/daemon-architecture-refactor-part-24",
+      "head": "agent/daemon-architecture-refactor-part-25"
+    },
+    "149": {
+      "body": "## Context\n\n[PR #148](https://github.com/mohasarc/symnav/pull/148) establishes the package `DaemonClient` and stages daemon mechanisms, but the shipped CLI and external test consumers still retain app-local ownership paths. This PR makes `@symnav/daemon` the sole mechanism owner while preserving command output, telemetry, execution modes, and lifecycle behavior.\n\n## Shape\n\nBefore \u2014 CLI runtime and external tests still cross the app-local daemon boundary:\n\n```mermaid\nflowchart LR\n  E[CLI entry] -->|calls| D[CLI daemon dispatcher]\n  D -->|calls| A[App-local daemon copies]\n  T[CLI tests and benchmark] -->|calls| A\n  P[DaemonClient package root] -->|calls| M[Staged package mechanisms]\n  classDef removed fill:#ffebe9,stroke:#cf222e,color:#24292f\n  classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n  class D,A removed\n  class E,T changed\n```\n\nAfter \u2014 CLI coordinates invocations through the package root, and tests observe package state through a read-only subpath:\n\n```mermaid\nflowchart LR\n  E[CLI entry] -->|calls| C[CLI invocation coordinator]\n  C -->|calls| P[DaemonClient package root]\n  P -->|calls| M[Package-owned mechanisms]\n  T[CLI tests and benchmark] -->|calls| I[Read-only testing inspector]\n  I -->|calls| M\n  classDef added fill:#dafbe1,stroke:#1a7f37,color:#24292f\n  classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f\n  class C,I added\n  class E,T,M changed\n```\n\nLegend: green = added; red = removed; yellow = changed; unfilled = pre-existing and unchanged.\n\n- Atomic frozen install, build, 2,696 tests with 8 expected skips, lint, and typecheck pass at the exact head.\n- Explicit cold and warm suites each pass 355 tests with 8 expected skips.\n- Scale-1 daemon benchmark passes parity, freshness, responsiveness, continuity, telemetry, resource, and spool-cleanup gates.\n\n## Where it lives\n\n```text\n.\n\u251c\u2500\u2500 apps/cli/\n\u2502   \u251c\u2500\u2500 src/\n\u2502   \u2502   \u251c\u2500\u2500 ++ cli-invocation-coordinator.ts       # owns local/control/workspace routing\n\u2502   \u2502   \u251c\u2500\u2500 ~~ invocation-workspace-selector.ts   # moved from src/daemon/\n\u2502   \u2502   \u251c\u2500\u2500 ** cli.ts                              # composes one public daemon client\n\u2502   \u2502   \u251c\u2500\u2500 ** commands/daemon/register-daemon-command.ts # calls public lifecycle controls\n\u2502   \u2502   \u2514\u2500\u2500 -- daemon/ ... 45 files                # removes app-owned mechanism copies\n\u2502   \u2514\u2500\u2500 ** test/ ... 34 files                      # uses public behavior or testing inspector\n\u251c\u2500\u2500 packages/daemon/\n\u2502   \u251c\u2500\u2500 ** package.json                            # exposes exactly four package paths\n\u2502   \u251c\u2500\u2500 ++ src/testing/ ... 3 files                # read-only state inspection boundary\n\u2502   \u251c\u2500\u2500 ** src/transport/ ... 16 files             # replaces compatibility facade\n\u2502   \u251c\u2500\u2500 ++ test/actors/daemon-accepted-caller.ts   # package-owned accepted caller\n\u2502   \u2514\u2500\u2500 ~~ test/actors/ ... 6 files                # moved from apps/cli/test/helpers/\n\u251c\u2500\u2500 meta-tests/src/\n\u2502   \u251c\u2500\u2500 ++ cli-daemon-reachability.test.ts         # locks production import graph\n\u2502   \u251c\u2500\u2500 ++ daemon-storage-boundary.test.ts         # locks testing storage boundary\n\u2502   \u2514\u2500\u2500 ** ... 3 files                             # locks exports, deletion, and lint rules\n\u251c\u2500\u2500 ** AGENTS.md                                   # records final package ownership\n\u2514\u2500\u2500 ** plans/000/symnav-stages.md                  # records completed architecture milestone\n```\n\n## Public surface\n\n```ts\nexport class DaemonTestingInspector {\n  constructor(canonicalStateDirectory: string);\n  listInstances(): readonly DaemonTestingInstance[];\n  hasStateArtifacts(): boolean;\n  readDiagnostics(canonicalWorkspaceRoot: string, cursor?: number): DaemonTestingDiagnosticPage;\n  completionSpoolUsage(canonicalWorkspaceRoot: string): DaemonTestingSpoolUsage;\n}\n\n// Removed from DaemonPolicy:\nstatic fromSerialized(value: unknown): DaemonPolicy;\ntoSerialized(): Readonly<SerializedDaemonPolicy>;\n```\n\n## Decisions\n\n- Chose a CLI invocation coordinator over the app-local daemon dispatcher, because argv classification and workspace discovery remain host responsibilities while execution belongs behind `DaemonClient`.\n- Chose a read-only testing inspector over exposing registry, diagnostic, or spool paths, because external assertions need observability without storage or mutation authority.\n- Chose package-owned actors with an injected executor URL over package tests naming CLI build artifacts, because daemon tests must not depend on app layout.\n- Chose focused package transport composition over retaining `LocalDaemonTransport`, because lifecycle, execution, result transfer, and socket owners now have one package boundary.\n- Chose exact compiler-backed import, export, clock, and storage inventories over regex or compatibility aliases, because ordinary TypeScript syntax must not bypass final ownership rules.\n\n## Look here\n\n- `apps/cli/src/cli-invocation-coordinator.ts:17`\n- `packages/daemon/src/testing/daemon-testing-inspector.ts:35`\n- `meta-tests/src/daemon-storage-boundary.test.ts:215`\n",
+      "commits": [
+        {
+          "sha": "e09553a8269267cdd8ebec95ea4c00fc66712f75",
+          "subject": "Specify CLI invocation coordination",
+          "body": ""
+        },
+        {
+          "sha": "65371fbba380b21a5077d13a2fa1a3666cc6877e",
+          "subject": "Move invocation selection into CLI",
+          "body": ""
+        },
+        {
+          "sha": "da4261619d7ff38b753b9a4ae6270ba4a3d154d4",
+          "subject": "Route CLI invocations through DaemonClient",
+          "body": ""
+        },
+        {
+          "sha": "2f914dada453f486c2037fe51ac0bb1f3eb07a57",
+          "subject": "Specify public daemon lifecycle commands",
+          "body": ""
+        },
+        {
+          "sha": "49ab7c945737136498f3a476288c79871947dfe5",
+          "subject": "Delegate daemon commands to DaemonClient",
+          "body": ""
+        },
+        {
+          "sha": "ab417b09807c4e7978b2cc056984d775fa5c5c71",
+          "subject": "Lock top-level daemon composition",
+          "body": ""
+        },
+        {
+          "sha": "75c9a72d5ae5f3e9f5b093583efc9c23b900952a",
+          "subject": "Lock the reachable CLI daemon boundary",
+          "body": ""
+        },
+        {
+          "sha": "803c02bbcb731ffaa88ce8ab4d020ce1e69a91ae",
+          "subject": "Specify relative daemon control cwd",
+          "body": ""
+        },
+        {
+          "sha": "ffa0bb284d2f62bf5182ba58abe779d3be40efe8",
+          "subject": "Normalize daemon control cwd",
+          "body": ""
+        },
+        {
+          "sha": "cbcebf52c31b53e326ed7f69660d4fbf500a5d20",
+          "subject": "Align CLI coordinator boundary",
+          "body": ""
+        },
+        {
+          "sha": "9945d596c052b1a7f89da4ddedc901ec82e37700",
+          "subject": "Exercise diagnostics through package daemon entry",
+          "body": ""
+        },
+        {
+          "sha": "6d81d76fa7951f4a3f2fa147802533e5aac1006a",
+          "subject": "Satisfy CLI test lint contracts",
+          "body": ""
+        },
+        {
+          "sha": "5b940bd0e25a0534bddf2ce6aa7cb71ccc1a0fbf",
+          "subject": "Specify daemon import syntax boundary",
+          "body": ""
+        },
+        {
+          "sha": "17b00cd2375347cdc2ad00d08945f2ab0cb26e11",
+          "subject": "Enforce daemon import syntax boundary",
+          "body": ""
+        },
+        {
+          "sha": "0a38145da68ebb8326db013bff10ec7a4b13f63f",
+          "subject": "Specify syntax-complete daemon import detection",
+          "body": ""
+        },
+        {
+          "sha": "e5f99828c066f30293374f1122e21fabd7b0e472",
+          "subject": "Parse TypeScript imports for daemon boundaries",
+          "body": ""
+        },
+        {
+          "sha": "054424b3f5dd5e5ff40c8e6fc9db82e97f02481c",
+          "subject": "Specify read-only daemon testing inspection",
+          "body": ""
+        },
+        {
+          "sha": "d7f60b07fdce1cc039ffeb83802dcb2654f63ad5",
+          "subject": "Expose read-only daemon testing inspection",
+          "body": ""
+        },
+        {
+          "sha": "6e441e4b4dbb742fe9361f8f1d98c8c53aa270c5",
+          "subject": "Specify test-only daemon inspector imports",
+          "body": ""
+        },
+        {
+          "sha": "9e80c3d365099f1fcc95b8f88cac48435e57301f",
+          "subject": "Restrict daemon inspector to tests",
+          "body": ""
+        },
+        {
+          "sha": "be272702a940c937179923634d08b47d346bed5f",
+          "subject": "Inspect daemon e2e state through testing API",
+          "body": ""
+        },
+        {
+          "sha": "20559201afa9872c419222c3ca5723e60dc4ce65",
+          "subject": "Inspect daemon benchmark state through testing API",
+          "body": ""
+        },
+        {
+          "sha": "d04aa0f7a6257690acfc1191978aac8fc4a91ea7",
+          "subject": "Own test process cleanup outside daemon mechanisms",
+          "body": ""
+        },
+        {
+          "sha": "0afd69187db20001d18cac2487a2fc5870704c02",
+          "subject": "Specify rotated diagnostic inspection order",
+          "body": ""
+        },
+        {
+          "sha": "fb6d864d3a20af5d5a8b4f44cf61007c76044e4f",
+          "subject": "Inspect rotated daemon diagnostics chronologically",
+          "body": ""
+        },
+        {
+          "sha": "86761bd6454434448eb055df9b8d4a2378290563",
+          "subject": "Inspect daemon isolation through testing API",
+          "body": ""
+        },
+        {
+          "sha": "a567e24453aa2ab27bc32c9d87e0a74cc20d4fcc",
+          "subject": "Move daemon state actors into daemon package",
+          "body": ""
+        },
+        {
+          "sha": "9e31259fa8a43337ee5c5d1f09c8db2e637e6cf9",
+          "subject": "Move controlled daemon actor into daemon package",
+          "body": ""
+        },
+        {
+          "sha": "9284116a4bb2be984054d9b3af010b31b61a90b2",
+          "subject": "Use package-owned daemon parity actors",
+          "body": ""
+        },
+        {
+          "sha": "3b739006ef3e0b0896756358a9fbb5ecaa379473",
+          "subject": "Inspect persistent pressure through public status",
+          "body": ""
+        },
+        {
+          "sha": "d698b1a55d0ce2e46c7bb716d0b7d4f866276516",
+          "subject": "Internalize daemon policy serialization",
+          "body": ""
+        },
+        {
+          "sha": "9f4886435a5f71e2dbced0db83814529b10c414f",
+          "subject": "Remove CLI-owned daemon mechanisms",
+          "body": ""
+        },
+        {
+          "sha": "ff2888997bcb8a427960b4aa58de07cc6b7fc105",
+          "subject": "Replace daemon transport compatibility facade",
+          "body": ""
+        },
+        {
+          "sha": "4d9755a425805d6a00d62770a7b2a2c44ead60d5",
+          "subject": "Lock final daemon package surface",
+          "body": ""
+        },
+        {
+          "sha": "a92afc1a96d9b22fad3a8dbce93de85252c1e600",
+          "subject": "Handle invalid inspector state paths",
+          "body": ""
+        },
+        {
+          "sha": "e72f3b10904ea371e7fdeddfce366245e123c5eb",
+          "subject": "Format daemon testing lint cases",
+          "body": ""
+        },
+        {
+          "sha": "fdc718dc8f7b91423487b8bcb8ba770de343e834",
+          "subject": "Specify invalid daemon inspector state reads",
+          "body": ""
+        },
+        {
+          "sha": "d01799054780a684f9e197489d256c519c0f3276",
+          "subject": "Normalize invalid daemon inspector state reads",
+          "body": ""
+        },
+        {
+          "sha": "4ed1de0052b29ec776a33e6e7101f1226d47f563",
+          "subject": "Specify exhaustive daemon export inventory",
+          "body": ""
+        },
+        {
+          "sha": "a7d46afd33f45c9c4286f0f21810e5c9b68f2619",
+          "subject": "Inventory every TypeScript export form",
+          "body": ""
+        },
+        {
+          "sha": "0ab7e9d011fd80fbada3485ae5176905cef6fe0b",
+          "subject": "Lock daemon source and declaration exports",
+          "body": ""
+        },
+        {
+          "sha": "ff983397427c3ba699899145d90796d00d83c84a",
+          "subject": "Lock emitted daemon policy surface",
+          "body": ""
+        },
+        {
+          "sha": "ac8fd267890b41820a5cd8e41e749950aaaa629a",
+          "subject": "Specify equivalent daemon clock sources",
+          "body": ""
+        },
+        {
+          "sha": "b6761ee46e629b0d66d1a2f39090f631b155cd2c",
+          "subject": "Detect syntax-aware daemon clock sources",
+          "body": ""
+        },
+        {
+          "sha": "2e06c2aa9720e715ca26349d3c74f284a453cb89",
+          "subject": "Specify adversarial daemon peer integration",
+          "body": ""
+        },
+        {
+          "sha": "0ff9276304571e862c74260e870911500455122e",
+          "subject": "Run adversarial peers through daemon client",
+          "body": ""
+        },
+        {
+          "sha": "7e3dca4b03013d26a2fc02ed6f23c17192541bd6",
+          "subject": "Format invalid daemon inspector cases",
+          "body": ""
+        },
+        {
+          "sha": "8976d7409f194904a3bf62653eb6bc98fc3b68ab",
+          "subject": "Specify import-equals daemon reachability",
+          "body": ""
+        },
+        {
+          "sha": "7db908eb985844967b82d22674a1651b0b574aae",
+          "subject": "Parse import-equals daemon dependencies",
+          "body": ""
+        },
+        {
+          "sha": "e49515135b2154bb27b38515f652755420ae3e08",
+          "subject": "Specify import-equals export inventory",
+          "body": ""
+        },
+        {
+          "sha": "3af983dfece4ede0f1ecedc25ba5e8baf5311c5d",
+          "subject": "Inventory import-equals exports",
+          "body": ""
+        },
+        {
+          "sha": "3b9a572f4ee20111d388f3c49bbc36fc30c4455e",
+          "subject": "Specify every inspector filesystem failure",
+          "body": ""
+        },
+        {
+          "sha": "b56a4ea1d8f5f4af0f0bea361235ddadfb25f4fe",
+          "subject": "Classify inspector artifact read failures",
+          "body": ""
+        },
+        {
+          "sha": "7235fff84c81c5198cd7ba6586122a7b25c22d1b",
+          "subject": "Specify semantic daemon clock sources",
+          "body": ""
+        },
+        {
+          "sha": "63fdc227468de95ef89f28c831fd6fb7744541d9",
+          "subject": "Resolve daemon clock identifiers lexically",
+          "body": ""
+        },
+        {
+          "sha": "5a5198db54764760e996f777d4d6e2b717a00680",
+          "subject": "Specify package test executor independence",
+          "body": ""
+        },
+        {
+          "sha": "aea44a091f28ea01a26c2985630e7449d35ec024",
+          "subject": "Inject controlled daemon executor URL",
+          "body": ""
+        },
+        {
+          "sha": "1eb3916559058fbf6294043dbad0f3e25f4444fe",
+          "subject": "Specify runtime import-equals exports",
+          "body": ""
+        },
+        {
+          "sha": "7ab16df4faf4d96e0440a10ada34d5835a42d3fb",
+          "subject": "Classify import-equals exports semantically",
+          "body": ""
+        },
+        {
+          "sha": "3d32eb0eecaaaa7e997258c45f58fef8a078faac",
+          "subject": "Specify import-equals daemon clock aliases",
+          "body": ""
+        },
+        {
+          "sha": "6b6632726ca97ee6d402bd3d33eada1372981365",
+          "subject": "Resolve import-equals daemon clock aliases",
+          "body": ""
+        },
+        {
+          "sha": "b54aeca64d66ce5c248393f7c9a24a181ec9117a",
+          "subject": "Specify external daemon storage boundary",
+          "body": ""
+        },
+        {
+          "sha": "65bdd226ee069bedca46e3023847bd22a678a4d5",
+          "subject": "Inspect telemetry daemon state through testing API",
+          "body": ""
+        },
+        {
+          "sha": "64aea4d5fbbd73d2bd62b6f2b576bce24903f45a",
+          "subject": "Document final daemon package ownership",
+          "body": ""
+        },
+        {
+          "sha": "688173885455dd0779b123bfbe90b7c5400b36fc",
+          "subject": "Specify dynamic daemon clock imports",
+          "body": ""
+        },
+        {
+          "sha": "21cb6cfda698e3edd072041cdb1140e52ca335ce",
+          "subject": "Reject dynamic daemon clock imports",
+          "body": ""
+        },
+        {
+          "sha": "279b629d8418a24161fb1fdf5a7ddd3a7ce37427",
+          "subject": "Specify computed daemon clock members",
+          "body": ""
+        },
+        {
+          "sha": "fc3dc695bc8fd9de850781e6a2e030bb0864ee24",
+          "subject": "Classify computed daemon clock members",
+          "body": ""
+        },
+        {
+          "sha": "7730a9feb527357e0a055631601e99ec1c06d350",
+          "subject": "Specify platform daemon path builders",
+          "body": ""
+        },
+        {
+          "sha": "68a6240a80d653ceae9cd3299a88e28cb03d9532",
+          "subject": "Classify platform daemon path builders",
+          "body": ""
+        },
+        {
+          "sha": "1d76592bbef9ba86bd827dbb64d523d8696fbf9a",
+          "subject": "Specify contextual daemon storage paths",
+          "body": ""
+        },
+        {
+          "sha": "a592cb32a44983538f3e82efe774dc0cfb26dd37",
+          "subject": "Classify contextual daemon storage paths",
+          "body": ""
+        },
+        {
+          "sha": "8ddb833b3e1970598a3f523a4f02e1550546aec2",
+          "subject": "Specify aliased daemon clock sources",
+          "body": ""
+        },
+        {
+          "sha": "40c8ab9dad7da6e8d38d8d8726a112ef8f754d97",
+          "subject": "Resolve aliased daemon clock sources",
+          "body": ""
+        },
+        {
+          "sha": "44080a7563f3f7bafb268a7562028c3c7c627d32",
+          "subject": "Specify semantic daemon storage access",
+          "body": ""
+        },
+        {
+          "sha": "bcfc89488ff8bf07bc8e3b8f5cff164725b422f0",
+          "subject": "Resolve semantic daemon storage access",
+          "body": ""
+        },
+        {
+          "sha": "4f2ab33c179b5c6e321bbfd613bf79dbc0fb49d1",
+          "subject": "Specify callable daemon wall clocks",
+          "body": ""
+        },
+        {
+          "sha": "fe36df025e9cb5ca17cf48d761c6d080c33d5f57",
+          "subject": "Classify callable daemon wall clocks",
+          "body": ""
+        },
+        {
+          "sha": "25b93bac45053a3242f8e3f200a1ba26754c8c62",
+          "subject": "Specify dynamic daemon storage access",
+          "body": ""
+        },
+        {
+          "sha": "69e1cd07c1245f5ff28c42e74adeee49a1086bc5",
+          "subject": "Classify dynamic daemon storage access",
+          "body": ""
+        },
+        {
+          "sha": "0049b660538c3ea118c686e86b5d53e37ea42e51",
+          "subject": "Specify invoked daemon wall clocks",
+          "body": ""
+        },
+        {
+          "sha": "ec5e4b7547c8a34effdc948beddcba9ad39d5cbe",
+          "subject": "Classify invoked daemon wall clocks",
+          "body": ""
+        },
+        {
+          "sha": "0ac6d1da7125858f26d69461d41fc0c463b0039d",
+          "subject": "Specify promised daemon storage access",
+          "body": ""
+        },
+        {
+          "sha": "b8a09975a59c9f7cdb8ddb4a66e418e3df856aa8",
+          "subject": "Classify promised daemon storage access",
+          "body": ""
+        },
+        {
+          "sha": "748529679b40310b665720cbf13d217598778860",
+          "subject": "Specify default dynamic daemon storage access",
+          "body": ""
+        },
+        {
+          "sha": "ea6c6321a634fdccfd10cdd1d67890c04a63bbbc",
+          "subject": "Classify default dynamic daemon storage access",
+          "body": ""
+        },
+        {
+          "sha": "e71da400a18c7972a09fa8d1bacc8a9fc807a59f",
+          "subject": "Specify callback-body daemon storage access",
+          "body": ""
+        },
+        {
+          "sha": "5cbc1cde6ffcd802ab4e30750df3c2001a4ed04a",
+          "subject": "Classify callback-body daemon storage access",
+          "body": ""
+        },
+        {
+          "sha": "c7f36b1b49115972d97ff20def8019a9ec1323a5",
+          "subject": "Specify aliased callback daemon storage access",
+          "body": ""
+        },
+        {
+          "sha": "673208bc0b510581b6aff988fdc608335c1f77df",
+          "subject": "Resolve aliased callback daemon storage access",
+          "body": ""
+        },
+        {
+          "sha": "66f3c9053f705238dda202dfd9ec1401c72c3db2",
+          "subject": "Use native paths in CLI reachability gate",
+          "body": ""
+        },
+        {
+          "sha": "eb512e8ea7a57fcc58f8709f8dadf152e725d3d7",
+          "subject": "Read daemon clock inventory from file URLs",
+          "body": ""
+        },
+        {
+          "sha": "1599252152c565631066bcdc312f8669438beacd",
+          "subject": "Align daemon test workspace path dialect",
+          "body": ""
+        },
+        {
+          "sha": "d07002357d3e9596bfaae910a1ac63b77981620b",
+          "subject": "Track disconnected daemon actor directly",
+          "body": ""
+        }
+      ],
+      "number": 149,
+      "title": "Enforce physical daemon package ownership",
+      "base": "agent/daemon-architecture-refactor-part-25",
+      "head": "agent/daemon-architecture-refactor-part-28"
+    }
+  }
+}
