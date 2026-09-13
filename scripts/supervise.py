@@ -286,6 +286,7 @@ def git_commit(worker: Worker) -> None:
         log(f"COMMIT FAILED {worker.experiment.name}: {completed.stderr.strip() or completed.stdout.strip()}")
     else:
         log(f"COMMIT OK {worker.experiment.name}: {completed.stdout.splitlines()[0]}")
+        subprocess.run(["python3", "scripts/publish_main.py"], cwd=ROOT, check=False)
 
 
 def finish(worker: Worker, returncode: int) -> None:

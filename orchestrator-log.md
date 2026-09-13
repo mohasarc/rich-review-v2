@@ -1052,3 +1052,47 @@ no changes added to commit (use "git add" and/or "git commit -a")
 - 2026-09-13 12:37:41 +03: START 67-blast-radius-terrain attempt 1 via codex, pid 56276
 - 2026-09-13 12:40:01 +03: MONITOR OK supervisor=47081, finished=62, running=5, queued=13, dirty-worktrees=0, missing-readmes=0, free-disk=22.9GiB
 - 2026-09-13 12:47:41 +03: FINISH 65-decision-tetris via codex, exit 0, README present
+- 2026-09-13 12:47:41 +03: COMMIT OK 65-decision-tetris: [main 01f49e8] Add experiment 65 decision-tetris
+- 2026-09-13 12:47:42 +03: START 68-semantic-zoom-microscope attempt 1 via claude-opus, pid 95170
+- 2026-09-13 12:48:32 +03: README MISSING 66-boundary-subway after worker exit 1
+- 2026-09-13 12:48:32 +03: REQUEUE 66-boundary-subway after attempt 1: worker exited 1 without README
+- 2026-09-13 12:48:32 +03: README MISSING 68-semantic-zoom-microscope after worker exit 1
+- 2026-09-13 12:48:32 +03: REQUEUE 68-semantic-zoom-microscope after attempt 1: worker exited 1 without README
+- 2026-09-13 12:48:32 +03: START 66-boundary-subway attempt 2 via claude-opus, pid 99474
+- 2026-09-13 12:48:32 +03: START 68-semantic-zoom-microscope attempt 2 via claude-opus, pid 99475
+- 2026-09-13 12:48:42 +03: README MISSING 66-boundary-subway after worker exit 1
+- 2026-09-13 12:48:42 +03: REQUEUE 66-boundary-subway after attempt 2: worker exited 1 without README
+- 2026-09-13 12:48:42 +03: README MISSING 68-semantic-zoom-microscope after worker exit 1
+- 2026-09-13 12:48:42 +03: REQUEUE 68-semantic-zoom-microscope after attempt 2: worker exited 1 without README
+- 2026-09-13 12:48:42 +03: START 66-boundary-subway attempt 3 via codex, pid 232
+- 2026-09-13 12:48:42 +03: START 68-semantic-zoom-microscope attempt 3 via codex, pid 233
+- 2026-09-13 12:50:42 +03: README MISSING 62-policy-stained-glass after worker exit 1
+- 2026-09-13 12:50:42 +03: REQUEUE 62-policy-stained-glass after attempt 1: worker exited 1 without README
+- 2026-09-13 12:50:42 +03: README MISSING 64-lifecycle-music-box after worker exit 1
+- 2026-09-13 12:50:42 +03: REQUEUE 64-lifecycle-music-box after attempt 1: worker exited 1 without README
+- 2026-09-13 12:50:42 +03: START 62-policy-stained-glass attempt 2 via claude-opus, pid 8443
+- 2026-09-13 12:50:42 +03: START 64-lifecycle-music-box attempt 2 via claude-opus, pid 8445
+- 2026-09-13 12:50:52 +03: README MISSING 62-policy-stained-glass after worker exit 1
+- 2026-09-13 12:50:52 +03: REQUEUE 62-policy-stained-glass after attempt 2: worker exited 1 without README
+- 2026-09-13 12:50:52 +03: README MISSING 64-lifecycle-music-box after worker exit 1
+- 2026-09-13 12:50:52 +03: REQUEUE 64-lifecycle-music-box after attempt 2: worker exited 1 without README
+- 2026-09-13 12:50:52 +03: START 62-policy-stained-glass attempt 3 via codex, pid 9090
+- 2026-09-13 12:50:52 +03: START 64-lifecycle-music-box attempt 3 via codex, pid 9091
+- 2026-09-13 12:56:18 +03: MONITOR OK supervisor=47081, finished=63, running=5, queued=12, dirty-worktrees=0, missing-readmes=0, free-disk=23.4GiB
+- 2026-09-13 12:57:35 +03: STOP signal 15; terminating 5 active workers
+- 2026-09-13 12:57:36 +03: MONITOR STOPPED
+- 2026-09-13 12:57:42 +03: SUPERVISOR STOPPED
+- 2026-09-13 13:00:14 +03: RECOVER 62-policy-stained-glass.md: prior supervisor stopped; returned running brief to queue
+- 2026-09-13 13:00:14 +03: RECOVER 68-semantic-zoom-microscope.md: prior supervisor stopped; returned running brief to queue
+- 2026-09-13 13:00:14 +03: RECOVER 66-boundary-subway.md: prior supervisor stopped; returned running brief to queue
+- 2026-09-13 13:00:14 +03: RECOVER 64-lifecycle-music-box.md: prior supervisor stopped; returned running brief to queue
+- 2026-09-13 13:00:14 +03: RECOVER 67-blast-radius-terrain.md: prior supervisor stopped; returned running brief to queue
+- 2026-09-13 13:00:14 +03: SUPERVISOR START pid 39161; stop with: kill $(cat /Users/moyaseen/projects/rich-review-v2/supervisor.pid)
+- 2026-09-13 13:00:14 +03: START 62-policy-stained-glass attempt 4 via codex, pid 39231
+- 2026-09-13 13:00:14 +03: START 64-lifecycle-music-box attempt 4 via codex, pid 39232
+- 2026-09-13 13:00:14 +03: START 66-boundary-subway attempt 4 via codex, pid 39233
+- 2026-09-13 13:00:14 +03: START 67-blast-radius-terrain attempt 2 via codex, pid 39234
+- 2026-09-13 13:00:14 +03: START 68-semantic-zoom-microscope attempt 4 via codex, pid 39235
+- 2026-09-13 13:00:35 +03: MONITOR START pid 43049, five-minute audits enabled
+- 2026-09-13 13:00:36 +03: MONITOR OK supervisor=39161, finished=63, running=5, queued=12, dirty-worktrees=0, missing-readmes=0, free-disk=22.6GiB
+- 2026-09-13 13:04:00 +03: DECISION Public publication approved by user. Publish full rich-review-v2 history and artifacts, excluding ignored worker transcripts, to mohasarc/rich-review-v2; serve repository root with GitHub Pages; push new experiment commits automatically.

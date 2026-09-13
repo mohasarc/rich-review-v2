@@ -114,6 +114,7 @@ def audit(iteration: int) -> None:
         restart_crashed_supervisor(pid)
         return
     subprocess.run(["python3", "scripts/build_index.py"], cwd=ROOT, check=False)
+    subprocess.run(["python3", "scripts/publish_main.py"], cwd=ROOT, check=False)
     running = len(list((ROOT / "queue/running").glob("*.md")))
     queued = len(list((ROOT / "queue").glob("*.md")))
     finished = len(list((ROOT / "queue/done").glob("*.md")))
