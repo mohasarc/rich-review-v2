@@ -1,0 +1,90 @@
+async (page) => {
+  const folder = '/Users/moyaseen/projects/rich-review-v2/experiments/13-owner-persona';
+  const url = `file://${folder}/index.html`;
+  const context = await page.context().browser().newContext({ viewport: { width: 1440, height: 1100 } });
+  const ownPage = await context.newPage();
+  const errors = [];
+  const requests = [];
+  const checks = [];
+  ownPage.on('pageerror', error => errors.push(error.message));
+  ownPage.on('request', request => requests.push(request.url()));
+  const check = (condition, label) => {
+    if (!condition) throw new Error(label);
+    checks.push(label);
+  };
+  try {
+    await ownPage.goto(url);
+    check(await ownPage.locator('details.decision').count() === 12, 'All twelve decision summaries render');
+    check(await ownPage.locator('details.decision[open]').count() === 0, 'Initial view keeps all explanations collapsed');
+    check(await ownPage.locator('tr[data-file]').count() === 60, 'Every changed file renders in the index');
+    const sourceChecks = await ownPage.evaluate(() => {
+      const data = JSON.parse(document.getElementById('evidence-data').textContent);
+      return [...document.querySelectorAll('.evidence-link')].every(link => {
+        const source = data.sources[link.dataset.source];
+        return !!source && (!link.dataset.line || Number(link.dataset.line) <= source[link.dataset.side].split('\n').length);
+      });
+    });
+    check(sourceChecks, 'All evidence references and target line numbers resolve');
+    await ownPage.locator('#d-error > summary').click();
+    await ownPage.getByRole('link', { name: /Head method$/ }).click();
+    check(await ownPage.locator('#evidence-dialog').isVisible(), 'Evidence opens in a modal');
+    check(await ownPage.locator('#tab-head').getAttribute('aria-selected') === 'true', 'A source link selects its requested revision');
+    check(await ownPage.locator('.code-line.highlight').getAttribute('data-line') === '402', 'A source link highlights its requested line');
+    await ownPage.locator('#tab-base').click();
+    check(await ownPage.locator('#evidence-code').textContent().then(text => text.includes('completeWithOneReattachment')), 'Base revision displays the old method');
+    await ownPage.locator('#tab-base').press('ArrowRight');
+    check(await ownPage.locator('#tab-head').getAttribute('aria-selected') === 'true', 'Source tabs support arrow-key navigation');
+    await ownPage.keyboard.press('Escape');
+    check(!await ownPage.locator('#evidence-dialog').isVisible(), 'Escape closes evidence');
+    check(await ownPage.evaluate(() => document.activeElement.textContent === 'Head method'), 'Closing evidence returns focus to its invoking link');
+    await ownPage.locator('#d-error .close-decision').click();
+    check(await ownPage.locator('#d-error').getAttribute('open') === null, 'Back to row collapses only that explanation');
+    await ownPage.getByRole('link', { name: 'Process / worker view ↓', exact: true }).click();
+    check(await ownPage.locator('#d-composition').getAttribute('open') !== null, 'The high-level map opens the matching lower-level explanation');
+    await ownPage.locator('#d-composition').screenshot({ path: `${folder}/screenshots/02-process-boundaries.png` });
+    await ownPage.locator('#expand-all').click();
+    check(await ownPage.locator('details.decision[open]').count() === 12, 'Linear reading can expand all explanations');
+    await ownPage.locator('#expand-all').click();
+    check(await ownPage.locator('details.decision[open]').count() === 0, 'Collapse all restores the complete top layer');
+    await ownPage.locator('#file-filter').fill('daemon-logger');
+    check(await ownPage.locator('tr[data-file]:visible').count() === 2, 'File filtering finds production and test counterparts');
+    await ownPage.locator('#file-filter').fill('no-file-can-match-this');
+    check(await ownPage.locator('#no-files').isVisible(), 'The file filter has an empty state');
+    await ownPage.locator('#file-filter').fill('test/helpers/local-daemon-transport.ts');
+    await ownPage.locator('tr[data-file]:visible .evidence-link').click();
+    await ownPage.locator('#tab-base').click();
+    check(await ownPage.locator('#evidence-code').textContent().then(text => text.includes('absent from the base')), 'Added files identify their absent base revision');
+    await ownPage.keyboard.press('Escape');
+    await ownPage.locator('tr[data-file]:visible .topic-jump').first().click();
+    check(await ownPage.locator('details.decision[open]').count() >= 1, 'The file index jumps back to the corresponding decision');
+    await ownPage.goto(url + '#d-lifecycle');
+    check(await ownPage.locator('#d-lifecycle').getAttribute('open') !== null, 'A bookmarked decision opens directly');
+    check(!await ownPage.evaluate(() => document.documentElement.scrollWidth > innerWidth), 'Desktop has no page-level horizontal overflow');
+    await ownPage.goto(url);
+    await ownPage.screenshot({ path: `${folder}/screenshots/01-owner-overview.png`, fullPage: false });
+    await ownPage.setViewportSize({ width: 390, height: 844 });
+    await ownPage.goto(url);
+    check(!await ownPage.evaluate(() => document.documentElement.scrollWidth > innerWidth), 'Mobile has no page-level horizontal overflow');
+    await ownPage.screenshot({ path: `${folder}/screenshots/03-mobile-overview.png`, fullPage: false });
+    await ownPage.locator('#d-resources > summary').click();
+    check(!await ownPage.evaluate(() => document.documentElement.scrollWidth > innerWidth), 'Expanded mobile mechanism tables stay inside a scroll container');
+    await ownPage.locator('#d-resources .evidence-link').first().click();
+    check(await ownPage.locator('#evidence-dialog').isVisible(), 'The mobile evidence viewer opens');
+    await ownPage.screenshot({ path: `${folder}/screenshots/04-mobile-evidence.png`, fullPage: false });
+    await ownPage.keyboard.press('Escape');
+    check(errors.length === 0, 'No browser JavaScript errors');
+    check(requests.every(request => request.startsWith('file:')), 'The entry page makes no network requests');
+    const noScriptContext = await page.context().browser().newContext({ javaScriptEnabled: false, viewport: { width: 1280, height: 900 } });
+    const noScriptPage = await noScriptContext.newPage();
+    await noScriptPage.goto(url);
+    await noScriptPage.locator('#d-error > summary').click();
+    check(await noScriptPage.locator('#d-error').getAttribute('open') !== null, 'Native decision disclosure works without JavaScript');
+    await noScriptPage.getByRole('link', { name: /Catch boundary in the diff$/ }).click();
+    check(noScriptPage.url().includes('evidence.html#'), 'Evidence links fall back to a standalone local page without JavaScript');
+    await noScriptContext.close();
+    const report = { checkedAt: new Date().toISOString(), environment: 'Chromium via Playwright; isolated browser contexts; file://', checks, browserErrors: errors, networkRequests: requests.filter(request => !request.startsWith('file:')) };
+    return report;
+  } finally {
+    await context.close();
+  }
+}

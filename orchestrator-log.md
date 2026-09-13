@@ -113,3 +113,13 @@ BUILD OK stack-head
 - 2026-09-13 03:21:30 +03: Generated brief 42-fresh-reader-refresh-10: recurring brief 39 after 10 completions
 - 2026-09-13 03:21:30 +03: START 15-message-choreography-sim attempt 1 via codex, pid 70093
 - 2026-09-13 03:28:51 +03: FINISH 08-adversarial via codex, exit 0, README present
+- 2026-09-13 03:28:51 +03: COMMIT OK 08-adversarial: [main bec3118] Add experiment 08 adversarial
+- 2026-09-13 03:28:51 +03: START 16-drag-the-box attempt 1 via claude-opus, pid 72951
+- 2026-09-13 03:29:01 +03: README MISSING 16-drag-the-box after worker exit 1
+- 2026-09-13 03:29:01 +03: REQUEUE 16-drag-the-box after attempt 1: worker exited 1 without README
+- 2026-09-13 03:29:01 +03: START 16-drag-the-box attempt 2 via claude-opus, pid 73000
+- 2026-09-13 03:29:11 +03: README MISSING 16-drag-the-box after worker exit 1
+- 2026-09-13 03:29:11 +03: REQUEUE 16-drag-the-box after attempt 2: worker exited 1 without README
+- 2026-09-13 03:29:11 +03: START 16-drag-the-box attempt 3 via codex, pid 73047
+- 2026-09-13 03:29:15 +03: MONITOR OK supervisor=1153, finished=11, running=5, queued=26, dirty-worktrees=0, missing-readmes=0, free-disk=32.7GiB
+- 2026-09-13 03:44:12 +03: FINISH 13-owner-persona via codex, exit 0, README present
