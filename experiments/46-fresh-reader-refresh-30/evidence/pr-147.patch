@@ -1,0 +1,1260 @@
+diff --git a/apps/cli/src/daemon/accepted-execution-session-contracts.ts b/apps/cli/src/daemon/accepted-execution-session-contracts.ts
+new file mode 100644
+index 000000000..a469ccaea
+--- /dev/null
++++ b/apps/cli/src/daemon/accepted-execution-session-contracts.ts
+@@ -0,0 +1,69 @@
++import type { AcceptedRequestEntry, AcceptedRequestLedger } from "./accepted-request-ledger.js";
++import type { DaemonClock } from "./daemon-clock.js";
++import type {
++  DaemonCompletionWriter,
++  DaemonDiagnosticRecorder,
++} from "./daemon-delivery-session.js";
++import type { DaemonOperationTrace } from "./daemon-operation-observer.js";
++import type { DaemonExecuteRequest } from "./daemon-protocol.js";
++import type { DaemonResourceSupervisor } from "./daemon-resource-monitor.js";
++import type { DaemonWorkerGenerationManager } from "./daemon-worker-generation-manager.js";
++import type {
++  WorkspaceRequestQueue,
++  WorkspaceRequestQueueSnapshot,
++} from "./workspace-request-queue.js";
++
++export type AuthenticatedDaemonExecuteRequest = DaemonExecuteRequest;
++
++export interface AcceptedExecutionAdmission {
++  readonly newlyAccepted: boolean;
++  readonly entry: AcceptedRequestEntry;
++  readonly acceptance: {
++    readonly requestId: string;
++    readonly acceptedAt: number;
++    readonly queuePosition: number;
++  };
++}
++
++export interface AcceptedExecutionSnapshot {
++  readonly queue: WorkspaceRequestQueueSnapshot;
++  readonly lastNavigationAt?: number;
++  readonly lastCompletedMonotonicAt?: number;
++}
++
++export interface AcceptedExecutionDelivery {
++  beginAcceptedTrace(
++    requestId: string,
++    command: DaemonExecuteRequest["commandName"],
++    queuePosition: number,
++    workerGeneration: number,
++  ): DaemonOperationTrace;
++  createCompletion(requestId: string): Promise<DaemonCompletionWriter>;
++  trackedCompletion(requestId: string): Promise<void> | undefined;
++}
++
++export interface AcceptedExecutionLifetime {
++  navigationAccepted(): void;
++  queueBecameIdle(): void;
++}
++
++export interface AcceptedExecutionProcessLifecycle {
++  shutdownSnapshot(): {
++    readonly started: boolean;
++    readonly failureCode?: "stopping" | "controlled-resource";
++  };
++  workspaceExists(): Promise<boolean>;
++  workspaceDeletedAfterDelivery(): Promise<void>;
++}
++
++export interface AcceptedExecutionSessionOptions {
++  readonly ledger: AcceptedRequestLedger;
++  readonly queue: WorkspaceRequestQueue;
++  readonly worker: DaemonWorkerGenerationManager;
++  readonly delivery: AcceptedExecutionDelivery;
++  readonly resourceSupervisor: DaemonResourceSupervisor;
++  readonly processLifecycle: AcceptedExecutionProcessLifecycle;
++  readonly lifetime: AcceptedExecutionLifetime;
++  readonly diagnostics: DaemonDiagnosticRecorder;
++  readonly clock: DaemonClock;
++}
+diff --git a/apps/cli/src/daemon/accepted-execution-session.test.ts b/apps/cli/src/daemon/accepted-execution-session.test.ts
+new file mode 100644
+index 000000000..bc5ad8972
+--- /dev/null
++++ b/apps/cli/src/daemon/accepted-execution-session.test.ts
+@@ -0,0 +1,327 @@
++import { describe, expect, it, vi } from "vitest";
++import type { DaemonSequencedOutputRecord } from "@symnav/daemon";
++import { AcceptedRequestLedger } from "./accepted-request-ledger.js";
++import type {
++  AcceptedExecutionDelivery,
++  AcceptedExecutionLifetime,
++  AcceptedExecutionProcessLifecycle,
++  AuthenticatedDaemonExecuteRequest,
++} from "./accepted-execution-session-contracts.js";
++import { AcceptedExecutionSession } from "./accepted-execution-session.js";
++import type { DaemonCompletionWriter } from "./daemon-delivery-session.js";
++import type { DaemonDiagnosticEvent, DaemonOperationTrace } from "./daemon-operation-observer.js";
++import type { DaemonResourceSupervisor } from "./daemon-resource-monitor.js";
++import type { DaemonWorkerGenerationManager } from "./daemon-worker-generation-manager.js";
++import { WorkspaceRequestQueue } from "./workspace-request-queue.js";
++
++describe("AcceptedExecutionSession", () => {
++  it("observes navigation activity separately from immutable acceptance metadata", () => {
++    let wallNow = 1_234;
++    const wallNowMs = vi.fn(() => wallNow++);
++    const harness = new AcceptedExecutionHarness({ wallNowMs });
++
++    const accepted = harness.session.accept(harness.request("request"));
++    const duplicate = harness.session.accept(harness.request("request"));
++
++    expect(accepted.acceptance.acceptedAt).toBe(1_234);
++    expect(harness.session.snapshot.lastNavigationAt).toBe(1_235);
++    expect(duplicate).toMatchObject({
++      newlyAccepted: false,
++      entry: accepted.entry,
++      acceptance: accepted.acceptance,
++    });
++    expect(wallNowMs).toHaveBeenCalledTimes(2);
++    expect(harness.navigationAccepted).toHaveBeenCalledTimes(1);
++  });
++
++  it("records immutable acceptance and synchronously schedules one turn", async () => {
++    const harness = new AcceptedExecutionHarness();
++
++    const accepted = harness.session.accept(harness.request("request"));
++    const duplicate = harness.session.accept(harness.request("request"));
++
++    expect(accepted).toMatchObject({
++      newlyAccepted: true,
++      acceptance: { requestId: "request", acceptedAt: 100, queuePosition: 0 },
++    });
++    expect(duplicate).toMatchObject({
++      newlyAccepted: false,
++      entry: accepted.entry,
++      acceptance: accepted.acceptance,
++    });
++    expect(harness.events.slice(0, 4)).toEqual([
++      "navigation-accepted",
++      "trace-accepted:0:7",
++      "turn-started:7",
++      "completion-created",
++    ]);
++    expect(harness.navigationAccepted).toHaveBeenCalledTimes(1);
++
++    await harness.session.drain();
++    expect(harness.workerExecute).toHaveBeenCalledTimes(1);
++    expect(harness.session.status("request")).toEqual({ state: "completed" });
++    expect(harness.session.snapshot.lastNavigationAt).toBe(100);
++  });
++
++  it("preserves spool, ledger, delivery, workspace, and resource turn barriers", async () => {
++    const harness = new AcceptedExecutionHarness({ workspaceExists: false });
++
++    harness.session.accept(harness.request("deleted"));
++    harness.observeTerminal("deleted");
++    await harness.session.drain();
++
++    expect(harness.events).toEqual([
++      "navigation-accepted",
++      "trace-accepted:0:7",
++      "turn-started:7",
++      "completion-created",
++      "output-appended:0",
++      "worker-observed-append",
++      "worker-heap-reported:7:11:20:13",
++      "worker-completed",
++      "completion-finished:0",
++      "workspace-checked",
++      "execution-completed",
++      "ledger-completed",
++      "delivery-tracked",
++      "workspace-deleted-after-delivery",
++      "resource-sampled",
++      "queue-idle",
++    ]);
++    expect(harness.session.snapshot.lastCompletedMonotonicAt).toBeDefined();
++  });
++
++  it("consumes one active resource interruption when classifying failure", async () => {
++    const harness = new AcceptedExecutionHarness({ workerFailure: new Error("worker failed") });
++
++    harness.session.accept(harness.request("failed"));
++    harness.session.accept(harness.request("following"));
++    await Promise.resolve();
++    harness.session.markActiveResourceInterrupted("hard-pressure");
++    await harness.session.drain();
++
++    expect(harness.session.status("failed")).toEqual({
++      state: "failed",
++      code: "controlled-resource",
++    });
++    expect(harness.session.status("following")).toEqual({ state: "failed", code: "internal" });
++    expect(harness.diagnostics).toEqual([
++      expect.objectContaining({
++        kind: "failure",
++        operation: "request",
++        failureCode: "internal",
++        errorName: "Error",
++      }),
++      expect.objectContaining({
++        kind: "failure",
++        operation: "request",
++        failureCode: "internal",
++        errorName: "Error",
++      }),
++    ]);
++  });
++
++  it("records cleanup and turn-boundary sampling failures through the diagnostic port", async () => {
++    const failed = new AcceptedExecutionHarness({
++      workerFailure: new Error("worker failed"),
++      completionDisposeFailure: new TypeError("dispose failed"),
++    });
++    failed.session.accept(failed.request("failed"));
++    await failed.session.drain();
++
++    expect(failed.diagnostics).toEqual([
++      expect.objectContaining({
++        operation: "request",
++        failureCode: "internal",
++        errorName: "Error",
++      }),
++      expect.objectContaining({
++        operation: "completion-cleanup",
++        failureCode: "internal",
++        errorName: "TypeError",
++      }),
++    ]);
++
++    const sampled = new AcceptedExecutionHarness({
++      resourceSampleFailure: new RangeError("sample failed"),
++    });
++    sampled.session.accept(sampled.request("sampled"));
++    await sampled.session.drain();
++
++    expect(sampled.diagnostics).toEqual([
++      expect.objectContaining({
++        operation: "resource-sample",
++        failureCode: "operation-failed",
++        errorName: "RangeError",
++      }),
++    ]);
++    expect(sampled.events.at(-1)).toBe("queue-idle");
++  });
++});
++
++interface AcceptedExecutionHarnessOptions {
++  readonly workspaceExists?: boolean;
++  readonly workerFailure?: Error;
++  readonly completionDisposeFailure?: Error;
++  readonly resourceSampleFailure?: Error;
++  readonly wallNowMs?: () => number;
++}
++
++class AcceptedExecutionHarness {
++  readonly events: string[] = [];
++  readonly diagnostics: DaemonDiagnosticEvent[] = [];
++  readonly navigationAccepted = vi.fn(() => this.events.push("navigation-accepted"));
++  readonly workerExecute = vi.fn(
++    async (
++      _requestId: string,
++      _request: unknown,
++      output: { append(record: DaemonSequencedOutputRecord): Promise<void> },
++    ) => {
++      await output.append({ sequence: 0, stream: "stdout", bytes: new Uint8Array([1]) });
++      this.events.push("worker-observed-append");
++      if (this.options.workerFailure !== undefined) throw this.options.workerFailure;
++      return {
++        kind: "result" as const,
++        generation: 7,
++        requestId: _requestId,
++        result: { exitCode: 0 },
++        refresh: { added: 0, changed: 0, removed: 0, unchanged: 1 },
++        durations: { freshnessMs: 1, navigationMs: 2, renderMs: 3, outputMs: 4 },
++        resources: {
++          workerHeapUsedBytes: 11,
++          peakWorkerHeapUsedBytes: 13,
++          workerHeapLimitBytes: 20,
++        },
++      };
++    },
++  );
++  readonly session: AcceptedExecutionSession;
++  private readonly ledger: AcceptedRequestLedger;
++  private wallNow = 100;
++  private monotonicNow = 1_000;
++
++  constructor(private readonly options: AcceptedExecutionHarnessOptions = {}) {
++    const ledger = new AcceptedRequestLedger(() => this.wallNowMs());
++    this.ledger = ledger;
++    const queue = new WorkspaceRequestQueue(() => this.monotonicNow++);
++    const completion: DaemonCompletionWriter = {
++      append: async (record) => {
++        this.events.push(`output-appended:${record.sequence}`);
++      },
++      finish: async (exitCode) => {
++        this.events.push(`completion-finished:${exitCode}`);
++        return {
++          transferId: "transfer",
++          requestId: "request",
++          instanceId: "instance",
++          exitCode,
++          rawBytes: 1,
++          recordCount: 1,
++          sha256: "hash",
++        };
++      },
++      dispose: async () => {
++        this.events.push("completion-disposed");
++        if (this.options.completionDisposeFailure !== undefined) {
++          throw this.options.completionDisposeFailure;
++        }
++      },
++    };
++    const trace: DaemonOperationTrace = {
++      accepted: (queuePosition, generation) =>
++        this.events.push(`trace-accepted:${queuePosition}:${generation}`),
++      turnStarted: (generation) => this.events.push(`turn-started:${generation}`),
++      workerCompleted: () => this.events.push("worker-completed"),
++      spooled: () => undefined,
++      executionTerminated: (outcome) => this.events.push(`execution-${outcome}`),
++      clientDisconnected: () => undefined,
++      reattached: () => undefined,
++      deliveryTerminated: () => undefined,
++    };
++    const delivery: AcceptedExecutionDelivery = {
++      beginAcceptedTrace: (_requestId, _command, queuePosition, generation) => {
++        trace.accepted(queuePosition, generation);
++        return trace;
++      },
++      createCompletion: async () => {
++        this.events.push("completion-created");
++        return completion;
++      },
++      trackedCompletion: () => {
++        this.events.push("delivery-tracked");
++        return Promise.resolve();
++      },
++    };
++    const worker = {
++      snapshot: { generation: 7, ready: true, fileCount: 1 },
++      execute: this.workerExecute,
++    } as unknown as DaemonWorkerGenerationManager;
++    const resourceSupervisor = {
++      snapshot: { generation: 7 },
++      workerHeapReported: (generation: number, used: number, limit: number, peak: number) => {
++        this.events.push(`worker-heap-reported:${generation}:${used}:${limit}:${peak}`);
++      },
++      sampleAtTurnBoundary: async () => {
++        this.events.push("resource-sampled");
++        if (this.options.resourceSampleFailure !== undefined) {
++          throw this.options.resourceSampleFailure;
++        }
++      },
++    } as unknown as DaemonResourceSupervisor;
++    const processLifecycle: AcceptedExecutionProcessLifecycle = {
++      shutdownSnapshot: () => ({ started: false }),
++      workspaceExists: async () => {
++        this.events.push("workspace-checked");
++        return this.options.workspaceExists ?? true;
++      },
++      workspaceDeletedAfterDelivery: async () => {
++        this.events.push("workspace-deleted-after-delivery");
++      },
++    };
++    const lifetime: AcceptedExecutionLifetime = {
++      navigationAccepted: this.navigationAccepted,
++      queueBecameIdle: () => this.events.push("queue-idle"),
++    };
++    this.session = new AcceptedExecutionSession({
++      ledger,
++      queue,
++      worker,
++      delivery,
++      resourceSupervisor,
++      processLifecycle,
++      lifetime,
++      diagnostics: { record: (event) => this.diagnostics.push(event) },
++      clock: {
++        wallNowMs: () => this.wallNowMs(),
++        monotonicNowMs: () => this.monotonicNow++,
++      },
++    });
++  }
++
++  private wallNowMs(): number {
++    return this.options.wallNowMs?.() ?? this.wallNow;
++  }
++
++  request(requestId: string): AuthenticatedDaemonExecuteRequest {
++    return {
++      kind: "execute",
++      protocolVersion: 5,
++      instanceId: "instance",
++      processToken: "token",
++      requestId,
++      commandName: "version",
++      request: {
++        argv: ["--version"],
++        cwd: "/repo",
++        telemetryEnabled: false,
++        executionMode: "warm",
++      },
++    };
++  }
++
++  observeTerminal(requestId: string): void {
++    this.ledger.subscribe(requestId, (entry) => {
++      if (entry.state.state === "completed") this.events.push("ledger-completed");
++    });
++  }
++}
+diff --git a/apps/cli/src/daemon/accepted-execution-session.ts b/apps/cli/src/daemon/accepted-execution-session.ts
+new file mode 100644
+index 000000000..dad29a358
+--- /dev/null
++++ b/apps/cli/src/daemon/accepted-execution-session.ts
+@@ -0,0 +1,193 @@
++import { DaemonExecutionFailures, type AcceptedRequestCompatibility } from "@symnav/daemon";
++import type {
++  AcceptedExecutionAdmission,
++  AcceptedExecutionSessionOptions,
++  AcceptedExecutionSnapshot,
++  AuthenticatedDaemonExecuteRequest,
++} from "./accepted-execution-session-contracts.js";
++import { CompletionSpoolCapacityError } from "./completion-spool.js";
++import type { DaemonCompletionWriter } from "./daemon-delivery-session.js";
++import { DaemonLogger } from "./daemon-logger.js";
++import { DaemonNavigationWorkerExitedError } from "./daemon-navigation-worker.js";
++import type { DaemonOperationTrace } from "./daemon-operation-observer.js";
++import type {
++  DaemonExecuteRequest,
++  DaemonExecutionStatus,
++  DaemonWorkerReplacementCause,
++} from "./daemon-protocol.js";
++
++export class AcceptedExecutionSession {
++  private lastNavigationAt: number | undefined;
++  private lastCompletedMonotonicAt: number | undefined;
++  private readonly resourceInterruptedRequests = new Set<string>();
++
++  constructor(private readonly options: AcceptedExecutionSessionOptions) {}
++
++  get snapshot(): AcceptedExecutionSnapshot {
++    return Object.freeze({
++      queue: this.options.queue.snapshot,
++      ...(this.lastNavigationAt === undefined ? {} : { lastNavigationAt: this.lastNavigationAt }),
++      ...(this.lastCompletedMonotonicAt === undefined
++        ? {}
++        : { lastCompletedMonotonicAt: this.lastCompletedMonotonicAt }),
++    });
++  }
++
++  compatibilityFor(request: DaemonExecuteRequest): AcceptedRequestCompatibility {
++    return this.options.ledger.compatibilityFor(
++      request.requestId,
++      request.commandName,
++      request.request,
++    );
++  }
++
++  accept(request: AuthenticatedDaemonExecuteRequest): AcceptedExecutionAdmission {
++    const existing = this.options.ledger.entryFor(request.requestId);
++    const entry = this.options.ledger.accept(
++      request.requestId,
++      request.commandName,
++      request.request,
++    );
++    const acceptance = Object.freeze({
++      requestId: request.requestId,
++      acceptedAt: entry.acceptedAt,
++      queuePosition: entry.queuePosition,
++    });
++    if (existing !== undefined) {
++      return Object.freeze({ newlyAccepted: false, entry, acceptance });
++    }
++    this.lastNavigationAt = this.options.clock.wallNowMs();
++    this.options.lifetime.navigationAccepted();
++    const trace = this.options.delivery.beginAcceptedTrace(
++      request.requestId,
++      request.commandName,
++      entry.queuePosition,
++      this.options.resourceSupervisor.snapshot.generation,
++    );
++    void this.executeAccepted(request, trace);
++    return Object.freeze({ newlyAccepted: true, entry, acceptance });
++  }
++
++  status(requestId: string): DaemonExecutionStatus {
++    return this.options.ledger.status(requestId);
++  }
++
++  markActiveResourceInterrupted(cause: DaemonWorkerReplacementCause): void {
++    if (cause === "worker-exit") return;
++    const activeRequest = this.options.queue.snapshot.active;
++    if (activeRequest !== undefined) this.resourceInterruptedRequests.add(activeRequest.requestId);
++  }
++
++  scheduleAtTurnBoundary(operation: () => Promise<void>): Promise<void> {
++    return this.options.queue.scheduleAtTurnBoundary(operation);
++  }
++
++  drain(): Promise<void> {
++    return this.options.queue.drain();
++  }
++
++  close(): void {
++    this.options.queue.close();
++  }
++
++  private async executeAccepted(
++    request: AuthenticatedDaemonExecuteRequest,
++    trace: DaemonOperationTrace,
++  ): Promise<void> {
++    let completion: DaemonCompletionWriter | undefined;
++    try {
++      await this.options.queue.enqueue(
++        {
++          requestId: request.requestId,
++          command: request.commandName,
++          acceptedAt: this.options.clock.monotonicNowMs(),
++        },
++        async () => {
++          trace.turnStarted(this.options.resourceSupervisor.snapshot.generation);
++          try {
++            completion = await this.options.delivery.createCompletion(request.requestId);
++            this.options.ledger.markRunning(request.requestId, this.options.clock.wallNowMs());
++            const response = await this.options.worker.execute(
++              request.requestId,
++              { commandName: request.commandName, request: request.request },
++              completion,
++            );
++            this.options.resourceSupervisor.workerHeapReported(
++              response.generation,
++              response.resources.workerHeapUsedBytes,
++              response.resources.workerHeapLimitBytes,
++              response.resources.peakWorkerHeapUsedBytes,
++            );
++            trace.workerCompleted(
++              {
++                freshnessMs: response.durations.freshnessMs,
++                navigationMs: response.durations.navigationMs,
++                renderMs: response.durations.renderMs,
++                workerOutputMs: response.durations.outputMs,
++              },
++              response.refresh,
++            );
++            await completion.finish(response.result.exitCode);
++            this.lastCompletedMonotonicAt = this.options.clock.monotonicNowMs();
++            const workspaceExists = await this.options.processLifecycle.workspaceExists();
++            trace.executionTerminated("completed");
++            this.options.ledger.complete(
++              request.requestId,
++              request.requestId,
++              this.options.clock.wallNowMs(),
++            );
++            await this.options.delivery.trackedCompletion(request.requestId);
++            if (!workspaceExists) {
++              await this.options.processLifecycle.workspaceDeletedAfterDelivery();
++            }
++          } finally {
++            this.scheduleTurnCompleteResourceSample();
++          }
++        },
++      );
++    } catch (error) {
++      trace.executionTerminated("failed");
++      this.recordFailure("request", "internal", error);
++      const shutdown = this.options.processLifecycle.shutdownSnapshot();
++      const code = DaemonExecutionFailures.classify({
++        resourceInterrupted: this.resourceInterruptedRequests.delete(request.requestId),
++        responseCapacityExceeded: error instanceof CompletionSpoolCapacityError,
++        workerExited: error instanceof DaemonNavigationWorkerExitedError,
++        ...(shutdown.failureCode === undefined
++          ? {}
++          : { shutdownFailureCode: shutdown.failureCode }),
++        shutdownStarted: shutdown.started,
++      });
++      await completion?.dispose().catch((cleanupError) => {
++        this.recordFailure("completion-cleanup", "internal", cleanupError);
++      });
++      this.options.ledger.fail(request.requestId, code, this.options.clock.wallNowMs());
++    } finally {
++      if (this.options.queue.isIdle) this.options.lifetime.queueBecameIdle();
++    }
++  }
++
++  private scheduleTurnCompleteResourceSample(): void {
++    void this.options.queue
++      .scheduleAtTurnBoundary(() => this.options.resourceSupervisor.sampleAtTurnBoundary())
++      .catch((error) => {
++        this.recordFailure("resource-sample", "operation-failed", error);
++      })
++      .finally(() => {
++        if (this.options.queue.isIdle) this.options.lifetime.queueBecameIdle();
++      });
++  }
++
++  private recordFailure(
++    operation: "request" | "completion-cleanup" | "resource-sample",
++    failureCode: "internal" | "operation-failed",
++    error: unknown,
++  ): void {
++    this.options.diagnostics.record({
++      kind: "failure",
++      operation,
++      failureCode,
++      errorName: DaemonLogger.errorName(error),
++    });
++  }
++}
+diff --git a/apps/cli/src/daemon/accepted-request-ledger.test.ts b/apps/cli/src/daemon/accepted-request-ledger.test.ts
+index 12280c1a9..725987d7d 100644
+--- a/apps/cli/src/daemon/accepted-request-ledger.test.ts
++++ b/apps/cli/src/daemon/accepted-request-ledger.test.ts
+@@ -49,7 +49,9 @@ describe("AcceptedRequestLedger", () => {
+       requestId: "request",
+       commandName: "overview",
+       request,
+-      state: { state: "queued", acceptedAt: 10, queuePosition: 0 },
++      acceptedAt: 10,
++      queuePosition: 0,
++      state: { state: "queued" },
+     });
+     expect(ledger.size).toBe(1);
+   });
+@@ -71,7 +73,6 @@ describe("AcceptedRequestLedger", () => {
+ 
+     expect(ledger.markRunning("request", 20).state).toEqual({
+       state: "running",
+-      acceptedAt: 10,
+       startedAt: 20,
+     });
+     expect(ledger.complete("request", "result", 30).state).toEqual({
+@@ -83,6 +84,7 @@ describe("AcceptedRequestLedger", () => {
+     ledger.acknowledge("request");
+     expect(ledger.hasUnacknowledgedCompletions).toBe(false);
+     expect(ledger.status("request")).toEqual({ state: "completed" });
++    expect(ledger.entryFor("request")).toMatchObject({ acceptedAt: 10, queuePosition: 0 });
+   });
+ 
+   it.each<DaemonExecutionFailureCode>([
+diff --git a/apps/cli/src/daemon/accepted-request-ledger.ts b/apps/cli/src/daemon/accepted-request-ledger.ts
+index 63fcb244b..55c51a19a 100644
+--- a/apps/cli/src/daemon/accepted-request-ledger.ts
++++ b/apps/cli/src/daemon/accepted-request-ledger.ts
+@@ -9,8 +9,8 @@ import {
+ import type { DaemonExecutionStatus } from "./daemon-protocol.js";
+ 
+ export type AcceptedRequestState =
+-  | { readonly state: "queued"; readonly acceptedAt: number; readonly queuePosition: number }
+-  | { readonly state: "running"; readonly acceptedAt: number; readonly startedAt: number }
++  | { readonly state: "queued" }
++  | { readonly state: "running"; readonly startedAt: number }
+   | { readonly state: "completed"; readonly completedAt: number; readonly resultId: string }
+   | {
+       readonly state: "failed";
+@@ -23,6 +23,8 @@ export interface AcceptedRequestEntry {
+   readonly requestFingerprint: string;
+   readonly commandName: DaemonCommandName;
+   readonly request: DaemonExecutorRequest;
++  readonly acceptedAt: number;
++  readonly queuePosition: number;
+   readonly state: AcceptedRequestState;
+   readonly deliveryTerminated: boolean;
+ }
+@@ -83,12 +85,10 @@ export class AcceptedRequestLedger {
+       requestFingerprint,
+       commandName,
+       request,
++      acceptedAt: this.now(),
++      queuePosition: this.nonterminalCount,
+       deliveryTerminated: false,
+-      state: {
+-        state: "queued",
+-        acceptedAt: this.now(),
+-        queuePosition: this.nonterminalCount,
+-      },
++      state: { state: "queued" },
+     };
+     this.entries.set(requestId, entry);
+     return entry;
+@@ -101,7 +101,7 @@ export class AcceptedRequestLedger {
+     }
+     return this.publish({
+       ...entry,
+-      state: { state: "running", acceptedAt: entry.state.acceptedAt, startedAt },
++      state: { state: "running", startedAt },
+     });
+   }
+ 
+@@ -150,10 +150,11 @@ export class AcceptedRequestLedger {
+   }
+ 
+   status(requestId: string): DaemonExecutionStatus {
+-    const state = this.entries.get(requestId)?.state;
+-    if (state === undefined) return { state: "unknown" };
++    const entry = this.entries.get(requestId);
++    if (entry === undefined) return { state: "unknown" };
++    const state = entry.state;
+     if (state.state === "queued") {
+-      return { state: "queued", queuePosition: state.queuePosition };
++      return { state: "queued", queuePosition: entry.queuePosition };
+     }
+     if (state.state === "running") return { state: "running", startedAt: state.startedAt };
+     if (state.state === "completed") return { state: "completed" };
+diff --git a/apps/cli/src/daemon/daemon-delivery-session.test.ts b/apps/cli/src/daemon/daemon-delivery-session.test.ts
+index 57581370f..7080f4919 100644
+--- a/apps/cli/src/daemon/daemon-delivery-session.test.ts
++++ b/apps/cli/src/daemon/daemon-delivery-session.test.ts
+@@ -69,23 +69,23 @@ describe("DaemonDeliverySession", () => {
+     const harness = await DeliverySessionHarness.create(directories);
+     const entry = harness.journal.accept("request-1", "version", harness.executionRequest);
+     if (entry.state.state !== "queued") throw new Error("Expected queued request");
+-    harness.session.beginAcceptedTrace("request-1", "version", entry.state.queuePosition, 1);
++    harness.session.beginAcceptedTrace("request-1", "version", entry.queuePosition, 1);
+     const first = DeliverySend.create();
+     const duplicate = DeliverySend.create();
+ 
+     await harness.session.attach(
+       {
+         requestId: "request-1",
+-        acceptedAt: entry.state.acceptedAt,
+-        queuePosition: entry.state.queuePosition,
++        acceptedAt: entry.acceptedAt,
++        queuePosition: entry.queuePosition,
+       },
+       first.send,
+     );
+     await harness.session.attach(
+       {
+         requestId: "request-1",
+-        acceptedAt: entry.state.acceptedAt,
+-        queuePosition: entry.state.queuePosition,
++        acceptedAt: entry.acceptedAt,
++        queuePosition: entry.queuePosition,
+       },
+       duplicate.send,
+     );
+@@ -121,7 +121,7 @@ describe("DaemonDeliverySession", () => {
+     const harness = await DeliverySessionHarness.create(directories);
+     const entry = harness.journal.accept("request-1", "version", harness.executionRequest);
+     if (entry.state.state !== "queued") throw new Error("Expected queued request");
+-    harness.session.beginAcceptedTrace("request-1", "version", entry.state.queuePosition, 1);
++    harness.session.beginAcceptedTrace("request-1", "version", entry.queuePosition, 1);
+     const firstResultEnd = new DeferredSignal();
+     const secondResultEnd = new DeferredSignal();
+     const first = DeliverySend.create((message) =>
+@@ -133,16 +133,16 @@ describe("DaemonDeliverySession", () => {
+     await harness.session.attach(
+       {
+         requestId: "request-1",
+-        acceptedAt: entry.state.acceptedAt,
+-        queuePosition: entry.state.queuePosition,
++        acceptedAt: entry.acceptedAt,
++        queuePosition: entry.queuePosition,
+       },
+       first.send,
+     );
+     await harness.session.attach(
+       {
+         requestId: "request-1",
+-        acceptedAt: entry.state.acceptedAt,
+-        queuePosition: entry.state.queuePosition,
++        acceptedAt: entry.acceptedAt,
++        queuePosition: entry.queuePosition,
+       },
+       duplicate.send,
+     );
+@@ -375,12 +375,12 @@ describe("DaemonDeliverySession", () => {
+     ] as const) {
+       const entry = harness.journal.accept(requestId, "version", harness.executionRequest);
+       if (entry.state.state !== "queued") throw new Error("Expected queued request");
+-      harness.session.beginAcceptedTrace(requestId, "version", entry.state.queuePosition, 1);
++      harness.session.beginAcceptedTrace(requestId, "version", entry.queuePosition, 1);
+       await harness.session.attach(
+         {
+           requestId,
+-          acceptedAt: entry.state.acceptedAt,
+-          queuePosition: entry.state.queuePosition,
++          acceptedAt: entry.acceptedAt,
++          queuePosition: entry.queuePosition,
+         },
+         send.send,
+       );
+diff --git a/apps/cli/src/daemon/workspace-daemon-requests.test.ts b/apps/cli/src/daemon/workspace-daemon-requests.test.ts
+index cbfeb0053..a234c57a3 100644
+--- a/apps/cli/src/daemon/workspace-daemon-requests.test.ts
++++ b/apps/cli/src/daemon/workspace-daemon-requests.test.ts
+@@ -30,6 +30,7 @@ import { TestDaemonRegistry as DaemonRegistry } from "../../test/helpers/daemon-
+ import { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
+ import type { DaemonRequestServer, DaemonServerSend } from "./daemon-transport.js";
+ import type { AcceptedRequestLedger } from "./accepted-request-ledger.js";
++import type { AcceptedExecutionSession } from "./accepted-execution-session.js";
+ import type {
+   DaemonNavigationWorker,
+   DaemonNavigationWorkerExit,
+@@ -44,7 +45,6 @@ import type {
+   DaemonResourceSupervisor,
+ } from "./daemon-resource-monitor.js";
+ import type { DaemonWorkerGenerationManager } from "./daemon-worker-generation-manager.js";
+-import type { WorkspaceRequestQueue } from "./workspace-request-queue.js";
+ import { TestDaemonResourcePolicy as DaemonResourcePolicy } from "../../test/helpers/daemon-resource-policy.js";
+ import {
+   TestWorkspaceDaemon as WorkspaceDaemon,
+@@ -1967,7 +1967,10 @@ class RequestHarness {
+   }
+ 
+   acceptedRequestCount(): number {
+-    return this.daemonInternals.acceptedRequests.size;
++    const session = this.daemonInternals.acceptedExecutionSession as unknown as {
++      readonly options: { readonly ledger: AcceptedRequestLedger };
++    };
++    return session.options.ledger.size;
+   }
+ 
+   setWorkerReady(workerReady: boolean): void {
+@@ -1986,7 +1989,7 @@ class RequestHarness {
+   }
+ 
+   closeAdmission(): Promise<void> {
+-    return this.daemonInternals.requestQueue.drain();
++    return this.daemonInternals.acceptedExecutionSession.drain();
+   }
+ 
+   observeAdmissionSamples(): ReturnType<typeof vi.fn> {
+@@ -2007,8 +2010,7 @@ class RequestHarness {
+   }
+ 
+   private get daemonInternals(): {
+-    readonly acceptedRequests: AcceptedRequestLedger;
+-    readonly requestQueue: WorkspaceRequestQueue;
++    readonly acceptedExecutionSession: AcceptedExecutionSession;
+     readonly workerManager: DaemonWorkerGenerationManager;
+     readonly resourceSupervisor: DaemonResourceSupervisor & {
+       readonly snapshot: DaemonResourceSnapshot;
+@@ -2016,8 +2018,7 @@ class RequestHarness {
+   } {
+     if (this.daemon === undefined) throw new Error("Workspace daemon is unavailable");
+     return this.daemon as unknown as {
+-      readonly acceptedRequests: AcceptedRequestLedger;
+-      readonly requestQueue: WorkspaceRequestQueue;
++      readonly acceptedExecutionSession: AcceptedExecutionSession;
+       readonly workerManager: DaemonWorkerGenerationManager;
+       readonly resourceSupervisor: DaemonResourceSupervisor & {
+         readonly snapshot: DaemonResourceSnapshot;
+diff --git a/apps/cli/src/daemon/workspace-daemon.ts b/apps/cli/src/daemon/workspace-daemon.ts
+index 2716747a3..b3fc904cb 100644
+--- a/apps/cli/src/daemon/workspace-daemon.ts
++++ b/apps/cli/src/daemon/workspace-daemon.ts
+@@ -2,7 +2,6 @@ import { access } from "node:fs/promises";
+ import {
+   DaemonAdmissionPolicy,
+   DaemonAdmissionRejections,
+-  DaemonExecutionFailures,
+   type DaemonAdmissionDecision,
+   type DaemonExecuteRejectionCode,
+   type DaemonExecutorModuleUrl,
+@@ -10,6 +9,7 @@ import {
+   type DaemonPolicyValues,
+ } from "@symnav/daemon";
+ import { AcceptedRequestLedger } from "./accepted-request-ledger.js";
++import { AcceptedExecutionSession } from "./accepted-execution-session.js";
+ import { DaemonActivityProjector } from "./daemon-activity-projector.js";
+ import type {
+   DaemonExecutionServerFrame,
+@@ -18,27 +18,19 @@ import type {
+   DaemonResponse,
+   DaemonServer,
+ } from "./daemon-protocol.js";
+-import {
+-  CompletionSpoolCapacityError,
+-  DaemonCompletionSpoolStore,
+-  type CompletionSpoolStorage,
+-} from "./completion-spool.js";
++import { DaemonCompletionSpoolStore, type CompletionSpoolStorage } from "./completion-spool.js";
+ import { DAEMON_PROTOCOL_VERSION, DAEMON_RECORD_SCHEMA_VERSION } from "./daemon-protocol.js";
+ import { DaemonLifetime } from "./daemon-lifetime.js";
+ import { DaemonLogger } from "./daemon-logger.js";
+ import { NodeDaemonClock, type DaemonClock } from "./daemon-clock.js";
+-import { DaemonOperationObserver, type DaemonOperationTrace } from "./daemon-operation-observer.js";
+-import { DaemonDeliverySession, type DaemonCompletionWriter } from "./daemon-delivery-session.js";
++import { DaemonOperationObserver } from "./daemon-operation-observer.js";
++import { DaemonDeliverySession } from "./daemon-delivery-session.js";
+ import {
+-  DaemonNavigationWorkerExitedError,
+   type DaemonNavigationWorker,
+   NodeDaemonNavigationWorker,
+ } from "./daemon-navigation-worker.js";
+ import { DaemonWorkerGenerationManager } from "./daemon-worker-generation-manager.js";
+-import {
+-  DaemonResourceSupervisor,
+-  type DaemonWorkerReplacementCause,
+-} from "./daemon-resource-monitor.js";
++import { DaemonResourceSupervisor } from "./daemon-resource-monitor.js";
+ import type { DaemonRegistry, DaemonStartupLease } from "./daemon-registry.js";
+ import type { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
+ import type { DaemonRequestServer, DaemonServerSend } from "./daemon-transport.js";
+@@ -71,32 +63,24 @@ export class WorkspaceDaemon {
+   private readonly clock: DaemonClock;
+   private readonly exit: (code: number) => void;
+   private readonly workerManager: DaemonWorkerGenerationManager;
+-  private readonly requestQueue: WorkspaceRequestQueue;
++  private readonly acceptedExecutionSession: AcceptedExecutionSession;
+   private readonly logger: DaemonLogger;
+   private readonly lifetime: DaemonLifetime;
+   private readonly resourceSupervisor: DaemonResourceSupervisor;
+   private readonly resourcePolicy: DaemonPolicyValues["resources"];
+   private readonly policy: DaemonPolicy;
+   private readonly operationObserver: DaemonOperationObserver;
+-  private readonly acceptedRequests: AcceptedRequestLedger;
+   private readonly deliverySession: DaemonDeliverySession;
+   private readonly admissionPolicy = new DaemonAdmissionPolicy();
+-  private readonly acceptances = new Map<
+-    string,
+-    { readonly acceptedAt: number; readonly queuePosition: number }
+-  >();
+   private server: DaemonServer | undefined;
+   private startedAt = 0;
+   private readonly startedMonotonicAt: number;
+-  private lastNavigationAt: number | undefined;
+-  private lastCompletedMonotonicAt: number | undefined;
+   private shutdownStarted = false;
+   private shutdownFailureCode: "stopping" | "controlled-resource" | undefined;
+   private shutdownOperation: Promise<void> | undefined;
+   private forcedWorkerShutdown: Promise<void> | undefined;
+   private readonly forceEscalated: Promise<void>;
+   private resolveForceEscalated!: () => void;
+-  private readonly resourceInterruptedRequests = new Set<string>();
+ 
+   constructor(private readonly options: WorkspaceDaemonOptions) {
+     const policy = options.policy;
+@@ -107,8 +91,8 @@ export class WorkspaceDaemon {
+     this.now = options.now ?? Date.now;
+     this.clock = options.clock ?? new NodeDaemonClock();
+     this.startedMonotonicAt = this.clock.monotonicNowMs();
+-    this.requestQueue = new WorkspaceRequestQueue(() => this.clock.monotonicNowMs());
+-    this.acceptedRequests = new AcceptedRequestLedger(this.now);
++    const requestQueue = new WorkspaceRequestQueue(() => this.clock.monotonicNowMs());
++    const acceptedRequests = new AcceptedRequestLedger(this.now);
+     const completionSpools = new DaemonCompletionSpoolStore({
+       directory: options.identity.spoolDirectory,
+       workspaceKey: options.identity.workspaceKey,
+@@ -161,7 +145,8 @@ export class WorkspaceDaemon {
+       initialWorker: initialNavigationWorker,
+       createWorker: createNavigationWorker,
+       exitRecovery: { recover: (workerExit) => this.recoverWorkerExit(workerExit) },
+-      onActiveResourceInterruption: (cause) => this.markActiveResourceInterruption(cause),
++      onActiveResourceInterruption: (cause) =>
++        this.acceptedExecutionSession.markActiveResourceInterrupted(cause),
+       onDiagnostic: (diagnostic) => this.operationObserver.worker(diagnostic),
+     });
+     this.resourceSupervisor = new DaemonResourceSupervisor({
+@@ -171,7 +156,8 @@ export class WorkspaceDaemon {
+         ? {}
+         : { residentMemoryBytes: options.residentMemoryBytes }),
+       spoolBytes: () => this.deliverySession.snapshot.spoolBytes,
+-      scheduleAtTurnBoundary: (operation) => this.requestQueue.scheduleAtTurnBoundary(operation),
++      scheduleAtTurnBoundary: (operation) =>
++        this.acceptedExecutionSession.scheduleAtTurnBoundary(operation),
+       releaseTransientResources: async () => {
+         const response = await this.workerManager.releaseTransientResources();
+         this.resourceSupervisor.workerHeapReported(
+@@ -197,13 +183,36 @@ export class WorkspaceDaemon {
+         instanceId: options.instanceId,
+         processToken: options.processToken,
+       },
+-      journal: this.acceptedRequests,
++      journal: acceptedRequests,
+       spoolStore: completionSpools,
+       observer: this.operationObserver,
+       diagnostics: this.logger,
+       clock: this.clock,
+       policy: policy.values,
+     });
++    this.acceptedExecutionSession = new AcceptedExecutionSession({
++      ledger: acceptedRequests,
++      queue: requestQueue,
++      worker: this.workerManager,
++      delivery: this.deliverySession,
++      resourceSupervisor: this.resourceSupervisor,
++      processLifecycle: {
++        shutdownSnapshot: () => ({
++          started: this.shutdownStarted,
++          ...(this.shutdownFailureCode === undefined
++            ? {}
++            : { failureCode: this.shutdownFailureCode }),
++        }),
++        workspaceExists: () => this.workspaceExists(),
++        workspaceDeletedAfterDelivery: () => this.workspaceDeletedAfterDelivery(),
++      },
++      lifetime: this.lifetime,
++      diagnostics: this.logger,
++      clock: {
++        wallNowMs: this.now,
++        monotonicNowMs: () => this.clock.monotonicNowMs(),
++      },
++    });
+   }
+ 
+   async start(): Promise<void> {
+@@ -379,11 +388,11 @@ export class WorkspaceDaemon {
+         instanceId: this.options.instanceId,
+         processToken: this.options.processToken,
+         requestId: request.requestId,
+-        status: this.acceptedRequests.status(request.requestId),
++        status: this.acceptedExecutionSession.status(request.requestId),
+       };
+     }
+     this.beginGracefulShutdown();
+-    await this.requestQueue.drain();
++    await this.acceptedExecutionSession.drain();
+     await this.deliverySession.waitForCompletionAcknowledgements();
+     setTimeout(() => void this.shutdown("graceful"), 0);
+     return { kind: "stopped", instanceId: this.options.instanceId };
+@@ -416,7 +425,7 @@ export class WorkspaceDaemon {
+     }
+     this.beginGracefulShutdown();
+     if (request.kind === "terminate") {
+-      await this.requestQueue.drain();
++      await this.acceptedExecutionSession.drain();
+       await this.deliverySession.waitForCompletionAcknowledgements();
+       setTimeout(() => void this.shutdown("graceful"), 0);
+     } else {
+@@ -430,7 +439,7 @@ export class WorkspaceDaemon {
+   }
+ 
+   private pong(): DaemonResponse {
+-    const queue = this.requestQueue.snapshot;
++    const execution = this.acceptedExecutionSession.snapshot;
+     const resources = this.resourceSupervisor.snapshot;
+     const worker = this.workerManager.snapshot;
+     return DaemonActivityProjector.project({
+@@ -439,14 +448,16 @@ export class WorkspaceDaemon {
+       processRssBytes: process.memoryUsage().rss,
+       startedAt: this.startedAt,
+       startedMonotonicAt: this.startedMonotonicAt,
+-      ...(this.lastNavigationAt === undefined ? {} : { lastNavigationAt: this.lastNavigationAt }),
+-      ...(this.lastCompletedMonotonicAt === undefined
++      ...(execution.lastNavigationAt === undefined
++        ? {}
++        : { lastNavigationAt: execution.lastNavigationAt }),
++      ...(execution.lastCompletedMonotonicAt === undefined
+         ? {}
+-        : { lastCompletedMonotonicAt: this.lastCompletedMonotonicAt }),
++        : { lastCompletedMonotonicAt: execution.lastCompletedMonotonicAt }),
+       productVersion: this.options.symnavVersion,
+       instanceId: this.options.instanceId,
+       hardProcessRssBytes: this.resourcePolicy.hardProcessRssBytes,
+-      queue,
++      queue: execution.queue,
+       resources,
+       worker: {
+         generation: worker.generation,
+@@ -465,35 +476,10 @@ export class WorkspaceDaemon {
+       throw new Error("Daemon execution request does not match process instance");
+     }
+     if (decision.kind === "reject") return this.rejection(request, decision.code);
+-    const existing = this.acceptedRequests.entryFor(request.requestId);
+-    const entry = this.acceptedRequests.accept(
+-      request.requestId,
+-      request.commandName,
+-      request.request,
+-    );
+-    if (entry.state.state === "queued") {
+-      this.acceptances.set(request.requestId, {
+-        acceptedAt: entry.state.acceptedAt,
+-        queuePosition: entry.state.queuePosition,
+-      });
+-    }
+-    const acceptance = this.acceptances.get(request.requestId);
+-    if (acceptance === undefined) throw new Error("Accepted request is missing admission metadata");
+-    if (existing === undefined) {
+-      this.lastNavigationAt = this.now();
+-      this.lifetime.navigationAccepted();
+-      const trace = this.deliverySession.beginAcceptedTrace(
+-        request.requestId,
+-        request.commandName,
+-        entry.state.state === "queued" ? entry.state.queuePosition : acceptance.queuePosition,
+-        this.resourceSupervisor.snapshot.generation,
+-      );
+-      void this.executeAccepted(request, trace);
+-    }
++    const admission = this.acceptedExecutionSession.accept(request);
+     await this.deliverySession.attach(
+       {
+-        requestId: request.requestId,
+-        ...acceptance,
++        ...admission.acceptance,
+       },
+       send,
+     );
+@@ -526,119 +512,20 @@ export class WorkspaceDaemon {
+       authenticated,
+       workerReady: this.workerManager.snapshot.ready,
+       resourceAdmissionPaused: this.resourceSupervisor.snapshot.admissionPaused,
+-      queueState: this.requestQueue.state,
+-      compatibility: this.acceptedRequests.compatibilityFor(
+-        request.requestId,
+-        request.commandName,
+-        request.request,
+-      ),
++      queueState: this.acceptedExecutionSession.snapshot.queue.state,
++      compatibility: this.acceptedExecutionSession.compatibilityFor(request),
+     });
+   }
+ 
+-  private async executeAccepted(
+-    request: Extract<DaemonRequest, { kind: "execute" }>,
+-    trace: DaemonOperationTrace,
+-  ): Promise<void> {
+-    let completion: DaemonCompletionWriter | undefined;
+-    try {
+-      await this.requestQueue.enqueue(
+-        {
+-          requestId: request.requestId,
+-          command: request.commandName,
+-          acceptedAt: this.clock.monotonicNowMs(),
+-        },
+-        async () => {
+-          trace.turnStarted(this.resourceSupervisor.snapshot.generation);
+-          try {
+-            completion = await this.deliverySession.createCompletion(request.requestId);
+-            this.acceptedRequests.markRunning(request.requestId, this.now());
+-            const response = await this.workerManager.execute(
+-              request.requestId,
+-              { commandName: request.commandName, request: request.request },
+-              completion,
+-            );
+-            this.resourceSupervisor.workerHeapReported(
+-              response.generation,
+-              response.resources.workerHeapUsedBytes,
+-              response.resources.workerHeapLimitBytes,
+-              response.resources.peakWorkerHeapUsedBytes,
+-            );
+-            trace.workerCompleted(
+-              {
+-                freshnessMs: response.durations.freshnessMs,
+-                navigationMs: response.durations.navigationMs,
+-                renderMs: response.durations.renderMs,
+-                workerOutputMs: response.durations.outputMs,
+-              },
+-              response.refresh,
+-            );
+-            await completion.finish(response.result.exitCode);
+-            const workspaceDeleted = await this.recordCompletion();
+-            trace.executionTerminated("completed");
+-            this.acceptedRequests.complete(request.requestId, request.requestId, this.now());
+-            await this.deliverySession.trackedCompletion(request.requestId);
+-            if (workspaceDeleted) {
+-              await this.deliverySession.waitForCompletionAcknowledgements();
+-              setTimeout(() => void this.shutdown("workspace-deleted", true), 0);
+-            }
+-          } finally {
+-            this.scheduleTurnCompleteResourceSample();
+-          }
+-        },
+-      );
+-    } catch (error) {
+-      trace.executionTerminated("failed");
+-      this.logger.record({
+-        kind: "failure",
+-        operation: "request",
+-        failureCode: "internal",
+-        errorName: DaemonLogger.errorName(error),
+-      });
+-      const code = DaemonExecutionFailures.classify({
+-        resourceInterrupted: this.resourceInterruptedRequests.delete(request.requestId),
+-        responseCapacityExceeded: error instanceof CompletionSpoolCapacityError,
+-        workerExited: error instanceof DaemonNavigationWorkerExitedError,
+-        ...(this.shutdownFailureCode === undefined
+-          ? {}
+-          : { shutdownFailureCode: this.shutdownFailureCode }),
+-        shutdownStarted: this.shutdownStarted,
+-      });
+-      await completion?.dispose().catch((cleanupError) => {
+-        this.logger.record({
+-          kind: "failure",
+-          operation: "completion-cleanup",
+-          failureCode: "internal",
+-          errorName: DaemonLogger.errorName(cleanupError),
+-        });
+-      });
+-      this.acceptedRequests.fail(request.requestId, code, this.now());
+-    } finally {
+-      if (this.requestQueue.isIdle) this.lifetime.queueBecameIdle();
+-    }
+-  }
+-
+-  private scheduleTurnCompleteResourceSample(): void {
+-    void this.requestQueue
+-      .scheduleAtTurnBoundary(() => this.resourceSupervisor.sampleAtTurnBoundary())
+-      .catch((error) => {
+-        this.logger.record({
+-          kind: "failure",
+-          operation: "resource-sample",
+-          failureCode: "operation-failed",
+-          errorName: DaemonLogger.errorName(error),
+-        });
+-      })
+-      .finally(() => {
+-        if (this.requestQueue.isIdle) this.lifetime.queueBecameIdle();
+-      });
++  private workspaceExists(): Promise<boolean> {
++    return this.options.dependencies
++      ? this.options.dependencies.fs.exists(this.options.identity.workspaceRoot)
++      : WorkspaceDaemon.pathExists(this.options.identity.workspaceRoot);
+   }
+ 
+-  private async recordCompletion(): Promise<boolean> {
+-    this.lastCompletedMonotonicAt = this.clock.monotonicNowMs();
+-    const exists = this.options.dependencies
+-      ? await this.options.dependencies.fs.exists(this.options.identity.workspaceRoot)
+-      : await WorkspaceDaemon.pathExists(this.options.identity.workspaceRoot);
+-    return !exists;
++  private async workspaceDeletedAfterDelivery(): Promise<void> {
++    await this.deliverySession.waitForCompletionAcknowledgements();
++    setTimeout(() => void this.shutdown("workspace-deleted", true), 0);
+   }
+ 
+   private static async pathExists(path: string): Promise<boolean> {
+@@ -662,7 +549,7 @@ export class WorkspaceDaemon {
+   }
+ 
+   private async drainAndShutdown(reason: "idle"): Promise<void> {
+-    await this.requestQueue.drain();
++    await this.acceptedExecutionSession.drain();
+     await this.shutdown(reason);
+   }
+ 
+@@ -722,17 +609,17 @@ export class WorkspaceDaemon {
+   }
+ 
+   private async gracefullyShutdownWorker(): Promise<void> {
+-    await this.requestQueue.drain();
++    await this.acceptedExecutionSession.drain();
+     const gracefulClose = this.workerManager.close();
+     await Promise.race([gracefulClose, this.forceEscalated.then(() => this.forceWorkerShutdown())]);
+   }
+ 
+   private forceWorkerShutdown(): Promise<void> {
+     if (this.forcedWorkerShutdown !== undefined) return this.forcedWorkerShutdown;
+-    this.requestQueue.close();
++    this.acceptedExecutionSession.close();
+     this.forcedWorkerShutdown = this.workerManager
+       .terminate()
+-      .then(() => this.requestQueue.drain());
++      .then(() => this.acceptedExecutionSession.drain());
+     this.resolveForceEscalated();
+     return this.forcedWorkerShutdown;
+   }
+@@ -743,12 +630,6 @@ export class WorkspaceDaemon {
+     );
+   }
+ 
+-  private markActiveResourceInterruption(cause: DaemonWorkerReplacementCause): void {
+-    if (cause === "worker-exit") return;
+-    const activeRequest = this.requestQueue.snapshot.active;
+-    if (activeRequest !== undefined) this.resourceInterruptedRequests.add(activeRequest.requestId);
+-  }
+-
+   private async recoverWorkerExit(
+     workerExit: import("./daemon-navigation-worker.js").DaemonNavigationWorkerExit,
+   ): Promise<void> {

@@ -1,0 +1,3115 @@
+{
+  "title": "PR 127 — Cache lifetime and release boundaries",
+  "url": "file:///Users/moyaseen/projects/rich-review-v2/experiments/31-method-runbook/index.html",
+  "text": "Skip to content\n31 METHOD / RUNBOOK\nPR 127\nRead the runbook\nInspect this run\nREADME\nPR 127 · SCOPE SEMANTIC CACHES TO ONE TURN · STACK LAYER 4 / 26\nCore gets the clearing job.\nRelease gets an awaited boundary.\n\nThese query results were already turn-scoped. This change moves their clearing machinery into core and connects project-release completion to the backend caller.\n\nA turn here is the service's cache interval, advanced after a successful backend refresh. Read the maps and all twelve decisions for the complete overview. Every deeper section adds mechanism or source to a choice already here.\n\nMove the clearing machinery\nFollow the ownership change ↗\nBEFORE\na1e325a\n@symnav/backend-typescript\nTypeScriptBackend\nowns service, state, project graph, source cache\n↓ refresh / release\nSemantic query service\nquery algorithms + six Maps + manual clear list\ndefinitions\nreferences\ncall targets\ncallers\ncallees\npositions\n↓ starts graph release; discards its promise\nTypeScriptProjectGraph\nconcrete project cleanup is synchronous\n@symnav/core\nProjectGraph base\nexisting async release loop, inherited by TypeScript graph\nThe generic turn-cache scope does not exist here yet.\nAFTER\n64919bc\n@symnav/backend-typescript\nTypeScriptBackend\nsame owners; now awaits service release\n↓ refresh / await release\nSemantic query service\nquery algorithms + file list; constructs a core scope\n↓ clears scope, then awaits graph release\nTypeScriptProjectGraph\ninherits the same async release loop\nservice → core: creates six handles; delegates lookup and clear\n@symnav/core · NEW CACHE MODULE\nTurnScopedCacheScope\nregisters and clears isolated Map-backed handles\ndefinitions\nreferences\ncall targets\ncallers\ncallees\npositions\nCode is defined in core; the scope instance belongs to the service.\nThe existing ProjectGraph base remains in core.\nclearing code removed from TypeScript\nclearing code added to core\nexisting units and calls\nSimplified package picture: only units needed for cache lifetime are shown; the six badges stand for separate caches, not six entries. The service already cleared query caches between successful turns. The new scope moves that responsibility across the existing TypeScript → core dependency.\nKeep clearing separate from finishing\nFollow completion and failure ↗\nREFRESH\nboth versions\nCurrent cache turn\n→\nRefresh source / projects / state\n→\nSuccess: begin next turn, clear entries\n\nFailure: keep prior cache turn\nRELEASE\nbefore\nClear six Maps now\n→\nStart graph release\n→\nBackend returns without graph's outcome\nRELEASE\nafter\nClear scope entries now\n→\nService + backend await graph\n→\nBackend completes or rejects with graph\nHandles can refill while release is pending.\nClearing does not cancel promises already returned.\nSchematic call order, not measured durations. The new pending/rejecting-release test controls a graph promise. The real graph already returns a promise; concrete TypeScript project cleanup is synchronous. A rejection can stop its later project releases. The cache scope itself has no active/released state.\nTwelve choices, with their reasons\nWhy this order ↗\n\n“Stated” means a source gives a reason. “Unexplained” means no reason was found in the bounded PR/commit/plan corpus; the choice may still be explicitly declared. The PR promises preservation, while release completion and failure visibility change. That distinction remains visible below.\n\n01 / The moved boundaries\nD01\nREASON: STATED\nGive six caches one clearing owner\n\nCore owns clearing for all six handles; TypeScript keeps the query algorithms. Five handles use symbol identities, one uses file positions. Their key and value spaces stay separate.\n\nIndependent query key and value spaces are the stated reason for six handles.\n\nMechanism & evidence ↗\nD12\nREASON: UNEXPLAINED\nCarry project completion and failure back to the backend\n\nBackend release now waits for the graph's completion and propagates its rejection, including failure that stops later project releases. This is an observable contract change alongside the ownership move. The PR declares the barrier, but the broad plan promises unchanged failure behavior; no separate rationale reconciles that change. The generic graph already returns a promise even though concrete TypeScript cleanup is synchronous.\n\nThe awaited barrier is explicit, but no separate reason reconciles changed failure/completion visibility with the plan's preservation promise. The stated clearing-order reason belongs to D02.\n\nMechanism & evidence ↗\nD02\nREASON: STATED\nEmpty entries before project release\n\nOld cache entries disappear synchronously when release starts, even while project release is pending or rejects. The ordering is preserved; the clearing owner changes.\n\nThe PR says released semantics must be unavailable while release is pending or rejecting.\n\nMechanism & evidence ↗\nD03\nREASON: STATED\nAdvance the cache turn only after refresh succeeds\n\nSuccessful refresh clears the previous turn, even for unchanged files. Failed refresh never reaches beginTurn, so it keeps the prior cache entries and query-file list. This is a cache guarantee, not a claim that every refresh side effect is rolled back.\n\nThe PR says failed refresh must preserve the current successful turn.\n\nMechanism & evidence ↗\n02 / Declared surfaces, missing reasons\nD04\nREASON: UNEXPLAINED\nUse a scope object at the package seam\n\nThe service composes a core scope. The plan describes shared backend bases and inheritance; the PR shows this composed form, without giving a reason for that form. The existing TypeScript → core dependency direction is retained.\n\nThe PR describes composition but gives no reason for choosing it over the plan's base/extends wording.\n\nMechanism & evidence ↗\nD05\nREASON: UNEXPLAINED\nExpose reusable handles and whole-scope clearing\n\nThe public handle offers getOrCreate; scope methods clear every registered handle synchronously. Handles remain usable before beginTurn, after repeated release, and during pending project release. There is no turn gate, per-key invalidation, or handle-unregister operation; the service creates its six handles once.\n\nThe public surface is stated; no reason is given for this minimal, reusable lifecycle contract.\n\nMechanism & evidence ↗\nD06\nREASON: UNEXPLAINED\nPass a file list across the exported service API\n\nThe already-exported semantic service now takes a file list instead of a whole snapshot. The backend supplies snapshot.files. Direct callers of that public method must change their argument shape; the PR records the signature change without explaining why.\n\nNo reason for the narrower argument is stated in the PR, commits, or relevant plan passages.\n\nMechanism & evidence ↗\n03 / Contracts kept and made generic\nD08\nREASON: STATED\nReturn the exact factory value between clears\n\nBetween clears, a repeated key on one handle returns the same value or promise object. Clearing forgets entries without cancelling returned work. An old promise may settle later but cannot overwrite a new-turn entry. Promise identity applies at the cached service/handle boundary, not every async wrapper.\n\nThe PR's compatibility intent explicitly preserves promise/value identities; it gives no separate optimization claim.\n\nMechanism & evidence ↗\nD09\nREASON: STATED\nKeep async failures cached; retry synchronous throws\n\nA factory that returns a promise stores it, including later rejection, until the next clear. A factory that throws synchronously stores nothing, so the next access retries. TypeScript definitions/callees take the async path; reference discovery can take the synchronous path.\n\nThe stated reason is compatibility with existing failure behavior; no independent defense of the asymmetry is supplied.\n\nMechanism & evidence ↗\nD07\nREASON: STATED\nTreat undefined as a cached value\n\nA present key is a hit even when its value is undefined. Existing TypeScript caches hold arrays or promises; the generic core contract also supports undefined without rerunning the factory.\n\nThe PR explicitly names undefined as a valid cached value.\n\nMechanism & evidence ↗\nD10\nREASON: STATED\nKeep TypeScript projections and query work in place\n\nQuery keys and bodies stay in TypeScript. Observers run on cache misses; callers and references share cached reference locations. Position caches keep locations (including empty results), while each access rebuilds a node array. Reference results are also projected per access; the refactor does not turn all outputs into shared objects.\n\nThe PR explicitly preserves all six algorithms, key spaces, and value identities.\n\nMechanism & evidence ↗\nD11\nREASON: STATED\nAdd contract tests while retaining prior assertions\n\nTen new tests cover identities/isolation, empty-position projection, rejection versus throw, successful-turn preservation, immediate clearing plus awaited release, repeated release, and late promise settlement. The five existing tests remain; none is weakened or deleted. The pending/rejecting release case uses a controlled graph double. This artifact inspects tests; it does not report a test run.\n\nThe PR names characterization and identity/error/clearing contracts, alongside its compatibility intent.\n\nMechanism & evidence ↗\nThe complete overview ends here. You have the moved boundaries, preserved contracts, public surfaces, test changes, and rationale gaps. Continue linearly, or follow any decision directly to its mechanism and evidence.\nThe same choices, at source resolution\n↑ Complete overview\nD01 · MECHANISM\nGive six caches one clearing owner\n↑ Return to overview\nBEFORE\nThe TypeScript service owns six Maps and a six-call clearing list.\nAFTER\nThe service creates one core scope with six independent typed handles.\nPart\tMechanism / context\tEvidence\nOwnership\tThe removed clearQueryCaches method names all six Maps. The new scope registers clearable handles and visits its registry on either boundary.\t\nE46\nE20\n\nPartition\tdefinitions, references, call targets, callers, and callees use formatted symbol-identity strings. definitionsByPosition uses relativePath:start. Each createCache call allocates a separate Map.\t\nE11\nE19\nE21\nE22\nE23\nE26\n\nREASON: STATED — Independent query key and value spaces are the stated reason for six handles.\n\nIntent record: Explicit in the PR context, shape, and decisions.\n\nE10\nE11\nE12\nE46\nE03\nE08\nD12 · MECHANISM\nCarry project completion and failure back to the backend\n↑ Return to overview\nBEFORE\nThe graph's promise is started and discarded by a void service method; the backend does not await it.\nAFTER\nThe service becomes async and the backend awaits it, connecting the caller to graph settlement.\nPart\tMechanism / context\tEvidence\nBefore\tService clears, calls the graph, and returns void. The async backend returns without adopting the graph promise.\t\nE13\nE15\nE17\n\nAfter\tService awaits the graph and backend awaits service. A graph rejection now reaches the backend caller. The existing graph's sequential loop stops on rejection, so later release work is not run.\t\nE14\nE16\nE17\nE36\n\nReason boundary\tPR shape and signatures explicitly describe the barrier. The reason for clearing before an await does not separately explain why a refactor changes what the backend caller observes. The broad plan asks for unchanged failure paths; this artifact leaves that choice for the reader.\t\nE02\nE07\nE09\n\nREASON: UNEXPLAINED — The awaited barrier is explicit, but no separate reason reconciles changed failure/completion visibility with the plan's preservation promise. The stated clearing-order reason belongs to D02.\n\nIntent record: Explicit in PR shape and public surface; broader plan tension is surfaced without a correctness verdict.\n\nE02\nE07\nE09\nE13\nE14\nE15\nE16\nE17\nE18\nE36\nD02 · MECHANISM\nEmpty entries before project release\n↑ Return to overview\nBEFORE\nThe service synchronously clears its six Maps before starting graph release.\nAFTER\nThe service synchronously clears its scope before awaiting graph release.\nPart\tMechanism / context\tEvidence\nFirst\tCalling the async service method executes cacheScope.releaseTransientResources synchronously, before its first await.\t\nE16\nE20\n\nDuring release\tThe added test queries after release begins, obtains a different definition array, and sees the backend release promise still pending before rejecting its controlled graph promise.\t\nE36\n\nREASON: STATED — The PR says released semantics must be unavailable while release is pending or rejecting.\n\nIntent record: Explicit PR decision; existing order preserved through the core scope.\n\nE15\nE16\nE20\nE36\nE05\nD03 · MECHANISM\nAdvance the cache turn only after refresh succeeds\n↑ Return to overview\nBEFORE\nbeginTurn follows the awaited state refresh.\nAFTER\nThe ordering remains; beginTurn delegates clearing to core.\nPart\tMechanism / context\tEvidence\nRefresh path\tSource-cache refresh runs first; workspace coverage also awaits project-graph refresh; state refresh is awaited next. Only then is the file list passed to beginTurn.\t\nE14\n\nFailure path\tA rejected state refresh skips both the file-list assignment and scope clear. Earlier source/project work is outside this cache-lifecycle claim.\t\nE14\nE11\nE35\n\nUnchanged input\tThe retained next-turn test refreshes the same snapshot twice and expects a second reference search after the second refresh.\t\nE37\n\nREASON: STATED — The PR says failed refresh must preserve the current successful turn.\n\nIntent record: Explicit PR decision and new characterization test; behavior preserved.\n\nE13\nE14\nE11\nE35\nE37\nE06\nD04 · MECHANISM\nUse a scope object at the package seam\n↑ Return to overview\nBEFORE\nGeneric cache machinery is implemented inside the TypeScript service.\nAFTER\nThe service constructs a core helper object and calls its methods.\nPart\tMechanism / context\tEvidence\nConstruction\tcacheScope is a field initialized with new TurnScopedCacheScope. The service still implements PositionDefinitionResolver and is not made a scope subclass.\t\nE11\n\nPlan comparison\tThe plan says a shared concept lives in core as a base the backend extends. The PR's own diagram instead shows the service owning a scope. The supplied material does not reconcile this particular form.\t\nE08\nE02\n\nREASON: UNEXPLAINED — The PR describes composition but gives no reason for choosing it over the plan's base/extends wording.\n\nIntent record: Present in the PR shape; differs in implementation form from the plan's wording, rather than being absent from the PR.\n\nE02\nE08\nE11\nE40\nD05 · MECHANISM\nExpose reusable handles and whole-scope clearing\n↑ Return to overview\nBEFORE\nMaps are private to the service; core has no generic turn-cache surface.\nAFTER\nCore exports a scope and a typed getOrCreate-only handle interface.\nPart\tMechanism / context\tEvidence\nHandle API\tTurnScopedCache<Key, Value> exposes getOrCreate. The unexported concrete handle also has clear; callers typed as the interface are not given that method.\t\nE19\nE40\n\nScope API\tcreateCache registers a handle in an array. beginTurn and releaseTransientResources both call the same synchronous clear loop; the registry is retained.\t\nE20\n\nReusable lifetime\tThere is no active/released flag. Tests populate before beginTurn, release twice, then populate again. The pending-release test also performs a new query before release settles.\t\nE12\nE29\nE36\n\nAllocation boundary\tThe TypeScript service constructs all six handles as fields. The generic scope exposes neither unregister nor single-key deletion.\t\nE11\nE12\n\nREASON: UNEXPLAINED — The public surface is stated; no reason is given for this minimal, reusable lifecycle contract.\n\nIntent record: Public surface explicitly listed in PR; lifecycle limits derived from the entire new implementation.\n\nE07\nE12\nE29\nE36\nE40\nE11\nD06 · MECHANISM\nPass a file list across the exported service API\n↑ Return to overview\nBEFORE\nbeginTurn receives a WorkspaceSnapshot and reads snapshot.files.\nAFTER\nbeginTurn receives readonly WorkspaceFile[] directly.\nPart\tMechanism / context\tEvidence\nCall boundary\tThe backend changes beginTurn(request.snapshot) to beginTurn(request.snapshot.files); the service assigns files directly before clearing.\t\nE13\nE14\nE10\nE11\n\nVisibility\tTypeScriptSemanticQueryService remains exported from the package root. The change is therefore visible to direct service consumers, even though the main backend refresh request keeps its shape.\t\nE41\nE07\nE14\n\nREASON: UNEXPLAINED — No reason for the narrower argument is stated in the PR, commits, or relevant plan passages.\n\nIntent record: Explicit PR public-surface change; not an unrequested change relative to that body.\n\nE07\nE10\nE11\nE14\nE41\nD08 · MECHANISM\nReturn the exact factory value between clears\n↑ Return to overview\nBEFORE\nSpecialized Maps store exact array or promise objects.\nAFTER\ngetOrCreate stores and returns the factory result unchanged.\nOne key, two promise lifetimes\n\nIllustrative identity trace, transcribed from the new core test; no runtime was executed for this page.\n\nStep\tEntry in the cache\tReturned work\tWhat to notice\n1 · first lookup\tP₀\tP₀ pending\tThe factory's promise is returned unchanged.\n2 · same key, same turn\tP₀\tP₀ pending\tHit: no second factory call.\n3 · beginTurn()\tempty\tP₀ still pending\tOnly the entry is forgotten.\n4 · new lookup\tP₁\tP₀ and P₁\tA new factory result occupies the same key.\n5 · P₀ settles\tP₁\tOld caller gets old result\tSettlement has no cache-write callback.\nPart\tMechanism / context\tEvidence\nIdentity\tThe factory result is inserted directly, and hits return it directly. The cache adds no promise wrapper or settlement handler.\t\nE19\n\nLater settlement\tThe core test stores an old pending promise, begins a new turn, stores a new promise, then settles the old one. The old caller still gets old; a cache lookup still gets new.\t\nE31\n\nBoundary\tThe new service test checks the direct promises from definitions, call target, callers, and callees. findReferences projects anew; backend query methods are async wrappers, so this is not a universal API promise-identity claim.\t\nE32\nE25\nE14\n\nREASON: STATED — The PR's compatibility intent explicitly preserves promise/value identities; it gives no separate optimization claim.\n\nIntent record: Preservation explicitly requested; old-settlement consequence additionally specified by the new core test.\n\nE01\nE19\nE20\nE31\nE32\nE44\nE14\nE25\nD09 · MECHANISM\nKeep async failures cached; retry synchronous throws\n↑ Return to overview\nBEFORE\nRejected promises remain in the specialized Maps; a synchronous factory failure never reaches set.\nAFTER\nThe generic handle preserves the same split by setting only after createValue returns.\nPart\tMechanism / context\tEvidence\nReturned rejection\tA Promise is a returned value before it settles. It is inserted once; rejection does not evict it.\t\nE19\nE30\nE34\n\nThrown failure\tIf createValue throws, values.set is never reached. In referenceLocations, findReferenceLocations executes before Promise.resolve can receive its result.\t\nE19\nE26\nE27\n\nPublic observation\tfindReferences is async, so its caller still observes a rejection; the internal factory nevertheless threw before caching. The added test observes two discovery attempts.\t\nE25\nE34\n\nREASON: STATED — The stated reason is compatibility with existing failure behavior; no independent defense of the asymmetry is supplied.\n\nIntent record: Explicit preservation request, with new core and TypeScript characterization tests.\n\nE01\nE19\nE26\nE27\nE30\nE34\nE42\nE43\nD07 · MECHANISM\nTreat undefined as a cached value\n↑ Return to overview\nBEFORE\nThe specialized Maps use truthiness checks on their array/promise values.\nAFTER\nThe generic handle tests Map.has before Map.get.\nPart\tMechanism / context\tEvidence\nHit path\tgetOrCreate checks values.has(key), then returns values.get(key) as Value. It does not ask whether the retrieved value is truthy.\t\nE19\n\nTest contract\tThe undefined-producing factory is accessed twice at the same key and expected to run once, while another handle has its own independent value space.\t\nE28\n\nREASON: STATED — The PR explicitly names undefined as a valid cached value.\n\nIntent record: Explicit PR decision; new generic behavior characterized in core.\n\nE04\nE19\nE28\nE44\nE11\nD10 · MECHANISM\nKeep TypeScript projections and query work in place\n↑ Return to overview\nBEFORE\nThe service owns query keys, observers, locations, node reconstruction, and query bodies.\nAFTER\nThe same work remains around getOrCreate factories and per-access projections.\nPart\tMechanism / context\tEvidence\nQueries and observers\tDefinition/reference search observers and position-resolution observers remain inside miss factories. findCallers reuses referenceLocations; findReferences uses that same cached location promise.\t\nE21\nE22\nE23\nE26\nE25\n\nPosition entries\tThe file:start key stores relative path, start, and syntax kind. A hit still looks up the project's source file and calls nodeAtSemanticLocation for each cached location.\t\nE23\nE24\n\nPer-access output\tThe position test gets different outer arrays containing the same node; empty results avoid a second discovery. Reference projection remains outside its cached location factory.\t\nE33\nE25\n\nREASON: STATED — The PR explicitly preserves all six algorithms, key spaces, and value identities.\n\nIntent record: Explicit compatibility intent; position and reference projections are retained implementation choices.\n\nE01\nE21\nE22\nE23\nE24\nE25\nE26\nE33\nE37\nE38\nD11 · MECHANISM\nAdd contract tests while retaining prior assertions\n↑ Return to overview\nBEFORE\nThe service has five tests; the generic core scope does not exist.\nAFTER\nSix service tests and four core tests are added; the five prior test bodies and helpers are unchanged.\nPart\tMechanism / context\tEvidence\nFour core tests\tExact values/undefined/isolation; clearing and repeated release; rejected promises versus throwing factories; late old-promise settlement after a turn change.\t\nE28\nE29\nE30\nE31\n\nSix service tests\tFour direct query identities; empty positions and fresh outer arrays; async failure retention; synchronous reference retry; failed refresh retention; immediate clearing with pending/rejecting graph release.\t\nE32\nE33\nE34\nE35\nE36\n\nRetained assertions\tThe old block from the first existing test through the fixture helpers is byte-for-byte equal in the two snapshots. The only removed test-file line is the import expanded to include vi.\t\nE37\nE38\nE39\n\nEvidence boundary\tThe added asynchronous graph is an injected test double. Concrete TypeScript project cleanup is synchronous; the existing generic graph returns a promise and can await projects sequentially. No runtime benchmark or whole-system output comparison was performed.\t\nE36\nE17\nE18\n\nREASON: STATED — The PR names characterization and identity/error/clearing contracts, alongside its compatibility intent.\n\nIntent record: Test additions explicitly described in PR; no removed or weakened assertions in this diff.\n\nE47\nE28\nE29\nE30\nE31\nE32\nE33\nE34\nE35\nE36\nE37\nE38\nE39\nEvidence shelf\n↑ Complete overview\n\nExact local excerpts from the frozen base/head and supplied PR. These show the sources of the choices above. Each link opens an excerpt and each excerpt links back to the mechanisms that use it. Full copied files are available beneath the excerpt.\n\nE01PR: compatibility intent\nE02PR: composed scope and awaited barrier\nE03PR: reason for six handles\nE04PR: reason for presence checks\nE05PR: reason for clearing before release\nE06PR: reason for success-only turn change\nE07PR: public surfaces\nE08Plan: bases and language ownership\nE09Plan: preserve behavior and separate fixes\nE10Before: six Maps and snapshot input\nE11After: scope, handles, files input\nE12Core: entire new lifecycle implementation\nE13Before: refresh and detached release\nE14After: refresh, awaited release, and async query wrappers\nE15Before: clear, start graph release, return void\nE16After: clear, await graph release\nE17Existing graph: sequential release with awaits\nE18Existing concrete project: synchronous cleanup\nE19Handle: presence check, raw value, set after factory\nE20Scope: registry and repeatable clear\nE21Definitions: factory and observer remain on misses\nE22Call queries: original algorithms in factories\nE23Position cache: locations in, nodes rehydrated out\nE24Before: same location and node projection\nE25References: per-access projection outside cached locations\nE26Reference discovery can throw before Promise.resolve\nE27Before: same synchronous reference discovery\nE28New test: identity, undefined, isolated handles\nE29New test: turn clear, repeated release, reusable handles\nE30New test: rejected promise versus synchronous throw\nE31New test: old settlement cannot replace new entry\nE32New test: four direct query promise identities\nE33New test: empty locations and per-access node arrays\nE34New tests: async failure retention and sync retry\nE35New test: failed refresh retains current turn\nE36New test: pending and rejecting release double\nE37Retained tests: shared references and next-turn clearing\nE38Retained tests: repeated targets and diamond paths\nE39Retained test: rebuilding released semantics\nE40Added package-root exports\nE41Service was already exported at package root\nE42Definition query starts asynchronously\nE43Callee query starts asynchronously\nE44Before: exact definition promise is stored\nE45Before: call query caching\nE46Removed manual six-cache clear sequence\nE47PR: characterization and contract-test intention\nBuilt by following Extract → rank → render v1. Inspect the run · Authored ledger · Changed-line assignments. Source inspection, not a correctness verdict, runtime comparison, or reader study. No input or response is stored.",
+  "headings": [
+    {
+      "tag": "H1",
+      "text": "Core gets the clearing job.\nRelease gets an awaited boundary.",
+      "y": 143,
+      "id": ""
+    },
+    {
+      "tag": "H2",
+      "text": "Move the clearing machinery",
+      "y": 481,
+      "id": ""
+    },
+    {
+      "tag": "H2",
+      "text": "Keep clearing separate from finishing",
+      "y": 1345,
+      "id": ""
+    },
+    {
+      "tag": "H2",
+      "text": "Twelve choices, with their reasons",
+      "y": 1861,
+      "id": ""
+    },
+    {
+      "tag": "H3",
+      "text": "01 / The moved boundaries",
+      "y": 1981,
+      "id": ""
+    },
+    {
+      "tag": "H3",
+      "text": "Give six caches one clearing owner",
+      "y": 2064,
+      "id": ""
+    },
+    {
+      "tag": "H3",
+      "text": "Carry project completion and failure back to the backend",
+      "y": 2066,
+      "id": ""
+    },
+    {
+      "tag": "H3",
+      "text": "Empty entries before project release",
+      "y": 2471,
+      "id": ""
+    },
+    {
+      "tag": "H3",
+      "text": "Advance the cache turn only after refresh succeeds",
+      "y": 2471,
+      "id": ""
+    },
+    {
+      "tag": "H3",
+      "text": "02 / Declared surfaces, missing reasons",
+      "y": 2736,
+      "id": ""
+    },
+    {
+      "tag": "H3",
+      "text": "Use a scope object at the package seam",
+      "y": 2820,
+      "id": ""
+    },
+    {
+      "tag": "H3",
+      "text": "Expose reusable handles and whole-scope clearing",
+      "y": 2820,
+      "id": ""
+    },
+    {
+      "tag": "H3",
+      "text": "Pass a file list across the exported service API",
+      "y": 3160,
+      "id": ""
+    },
+    {
+      "tag": "H3",
+      "text": "03 / Contracts kept and made generic",
+      "y": 3444,
+      "id": ""
+    },
+    {
+      "tag": "H3",
+      "text": "Return the exact factory value between clears",
+      "y": 3527,
+      "id": ""
+    },
+    {
+      "tag": "H3",
+      "text": "Keep async failures cached; retry synchronous throws",
+      "y": 3527,
+      "id": ""
+    },
+    {
+      "tag": "H3",
+      "text": "Treat undefined as a cached value",
+      "y": 3864,
+      "id": ""
+    },
+    {
+      "tag": "H3",
+      "text": "Keep TypeScript projections and query work in place",
+      "y": 3864,
+      "id": ""
+    },
+    {
+      "tag": "H3",
+      "text": "Add contract tests while retaining prior assertions",
+      "y": 4183,
+      "id": ""
+    },
+    {
+      "tag": "H2",
+      "text": "The same choices, at source resolution",
+      "y": 4679,
+      "id": ""
+    },
+    {
+      "tag": "H2",
+      "text": "Give six caches one clearing owner",
+      "y": 4828,
+      "id": ""
+    },
+    {
+      "tag": "H2",
+      "text": "Carry project completion and failure back to the backend",
+      "y": 5400,
+      "id": ""
+    },
+    {
+      "tag": "H2",
+      "text": "Empty entries before project release",
+      "y": 6077,
+      "id": ""
+    },
+    {
+      "tag": "H2",
+      "text": "Advance the cache turn only after refresh succeeds",
+      "y": 6644,
+      "id": ""
+    },
+    {
+      "tag": "H2",
+      "text": "Use a scope object at the package seam",
+      "y": 7278,
+      "id": ""
+    },
+    {
+      "tag": "H2",
+      "text": "Expose reusable handles and whole-scope clearing",
+      "y": 7844,
+      "id": ""
+    },
+    {
+      "tag": "H2",
+      "text": "Pass a file list across the exported service API",
+      "y": 8546,
+      "id": ""
+    },
+    {
+      "tag": "H2",
+      "text": "Return the exact factory value between clears",
+      "y": 9112,
+      "id": ""
+    },
+    {
+      "tag": "H4",
+      "text": "One key, two promise lifetimes",
+      "y": 9284,
+      "id": ""
+    },
+    {
+      "tag": "H2",
+      "text": "Keep async failures cached; retry synchronous throws",
+      "y": 10199,
+      "id": ""
+    },
+    {
+      "tag": "H2",
+      "text": "Treat undefined as a cached value",
+      "y": 10835,
+      "id": ""
+    },
+    {
+      "tag": "H2",
+      "text": "Keep TypeScript projections and query work in place",
+      "y": 11401,
+      "id": ""
+    },
+    {
+      "tag": "H2",
+      "text": "Add contract tests while retaining prior assertions",
+      "y": 12062,
+      "id": ""
+    },
+    {
+      "tag": "H2",
+      "text": "Evidence shelf",
+      "y": 12775,
+      "id": ""
+    }
+  ],
+  "controls": [
+    {
+      "tag": "A",
+      "text": "Skip to content",
+      "id": "",
+      "href": "#content",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "PR 127",
+      "id": "",
+      "href": "index.html",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Read the runbook",
+      "id": "",
+      "href": "method.html",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Inspect this run",
+      "id": "",
+      "href": "record.html",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "README",
+      "id": "",
+      "href": "README.md",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Follow the ownership change ↗",
+      "id": "",
+      "href": "#detail-D01",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "TypeScriptBackend\nowns service, state, project graph, source cache",
+      "id": "",
+      "href": "#detail-D03",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Semantic query service\nquery algorithms + six Maps + manual clear list\ndefinitions\nreferences\ncall targets\ncallers\ncallees\npositions",
+      "id": "",
+      "href": "#detail-D01",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "TypeScriptProjectGraph\nconcrete project cleanup is synchronous",
+      "id": "",
+      "href": "#detail-D12",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "ProjectGraph base\nexisting async release loop, inherited by TypeScript graph",
+      "id": "",
+      "href": "#detail-D12",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "TypeScriptBackend\nsame owners; now awaits service release",
+      "id": "",
+      "href": "#detail-D12",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Semantic query service\nquery algorithms + file list; constructs a core scope",
+      "id": "",
+      "href": "#detail-D04",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "TypeScriptProjectGraph\ninherits the same async release loop",
+      "id": "",
+      "href": "#detail-D12",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "TurnScopedCacheScope\nregisters and clears isolated Map-backed handles\ndefinitions\nreferences\ncall targets\ncallers\ncallees\npositions",
+      "id": "",
+      "href": "#detail-D05",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Code is defined in core; the scope instance belongs to the service.",
+      "id": "",
+      "href": "#detail-D04",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Follow completion and failure ↗",
+      "id": "",
+      "href": "#detail-D12",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Refresh source / projects / state",
+      "id": "",
+      "href": "#detail-D03",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Success: begin next turn, clear entries",
+      "id": "",
+      "href": "#detail-D03",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Clear scope entries now",
+      "id": "",
+      "href": "#detail-D02",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Service + backend await graph",
+      "id": "",
+      "href": "#detail-D12",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Handles can refill while release is pending.",
+      "id": "",
+      "href": "#detail-D05",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Clearing does not cancel promises already returned.",
+      "id": "",
+      "href": "#detail-D08",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Why this order ↗",
+      "id": "",
+      "href": "record.html#ranking",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Mechanism & evidence ↗",
+      "id": "",
+      "href": "#detail-D01",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Mechanism & evidence ↗",
+      "id": "",
+      "href": "#detail-D12",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Mechanism & evidence ↗",
+      "id": "",
+      "href": "#detail-D02",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Mechanism & evidence ↗",
+      "id": "",
+      "href": "#detail-D03",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Mechanism & evidence ↗",
+      "id": "",
+      "href": "#detail-D04",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Mechanism & evidence ↗",
+      "id": "",
+      "href": "#detail-D05",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Mechanism & evidence ↗",
+      "id": "",
+      "href": "#detail-D06",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Mechanism & evidence ↗",
+      "id": "",
+      "href": "#detail-D08",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Mechanism & evidence ↗",
+      "id": "",
+      "href": "#detail-D09",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Mechanism & evidence ↗",
+      "id": "",
+      "href": "#detail-D07",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Mechanism & evidence ↗",
+      "id": "",
+      "href": "#detail-D10",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Mechanism & evidence ↗",
+      "id": "",
+      "href": "#detail-D11",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "↑ Complete overview",
+      "id": "",
+      "href": "#overview",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "↑ Return to overview",
+      "id": "",
+      "href": "#overview-D01",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E46",
+      "id": "",
+      "href": "#source-E46",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E20",
+      "id": "",
+      "href": "#source-E20",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E11",
+      "id": "",
+      "href": "#source-E11",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E19",
+      "id": "",
+      "href": "#source-E19",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E21",
+      "id": "",
+      "href": "#source-E21",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E22",
+      "id": "",
+      "href": "#source-E22",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E23",
+      "id": "",
+      "href": "#source-E23",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E26",
+      "id": "",
+      "href": "#source-E26",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E10",
+      "id": "",
+      "href": "#source-E10",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E11",
+      "id": "",
+      "href": "#source-E11",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E12",
+      "id": "",
+      "href": "#source-E12",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E46",
+      "id": "",
+      "href": "#source-E46",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E03",
+      "id": "",
+      "href": "#source-E03",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E08",
+      "id": "",
+      "href": "#source-E08",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "↑ Return to overview",
+      "id": "",
+      "href": "#overview-D12",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E13",
+      "id": "",
+      "href": "#source-E13",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E15",
+      "id": "",
+      "href": "#source-E15",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E17",
+      "id": "",
+      "href": "#source-E17",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E14",
+      "id": "",
+      "href": "#source-E14",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E16",
+      "id": "",
+      "href": "#source-E16",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E17",
+      "id": "",
+      "href": "#source-E17",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E36",
+      "id": "",
+      "href": "#source-E36",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E02",
+      "id": "",
+      "href": "#source-E02",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E07",
+      "id": "",
+      "href": "#source-E07",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E09",
+      "id": "",
+      "href": "#source-E09",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E02",
+      "id": "",
+      "href": "#source-E02",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E07",
+      "id": "",
+      "href": "#source-E07",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E09",
+      "id": "",
+      "href": "#source-E09",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E13",
+      "id": "",
+      "href": "#source-E13",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E14",
+      "id": "",
+      "href": "#source-E14",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E15",
+      "id": "",
+      "href": "#source-E15",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E16",
+      "id": "",
+      "href": "#source-E16",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E17",
+      "id": "",
+      "href": "#source-E17",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E18",
+      "id": "",
+      "href": "#source-E18",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E36",
+      "id": "",
+      "href": "#source-E36",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "↑ Return to overview",
+      "id": "",
+      "href": "#overview-D02",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E16",
+      "id": "",
+      "href": "#source-E16",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E20",
+      "id": "",
+      "href": "#source-E20",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E36",
+      "id": "",
+      "href": "#source-E36",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E15",
+      "id": "",
+      "href": "#source-E15",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E16",
+      "id": "",
+      "href": "#source-E16",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E20",
+      "id": "",
+      "href": "#source-E20",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E36",
+      "id": "",
+      "href": "#source-E36",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E05",
+      "id": "",
+      "href": "#source-E05",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "↑ Return to overview",
+      "id": "",
+      "href": "#overview-D03",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E14",
+      "id": "",
+      "href": "#source-E14",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E14",
+      "id": "",
+      "href": "#source-E14",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E11",
+      "id": "",
+      "href": "#source-E11",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E35",
+      "id": "",
+      "href": "#source-E35",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E37",
+      "id": "",
+      "href": "#source-E37",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E13",
+      "id": "",
+      "href": "#source-E13",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E14",
+      "id": "",
+      "href": "#source-E14",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E11",
+      "id": "",
+      "href": "#source-E11",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E35",
+      "id": "",
+      "href": "#source-E35",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E37",
+      "id": "",
+      "href": "#source-E37",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E06",
+      "id": "",
+      "href": "#source-E06",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "↑ Return to overview",
+      "id": "",
+      "href": "#overview-D04",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E11",
+      "id": "",
+      "href": "#source-E11",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E08",
+      "id": "",
+      "href": "#source-E08",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E02",
+      "id": "",
+      "href": "#source-E02",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E02",
+      "id": "",
+      "href": "#source-E02",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E08",
+      "id": "",
+      "href": "#source-E08",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E11",
+      "id": "",
+      "href": "#source-E11",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E40",
+      "id": "",
+      "href": "#source-E40",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "↑ Return to overview",
+      "id": "",
+      "href": "#overview-D05",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E19",
+      "id": "",
+      "href": "#source-E19",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E40",
+      "id": "",
+      "href": "#source-E40",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E20",
+      "id": "",
+      "href": "#source-E20",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E12",
+      "id": "",
+      "href": "#source-E12",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E29",
+      "id": "",
+      "href": "#source-E29",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E36",
+      "id": "",
+      "href": "#source-E36",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E11",
+      "id": "",
+      "href": "#source-E11",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E12",
+      "id": "",
+      "href": "#source-E12",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E07",
+      "id": "",
+      "href": "#source-E07",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E12",
+      "id": "",
+      "href": "#source-E12",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E29",
+      "id": "",
+      "href": "#source-E29",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E36",
+      "id": "",
+      "href": "#source-E36",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E40",
+      "id": "",
+      "href": "#source-E40",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E11",
+      "id": "",
+      "href": "#source-E11",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "↑ Return to overview",
+      "id": "",
+      "href": "#overview-D06",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E13",
+      "id": "",
+      "href": "#source-E13",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E14",
+      "id": "",
+      "href": "#source-E14",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E10",
+      "id": "",
+      "href": "#source-E10",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E11",
+      "id": "",
+      "href": "#source-E11",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E41",
+      "id": "",
+      "href": "#source-E41",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E07",
+      "id": "",
+      "href": "#source-E07",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E14",
+      "id": "",
+      "href": "#source-E14",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E07",
+      "id": "",
+      "href": "#source-E07",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E10",
+      "id": "",
+      "href": "#source-E10",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E11",
+      "id": "",
+      "href": "#source-E11",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E14",
+      "id": "",
+      "href": "#source-E14",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E41",
+      "id": "",
+      "href": "#source-E41",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "↑ Return to overview",
+      "id": "",
+      "href": "#overview-D08",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E19",
+      "id": "",
+      "href": "#source-E19",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E31",
+      "id": "",
+      "href": "#source-E31",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E32",
+      "id": "",
+      "href": "#source-E32",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E25",
+      "id": "",
+      "href": "#source-E25",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E14",
+      "id": "",
+      "href": "#source-E14",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E01",
+      "id": "",
+      "href": "#source-E01",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E19",
+      "id": "",
+      "href": "#source-E19",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E20",
+      "id": "",
+      "href": "#source-E20",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E31",
+      "id": "",
+      "href": "#source-E31",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E32",
+      "id": "",
+      "href": "#source-E32",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E44",
+      "id": "",
+      "href": "#source-E44",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E14",
+      "id": "",
+      "href": "#source-E14",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E25",
+      "id": "",
+      "href": "#source-E25",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "↑ Return to overview",
+      "id": "",
+      "href": "#overview-D09",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E19",
+      "id": "",
+      "href": "#source-E19",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E30",
+      "id": "",
+      "href": "#source-E30",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E34",
+      "id": "",
+      "href": "#source-E34",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E19",
+      "id": "",
+      "href": "#source-E19",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E26",
+      "id": "",
+      "href": "#source-E26",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E27",
+      "id": "",
+      "href": "#source-E27",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E25",
+      "id": "",
+      "href": "#source-E25",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E34",
+      "id": "",
+      "href": "#source-E34",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E01",
+      "id": "",
+      "href": "#source-E01",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E19",
+      "id": "",
+      "href": "#source-E19",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E26",
+      "id": "",
+      "href": "#source-E26",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E27",
+      "id": "",
+      "href": "#source-E27",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E30",
+      "id": "",
+      "href": "#source-E30",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E34",
+      "id": "",
+      "href": "#source-E34",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E42",
+      "id": "",
+      "href": "#source-E42",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E43",
+      "id": "",
+      "href": "#source-E43",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "↑ Return to overview",
+      "id": "",
+      "href": "#overview-D07",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E19",
+      "id": "",
+      "href": "#source-E19",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E28",
+      "id": "",
+      "href": "#source-E28",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E04",
+      "id": "",
+      "href": "#source-E04",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E19",
+      "id": "",
+      "href": "#source-E19",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E28",
+      "id": "",
+      "href": "#source-E28",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E44",
+      "id": "",
+      "href": "#source-E44",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E11",
+      "id": "",
+      "href": "#source-E11",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "↑ Return to overview",
+      "id": "",
+      "href": "#overview-D10",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E21",
+      "id": "",
+      "href": "#source-E21",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E22",
+      "id": "",
+      "href": "#source-E22",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E23",
+      "id": "",
+      "href": "#source-E23",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E26",
+      "id": "",
+      "href": "#source-E26",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E25",
+      "id": "",
+      "href": "#source-E25",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E23",
+      "id": "",
+      "href": "#source-E23",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E24",
+      "id": "",
+      "href": "#source-E24",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E33",
+      "id": "",
+      "href": "#source-E33",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E25",
+      "id": "",
+      "href": "#source-E25",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E01",
+      "id": "",
+      "href": "#source-E01",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E21",
+      "id": "",
+      "href": "#source-E21",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E22",
+      "id": "",
+      "href": "#source-E22",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E23",
+      "id": "",
+      "href": "#source-E23",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E24",
+      "id": "",
+      "href": "#source-E24",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E25",
+      "id": "",
+      "href": "#source-E25",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E26",
+      "id": "",
+      "href": "#source-E26",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E33",
+      "id": "",
+      "href": "#source-E33",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E37",
+      "id": "",
+      "href": "#source-E37",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E38",
+      "id": "",
+      "href": "#source-E38",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "↑ Return to overview",
+      "id": "",
+      "href": "#overview-D11",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E28",
+      "id": "",
+      "href": "#source-E28",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E29",
+      "id": "",
+      "href": "#source-E29",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E30",
+      "id": "",
+      "href": "#source-E30",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E31",
+      "id": "",
+      "href": "#source-E31",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E32",
+      "id": "",
+      "href": "#source-E32",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E33",
+      "id": "",
+      "href": "#source-E33",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E34",
+      "id": "",
+      "href": "#source-E34",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E35",
+      "id": "",
+      "href": "#source-E35",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E36",
+      "id": "",
+      "href": "#source-E36",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E37",
+      "id": "",
+      "href": "#source-E37",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E38",
+      "id": "",
+      "href": "#source-E38",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E39",
+      "id": "",
+      "href": "#source-E39",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E36",
+      "id": "",
+      "href": "#source-E36",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E17",
+      "id": "",
+      "href": "#source-E17",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E18",
+      "id": "",
+      "href": "#source-E18",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E47",
+      "id": "",
+      "href": "#source-E47",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E28",
+      "id": "",
+      "href": "#source-E28",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E29",
+      "id": "",
+      "href": "#source-E29",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E30",
+      "id": "",
+      "href": "#source-E30",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E31",
+      "id": "",
+      "href": "#source-E31",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E32",
+      "id": "",
+      "href": "#source-E32",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E33",
+      "id": "",
+      "href": "#source-E33",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E34",
+      "id": "",
+      "href": "#source-E34",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E35",
+      "id": "",
+      "href": "#source-E35",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E36",
+      "id": "",
+      "href": "#source-E36",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E37",
+      "id": "",
+      "href": "#source-E37",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E38",
+      "id": "",
+      "href": "#source-E38",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "E39",
+      "id": "",
+      "href": "#source-E39",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "↑ Complete overview",
+      "id": "",
+      "href": "#overview",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E01PR: compatibility intent",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/derived/pr-body.md",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D08",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D09",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D10",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E02PR: composed scope and awaited barrier",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/derived/pr-body.md",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D12",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D04",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E03PR: reason for six handles",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/derived/pr-body.md",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D01",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E04PR: reason for presence checks",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/derived/pr-body.md",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D07",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E05PR: reason for clearing before release",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/derived/pr-body.md",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D02",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E06PR: reason for success-only turn change",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/derived/pr-body.md",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D03",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E07PR: public surfaces",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/derived/pr-body.md",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D12",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D05",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D06",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E08Plan: bases and language ownership",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/plans/005/daemon-architecture-functional-spec.md",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D01",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D04",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E09Plan: preserve behavior and separate fixes",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/plans/005/daemon-architecture-functional-spec.md",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D12",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E10Before: six Maps and snapshot input",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/base/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D01",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D06",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E11After: scope, handles, files input",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D01",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D03",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D04",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D05",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D06",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D07",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E12Core: entire new lifecycle implementation",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/core/src/backend/turn-scoped-cache-scope.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D01",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D05",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E13Before: refresh and detached release",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/base/packages/backend-typescript/src/typescript-backend/typescript-backend.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D12",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D03",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D06",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E14After: refresh, awaited release, and async query wrappers",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/backend-typescript/src/typescript-backend/typescript-backend.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D12",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D03",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D06",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D08",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E15Before: clear, start graph release, return void",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/base/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D12",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D02",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E16After: clear, await graph release",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D12",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D02",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E17Existing graph: sequential release with awaits",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/core/src/workspace/project-graph.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D12",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D11",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E18Existing concrete project: synchronous cleanup",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/backend-typescript/src/typescript-backend/typescript-project-graph.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D12",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D11",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E19Handle: presence check, raw value, set after factory",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/core/src/backend/turn-scoped-cache-scope.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D01",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D05",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D08",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D09",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D07",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E20Scope: registry and repeatable clear",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/core/src/backend/turn-scoped-cache-scope.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D01",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D02",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D05",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D08",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E21Definitions: factory and observer remain on misses",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D01",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D10",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E22Call queries: original algorithms in factories",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D01",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D10",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E23Position cache: locations in, nodes rehydrated out",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D01",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D10",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E24Before: same location and node projection",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/base/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D10",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E25References: per-access projection outside cached locations",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D08",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D09",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D10",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E26Reference discovery can throw before Promise.resolve",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D01",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D09",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D10",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E27Before: same synchronous reference discovery",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/base/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D09",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E28New test: identity, undefined, isolated handles",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/core/src/backend/turn-scoped-cache-scope.test.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D07",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D11",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E29New test: turn clear, repeated release, reusable handles",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/core/src/backend/turn-scoped-cache-scope.test.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D05",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D11",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E30New test: rejected promise versus synchronous throw",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/core/src/backend/turn-scoped-cache-scope.test.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D09",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D11",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E31New test: old settlement cannot replace new entry",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/core/src/backend/turn-scoped-cache-scope.test.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D08",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D11",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E32New test: four direct query promise identities",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D08",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D11",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E33New test: empty locations and per-access node arrays",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D10",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D11",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E34New tests: async failure retention and sync retry",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D09",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D11",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E35New test: failed refresh retains current turn",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D03",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D11",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E36New test: pending and rejecting release double",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D12",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D02",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D05",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D11",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E37Retained tests: shared references and next-turn clearing",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D03",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D10",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D11",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E38Retained tests: repeated targets and diamond paths",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D10",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D11",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E39Retained test: rebuilding released semantics",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D11",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E40Added package-root exports",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/core/src/index.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D04",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D05",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E41Service was already exported at package root",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/backend-typescript/src/index.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D06",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E42Definition query starts asynchronously",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/backend-typescript/src/definition/find-definitions.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D09",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E43Callee query starts asynchronously",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/head/packages/backend-typescript/src/call-graph/find-callees.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D09",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E44Before: exact definition promise is stored",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/base/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D08",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D07",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E45Before: call query caching",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/base/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E46Removed manual six-cache clear sequence",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/base/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D01",
+      "type": null
+    },
+    {
+      "tag": "SUMMARY",
+      "text": "E47PR: characterization and contract-test intention",
+      "id": "",
+      "href": null,
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "evidence/derived/pr-body.md",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "",
+      "id": "",
+      "href": "#detail-D11",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Extract → rank → render v1",
+      "id": "",
+      "href": "method.html",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Inspect the run",
+      "id": "",
+      "href": "record.html",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Authored ledger",
+      "id": "",
+      "href": "ledger.json",
+      "type": null
+    },
+    {
+      "tag": "A",
+      "text": "Changed-line assignments",
+      "id": "",
+      "href": "coverage.json",
+      "type": null
+    }
+  ],
+  "svgText": [],
+  "captured_utc": "2026-09-13T04:02:54.555Z",
+  "actions": [],
+  "errors": []
+}
