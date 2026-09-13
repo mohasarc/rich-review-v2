@@ -1,0 +1,412 @@
+[
+  {
+    "id": "01",
+    "title": "Move lifetime into core.",
+    "status": "stated",
+    "top": "The TypeScript service still owns query algorithms and its own cache instance. Core now supplies the shared emptying mechanism. No package dependency direction changes.",
+    "reason": "The architecture spec assigns language-independent cache lifetime to core; semantic query bodies stay in TypeScript.",
+    "mechanism": "<div class='flow'><span>TypeScriptBackend</span><b>→</b><span>TypeScriptSemanticQueryService<br><small>owns one scope instance</small></span><b>→</b><span>TurnScopedCacheScope<br><small>class supplied by core</small></span></div><p>The old service enumerated six <code>Map.clear()</code> calls. The new service invokes its scope once; the scope walks its registered handles. Core is a code package here, not another process or a singleton cache shared by backends.</p>",
+    "sources": [
+      [
+        "base-service",
+        219,
+        226
+      ],
+      [
+        "head-service",
+        29,
+        55
+      ],
+      [
+        "head-scope",
+        26,
+        46
+      ],
+      [
+        "head-spec",
+        53,
+        64
+      ]
+    ]
+  },
+  {
+    "id": "02",
+    "title": "Keep six stores separate.",
+    "status": "stated",
+    "top": "Five stores use formatted symbol identities; the sixth uses file + source position. Definitions, reference locations, call targets, callers, callees, and position definitions keep their existing algorithms and value spaces.",
+    "reason": "The PR explicitly chooses separate handles because existing queries have independent keys and values.",
+    "mechanism": "<table><thead><tr><th>Handle</th><th>Key → stored value</th></tr></thead><tbody><tr><td>Definitions</td><td>formatted identity → promise of overview nodes</td></tr><tr><td>Reference locations</td><td>formatted identity → promise of raw locations</td></tr><tr><td>Call target</td><td>formatted identity → promise of resolution</td></tr><tr><td>Callers</td><td>formatted identity → promise of call edges</td></tr><tr><td>Callees</td><td>formatted identity → promise of call edges</td></tr><tr><td>Position definitions</td><td>relative path : start → node locations (not a promise)</td></tr></tbody></table><p>Each <code>createCache()</code> allocates a separate Map. Matching strings in different handles do not collide. Identity formatting, query bodies, reference deduplication, and call-target selection are retained.</p>",
+    "sources": [
+      [
+        "head-service",
+        29,
+        55
+      ],
+      [
+        "head-service",
+        68,
+        78
+      ],
+      [
+        "head-service",
+        134,
+        171
+      ],
+      [
+        "head-scope",
+        9,
+        18
+      ],
+      [
+        "pr-body",
+        76,
+        81
+      ]
+    ]
+  },
+  {
+    "id": "03",
+    "title": "Cache the exact returned value.",
+    "status": "stated",
+    "top": "Presence, not truthiness, decides a hit: undefined and empty arrays count. Repeated lookups return the stored object or promise without wrapping it.",
+    "reason": "The PR says undefined is a valid cached value and calls for preserving promise/value identities.",
+    "mechanism": "<div class='flow'><span>Map has key?</span><b>→ yes</b><span>return stored value</span></div><div class='flow'><span>no</span><b>→</b><span>call factory</span><b>→</b><span>store exact return</span></div><p><code>getOrCreate</code> is synchronous even when its value is a promise. A hit never calls the factory. This is the generic core contract; the five existing TypeScript promise maps already stored truthy promise objects.</p>",
+    "sources": [
+      [
+        "head-scope",
+        9,
+        23
+      ],
+      [
+        "head-scope-test",
+        5,
+        25
+      ],
+      [
+        "base-service",
+        54,
+        66
+      ],
+      [
+        "pr-body",
+        76,
+        81
+      ]
+    ]
+  },
+  {
+    "id": "04",
+    "title": "Retain the two failure shapes.",
+    "status": "stated",
+    "top": "A returned promise stays cached after rejection. A factory that throws before returning creates no entry, so the next lookup retries. This preserves query behavior; it does not describe the changed release promise.",
+    "reason": "The PR calls for preserving query failure behavior; new characterization tests pin these two branches.",
+    "mechanism": "<div class='two-up'><div class='mini'><b>Promise returned, then rejected</b><p>The promise was stored before settlement. The next lookup returns that same promise and rejection.</p></div><div class='mini'><b>Factory throws synchronously</b><p>Execution never reaches <code>Map.set</code>. The next lookup calls the factory again.</p></div></div><p>Reference discovery runs inside <code>Promise.resolve(this.findReferenceLocations(...))</code>: the inner call can throw before a promise is returned to the cache. Definition/callee async failures already return promises.</p>",
+    "sources": [
+      [
+        "head-scope",
+        14,
+        19
+      ],
+      [
+        "head-service",
+        163,
+        172
+      ],
+      [
+        "head-service-test",
+        95,
+        133
+      ],
+      [
+        "head-scope-test",
+        52,
+        73
+      ],
+      [
+        "pr-body",
+        1,
+        3
+      ]
+    ]
+  },
+  {
+    "id": "05",
+    "title": "Forget entries; keep handles and callers.",
+    "status": "unexplained",
+    "top": "Both lifecycle calls empty every handle synchronously and can repeat. Handles remain registered and reusable, even while project release waits. Caller-held promises are not cancelled; a late old settlement cannot replace a new entry. There is no close or deregistration API.",
+    "reason": "No specific reason was found for this reusable, non-closing API or its retained handle registry.",
+    "mechanism": "<div class='flow'><span>old caller holds promise A</span><b>→</b><span>A may still settle</span></div><div class='flow'><span>same handle: A</span><b>→ clear →</b><span>empty</span><b>→ query →</b><span>B</span></div><p>The scope clears Maps, not its array of handles. It installs no settlement callback that writes an old promise back. Repeated release is another clear; it is not disposal. This does not guarantee safety for arbitrary concurrent queries: it describes what this cache API permits.</p><p class='record-note'>Recorded with the actual core class: old caller receives “old”; the current cache still yields “new”.</p>",
+    "sources": [
+      [
+        "head-scope",
+        21,
+        46
+      ],
+      [
+        "head-scope-test",
+        27,
+        50
+      ],
+      [
+        "head-scope-test",
+        75,
+        92
+      ]
+    ]
+  },
+  {
+    "id": "06",
+    "title": "Start a turn after refresh succeeds.",
+    "status": "stated",
+    "top": "Backend refresh keeps the prior cache turn if refresh fails; this is not a rollback of all refresh work. Source refresh, any workspace project refresh, and state refresh precede beginTurn. Success clears caches even with unchanged files. This ordering already exists in base.",
+    "reason": "The PR says a failed refresh must preserve the current successful turn.",
+    "mechanism": "<div class='flow'><span>source cache refresh</span><b>→</b><span>workspace coverage?<br><small>await project graph refresh</small></span><b>→</b><span>await state refresh</span><b>→</b><span>beginTurn(files)</span></div><p>Reaching the last step replaces the service’s file-list reference and empties all handles. An earlier throw or rejection skips that step. This is a semantic-cache boundary, not a claim that every earlier workspace operation is rolled back.</p><p class='record-note'>Both recorded builds reused the previous result after an injected refresh failure and created a new result after the next successful refresh.</p>",
+    "sources": [
+      [
+        "base-backend",
+        79,
+        90
+      ],
+      [
+        "head-backend",
+        79,
+        89
+      ],
+      [
+        "head-service",
+        63,
+        66
+      ],
+      [
+        "head-service-test",
+        135,
+        162
+      ],
+      [
+        "pr-body",
+        78,
+        81
+      ]
+    ]
+  },
+  {
+    "id": "07",
+    "title": "Empty before awaiting cleanup.",
+    "status": "stated",
+    "top": "Release clears semantic entries immediately in both versions, before calling project cleanup. A pending or failed cleanup leaves old entries absent. A query can refill a handle during that wait; clearing is not a lock.",
+    "reason": "The PR says released semantics must be unavailable while release is pending or rejecting.",
+    "mechanism": "<div class='flow'><span>release called</span><b>→</b><span>all cache entries cleared</span><b>→</b><span>project cleanup starts</span><b>→ await</b><span>cleanup settles</span></div><p>Only the scope clear is synchronous. The semantic service invokes it before its first await. Base also clears first, using its manual method. The recorded definition lookup produces a different result during the held cleanup in both builds; a second lookup reuses that new result.</p><a class='text-link' href='#bench'>Pull this boundary at the bench ↗</a>",
+    "sources": [
+      [
+        "base-service",
+        125,
+        128
+      ],
+      [
+        "head-service",
+        129,
+        132
+      ],
+      [
+        "head-service-test",
+        164,
+        217
+      ],
+      [
+        "pr-body",
+        78,
+        81
+      ]
+    ]
+  },
+  {
+    "id": "08",
+    "title": "Make backend release wait and propagate failure.",
+    "status": "unexplained",
+    "top": "The service changes void → Promise<void>; backend release now awaits it. In a held-cleanup run, base fulfills early while head stays pending; a cleanup rejection reaches head’s caller. The PR declares this barrier but does not reconcile it with its failure-preservation claim or the spec’s unchanged-lifecycle rule.",
+    "reason": "The barrier is declared. A reason for changing this caller-visible release outcome, within the parity promise, was not found.",
+    "mechanism": "<table><thead><tr><th>Controlled project state</th><th>Base backend release</th><th>Head backend release</th></tr></thead><tbody><tr><td>pending</td><td>fulfilled</td><td>pending</td></tr><tr><td>fulfilled</td><td>already fulfilled</td><td>fulfilled</td></tr><tr><td>rejected</td><td>already fulfilled</td><td>rejected with same error</td></tr></tbody></table><p>There are two new await links: backend → semantic service → project graph. Base’s async backend method returns after a void service call. The table records these method boundaries with injected ports; it does not establish a changed end-user command outcome.</p><a class='text-link' href='#bench'>Feel the two await links ↗</a>",
+    "sources": [
+      [
+        "base-backend",
+        86,
+        89
+      ],
+      [
+        "head-backend",
+        86,
+        89
+      ],
+      [
+        "base-service",
+        125,
+        128
+      ],
+      [
+        "head-service",
+        129,
+        132
+      ],
+      [
+        "head-spec",
+        15,
+        28
+      ],
+      [
+        "pr-body",
+        1,
+        3
+      ],
+      [
+        "pr-body",
+        18,
+        25
+      ]
+    ]
+  },
+  {
+    "id": "09",
+    "title": "Keep fresh projections over cached locations.",
+    "status": "unexplained",
+    "top": "References and callers share the internal reference-location search, but public findReferences reprojects on each access. Position queries cache locations, including empty results, then rehydrate nodes each time. Fresh arrays can contain the same nodes; backend async wrappers need not preserve service promise identity.",
+    "reason": "The PR preserves these behaviors; no specific reason for the existing projection boundaries was found.",
+    "mechanism": "<div class='flow'><span>cached reference locations</span><b>↗</b><span>public reference projection<br><small>fresh call / array</small></span><b>↘</b><span>caller edges<br><small>own cached promise</small></span></div><p>Position caching stores <code>{ relativePath, start, kind }</code>, not AST nodes. Every access walks those locations into nodes and returns a new array; repeated elements can still have the same identity. Four service methods directly return their stored promise: definitions, call target, callers, and callees. The async backend methods have their own promise boundary.</p>",
+    "sources": [
+      [
+        "head-service",
+        80,
+        127
+      ],
+      [
+        "head-service",
+        134,
+        161
+      ],
+      [
+        "head-backend",
+        110,
+        149
+      ],
+      [
+        "head-service-test",
+        61,
+        93
+      ],
+      [
+        "head-service-test",
+        219,
+        239
+      ]
+    ]
+  },
+  {
+    "id": "10",
+    "title": "Choose composition and a small public API.",
+    "status": "unexplained",
+    "top": "Core exports TurnScopedCacheScope plus a getOrCreate-only handle interface. Each service constructs its scope rather than extending a cache base. beginTurn now accepts readonly WorkspaceFile[] instead of a whole WorkspaceSnapshot; the array is retained by reference.",
+    "reason": "The precise export shape, composition choice, and narrower argument have no specific reason in the inspected PR, commits, or spec. The spec describes shared backend bases.",
+    "mechanism": "<pre class='api'>TurnScopedCache&lt;Key, Value&gt;\n  getOrCreate(key, factory): Value\n\nTurnScopedCacheScope\n  createCache&lt;Key, Value&gt;(): TurnScopedCache&lt;Key, Value&gt;\n  beginTurn(): void\n  releaseTransientResources(): void\n\nTypeScriptSemanticQueryService\n  beginTurn(files: readonly WorkspaceFile[]): void\n  releaseTransientResources(): Promise&lt;void&gt;</pre><p>The handle implementation has a clear method for the scope’s internal use, but the exported handle interface only exposes lookup. The service assigns <code>this.files = files</code>; readonly describes its type, not a runtime copy or freeze.</p>",
+    "sources": [
+      [
+        "head-scope",
+        1,
+        46
+      ],
+      [
+        "head-exports",
+        145,
+        155
+      ],
+      [
+        "head-service",
+        29,
+        66
+      ],
+      [
+        "head-backend",
+        79,
+        89
+      ],
+      [
+        "head-spec",
+        225,
+        233
+      ],
+      [
+        "pr-body",
+        50,
+        74
+      ]
+    ]
+  },
+  {
+    "id": "11",
+    "title": "Add characterization; preserve the old tests.",
+    "status": "unexplained",
+    "top": "Six service cases and four core cases add identity, projection, failure, refresh, release, and generic-cache checks. All five old cases and helpers are byte-identical; no assertions are removed or weakened. The new release test covers pending/rejection, without an explicit successful deferred-release check; this experiment records both outcomes. Focused checks do not establish full command parity.",
+    "reason": "The commits record characterization and lifecycle intent. They do not explain the exact selection of cases or the missing successful deferred-release assertion.",
+    "mechanism": "<div class='test-bars'><div><b>Base service</b><span class='bar old'>5 preserved cases</span></div><div><b>Head service</b><span class='bar old'>same 5</span><span class='bar added'>+ 6 cases</span></div><div><b>Core scope</b><span class='bar added'>+ 4 cases</span></div></div><p>The original case block, including fixture helpers, compares byte-for-byte between pins. The added service release test holds the first cleanup promise, checks that backend release is still pending, then rejects cleanup. It does not add an equivalent explicit successful deferred-release assertion; the experiment’s separate recording covers that outcome.</p><p>The preserved cases still cover shared reference search, next-turn clearing, overload call positions, diamond paths, and rebuilding released semantics. No broader suite result is claimed here.</p>",
+    "sources": [
+      [
+        "head-service-test",
+        29,
+        59
+      ],
+      [
+        "head-service-test",
+        164,
+        217
+      ],
+      [
+        "head-scope-test",
+        1,
+        92
+      ],
+      [
+        "commits",
+        1,
+        22
+      ]
+    ]
+  },
+  {
+    "id": "12",
+    "title": "Keep the surrounding cleanup machinery.",
+    "status": "stated",
+    "top": "This six-file PR leaves project cleanup, query algorithms, daemon/worker topology, and transport in place. Concrete TypeScript project cleanup is synchronous; the graph can await projects in sequence. The bench injects a long pending graph promise to expose the release contract, not a measured production delay.",
+    "reason": "The PR confines its move to cache lifetime while preserving the existing algorithms; the spec keeps language-specific work in the backend.",
+    "mechanism": "<div class='flow'><span>same backend/service objects</span><b>→</b><span>same project graph<br><small>await each configured project, then inferred</small></span><b>→</b><span>same TypeScript project<br><small>cleanup compiler cache; recreate project; mark unloaded</small></span></div><p>The concrete project’s cleanup method returns void. The generic graph supports both void and promise-returning project release and is itself async. Neither implementation changes in this PR. A source comparison defines that boundary; the bench intentionally holds a synthetic graph promise to make the new await links visible.</p>",
+    "sources": [
+      [
+        "head-graph",
+        144,
+        152
+      ],
+      [
+        "head-project",
+        78,
+        84
+      ],
+      [
+        "base-graph",
+        144,
+        152
+      ],
+      [
+        "base-project",
+        78,
+        84
+      ],
+      [
+        "diff",
+        1,
+        15
+      ],
+      [
+        "pr-body",
+        1,
+        3
+      ]
+    ]
+  }
+]
