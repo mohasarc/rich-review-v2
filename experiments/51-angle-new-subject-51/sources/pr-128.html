@@ -1,0 +1,213 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PR 128 · supplied record</title><link rel="stylesheet" href="../style.css"><body class="source-page"><main><a href="../index.html#provenance">← Page provenance</a><h1>#128 · Retain workspaces through core sessions</h1><p>Supplied bundle, frozen with this experiment. The original Markdown is preserved below.</p><pre class="pr-source">## Context
+
+The [daemon architecture spec](https://github.com/mohasarc/symnav/blob/main/plans/005/daemon-architecture-functional-spec.md) assigns language-independent workspace retention and backend lifetime to core. Building on #127, this layer removes CLI-owned request scopes while preserving cold discovery, retained daemon turns, selection isolation, command ordering, and output behavior.
+
+## Shape
+
+Before — CLI-owned scopes split workspace preparation from worker resource lifetime:
+
+```mermaid
+flowchart LR
+    Command[&quot;runCommand&quot;] --&gt;|uses| Factory[&quot;WorkspaceRequestScopeFactory&lt;br/&gt;discovery + snapshot + refresh&quot;]
+    Retained[&quot;RetainedWorkspaceProgram&lt;br/&gt;owns backends&quot;] --&gt;|uses| Factory
+    Factory --&gt;|uses| Catalog[&quot;WorkspaceCatalog&lt;br/&gt;optional retention&quot;]
+    Factory --&gt;|uses| Router[&quot;BackendRouter&lt;br/&gt;per turn&quot;]
+    Worker[&quot;daemon worker&lt;br/&gt;releases raw backends&quot;] --&gt;|uses| Retained
+    style Command fill:#fff2cc,stroke:#bf9000
+    style Factory fill:#ffdddd,stroke:#cc0000
+    style Retained fill:#fff2cc,stroke:#bf9000
+    style Worker fill:#fff2cc,stroke:#bf9000
+```
+
+After — core sessions own request and retained preparation through one lifecycle boundary:
+
+```mermaid
+flowchart LR
+    Command[&quot;runCommand&quot;] --&gt;|uses| Request[&quot;WorkspaceSession&lt;br/&gt;request discovery&quot;]
+    Retained[&quot;RetainedWorkspaceProgram&lt;br/&gt;composition only&quot;] --&gt;|uses| Session[&quot;WorkspaceSession&lt;br/&gt;session discovery&quot;]
+    Worker[&quot;daemon worker&quot;] --&gt;|uses| Session
+    Request --&gt;|uses| Router[&quot;fresh BackendRouter&lt;br/&gt;per turn&quot;]
+    Session --&gt;|uses| Router
+    Session --&gt;|uses| Catalog[&quot;retained WorkspaceCatalog&lt;br/&gt;per root&quot;]
+    style Command fill:#fff2cc,stroke:#bf9000
+    style Request fill:#ddffdd,stroke:#008800
+    style Retained fill:#fff2cc,stroke:#bf9000
+    style Session fill:#ddffdd,stroke:#008800
+    style Worker fill:#fff2cc,stroke:#bf9000
+```
+
+Legend: green = added ownership; red = removed ownership; yellow = changed responsibility; default = pre-existing and unchanged.
+
+## Where it lives
+
+```text
+.
+├── packages/core/src/
+│   ├── ** index.ts
+│   └── workspace/
+│       ├── ++ workspace-session.ts       # owns discovery, preparation, routing, and release
+│       └── ++ workspace-session.test.ts  # locks retention and lifecycle contracts
+└── apps/cli/
+    ├── src/
+    │   ├── ** command.ts                           # preserves discovery and validation order
+    │   ├── ** cli-program-executor.ts              # accepts an injected session
+    │   ├── ** program-dependencies.ts              # replaces scope factory dependency
+    │   ├── daemon/
+    │   │   ├── ** retained-workspace-program.ts  # composes one retained session
+    │   │   └── ** daemon-navigation-worker-entry.ts
+    │   ├── -- workspace-request-scope.ts           # superseded CLI ownership
+    │   └── -- workspace-request-scope.test.ts
+    └── test/integration/commands/
+        └── ** ... 3 files  # session injection and retained-selection coverage
+```
+
+## Public surface
+
+Added to `@symnav/core`:
+
+```ts
+export type WorkspaceDiscoveryRetention = &quot;request&quot; | &quot;session&quot;;
+export type WorkspaceSnapshotSelector = (
+  workspace: Workspace,
+  router: BackendRouter,
+) =&gt; Promise&lt;WorkspaceSnapshot&gt;;
+export type WorkspacePreparation =
+  | { readonly coverage: &quot;workspace&quot; }
+  | { readonly coverage: &quot;selection&quot;; readonly selectSnapshot: WorkspaceSnapshotSelector };
+export interface PreparedWorkspaceScope {
+  readonly workspace: Workspace;
+  readonly snapshot: WorkspaceSnapshot;
+  readonly router: BackendRouter;
+  readonly refresh: BackendRefreshSummary;
+}
+export class WorkspaceSession {
+  constructor(options: {
+    readonly fileSystem: FileSystem;
+    readonly backends: readonly LanguageBackend[];
+    readonly discoveryRetention: WorkspaceDiscoveryRetention;
+  });
+  prepare(startDirectory: string, preparation?: WorkspacePreparation): Promise&lt;PreparedWorkspaceScope&gt;;
+  openWorkspace(startDirectory: string, coverage: BackendRefreshCoverage): Promise&lt;Workspace&gt;;
+  prepareWorkspace(workspace: Workspace, preparation: WorkspacePreparation): Promise&lt;PreparedWorkspaceScope&gt;;
+  releaseTransientResources(): Promise&lt;void&gt;;
+}
+```
+
+Changed in CLI composition:
+
+```ts
+// before: scopeFactory?: WorkspaceRequestScopeFactory
+readonly workspaceSession?: WorkspaceSession;
+
+// before: constructor(dependencies, scopeFactory?, outputOptions?)
+constructor(
+  dependencies: ProgramDependencies,
+  workspaceSession?: WorkspaceSession,
+  outputOptions?: OrderedCommandOutputOptions,
+);
+```
+
+## Decisions
+
+- Chose explicit request/session discovery retention over one cached strategy, because cold commands must not retain a catalog while daemon turns must reuse unchanged file identity.
+- Chose fresh selection discovery over retained-catalog reconciliation, because a selected file must not enumerate or fail on unrelated retained siblings.
+- Chose a copied backend array and fresh router per turn over a persistent router, because backend order is session state while routing results are turn state.
+- Chose explicit workspace opening before validation and preparation after validation over one combined call, because existing error and source-read ordering is observable.
+- Chose repeatable concurrent release over permanent session closure, because backend cleanup must retain state and retry every backend on later calls.
+
+## Look here
+
+- `packages/core/src/workspace/workspace-session.ts:32`
+- `apps/cli/src/command.ts:59`
+- `apps/cli/src/daemon/retained-workspace-program.ts:6`
+
+
+COMMIT MESSAGES
+
+4da5bf21e6ddd09e213b36687cad9fe927560479
+Define workspace session contracts
+
+
+5b6ab20896decbc90f00a5e7e49e45c1c88272f7
+Add the workspace session boundary
+
+
+de7b0d90c68b1c8bbe3ebebe8e27715860ae33d8
+Specify request and retained workspace turns
+
+
+dee58943a94cc62e8a69ef71c87e5f03885583f1
+Prepare request and retained workspace turns
+
+
+99cbd3a581eb5574c289fdce35e1664d165f6e59
+Specify selection discovery and coverage
+
+
+cc2bbd7e3f30f238a2ae2a1123881e0c18c09819
+Prepare selection-scoped workspace turns
+
+
+678ee343ab48f175ea8f4b1a45684ff203d68fa0
+Specify workspace session failure boundaries
+
+
+76672237c8530d24c66119a2e794b48fe0869672
+Propagate workspace preparation failures
+
+
+5411dd869155a4be8d4b294601ecb9f8d59e1978
+Specify stable backend routing order
+
+
+d8b8c719c2e97a4e0c88d543aa2c8f01df4afdbe
+Stabilize backend routing order
+
+
+06f9a977e870a7d9f4f4f95486a562d0084d7286
+Specify multiple-root session retention
+
+
+90b09c0af8b208ad868798245d916672eef1c7fd
+Retain independent workspace roots
+
+
+2d8ac0b2a629f77759bcae071cb7b9fdd1427d83
+Specify workspace session release lifecycle
+
+
+bb8b6404a61765619952d0d2d5b6597c46ab3c98
+Release workspace session resources concurrently
+
+
+385ada10b7056870cff70a4ab4cdccede1ae707e
+Specify command workspace session injection
+
+
+1818c93a30dccbc23b4c86a247de4fb55fa2028c
+Prepare commands through workspace sessions
+
+
+08f697b98bfc63cc133b19738d09892259ac56bb
+Specify retained executor session reuse
+
+
+65e58d0ed313a8fc57e05a8f0bd93092a264733c
+Retain one workspace session in daemon workers
+
+
+03cc3f2d1b51188d822cc17ab2055d1b5318dfe2
+Characterize lazy help execution
+
+
+144e1e7518cca4f42298d3d4ac10fb084ac059ad
+Characterize cold session construction
+
+
+ca0002b01f141f5d7d730c0be44d556954c77b60
+Migrate retained overview sessions
+
+
+ccad044c3a85334947bbc0f0b5ac757485df7e4c
+Remove CLI workspace scope ownership
+</pre></main></body></html>

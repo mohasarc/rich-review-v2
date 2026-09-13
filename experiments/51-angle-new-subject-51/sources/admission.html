@@ -1,0 +1,265 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>admission · pinned source</title><link rel="stylesheet" href="../style.css"><body class="source-page"><main><a href="../index.html#provenance">← Page provenance</a><h1>admission</h1><p>packages/daemon/src/daemon-admission.ts<br>d07002357d3e9596bfaae910a1ac63b77981620b · tip<br>SHA-256 6b381f171ec9523aa75e754caba82530240bd75c80d04774e7112a33e35b1cbe</p><pre class="source-code"><span class="line" id="L1"><a href="#L1">1</a> export type DaemonExecuteRejectionCode =</span>
+<span class="line" id="L2"><a href="#L2">2</a>   | &quot;not-ready&quot;</span>
+<span class="line" id="L3"><a href="#L3">3</a>   | &quot;draining&quot;</span>
+<span class="line" id="L4"><a href="#L4">4</a>   | &quot;resource-pressure&quot;</span>
+<span class="line" id="L5"><a href="#L5">5</a>   | &quot;incompatible&quot;;</span>
+<span class="line" id="L6"><a href="#L6">6</a> </span>
+<span class="line" id="L7"><a href="#L7">7</a> export type AcceptedRequestCompatibility = &quot;unseen&quot; | &quot;matching&quot; | &quot;conflicting&quot;;</span>
+<span class="line" id="L8"><a href="#L8">8</a> </span>
+<span class="line" id="L9"><a href="#L9">9</a> export type WorkspaceRequestQueueState = &quot;accepting&quot; | &quot;draining&quot; | &quot;closed&quot;;</span>
+<span class="line" id="L10"><a href="#L10">10</a> </span>
+<span class="line" id="L11"><a href="#L11">11</a> export type DaemonExecutionCoordinates = {</span>
+<span class="line" id="L12"><a href="#L12">12</a>   readonly instanceId: string;</span>
+<span class="line" id="L13"><a href="#L13">13</a>   readonly processToken: string;</span>
+<span class="line" id="L14"><a href="#L14">14</a>   readonly requestId: string;</span>
+<span class="line" id="L15"><a href="#L15">15</a> };</span>
+<span class="line" id="L16"><a href="#L16">16</a> </span>
+<span class="line" id="L17"><a href="#L17">17</a> export type DaemonRejectedExecutionFrame = {</span>
+<span class="line" id="L18"><a href="#L18">18</a>   readonly kind: &quot;rejected&quot;;</span>
+<span class="line" id="L19"><a href="#L19">19</a>   readonly instanceId: string;</span>
+<span class="line" id="L20"><a href="#L20">20</a>   readonly processToken: string;</span>
+<span class="line" id="L21"><a href="#L21">21</a>   readonly requestId: string;</span>
+<span class="line" id="L22"><a href="#L22">22</a>   readonly code: DaemonExecuteRejectionCode;</span>
+<span class="line" id="L23"><a href="#L23">23</a>   readonly retrySafe: boolean;</span>
+<span class="line" id="L24"><a href="#L24">24</a> };</span>
+<span class="line" id="L25"><a href="#L25">25</a> </span>
+<span class="line" id="L26"><a href="#L26">26</a> export interface DaemonAdmissionContext {</span>
+<span class="line" id="L27"><a href="#L27">27</a>   readonly request: unknown;</span>
+<span class="line" id="L28"><a href="#L28">28</a>   readonly authenticated: boolean;</span>
+<span class="line" id="L29"><a href="#L29">29</a>   readonly workerReady: boolean;</span>
+<span class="line" id="L30"><a href="#L30">30</a>   readonly resourceAdmissionPaused: boolean;</span>
+<span class="line" id="L31"><a href="#L31">31</a>   readonly queueState: WorkspaceRequestQueueState;</span>
+<span class="line" id="L32"><a href="#L32">32</a>   readonly compatibility: AcceptedRequestCompatibility;</span>
+<span class="line" id="L33"><a href="#L33">33</a> }</span>
+<span class="line" id="L34"><a href="#L34">34</a> </span>
+<span class="line" id="L35"><a href="#L35">35</a> export interface DaemonAdmissionGuard {</span>
+<span class="line" id="L36"><a href="#L36">36</a>   rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined;</span>
+<span class="line" id="L37"><a href="#L37">37</a> }</span>
+<span class="line" id="L38"><a href="#L38">38</a> </span>
+<span class="line" id="L39"><a href="#L39">39</a> export type DaemonAdmissionRejectionCode = &quot;authentication&quot; | DaemonExecuteRejectionCode;</span>
+<span class="line" id="L40"><a href="#L40">40</a> </span>
+<span class="line" id="L41"><a href="#L41">41</a> export type DaemonAdmissionDecision =</span>
+<span class="line" id="L42"><a href="#L42">42</a>   | { readonly kind: &quot;accept&quot; }</span>
+<span class="line" id="L43"><a href="#L43">43</a>   | { readonly kind: &quot;disconnect&quot;; readonly code: &quot;authentication&quot; }</span>
+<span class="line" id="L44"><a href="#L44">44</a>   | { readonly kind: &quot;reject&quot;; readonly code: DaemonExecuteRejectionCode };</span>
+<span class="line" id="L45"><a href="#L45">45</a> </span>
+<span class="line" id="L46"><a href="#L46">46</a> class AuthenticationAdmissionGuard implements DaemonAdmissionGuard {</span>
+<span class="line" id="L47"><a href="#L47">47</a>   rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {</span>
+<span class="line" id="L48"><a href="#L48">48</a>     return context.authenticated ? undefined : &quot;authentication&quot;;</span>
+<span class="line" id="L49"><a href="#L49">49</a>   }</span>
+<span class="line" id="L50"><a href="#L50">50</a> }</span>
+<span class="line" id="L51"><a href="#L51">51</a> </span>
+<span class="line" id="L52"><a href="#L52">52</a> class WorkerReadinessAdmissionGuard implements DaemonAdmissionGuard {</span>
+<span class="line" id="L53"><a href="#L53">53</a>   rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {</span>
+<span class="line" id="L54"><a href="#L54">54</a>     return context.workerReady ? undefined : &quot;not-ready&quot;;</span>
+<span class="line" id="L55"><a href="#L55">55</a>   }</span>
+<span class="line" id="L56"><a href="#L56">56</a> }</span>
+<span class="line" id="L57"><a href="#L57">57</a> </span>
+<span class="line" id="L58"><a href="#L58">58</a> class ResourceAdmissionGuard implements DaemonAdmissionGuard {</span>
+<span class="line" id="L59"><a href="#L59">59</a>   rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {</span>
+<span class="line" id="L60"><a href="#L60">60</a>     return context.resourceAdmissionPaused ? &quot;resource-pressure&quot; : undefined;</span>
+<span class="line" id="L61"><a href="#L61">61</a>   }</span>
+<span class="line" id="L62"><a href="#L62">62</a> }</span>
+<span class="line" id="L63"><a href="#L63">63</a> </span>
+<span class="line" id="L64"><a href="#L64">64</a> class QueueAdmissionGuard implements DaemonAdmissionGuard {</span>
+<span class="line" id="L65"><a href="#L65">65</a>   rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {</span>
+<span class="line" id="L66"><a href="#L66">66</a>     return context.queueState === &quot;accepting&quot; ? undefined : &quot;draining&quot;;</span>
+<span class="line" id="L67"><a href="#L67">67</a>   }</span>
+<span class="line" id="L68"><a href="#L68">68</a> }</span>
+<span class="line" id="L69"><a href="#L69">69</a> </span>
+<span class="line" id="L70"><a href="#L70">70</a> class CompatibilityAdmissionGuard implements DaemonAdmissionGuard {</span>
+<span class="line" id="L71"><a href="#L71">71</a>   rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {</span>
+<span class="line" id="L72"><a href="#L72">72</a>     return context.compatibility === &quot;conflicting&quot; ? &quot;incompatible&quot; : undefined;</span>
+<span class="line" id="L73"><a href="#L73">73</a>   }</span>
+<span class="line" id="L74"><a href="#L74">74</a> }</span>
+<span class="line" id="L75"><a href="#L75">75</a> </span>
+<span class="line" id="L76"><a href="#L76">76</a> export class DaemonAdmissionPolicy {</span>
+<span class="line" id="L77"><a href="#L77">77</a>   private readonly guards: readonly DaemonAdmissionGuard[] = [</span>
+<span class="line" id="L78"><a href="#L78">78</a>     new AuthenticationAdmissionGuard(),</span>
+<span class="line" id="L79"><a href="#L79">79</a>     new WorkerReadinessAdmissionGuard(),</span>
+<span class="line" id="L80"><a href="#L80">80</a>     new ResourceAdmissionGuard(),</span>
+<span class="line" id="L81"><a href="#L81">81</a>     new QueueAdmissionGuard(),</span>
+<span class="line" id="L82"><a href="#L82">82</a>     new CompatibilityAdmissionGuard(),</span>
+<span class="line" id="L83"><a href="#L83">83</a>   ];</span>
+<span class="line" id="L84"><a href="#L84">84</a> </span>
+<span class="line" id="L85"><a href="#L85">85</a>   decide(context: DaemonAdmissionContext): DaemonAdmissionDecision {</span>
+<span class="line" id="L86"><a href="#L86">86</a>     for (const guard of this.guards) {</span>
+<span class="line" id="L87"><a href="#L87">87</a>       const rejection = guard.rejectionFor(context);</span>
+<span class="line" id="L88"><a href="#L88">88</a>       if (rejection === undefined) continue;</span>
+<span class="line" id="L89"><a href="#L89">89</a>       if (rejection === &quot;authentication&quot;) return { kind: &quot;disconnect&quot;, code: rejection };</span>
+<span class="line" id="L90"><a href="#L90">90</a>       return { kind: &quot;reject&quot;, code: rejection };</span>
+<span class="line" id="L91"><a href="#L91">91</a>     }</span>
+<span class="line" id="L92"><a href="#L92">92</a>     return { kind: &quot;accept&quot; };</span>
+<span class="line" id="L93"><a href="#L93">93</a>   }</span>
+<span class="line" id="L94"><a href="#L94">94</a> }</span>
+<span class="line" id="L95"><a href="#L95">95</a> </span>
+<span class="line" id="L96"><a href="#L96">96</a> export class DaemonAdmissionRejections {</span>
+<span class="line" id="L97"><a href="#L97">97</a>   private static readonly retrySafety: Readonly&lt;Record&lt;DaemonExecuteRejectionCode, boolean&gt;&gt; =</span>
+<span class="line" id="L98"><a href="#L98">98</a>     Object.freeze({</span>
+<span class="line" id="L99"><a href="#L99">99</a>       &quot;not-ready&quot;: true,</span>
+<span class="line" id="L100"><a href="#L100">100</a>       draining: true,</span>
+<span class="line" id="L101"><a href="#L101">101</a>       &quot;resource-pressure&quot;: true,</span>
+<span class="line" id="L102"><a href="#L102">102</a>       incompatible: false,</span>
+<span class="line" id="L103"><a href="#L103">103</a>     });</span>
+<span class="line" id="L104"><a href="#L104">104</a> </span>
+<span class="line" id="L105"><a href="#L105">105</a>   static retrySafe(code: DaemonExecuteRejectionCode): boolean {</span>
+<span class="line" id="L106"><a href="#L106">106</a>     return DaemonAdmissionRejections.retrySafety[code];</span>
+<span class="line" id="L107"><a href="#L107">107</a>   }</span>
+<span class="line" id="L108"><a href="#L108">108</a> </span>
+<span class="line" id="L109"><a href="#L109">109</a>   static frame(</span>
+<span class="line" id="L110"><a href="#L110">110</a>     code: DaemonExecuteRejectionCode,</span>
+<span class="line" id="L111"><a href="#L111">111</a>     coordinates: DaemonExecutionCoordinates,</span>
+<span class="line" id="L112"><a href="#L112">112</a>   ): DaemonRejectedExecutionFrame {</span>
+<span class="line" id="L113"><a href="#L113">113</a>     return {</span>
+<span class="line" id="L114"><a href="#L114">114</a>       kind: &quot;rejected&quot;,</span>
+<span class="line" id="L115"><a href="#L115">115</a>       ...coordinates,</span>
+<span class="line" id="L116"><a href="#L116">116</a>       code,</span>
+<span class="line" id="L117"><a href="#L117">117</a>       retrySafe: DaemonAdmissionRejections.retrySafe(code),</span>
+<span class="line" id="L118"><a href="#L118">118</a>     };</span>
+<span class="line" id="L119"><a href="#L119">119</a>   }</span>
+<span class="line" id="L120"><a href="#L120">120</a> </span>
+<span class="line" id="L121"><a href="#L121">121</a>   static assertConsistent(frame: DaemonRejectedExecutionFrame): void {</span>
+<span class="line" id="L122"><a href="#L122">122</a>     if (</span>
+<span class="line" id="L123"><a href="#L123">123</a>       !Object.hasOwn(DaemonAdmissionRejections.retrySafety, frame.code) ||</span>
+<span class="line" id="L124"><a href="#L124">124</a>       frame.retrySafe !== DaemonAdmissionRejections.retrySafety[frame.code]</span>
+<span class="line" id="L125"><a href="#L125">125</a>     ) {</span>
+<span class="line" id="L126"><a href="#L126">126</a>       throw new Error(&quot;Inconsistent daemon execution rejection&quot;);</span>
+<span class="line" id="L127"><a href="#L127">127</a>     }</span>
+<span class="line" id="L128"><a href="#L128">128</a>   }</span>
+<span class="line" id="L129"><a href="#L129">129</a> }</span>
+</pre><details class="source-disclosure"><summary>Net main → tip change touching this path (copy-aware)</summary><p>This is the net delta, including moves/copies. A historical source snapshot above may precede the final change below.</p><pre class="pr-source">diff --git a/packages/daemon/src/daemon-admission.ts b/packages/daemon/src/daemon-admission.ts
+new file mode 100644
+index 000000000..bd5e636e5
+--- /dev/null
++++ b/packages/daemon/src/daemon-admission.ts
+@@ -0,0 +1,129 @@
++export type DaemonExecuteRejectionCode =
++  | &quot;not-ready&quot;
++  | &quot;draining&quot;
++  | &quot;resource-pressure&quot;
++  | &quot;incompatible&quot;;
++
++export type AcceptedRequestCompatibility = &quot;unseen&quot; | &quot;matching&quot; | &quot;conflicting&quot;;
++
++export type WorkspaceRequestQueueState = &quot;accepting&quot; | &quot;draining&quot; | &quot;closed&quot;;
++
++export type DaemonExecutionCoordinates = {
++  readonly instanceId: string;
++  readonly processToken: string;
++  readonly requestId: string;
++};
++
++export type DaemonRejectedExecutionFrame = {
++  readonly kind: &quot;rejected&quot;;
++  readonly instanceId: string;
++  readonly processToken: string;
++  readonly requestId: string;
++  readonly code: DaemonExecuteRejectionCode;
++  readonly retrySafe: boolean;
++};
++
++export interface DaemonAdmissionContext {
++  readonly request: unknown;
++  readonly authenticated: boolean;
++  readonly workerReady: boolean;
++  readonly resourceAdmissionPaused: boolean;
++  readonly queueState: WorkspaceRequestQueueState;
++  readonly compatibility: AcceptedRequestCompatibility;
++}
++
++export interface DaemonAdmissionGuard {
++  rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined;
++}
++
++export type DaemonAdmissionRejectionCode = &quot;authentication&quot; | DaemonExecuteRejectionCode;
++
++export type DaemonAdmissionDecision =
++  | { readonly kind: &quot;accept&quot; }
++  | { readonly kind: &quot;disconnect&quot;; readonly code: &quot;authentication&quot; }
++  | { readonly kind: &quot;reject&quot;; readonly code: DaemonExecuteRejectionCode };
++
++class AuthenticationAdmissionGuard implements DaemonAdmissionGuard {
++  rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {
++    return context.authenticated ? undefined : &quot;authentication&quot;;
++  }
++}
++
++class WorkerReadinessAdmissionGuard implements DaemonAdmissionGuard {
++  rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {
++    return context.workerReady ? undefined : &quot;not-ready&quot;;
++  }
++}
++
++class ResourceAdmissionGuard implements DaemonAdmissionGuard {
++  rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {
++    return context.resourceAdmissionPaused ? &quot;resource-pressure&quot; : undefined;
++  }
++}
++
++class QueueAdmissionGuard implements DaemonAdmissionGuard {
++  rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {
++    return context.queueState === &quot;accepting&quot; ? undefined : &quot;draining&quot;;
++  }
++}
++
++class CompatibilityAdmissionGuard implements DaemonAdmissionGuard {
++  rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {
++    return context.compatibility === &quot;conflicting&quot; ? &quot;incompatible&quot; : undefined;
++  }
++}
++
++export class DaemonAdmissionPolicy {
++  private readonly guards: readonly DaemonAdmissionGuard[] = [
++    new AuthenticationAdmissionGuard(),
++    new WorkerReadinessAdmissionGuard(),
++    new ResourceAdmissionGuard(),
++    new QueueAdmissionGuard(),
++    new CompatibilityAdmissionGuard(),
++  ];
++
++  decide(context: DaemonAdmissionContext): DaemonAdmissionDecision {
++    for (const guard of this.guards) {
++      const rejection = guard.rejectionFor(context);
++      if (rejection === undefined) continue;
++      if (rejection === &quot;authentication&quot;) return { kind: &quot;disconnect&quot;, code: rejection };
++      return { kind: &quot;reject&quot;, code: rejection };
++    }
++    return { kind: &quot;accept&quot; };
++  }
++}
++
++export class DaemonAdmissionRejections {
++  private static readonly retrySafety: Readonly&lt;Record&lt;DaemonExecuteRejectionCode, boolean&gt;&gt; =
++    Object.freeze({
++      &quot;not-ready&quot;: true,
++      draining: true,
++      &quot;resource-pressure&quot;: true,
++      incompatible: false,
++    });
++
++  static retrySafe(code: DaemonExecuteRejectionCode): boolean {
++    return DaemonAdmissionRejections.retrySafety[code];
++  }
++
++  static frame(
++    code: DaemonExecuteRejectionCode,
++    coordinates: DaemonExecutionCoordinates,
++  ): DaemonRejectedExecutionFrame {
++    return {
++      kind: &quot;rejected&quot;,
++      ...coordinates,
++      code,
++      retrySafe: DaemonAdmissionRejections.retrySafe(code),
++    };
++  }
++
++  static assertConsistent(frame: DaemonRejectedExecutionFrame): void {
++    if (
++      !Object.hasOwn(DaemonAdmissionRejections.retrySafety, frame.code) ||
++      frame.retrySafe !== DaemonAdmissionRejections.retrySafety[frame.code]
++    ) {
++      throw new Error(&quot;Inconsistent daemon execution rejection&quot;);
++    }
++  }
++}
+</pre></details></main></body></html>

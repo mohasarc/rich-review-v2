@@ -1,0 +1,176 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PR 124 · supplied record</title><link rel="stylesheet" href="../style.css"><body class="source-page"><main><a href="../index.html#provenance">← Page provenance</a><h1>#124 · Publish revisioned backend state transactionally</h1><p>Supplied bundle, frozen with this experiment. The original Markdown is preserved below.</p><pre class="pr-source">## Context
+
+The daemon architecture spec assigns reusable revision comparison, prepared-file indexing, and publication to core, but TypeScript still owned them after #123 moved source caching. This layer moves those mechanics into core while preserving selection retention, TypeScript source/node identity, and `LanguageBackend` results and errors.
+
+## Shape
+
+Before — TypeScript state mixed portable indexes with toolchain mutation:
+
+```mermaid
+flowchart LR
+    Backend[&quot;TypeScriptBackend&lt;br/&gt;async LanguageBackend&quot;] --&gt;|uses| State[&quot;TypeScriptWorkspaceState&lt;br/&gt;revision diff + indexes + ts-morph&quot;]
+    State --&gt;|uses| Project[&quot;ts-morph Project&lt;br/&gt;source/node owner&quot;]
+    style State fill:#ffdddd,stroke:#cc0000
+```
+
+After — core publishes portable candidate state; TypeScript supplies one mutation transaction:
+
+```mermaid
+flowchart LR
+    Backend[&quot;TypeScriptBackend&lt;br/&gt;async LanguageBackend&quot;] --&gt;|uses| State[&quot;TypeScriptWorkspaceState&lt;br/&gt;TypeScript lookup adapter&quot;]
+    State --&gt;|extends| CoreState[&quot;RevisionedBackendState&lt;br/&gt;diff + validate + publish&quot;]
+    State --&gt;|creates| Preparation[&quot;TypeScriptWorkspacePreparation&lt;br/&gt;&amp;lt;&amp;lt;unexported&amp;gt;&amp;gt;&quot;]
+    Preparation --&gt;|uses| Project[&quot;ts-morph Project&lt;br/&gt;source/node owner&quot;]
+    style State fill:#fff2cc,stroke:#bf9000
+    style CoreState fill:#ddffdd,stroke:#008800
+    style Preparation fill:#ddffdd,stroke:#008800
+```
+
+Legend: green = added ownership; red = removed ownership; yellow = changed responsibility.
+
+## Where it lives
+
+```text
+.
+└── packages/
+    ├── core/src/
+    │   ├── ** index.ts
+    │   └── backend/
+    │       ├── ++ revisioned-backend-state.ts       # owns revision/index transactions
+    │       └── ++ revisioned-backend-state.test.ts  # fake incremental/full backends
+    └── backend-typescript/src/
+        ├── ** index.ts                               # removes backend-owned revision exports
+        ├── ** ... 4 query/index consumer files      # await on-demand preparation
+        └── typescript-backend/
+            ├── ** typescript-backend.ts              # awaits state publication
+            ├── ** typescript-workspace-state.ts      # owns ts-morph mutation journal
+            └── ** ... 2 colocated tests              # async adoption and rollback boundaries
+```
+
+## Public surface
+
+Added to `@symnav/core`:
+
+```ts
+export interface RevisionedBackendPreparedFile&lt;PreparedDetails&gt; {
+  readonly file: WorkspaceFile;
+  readonly entries: OverviewFileEntries;
+  readonly details: PreparedDetails;
+}
+
+export type RevisionedBackendFileChange&lt;PreparedDetails&gt; =
+  | { readonly kind: &quot;added&quot;; readonly file: WorkspaceFile }
+  | {
+      readonly kind: &quot;changed&quot;;
+      readonly file: WorkspaceFile;
+      readonly previous: RevisionedBackendPreparedFile&lt;PreparedDetails&gt;;
+    };
+
+export interface RevisionedBackendPreparationRequest&lt;PreparedDetails&gt; {
+  readonly coverage: BackendRefreshCoverage;
+  readonly changes: readonly RevisionedBackendFileChange&lt;PreparedDetails&gt;[];
+  readonly removedFiles: readonly RevisionedBackendPreparedFile&lt;PreparedDetails&gt;[];
+  readonly effectiveFiles: readonly WorkspaceFile[];
+}
+
+export abstract class RevisionedBackendPreparation&lt;PreparedDetails&gt; {
+  abstract prepare(): Promise&lt;readonly RevisionedBackendPreparedFile&lt;PreparedDetails&gt;[]&gt;;
+  abstract commit(): Promise&lt;void&gt;;
+  abstract rollback(): Promise&lt;void&gt;;
+}
+
+export interface IndexedBackendDeclaration {
+  readonly declaration: SymbolOverviewNode;
+  readonly file: ResolvedPath;
+}
+
+export abstract class RevisionedBackendState&lt;PreparedDetails&gt; {
+  protected constructor(fileSystem: FileSystem);
+  refresh(files: readonly WorkspaceFile[], coverage?: BackendRefreshCoverage): Promise&lt;BackendRefreshSummary&gt;;
+  ensureFiles(files: readonly ResolvedPath[]): Promise&lt;void&gt;;
+  fileEntries(file: ResolvedPath): Promise&lt;OverviewFileEntries&gt;;
+  declarations(files: readonly ResolvedPath[]): Promise&lt;readonly SymbolOverviewNode[]&gt;;
+  diagnostics(file: ResolvedPath): readonly NavigationDiagnostic[];
+  declarationsIn(relativePath: string): readonly SymbolOverviewNode[] | undefined;
+  declarationForIdentity(identity: SymbolIdentity): IndexedBackendDeclaration | undefined;
+  currentFileCount(): number;
+  protected preparedFile(relativePath: string): RevisionedBackendPreparedFile&lt;PreparedDetails&gt; | undefined;
+  protected preparedFiles(): readonly RevisionedBackendPreparedFile&lt;PreparedDetails&gt;[];
+  protected relativePathForAbsolute(absolutePath: string): string | undefined;
+  protected abstract createPreparation(request: RevisionedBackendPreparationRequest&lt;PreparedDetails&gt;): RevisionedBackendPreparation&lt;PreparedDetails&gt;;
+}
+```
+
+Changed in `@symnav/backend-typescript`:
+
+```ts
+export class TypeScriptWorkspaceState extends RevisionedBackendState&lt;TypeScriptPreparedFileDetails&gt; {
+  // before: fileEntries(file: ResolvedPath, diagnostics?: DiagnosticSink): OverviewFileEntries
+  fileEntries(file: ResolvedPath, diagnostics?: DiagnosticSink): Promise&lt;OverviewFileEntries&gt;;
+}
+```
+
+Removed from `@symnav/backend-typescript` root:
+
+```ts
+type PreparedFileIndex;
+type PreparedFileRevision;
+type TypeScriptFileRevision;
+```
+
+## Decisions
+
+- Chose an incremental overlay candidate over requiring complete preparation output, because another language backend may prepare only changed files.
+- Chose candidate validation before subclass commit over post-commit validation, because malformed output must leave portable and toolchain state unpublished.
+- Chose one-file selection transactions for `ensureFiles` over one aggregate transaction, because existing behavior retains earlier progress when a later file fails.
+- Chose a TypeScript-owned mutation journal over core mutation callbacks, because source files and node restoration are `ts-morph` concerns.
+- Chose reversible path staging before source removal over recreating removed sources, because published lookups retain exact `SourceFile` handles.
+
+## Look here
+
+- `packages/core/src/backend/revisioned-backend-state.ts:65`
+- `packages/core/src/backend/revisioned-backend-state.ts:181`
+- `packages/backend-typescript/src/typescript-backend/typescript-workspace-state.ts:159`
+
+
+COMMIT MESSAGES
+
+b0fa20d750a702a12a9a33710c0ec65ebff13532
+Define revisioned backend state contracts
+
+
+294ca79f667a56153e4243f60b899cc3e922a314
+Diff revisioned backend files
+
+
+0ae50165bd23f731a10d0fc962039087968fece6
+Validate revisioned backend candidates
+
+
+a1a9a2a9aafff6b5decbe71ef04ac7da6df6fb69
+Roll back failed backend preparations
+
+
+144f7746166f2603be23f8770d77b80060e7a252
+Accept full backend preparation results
+
+
+f142e0bb231f75f20663314320826d6f669330d2
+Ensure missing backend files sequentially
+
+
+4a70bcc87ce15d26e10c8aab18499fbed806b5d9
+Adopt revisioned TypeScript state preparation
+
+
+23edd420ba9c024bc300641a17a6b49ab3e16547
+Preserve sequential TypeScript preparation progress
+
+
+cf0107c1fed07bb532cbf28edf0fd71f17c8c002
+Verify TypeScript source mutation rollback
+
+
+9643fac8f3e138fea0cc66ddd28a92611ab5b7d6
+Make obsolete TypeScript removals transactional
+</pre></main></body></html>

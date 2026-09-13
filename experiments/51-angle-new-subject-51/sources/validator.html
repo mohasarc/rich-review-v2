@@ -1,0 +1,1351 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>validator · pinned source</title><link rel="stylesheet" href="../style.css"><body class="source-page"><main><a href="../index.html#provenance">← Page provenance</a><h1>validator</h1><p>packages/daemon/src/transport/protocol-validator.ts<br>d07002357d3e9596bfaae910a1ac63b77981620b · tip<br>SHA-256 f4aab75b1bea9c604197500070409c72fed85420a52b82dc442766e90e1f8aaa</p><pre class="source-code"><span class="line" id="L1"><a href="#L1">1</a> import {</span>
+<span class="line" id="L2"><a href="#L2">2</a>   DaemonAdmissionRejections,</span>
+<span class="line" id="L3"><a href="#L3">3</a>   type DaemonRejectedExecutionFrame,</span>
+<span class="line" id="L4"><a href="#L4">4</a> } from &quot;../daemon-admission.js&quot;;</span>
+<span class="line" id="L5"><a href="#L5">5</a> import { DaemonExecutionFailures } from &quot;../daemon-execution-failure.js&quot;;</span>
+<span class="line" id="L6"><a href="#L6">6</a> import type { CompletionSpoolManifest } from &quot;../delivery/completion-spool.js&quot;;</span>
+<span class="line" id="L7"><a href="#L7">7</a> import type {</span>
+<span class="line" id="L8"><a href="#L8">8</a>   DaemonExecuteRequest,</span>
+<span class="line" id="L9"><a href="#L9">9</a>   DaemonExecutionServerFrame,</span>
+<span class="line" id="L10"><a href="#L10">10</a>   DaemonExecutionStatus,</span>
+<span class="line" id="L11"><a href="#L11">11</a>   DaemonExecutionStatusRequest,</span>
+<span class="line" id="L12"><a href="#L12">12</a>   DaemonExecutionStatusResponse,</span>
+<span class="line" id="L13"><a href="#L13">13</a>   DaemonLifecycleRequest,</span>
+<span class="line" id="L14"><a href="#L14">14</a>   DaemonLifecycleResponse,</span>
+<span class="line" id="L15"><a href="#L15">15</a>   DaemonRequest,</span>
+<span class="line" id="L16"><a href="#L16">16</a>   DaemonResponse,</span>
+<span class="line" id="L17"><a href="#L17">17</a> } from &quot;./protocol.js&quot;;</span>
+<span class="line" id="L18"><a href="#L18">18</a> import { DaemonRuntimeValues } from &quot;../process/runtime-values.js&quot;;</span>
+<span class="line" id="L19"><a href="#L19">19</a> </span>
+<span class="line" id="L20"><a href="#L20">20</a> export class DaemonProtocolError extends Error {</span>
+<span class="line" id="L21"><a href="#L21">21</a>   constructor(</span>
+<span class="line" id="L22"><a href="#L22">22</a>     readonly code: &quot;authentication&quot; | &quot;corrupt&quot; | &quot;incompatible&quot;,</span>
+<span class="line" id="L23"><a href="#L23">23</a>     message: string,</span>
+<span class="line" id="L24"><a href="#L24">24</a>     readonly authenticatedInstanceId?: string,</span>
+<span class="line" id="L25"><a href="#L25">25</a>   ) {</span>
+<span class="line" id="L26"><a href="#L26">26</a>     super(message);</span>
+<span class="line" id="L27"><a href="#L27">27</a>   }</span>
+<span class="line" id="L28"><a href="#L28">28</a> }</span>
+<span class="line" id="L29"><a href="#L29">29</a> </span>
+<span class="line" id="L30"><a href="#L30">30</a> export class DaemonProtocolValidator {</span>
+<span class="line" id="L31"><a href="#L31">31</a>   lifecycleRequest(value: unknown): DaemonLifecycleRequest {</span>
+<span class="line" id="L32"><a href="#L32">32</a>     const request = this.request(value);</span>
+<span class="line" id="L33"><a href="#L33">33</a>     if (</span>
+<span class="line" id="L34"><a href="#L34">34</a>       request.kind !== &quot;identify&quot; &amp;&amp;</span>
+<span class="line" id="L35"><a href="#L35">35</a>       request.kind !== &quot;terminate&quot; &amp;&amp;</span>
+<span class="line" id="L36"><a href="#L36">36</a>       request.kind !== &quot;kill&quot; &amp;&amp;</span>
+<span class="line" id="L37"><a href="#L37">37</a>       request.kind !== &quot;ping&quot; &amp;&amp;</span>
+<span class="line" id="L38"><a href="#L38">38</a>       request.kind !== &quot;stop&quot;</span>
+<span class="line" id="L39"><a href="#L39">39</a>     ) {</span>
+<span class="line" id="L40"><a href="#L40">40</a>       throw new Error(&quot;Malformed daemon lifecycle request&quot;);</span>
+<span class="line" id="L41"><a href="#L41">41</a>     }</span>
+<span class="line" id="L42"><a href="#L42">42</a>     return request;</span>
+<span class="line" id="L43"><a href="#L43">43</a>   }</span>
+<span class="line" id="L44"><a href="#L44">44</a> </span>
+<span class="line" id="L45"><a href="#L45">45</a>   request(value: unknown): DaemonRequest {</span>
+<span class="line" id="L46"><a href="#L46">46</a>     if (!DaemonProtocolValidator.isRecord(value) || typeof value.kind !== &quot;string&quot;) {</span>
+<span class="line" id="L47"><a href="#L47">47</a>       throw new Error(&quot;Malformed daemon request&quot;);</span>
+<span class="line" id="L48"><a href="#L48">48</a>     }</span>
+<span class="line" id="L49"><a href="#L49">49</a>     if (value.kind === &quot;identify&quot; || value.kind === &quot;terminate&quot; || value.kind === &quot;kill&quot;) {</span>
+<span class="line" id="L50"><a href="#L50">50</a>       if (</span>
+<span class="line" id="L51"><a href="#L51">51</a>         !DaemonProtocolValidator.hasExactKeys(value, [&quot;kind&quot;, &quot;instanceId&quot;, &quot;processToken&quot;]) ||</span>
+<span class="line" id="L52"><a href="#L52">52</a>         !DaemonProtocolValidator.isRuntimeString(value.instanceId) ||</span>
+<span class="line" id="L53"><a href="#L53">53</a>         !DaemonProtocolValidator.isRuntimeString(value.processToken)</span>
+<span class="line" id="L54"><a href="#L54">54</a>       ) {</span>
+<span class="line" id="L55"><a href="#L55">55</a>         throw new Error(&quot;Malformed daemon identity request&quot;);</span>
+<span class="line" id="L56"><a href="#L56">56</a>       }</span>
+<span class="line" id="L57"><a href="#L57">57</a>       return value as unknown as DaemonRequest;</span>
+<span class="line" id="L58"><a href="#L58">58</a>     }</span>
+<span class="line" id="L59"><a href="#L59">59</a>     if (</span>
+<span class="line" id="L60"><a href="#L60">60</a>       !DaemonProtocolValidator.isProtocolVersion(value.protocolVersion) ||</span>
+<span class="line" id="L61"><a href="#L61">61</a>       !DaemonProtocolValidator.isRuntimeString(value.instanceId)</span>
+<span class="line" id="L62"><a href="#L62">62</a>     ) {</span>
+<span class="line" id="L63"><a href="#L63">63</a>       throw new Error(&quot;Malformed daemon request envelope&quot;);</span>
+<span class="line" id="L64"><a href="#L64">64</a>     }</span>
+<span class="line" id="L65"><a href="#L65">65</a>     if (value.kind === &quot;ping&quot; || value.kind === &quot;stop&quot;) {</span>
+<span class="line" id="L66"><a href="#L66">66</a>       if (!DaemonProtocolValidator.hasExactKeys(value, [&quot;kind&quot;, &quot;protocolVersion&quot;, &quot;instanceId&quot;])) {</span>
+<span class="line" id="L67"><a href="#L67">67</a>         throw new Error(&quot;Malformed daemon request envelope&quot;);</span>
+<span class="line" id="L68"><a href="#L68">68</a>       }</span>
+<span class="line" id="L69"><a href="#L69">69</a>       return value as unknown as DaemonRequest;</span>
+<span class="line" id="L70"><a href="#L70">70</a>     }</span>
+<span class="line" id="L71"><a href="#L71">71</a>     if (!DaemonProtocolValidator.isExecutionRequestEnvelope(value)) {</span>
+<span class="line" id="L72"><a href="#L72">72</a>       throw new Error(&quot;Malformed daemon execution request&quot;);</span>
+<span class="line" id="L73"><a href="#L73">73</a>     }</span>
+<span class="line" id="L74"><a href="#L74">74</a>     return value as unknown as DaemonRequest;</span>
+<span class="line" id="L75"><a href="#L75">75</a>   }</span>
+<span class="line" id="L76"><a href="#L76">76</a> </span>
+<span class="line" id="L77"><a href="#L77">77</a>   lifecycleResponse(request: DaemonLifecycleRequest, value: unknown): DaemonLifecycleResponse {</span>
+<span class="line" id="L78"><a href="#L78">78</a>     const response = this.response(value);</span>
+<span class="line" id="L79"><a href="#L79">79</a>     if (request.kind === &quot;identify&quot;) {</span>
+<span class="line" id="L80"><a href="#L80">80</a>       if (response.kind !== &quot;identity&quot;) {</span>
+<span class="line" id="L81"><a href="#L81">81</a>         throw new DaemonProtocolError(&quot;corrupt&quot;, &quot;Daemon returned a non-identity response&quot;);</span>
+<span class="line" id="L82"><a href="#L82">82</a>       }</span>
+<span class="line" id="L83"><a href="#L83">83</a>       if (</span>
+<span class="line" id="L84"><a href="#L84">84</a>         response.instanceId !== request.instanceId ||</span>
+<span class="line" id="L85"><a href="#L85">85</a>         response.processToken !== request.processToken</span>
+<span class="line" id="L86"><a href="#L86">86</a>       ) {</span>
+<span class="line" id="L87"><a href="#L87">87</a>         throw new DaemonProtocolError(</span>
+<span class="line" id="L88"><a href="#L88">88</a>           &quot;authentication&quot;,</span>
+<span class="line" id="L89"><a href="#L89">89</a>           &quot;Daemon identity does not match process instance&quot;,</span>
+<span class="line" id="L90"><a href="#L90">90</a>           response.instanceId === request.instanceId ? response.instanceId : undefined,</span>
+<span class="line" id="L91"><a href="#L91">91</a>         );</span>
+<span class="line" id="L92"><a href="#L92">92</a>       }</span>
+<span class="line" id="L93"><a href="#L93">93</a>       return response;</span>
+<span class="line" id="L94"><a href="#L94">94</a>     }</span>
+<span class="line" id="L95"><a href="#L95">95</a>     if (request.kind === &quot;terminate&quot; || request.kind === &quot;kill&quot;) {</span>
+<span class="line" id="L96"><a href="#L96">96</a>       const expectedKind = request.kind === &quot;terminate&quot; ? &quot;terminating&quot; : &quot;killing&quot;;</span>
+<span class="line" id="L97"><a href="#L97">97</a>       if (response.kind !== expectedKind) {</span>
+<span class="line" id="L98"><a href="#L98">98</a>         throw new DaemonProtocolError(&quot;corrupt&quot;, &quot;Daemon returned a non-termination response&quot;);</span>
+<span class="line" id="L99"><a href="#L99">99</a>       }</span>
+<span class="line" id="L100"><a href="#L100">100</a>       if (</span>
+<span class="line" id="L101"><a href="#L101">101</a>         response.instanceId !== request.instanceId ||</span>
+<span class="line" id="L102"><a href="#L102">102</a>         response.processToken !== request.processToken</span>
+<span class="line" id="L103"><a href="#L103">103</a>       ) {</span>
+<span class="line" id="L104"><a href="#L104">104</a>         throw new DaemonProtocolError(</span>
+<span class="line" id="L105"><a href="#L105">105</a>           &quot;authentication&quot;,</span>
+<span class="line" id="L106"><a href="#L106">106</a>           &quot;Daemon termination does not match process instance&quot;,</span>
+<span class="line" id="L107"><a href="#L107">107</a>           response.instanceId === request.instanceId ? response.instanceId : undefined,</span>
+<span class="line" id="L108"><a href="#L108">108</a>         );</span>
+<span class="line" id="L109"><a href="#L109">109</a>       }</span>
+<span class="line" id="L110"><a href="#L110">110</a>       return response;</span>
+<span class="line" id="L111"><a href="#L111">111</a>     }</span>
+<span class="line" id="L112"><a href="#L112">112</a>     if (request.kind === &quot;ping&quot;) {</span>
+<span class="line" id="L113"><a href="#L113">113</a>       if (response.kind !== &quot;pong&quot;) {</span>
+<span class="line" id="L114"><a href="#L114">114</a>         throw new DaemonProtocolError(</span>
+<span class="line" id="L115"><a href="#L115">115</a>           &quot;corrupt&quot;,</span>
+<span class="line" id="L116"><a href="#L116">116</a>           &quot;Daemon pong does not match request protocol and instance&quot;,</span>
+<span class="line" id="L117"><a href="#L117">117</a>         );</span>
+<span class="line" id="L118"><a href="#L118">118</a>       }</span>
+<span class="line" id="L119"><a href="#L119">119</a>       if (response.instanceId !== request.instanceId) {</span>
+<span class="line" id="L120"><a href="#L120">120</a>         throw new DaemonProtocolError(</span>
+<span class="line" id="L121"><a href="#L121">121</a>           &quot;authentication&quot;,</span>
+<span class="line" id="L122"><a href="#L122">122</a>           &quot;Daemon pong does not match request instance&quot;,</span>
+<span class="line" id="L123"><a href="#L123">123</a>         );</span>
+<span class="line" id="L124"><a href="#L124">124</a>       }</span>
+<span class="line" id="L125"><a href="#L125">125</a>       if (response.protocolVersion !== request.protocolVersion) {</span>
+<span class="line" id="L126"><a href="#L126">126</a>         throw new DaemonProtocolError(</span>
+<span class="line" id="L127"><a href="#L127">127</a>           &quot;incompatible&quot;,</span>
+<span class="line" id="L128"><a href="#L128">128</a>           &quot;Daemon pong does not match request protocol&quot;,</span>
+<span class="line" id="L129"><a href="#L129">129</a>           response.instanceId,</span>
+<span class="line" id="L130"><a href="#L130">130</a>         );</span>
+<span class="line" id="L131"><a href="#L131">131</a>       }</span>
+<span class="line" id="L132"><a href="#L132">132</a>       return response;</span>
+<span class="line" id="L133"><a href="#L133">133</a>     }</span>
+<span class="line" id="L134"><a href="#L134">134</a>     if (response.kind !== &quot;stopped&quot;) {</span>
+<span class="line" id="L135"><a href="#L135">135</a>       throw new DaemonProtocolError(&quot;corrupt&quot;, &quot;Daemon returned a non-stop response&quot;);</span>
+<span class="line" id="L136"><a href="#L136">136</a>     }</span>
+<span class="line" id="L137"><a href="#L137">137</a>     if (response.instanceId !== request.instanceId) {</span>
+<span class="line" id="L138"><a href="#L138">138</a>       throw new DaemonProtocolError(</span>
+<span class="line" id="L139"><a href="#L139">139</a>         &quot;authentication&quot;,</span>
+<span class="line" id="L140"><a href="#L140">140</a>         &quot;Daemon stop response does not match instance&quot;,</span>
+<span class="line" id="L141"><a href="#L141">141</a>       );</span>
+<span class="line" id="L142"><a href="#L142">142</a>     }</span>
+<span class="line" id="L143"><a href="#L143">143</a>     return response;</span>
+<span class="line" id="L144"><a href="#L144">144</a>   }</span>
+<span class="line" id="L145"><a href="#L145">145</a> </span>
+<span class="line" id="L146"><a href="#L146">146</a>   executionStatusResponse(</span>
+<span class="line" id="L147"><a href="#L147">147</a>     request: DaemonExecutionStatusRequest,</span>
+<span class="line" id="L148"><a href="#L148">148</a>     value: unknown,</span>
+<span class="line" id="L149"><a href="#L149">149</a>   ): DaemonExecutionStatusResponse {</span>
+<span class="line" id="L150"><a href="#L150">150</a>     const response = this.response(value);</span>
+<span class="line" id="L151"><a href="#L151">151</a>     if (response.kind !== &quot;execution-status&quot;) {</span>
+<span class="line" id="L152"><a href="#L152">152</a>       throw new DaemonProtocolError(&quot;corrupt&quot;, &quot;Daemon returned a non-status response&quot;);</span>
+<span class="line" id="L153"><a href="#L153">153</a>     }</span>
+<span class="line" id="L154"><a href="#L154">154</a>     this.assertExecutionCoordinates(request, response);</span>
+<span class="line" id="L155"><a href="#L155">155</a>     return response;</span>
+<span class="line" id="L156"><a href="#L156">156</a>   }</span>
+<span class="line" id="L157"><a href="#L157">157</a> </span>
+<span class="line" id="L158"><a href="#L158">158</a>   executionFrame(</span>
+<span class="line" id="L159"><a href="#L159">159</a>     request: Pick&lt;DaemonExecuteRequest, &quot;instanceId&quot; | &quot;processToken&quot; | &quot;requestId&quot;&gt;,</span>
+<span class="line" id="L160"><a href="#L160">160</a>     value: unknown,</span>
+<span class="line" id="L161"><a href="#L161">161</a>   ): DaemonExecutionServerFrame {</span>
+<span class="line" id="L162"><a href="#L162">162</a>     const response = this.response(value);</span>
+<span class="line" id="L163"><a href="#L163">163</a>     if (</span>
+<span class="line" id="L164"><a href="#L164">164</a>       response.kind !== &quot;accepted&quot; &amp;&amp;</span>
+<span class="line" id="L165"><a href="#L165">165</a>       response.kind !== &quot;rejected&quot; &amp;&amp;</span>
+<span class="line" id="L166"><a href="#L166">166</a>       response.kind !== &quot;result-manifest&quot; &amp;&amp;</span>
+<span class="line" id="L167"><a href="#L167">167</a>       response.kind !== &quot;result-end&quot; &amp;&amp;</span>
+<span class="line" id="L168"><a href="#L168">168</a>       response.kind !== &quot;execution-failed&quot;</span>
+<span class="line" id="L169"><a href="#L169">169</a>     ) {</span>
+<span class="line" id="L170"><a href="#L170">170</a>       throw new DaemonProtocolError(&quot;corrupt&quot;, &quot;Daemon returned a non-execution frame&quot;);</span>
+<span class="line" id="L171"><a href="#L171">171</a>     }</span>
+<span class="line" id="L172"><a href="#L172">172</a>     this.assertExecutionCoordinates(request, response);</span>
+<span class="line" id="L173"><a href="#L173">173</a>     return response;</span>
+<span class="line" id="L174"><a href="#L174">174</a>   }</span>
+<span class="line" id="L175"><a href="#L175">175</a> </span>
+<span class="line" id="L176"><a href="#L176">176</a>   resultAcknowledgement(</span>
+<span class="line" id="L177"><a href="#L177">177</a>     request: Pick&lt;DaemonExecuteRequest, &quot;instanceId&quot; | &quot;processToken&quot; | &quot;requestId&quot;&gt;,</span>
+<span class="line" id="L178"><a href="#L178">178</a>     transferId: string,</span>
+<span class="line" id="L179"><a href="#L179">179</a>     value: unknown,</span>
+<span class="line" id="L180"><a href="#L180">180</a>   ): void {</span>
+<span class="line" id="L181"><a href="#L181">181</a>     const response = this.response(value);</span>
+<span class="line" id="L182"><a href="#L182">182</a>     if (</span>
+<span class="line" id="L183"><a href="#L183">183</a>       response.kind !== &quot;result-acknowledged&quot; ||</span>
+<span class="line" id="L184"><a href="#L184">184</a>       response.instanceId !== request.instanceId ||</span>
+<span class="line" id="L185"><a href="#L185">185</a>       response.processToken !== request.processToken ||</span>
+<span class="line" id="L186"><a href="#L186">186</a>       response.requestId !== request.requestId ||</span>
+<span class="line" id="L187"><a href="#L187">187</a>       response.transferId !== transferId</span>
+<span class="line" id="L188"><a href="#L188">188</a>     ) {</span>
+<span class="line" id="L189"><a href="#L189">189</a>       throw new Error(&quot;Invalid daemon result acknowledgement&quot;);</span>
+<span class="line" id="L190"><a href="#L190">190</a>     }</span>
+<span class="line" id="L191"><a href="#L191">191</a>   }</span>
+<span class="line" id="L192"><a href="#L192">192</a> </span>
+<span class="line" id="L193"><a href="#L193">193</a>   private response(value: unknown): DaemonResponse {</span>
+<span class="line" id="L194"><a href="#L194">194</a>     if (!DaemonProtocolValidator.isRecord(value) || typeof value.kind !== &quot;string&quot;) {</span>
+<span class="line" id="L195"><a href="#L195">195</a>       throw new Error(&quot;Malformed daemon response&quot;);</span>
+<span class="line" id="L196"><a href="#L196">196</a>     }</span>
+<span class="line" id="L197"><a href="#L197">197</a>     if (value.kind === &quot;pong&quot;) {</span>
+<span class="line" id="L198"><a href="#L198">198</a>       this.assertPong(value);</span>
+<span class="line" id="L199"><a href="#L199">199</a>       return value as unknown as DaemonResponse;</span>
+<span class="line" id="L200"><a href="#L200">200</a>     }</span>
+<span class="line" id="L201"><a href="#L201">201</a>     if (value.kind === &quot;identity&quot;) {</span>
+<span class="line" id="L202"><a href="#L202">202</a>       if (</span>
+<span class="line" id="L203"><a href="#L203">203</a>         !DaemonProtocolValidator.hasExactKeys(value, [</span>
+<span class="line" id="L204"><a href="#L204">204</a>           &quot;kind&quot;,</span>
+<span class="line" id="L205"><a href="#L205">205</a>           &quot;instanceId&quot;,</span>
+<span class="line" id="L206"><a href="#L206">206</a>           &quot;processToken&quot;,</span>
+<span class="line" id="L207"><a href="#L207">207</a>           &quot;pid&quot;,</span>
+<span class="line" id="L208"><a href="#L208">208</a>           &quot;startedAt&quot;,</span>
+<span class="line" id="L209"><a href="#L209">209</a>         ]) ||</span>
+<span class="line" id="L210"><a href="#L210">210</a>         !DaemonProtocolValidator.isRuntimeString(value.instanceId) ||</span>
+<span class="line" id="L211"><a href="#L211">211</a>         !DaemonProtocolValidator.isRuntimeString(value.processToken) ||</span>
+<span class="line" id="L212"><a href="#L212">212</a>         !DaemonProtocolValidator.isPositiveInteger(value.pid) ||</span>
+<span class="line" id="L213"><a href="#L213">213</a>         !DaemonProtocolValidator.isMetric(value.startedAt)</span>
+<span class="line" id="L214"><a href="#L214">214</a>       ) {</span>
+<span class="line" id="L215"><a href="#L215">215</a>         throw new Error(&quot;Malformed daemon identity&quot;);</span>
+<span class="line" id="L216"><a href="#L216">216</a>       }</span>
+<span class="line" id="L217"><a href="#L217">217</a>       return value as unknown as DaemonResponse;</span>
+<span class="line" id="L218"><a href="#L218">218</a>     }</span>
+<span class="line" id="L219"><a href="#L219">219</a>     if (value.kind === &quot;terminating&quot; || value.kind === &quot;killing&quot;) {</span>
+<span class="line" id="L220"><a href="#L220">220</a>       if (</span>
+<span class="line" id="L221"><a href="#L221">221</a>         !DaemonProtocolValidator.hasExactKeys(value, [&quot;kind&quot;, &quot;instanceId&quot;, &quot;processToken&quot;]) ||</span>
+<span class="line" id="L222"><a href="#L222">222</a>         !DaemonProtocolValidator.isRuntimeString(value.instanceId) ||</span>
+<span class="line" id="L223"><a href="#L223">223</a>         !DaemonProtocolValidator.isRuntimeString(value.processToken)</span>
+<span class="line" id="L224"><a href="#L224">224</a>       ) {</span>
+<span class="line" id="L225"><a href="#L225">225</a>         throw new Error(&quot;Malformed daemon termination response&quot;);</span>
+<span class="line" id="L226"><a href="#L226">226</a>       }</span>
+<span class="line" id="L227"><a href="#L227">227</a>       return value as unknown as DaemonResponse;</span>
+<span class="line" id="L228"><a href="#L228">228</a>     }</span>
+<span class="line" id="L229"><a href="#L229">229</a>     if (value.kind === &quot;stopped&quot;) {</span>
+<span class="line" id="L230"><a href="#L230">230</a>       if (</span>
+<span class="line" id="L231"><a href="#L231">231</a>         !DaemonProtocolValidator.hasExactKeys(value, [&quot;kind&quot;, &quot;instanceId&quot;]) ||</span>
+<span class="line" id="L232"><a href="#L232">232</a>         !DaemonProtocolValidator.isRuntimeString(value.instanceId)</span>
+<span class="line" id="L233"><a href="#L233">233</a>       ) {</span>
+<span class="line" id="L234"><a href="#L234">234</a>         throw new Error(&quot;Malformed daemon stop response&quot;);</span>
+<span class="line" id="L235"><a href="#L235">235</a>       }</span>
+<span class="line" id="L236"><a href="#L236">236</a>       return value as unknown as DaemonResponse;</span>
+<span class="line" id="L237"><a href="#L237">237</a>     }</span>
+<span class="line" id="L238"><a href="#L238">238</a>     if (</span>
+<span class="line" id="L239"><a href="#L239">239</a>       value.kind === &quot;accepted&quot; ||</span>
+<span class="line" id="L240"><a href="#L240">240</a>       value.kind === &quot;rejected&quot; ||</span>
+<span class="line" id="L241"><a href="#L241">241</a>       value.kind === &quot;result-manifest&quot; ||</span>
+<span class="line" id="L242"><a href="#L242">242</a>       value.kind === &quot;result-end&quot; ||</span>
+<span class="line" id="L243"><a href="#L243">243</a>       value.kind === &quot;execution-failed&quot;</span>
+<span class="line" id="L244"><a href="#L244">244</a>     ) {</span>
+<span class="line" id="L245"><a href="#L245">245</a>       this.assertExecutionFrame(value);</span>
+<span class="line" id="L246"><a href="#L246">246</a>       return value as unknown as DaemonResponse;</span>
+<span class="line" id="L247"><a href="#L247">247</a>     }</span>
+<span class="line" id="L248"><a href="#L248">248</a>     if (value.kind === &quot;execution-status&quot;) {</span>
+<span class="line" id="L249"><a href="#L249">249</a>       if (</span>
+<span class="line" id="L250"><a href="#L250">250</a>         !DaemonProtocolValidator.hasExactKeys(value, [</span>
+<span class="line" id="L251"><a href="#L251">251</a>           &quot;kind&quot;,</span>
+<span class="line" id="L252"><a href="#L252">252</a>           &quot;instanceId&quot;,</span>
+<span class="line" id="L253"><a href="#L253">253</a>           &quot;processToken&quot;,</span>
+<span class="line" id="L254"><a href="#L254">254</a>           &quot;requestId&quot;,</span>
+<span class="line" id="L255"><a href="#L255">255</a>           &quot;status&quot;,</span>
+<span class="line" id="L256"><a href="#L256">256</a>         ]) ||</span>
+<span class="line" id="L257"><a href="#L257">257</a>         !DaemonProtocolValidator.isRuntimeString(value.instanceId) ||</span>
+<span class="line" id="L258"><a href="#L258">258</a>         !DaemonProtocolValidator.isRuntimeString(value.processToken) ||</span>
+<span class="line" id="L259"><a href="#L259">259</a>         !DaemonRuntimeValues.isRequestId(value.requestId) ||</span>
+<span class="line" id="L260"><a href="#L260">260</a>         !DaemonProtocolValidator.isExecutionStatus(value.status)</span>
+<span class="line" id="L261"><a href="#L261">261</a>       ) {</span>
+<span class="line" id="L262"><a href="#L262">262</a>         throw new Error(&quot;Malformed daemon execution status&quot;);</span>
+<span class="line" id="L263"><a href="#L263">263</a>       }</span>
+<span class="line" id="L264"><a href="#L264">264</a>       return value as unknown as DaemonResponse;</span>
+<span class="line" id="L265"><a href="#L265">265</a>     }</span>
+<span class="line" id="L266"><a href="#L266">266</a>     if (value.kind === &quot;result-acknowledged&quot;) {</span>
+<span class="line" id="L267"><a href="#L267">267</a>       if (</span>
+<span class="line" id="L268"><a href="#L268">268</a>         !DaemonProtocolValidator.hasExactKeys(value, [</span>
+<span class="line" id="L269"><a href="#L269">269</a>           &quot;kind&quot;,</span>
+<span class="line" id="L270"><a href="#L270">270</a>           &quot;instanceId&quot;,</span>
+<span class="line" id="L271"><a href="#L271">271</a>           &quot;processToken&quot;,</span>
+<span class="line" id="L272"><a href="#L272">272</a>           &quot;requestId&quot;,</span>
+<span class="line" id="L273"><a href="#L273">273</a>           &quot;transferId&quot;,</span>
+<span class="line" id="L274"><a href="#L274">274</a>         ]) ||</span>
+<span class="line" id="L275"><a href="#L275">275</a>         !DaemonProtocolValidator.isRuntimeString(value.instanceId) ||</span>
+<span class="line" id="L276"><a href="#L276">276</a>         !DaemonProtocolValidator.isRuntimeString(value.processToken) ||</span>
+<span class="line" id="L277"><a href="#L277">277</a>         !DaemonRuntimeValues.isRequestId(value.requestId) ||</span>
+<span class="line" id="L278"><a href="#L278">278</a>         !DaemonProtocolValidator.isRuntimeString(value.transferId)</span>
+<span class="line" id="L279"><a href="#L279">279</a>       ) {</span>
+<span class="line" id="L280"><a href="#L280">280</a>         throw new Error(&quot;Malformed daemon result acknowledgement&quot;);</span>
+<span class="line" id="L281"><a href="#L281">281</a>       }</span>
+<span class="line" id="L282"><a href="#L282">282</a>       return value as unknown as DaemonResponse;</span>
+<span class="line" id="L283"><a href="#L283">283</a>     }</span>
+<span class="line" id="L284"><a href="#L284">284</a>     throw new Error(&quot;Malformed daemon response&quot;);</span>
+<span class="line" id="L285"><a href="#L285">285</a>   }</span>
+<span class="line" id="L286"><a href="#L286">286</a> </span>
+<span class="line" id="L287"><a href="#L287">287</a>   private assertExecutionCoordinates(</span>
+<span class="line" id="L288"><a href="#L288">288</a>     request: Pick&lt;DaemonExecuteRequest, &quot;instanceId&quot; | &quot;processToken&quot; | &quot;requestId&quot;&gt;,</span>
+<span class="line" id="L289"><a href="#L289">289</a>     response: Pick&lt;DaemonExecutionServerFrame, &quot;instanceId&quot; | &quot;processToken&quot; | &quot;requestId&quot;&gt;,</span>
+<span class="line" id="L290"><a href="#L290">290</a>   ): void {</span>
+<span class="line" id="L291"><a href="#L291">291</a>     if (response.instanceId !== request.instanceId) {</span>
+<span class="line" id="L292"><a href="#L292">292</a>       throw new DaemonProtocolError(&quot;authentication&quot;, &quot;Daemon execution instance does not match&quot;);</span>
+<span class="line" id="L293"><a href="#L293">293</a>     }</span>
+<span class="line" id="L294"><a href="#L294">294</a>     if (response.processToken !== request.processToken) {</span>
+<span class="line" id="L295"><a href="#L295">295</a>       throw new DaemonProtocolError(</span>
+<span class="line" id="L296"><a href="#L296">296</a>         &quot;authentication&quot;,</span>
+<span class="line" id="L297"><a href="#L297">297</a>         &quot;Daemon execution process token does not match&quot;,</span>
+<span class="line" id="L298"><a href="#L298">298</a>         response.instanceId,</span>
+<span class="line" id="L299"><a href="#L299">299</a>       );</span>
+<span class="line" id="L300"><a href="#L300">300</a>     }</span>
+<span class="line" id="L301"><a href="#L301">301</a>     if (response.requestId !== request.requestId) {</span>
+<span class="line" id="L302"><a href="#L302">302</a>       throw new DaemonProtocolError(</span>
+<span class="line" id="L303"><a href="#L303">303</a>         &quot;corrupt&quot;,</span>
+<span class="line" id="L304"><a href="#L304">304</a>         &quot;Daemon execution request identifier does not match&quot;,</span>
+<span class="line" id="L305"><a href="#L305">305</a>         response.instanceId,</span>
+<span class="line" id="L306"><a href="#L306">306</a>       );</span>
+<span class="line" id="L307"><a href="#L307">307</a>     }</span>
+<span class="line" id="L308"><a href="#L308">308</a>   }</span>
+<span class="line" id="L309"><a href="#L309">309</a> </span>
+<span class="line" id="L310"><a href="#L310">310</a>   private assertExecutionFrame(value: Record&lt;string, unknown&gt;): void {</span>
+<span class="line" id="L311"><a href="#L311">311</a>     if (</span>
+<span class="line" id="L312"><a href="#L312">312</a>       !DaemonProtocolValidator.isRuntimeString(value.instanceId) ||</span>
+<span class="line" id="L313"><a href="#L313">313</a>       !DaemonProtocolValidator.isRuntimeString(value.processToken) ||</span>
+<span class="line" id="L314"><a href="#L314">314</a>       !DaemonRuntimeValues.isRequestId(value.requestId)</span>
+<span class="line" id="L315"><a href="#L315">315</a>     ) {</span>
+<span class="line" id="L316"><a href="#L316">316</a>       throw new Error(&quot;Malformed daemon execution frame&quot;);</span>
+<span class="line" id="L317"><a href="#L317">317</a>     }</span>
+<span class="line" id="L318"><a href="#L318">318</a>     if (value.kind === &quot;accepted&quot;) {</span>
+<span class="line" id="L319"><a href="#L319">319</a>       if (</span>
+<span class="line" id="L320"><a href="#L320">320</a>         !DaemonProtocolValidator.hasExactKeys(value, [</span>
+<span class="line" id="L321"><a href="#L321">321</a>           &quot;kind&quot;,</span>
+<span class="line" id="L322"><a href="#L322">322</a>           &quot;instanceId&quot;,</span>
+<span class="line" id="L323"><a href="#L323">323</a>           &quot;processToken&quot;,</span>
+<span class="line" id="L324"><a href="#L324">324</a>           &quot;requestId&quot;,</span>
+<span class="line" id="L325"><a href="#L325">325</a>           &quot;acceptedAt&quot;,</span>
+<span class="line" id="L326"><a href="#L326">326</a>           &quot;queuePosition&quot;,</span>
+<span class="line" id="L327"><a href="#L327">327</a>         ]) ||</span>
+<span class="line" id="L328"><a href="#L328">328</a>         !DaemonProtocolValidator.isMetric(value.acceptedAt) ||</span>
+<span class="line" id="L329"><a href="#L329">329</a>         !DaemonProtocolValidator.isCount(value.queuePosition)</span>
+<span class="line" id="L330"><a href="#L330">330</a>       ) {</span>
+<span class="line" id="L331"><a href="#L331">331</a>         throw new Error(&quot;Malformed daemon acceptance&quot;);</span>
+<span class="line" id="L332"><a href="#L332">332</a>       }</span>
+<span class="line" id="L333"><a href="#L333">333</a>       return;</span>
+<span class="line" id="L334"><a href="#L334">334</a>     }</span>
+<span class="line" id="L335"><a href="#L335">335</a>     if (value.kind === &quot;rejected&quot;) {</span>
+<span class="line" id="L336"><a href="#L336">336</a>       if (</span>
+<span class="line" id="L337"><a href="#L337">337</a>         !DaemonProtocolValidator.hasExactKeys(value, [</span>
+<span class="line" id="L338"><a href="#L338">338</a>           &quot;kind&quot;,</span>
+<span class="line" id="L339"><a href="#L339">339</a>           &quot;instanceId&quot;,</span>
+<span class="line" id="L340"><a href="#L340">340</a>           &quot;processToken&quot;,</span>
+<span class="line" id="L341"><a href="#L341">341</a>           &quot;requestId&quot;,</span>
+<span class="line" id="L342"><a href="#L342">342</a>           &quot;code&quot;,</span>
+<span class="line" id="L343"><a href="#L343">343</a>           &quot;retrySafe&quot;,</span>
+<span class="line" id="L344"><a href="#L344">344</a>         ]) ||</span>
+<span class="line" id="L345"><a href="#L345">345</a>         typeof value.retrySafe !== &quot;boolean&quot;</span>
+<span class="line" id="L346"><a href="#L346">346</a>       ) {</span>
+<span class="line" id="L347"><a href="#L347">347</a>         throw new Error(&quot;Malformed daemon execution rejection&quot;);</span>
+<span class="line" id="L348"><a href="#L348">348</a>       }</span>
+<span class="line" id="L349"><a href="#L349">349</a>       try {</span>
+<span class="line" id="L350"><a href="#L350">350</a>         DaemonAdmissionRejections.assertConsistent(</span>
+<span class="line" id="L351"><a href="#L351">351</a>           value as unknown as DaemonRejectedExecutionFrame,</span>
+<span class="line" id="L352"><a href="#L352">352</a>         );</span>
+<span class="line" id="L353"><a href="#L353">353</a>       } catch {</span>
+<span class="line" id="L354"><a href="#L354">354</a>         throw new Error(&quot;Malformed daemon execution rejection&quot;);</span>
+<span class="line" id="L355"><a href="#L355">355</a>       }</span>
+<span class="line" id="L356"><a href="#L356">356</a>       return;</span>
+<span class="line" id="L357"><a href="#L357">357</a>     }</span>
+<span class="line" id="L358"><a href="#L358">358</a>     if (value.kind === &quot;result-manifest&quot;) {</span>
+<span class="line" id="L359"><a href="#L359">359</a>       if (</span>
+<span class="line" id="L360"><a href="#L360">360</a>         !DaemonProtocolValidator.hasExactKeys(value, [</span>
+<span class="line" id="L361"><a href="#L361">361</a>           &quot;kind&quot;,</span>
+<span class="line" id="L362"><a href="#L362">362</a>           &quot;instanceId&quot;,</span>
+<span class="line" id="L363"><a href="#L363">363</a>           &quot;processToken&quot;,</span>
+<span class="line" id="L364"><a href="#L364">364</a>           &quot;requestId&quot;,</span>
+<span class="line" id="L365"><a href="#L365">365</a>           &quot;manifest&quot;,</span>
+<span class="line" id="L366"><a href="#L366">366</a>         ]) ||</span>
+<span class="line" id="L367"><a href="#L367">367</a>         !DaemonProtocolValidator.isCompletionManifest(value.manifest) ||</span>
+<span class="line" id="L368"><a href="#L368">368</a>         value.manifest.instanceId !== value.instanceId ||</span>
+<span class="line" id="L369"><a href="#L369">369</a>         value.manifest.requestId !== value.requestId</span>
+<span class="line" id="L370"><a href="#L370">370</a>       ) {</span>
+<span class="line" id="L371"><a href="#L371">371</a>         throw new Error(&quot;Malformed daemon result manifest&quot;);</span>
+<span class="line" id="L372"><a href="#L372">372</a>       }</span>
+<span class="line" id="L373"><a href="#L373">373</a>       return;</span>
+<span class="line" id="L374"><a href="#L374">374</a>     }</span>
+<span class="line" id="L375"><a href="#L375">375</a>     if (value.kind === &quot;result-end&quot;) {</span>
+<span class="line" id="L376"><a href="#L376">376</a>       if (</span>
+<span class="line" id="L377"><a href="#L377">377</a>         !DaemonProtocolValidator.hasExactKeys(value, [</span>
+<span class="line" id="L378"><a href="#L378">378</a>           &quot;kind&quot;,</span>
+<span class="line" id="L379"><a href="#L379">379</a>           &quot;instanceId&quot;,</span>
+<span class="line" id="L380"><a href="#L380">380</a>           &quot;processToken&quot;,</span>
+<span class="line" id="L381"><a href="#L381">381</a>           &quot;requestId&quot;,</span>
+<span class="line" id="L382"><a href="#L382">382</a>           &quot;transferId&quot;,</span>
+<span class="line" id="L383"><a href="#L383">383</a>           &quot;rawBytes&quot;,</span>
+<span class="line" id="L384"><a href="#L384">384</a>           &quot;recordCount&quot;,</span>
+<span class="line" id="L385"><a href="#L385">385</a>           &quot;sha256&quot;,</span>
+<span class="line" id="L386"><a href="#L386">386</a>         ]) ||</span>
+<span class="line" id="L387"><a href="#L387">387</a>         !DaemonProtocolValidator.isRuntimeString(value.transferId) ||</span>
+<span class="line" id="L388"><a href="#L388">388</a>         !DaemonProtocolValidator.isCount(value.rawBytes) ||</span>
+<span class="line" id="L389"><a href="#L389">389</a>         !DaemonProtocolValidator.isCount(value.recordCount) ||</span>
+<span class="line" id="L390"><a href="#L390">390</a>         !DaemonProtocolValidator.isDigest(value.sha256)</span>
+<span class="line" id="L391"><a href="#L391">391</a>       ) {</span>
+<span class="line" id="L392"><a href="#L392">392</a>         throw new Error(&quot;Malformed daemon result end&quot;);</span>
+<span class="line" id="L393"><a href="#L393">393</a>       }</span>
+<span class="line" id="L394"><a href="#L394">394</a>       return;</span>
+<span class="line" id="L395"><a href="#L395">395</a>     }</span>
+<span class="line" id="L396"><a href="#L396">396</a>     if (</span>
+<span class="line" id="L397"><a href="#L397">397</a>       !DaemonProtocolValidator.hasExactKeys(value, [</span>
+<span class="line" id="L398"><a href="#L398">398</a>         &quot;kind&quot;,</span>
+<span class="line" id="L399"><a href="#L399">399</a>         &quot;instanceId&quot;,</span>
+<span class="line" id="L400"><a href="#L400">400</a>         &quot;processToken&quot;,</span>
+<span class="line" id="L401"><a href="#L401">401</a>         &quot;requestId&quot;,</span>
+<span class="line" id="L402"><a href="#L402">402</a>         &quot;code&quot;,</span>
+<span class="line" id="L403"><a href="#L403">403</a>       ]) ||</span>
+<span class="line" id="L404"><a href="#L404">404</a>       !DaemonExecutionFailures.isCode(value.code)</span>
+<span class="line" id="L405"><a href="#L405">405</a>     ) {</span>
+<span class="line" id="L406"><a href="#L406">406</a>       throw new Error(&quot;Malformed daemon execution failure&quot;);</span>
+<span class="line" id="L407"><a href="#L407">407</a>     }</span>
+<span class="line" id="L408"><a href="#L408">408</a>   }</span>
+<span class="line" id="L409"><a href="#L409">409</a> </span>
+<span class="line" id="L410"><a href="#L410">410</a>   private assertPong(value: Record&lt;string, unknown&gt;): void {</span>
+<span class="line" id="L411"><a href="#L411">411</a>     const expectedKeys = [&quot;kind&quot;, &quot;protocolVersion&quot;, &quot;instanceId&quot;, &quot;symnavVersion&quot;];</span>
+<span class="line" id="L412"><a href="#L412">412</a>     for (const optionalKey of [</span>
+<span class="line" id="L413"><a href="#L413">413</a>       &quot;state&quot;,</span>
+<span class="line" id="L414"><a href="#L414">414</a>       &quot;startedAt&quot;,</span>
+<span class="line" id="L415"><a href="#L415">415</a>       &quot;fileCount&quot;,</span>
+<span class="line" id="L416"><a href="#L416">416</a>       &quot;memoryBytes&quot;,</span>
+<span class="line" id="L417"><a href="#L417">417</a>       &quot;lastNavigationAt&quot;,</span>
+<span class="line" id="L418"><a href="#L418">418</a>       &quot;currentCommand&quot;,</span>
+<span class="line" id="L419"><a href="#L419">419</a>       &quot;currentCommandElapsedMs&quot;,</span>
+<span class="line" id="L420"><a href="#L420">420</a>       &quot;queued&quot;,</span>
+<span class="line" id="L421"><a href="#L421">421</a>       &quot;activity&quot;,</span>
+<span class="line" id="L422"><a href="#L422">422</a>     ]) {</span>
+<span class="line" id="L423"><a href="#L423">423</a>       if (value[optionalKey] !== undefined) expectedKeys.push(optionalKey);</span>
+<span class="line" id="L424"><a href="#L424">424</a>     }</span>
+<span class="line" id="L425"><a href="#L425">425</a>     if (</span>
+<span class="line" id="L426"><a href="#L426">426</a>       !DaemonProtocolValidator.hasExactKeys(value, expectedKeys) ||</span>
+<span class="line" id="L427"><a href="#L427">427</a>       !DaemonProtocolValidator.isProtocolVersion(value.protocolVersion) ||</span>
+<span class="line" id="L428"><a href="#L428">428</a>       !DaemonProtocolValidator.isRuntimeString(value.instanceId) ||</span>
+<span class="line" id="L429"><a href="#L429">429</a>       !DaemonProtocolValidator.isRuntimeString(value.symnavVersion) ||</span>
+<span class="line" id="L430"><a href="#L430">430</a>       (value.state !== undefined &amp;&amp;</span>
+<span class="line" id="L431"><a href="#L431">431</a>         value.state !== &quot;starting&quot; &amp;&amp;</span>
+<span class="line" id="L432"><a href="#L432">432</a>         value.state !== &quot;ready&quot; &amp;&amp;</span>
+<span class="line" id="L433"><a href="#L433">433</a>         value.state !== &quot;busy&quot;) ||</span>
+<span class="line" id="L434"><a href="#L434">434</a>       (value.startedAt !== undefined &amp;&amp; !DaemonProtocolValidator.isMetric(value.startedAt)) ||</span>
+<span class="line" id="L435"><a href="#L435">435</a>       (value.fileCount !== undefined &amp;&amp; !DaemonProtocolValidator.isCount(value.fileCount)) ||</span>
+<span class="line" id="L436"><a href="#L436">436</a>       (value.memoryBytes !== undefined &amp;&amp; !DaemonProtocolValidator.isCount(value.memoryBytes)) ||</span>
+<span class="line" id="L437"><a href="#L437">437</a>       (value.lastNavigationAt !== undefined &amp;&amp;</span>
+<span class="line" id="L438"><a href="#L438">438</a>         !DaemonProtocolValidator.isMetric(value.lastNavigationAt)) ||</span>
+<span class="line" id="L439"><a href="#L439">439</a>       (value.currentCommand !== undefined &amp;&amp;</span>
+<span class="line" id="L440"><a href="#L440">440</a>         !DaemonRuntimeValues.isCommandName(value.currentCommand)) ||</span>
+<span class="line" id="L441"><a href="#L441">441</a>       (value.currentCommandElapsedMs !== undefined &amp;&amp;</span>
+<span class="line" id="L442"><a href="#L442">442</a>         !DaemonProtocolValidator.isMetric(value.currentCommandElapsedMs)) ||</span>
+<span class="line" id="L443"><a href="#L443">443</a>       (value.queued !== undefined &amp;&amp; !DaemonProtocolValidator.isCount(value.queued)) ||</span>
+<span class="line" id="L444"><a href="#L444">444</a>       (value.activity !== undefined &amp;&amp; !DaemonProtocolValidator.isActivitySnapshot(value.activity))</span>
+<span class="line" id="L445"><a href="#L445">445</a>     ) {</span>
+<span class="line" id="L446"><a href="#L446">446</a>       throw new Error(&quot;Malformed daemon pong&quot;);</span>
+<span class="line" id="L447"><a href="#L447">447</a>     }</span>
+<span class="line" id="L448"><a href="#L448">448</a>   }</span>
+<span class="line" id="L449"><a href="#L449">449</a> </span>
+<span class="line" id="L450"><a href="#L450">450</a>   private static isExecutionRequestEnvelope(value: Record&lt;string, unknown&gt;): boolean {</span>
+<span class="line" id="L451"><a href="#L451">451</a>     if (</span>
+<span class="line" id="L452"><a href="#L452">452</a>       (value.kind !== &quot;execute&quot; &amp;&amp;</span>
+<span class="line" id="L453"><a href="#L453">453</a>         value.kind !== &quot;execution-status&quot; &amp;&amp;</span>
+<span class="line" id="L454"><a href="#L454">454</a>         value.kind !== &quot;result-fetch&quot; &amp;&amp;</span>
+<span class="line" id="L455"><a href="#L455">455</a>         value.kind !== &quot;result-ack&quot;) ||</span>
+<span class="line" id="L456"><a href="#L456">456</a>       !DaemonProtocolValidator.isRuntimeString(value.processToken) ||</span>
+<span class="line" id="L457"><a href="#L457">457</a>       !DaemonRuntimeValues.isRequestId(value.requestId)</span>
+<span class="line" id="L458"><a href="#L458">458</a>     ) {</span>
+<span class="line" id="L459"><a href="#L459">459</a>       return false;</span>
+<span class="line" id="L460"><a href="#L460">460</a>     }</span>
+<span class="line" id="L461"><a href="#L461">461</a>     if (value.kind === &quot;execute&quot;) {</span>
+<span class="line" id="L462"><a href="#L462">462</a>       return (</span>
+<span class="line" id="L463"><a href="#L463">463</a>         DaemonProtocolValidator.hasExactKeys(value, [</span>
+<span class="line" id="L464"><a href="#L464">464</a>           &quot;kind&quot;,</span>
+<span class="line" id="L465"><a href="#L465">465</a>           &quot;protocolVersion&quot;,</span>
+<span class="line" id="L466"><a href="#L466">466</a>           &quot;instanceId&quot;,</span>
+<span class="line" id="L467"><a href="#L467">467</a>           &quot;processToken&quot;,</span>
+<span class="line" id="L468"><a href="#L468">468</a>           &quot;requestId&quot;,</span>
+<span class="line" id="L469"><a href="#L469">469</a>           &quot;commandName&quot;,</span>
+<span class="line" id="L470"><a href="#L470">470</a>           &quot;request&quot;,</span>
+<span class="line" id="L471"><a href="#L471">471</a>         ]) &amp;&amp;</span>
+<span class="line" id="L472"><a href="#L472">472</a>         DaemonRuntimeValues.isCommandName(value.commandName) &amp;&amp;</span>
+<span class="line" id="L473"><a href="#L473">473</a>         DaemonProtocolValidator.isExecutorRequest(value.request)</span>
+<span class="line" id="L474"><a href="#L474">474</a>       );</span>
+<span class="line" id="L475"><a href="#L475">475</a>     }</span>
+<span class="line" id="L476"><a href="#L476">476</a>     if (value.kind === &quot;result-fetch&quot;) {</span>
+<span class="line" id="L477"><a href="#L477">477</a>       return (</span>
+<span class="line" id="L478"><a href="#L478">478</a>         DaemonProtocolValidator.hasExactKeys(value, [</span>
+<span class="line" id="L479"><a href="#L479">479</a>           &quot;kind&quot;,</span>
+<span class="line" id="L480"><a href="#L480">480</a>           &quot;protocolVersion&quot;,</span>
+<span class="line" id="L481"><a href="#L481">481</a>           &quot;instanceId&quot;,</span>
+<span class="line" id="L482"><a href="#L482">482</a>           &quot;processToken&quot;,</span>
+<span class="line" id="L483"><a href="#L483">483</a>           &quot;requestId&quot;,</span>
+<span class="line" id="L484"><a href="#L484">484</a>           &quot;offset&quot;,</span>
+<span class="line" id="L485"><a href="#L485">485</a>         ]) &amp;&amp; DaemonProtocolValidator.isCount(value.offset)</span>
+<span class="line" id="L486"><a href="#L486">486</a>       );</span>
+<span class="line" id="L487"><a href="#L487">487</a>     }</span>
+<span class="line" id="L488"><a href="#L488">488</a>     if (value.kind === &quot;result-ack&quot;) {</span>
+<span class="line" id="L489"><a href="#L489">489</a>       return (</span>
+<span class="line" id="L490"><a href="#L490">490</a>         DaemonProtocolValidator.hasExactKeys(value, [</span>
+<span class="line" id="L491"><a href="#L491">491</a>           &quot;kind&quot;,</span>
+<span class="line" id="L492"><a href="#L492">492</a>           &quot;protocolVersion&quot;,</span>
+<span class="line" id="L493"><a href="#L493">493</a>           &quot;instanceId&quot;,</span>
+<span class="line" id="L494"><a href="#L494">494</a>           &quot;processToken&quot;,</span>
+<span class="line" id="L495"><a href="#L495">495</a>           &quot;requestId&quot;,</span>
+<span class="line" id="L496"><a href="#L496">496</a>           &quot;transferId&quot;,</span>
+<span class="line" id="L497"><a href="#L497">497</a>         ]) &amp;&amp; DaemonProtocolValidator.isRuntimeString(value.transferId)</span>
+<span class="line" id="L498"><a href="#L498">498</a>       );</span>
+<span class="line" id="L499"><a href="#L499">499</a>     }</span>
+<span class="line" id="L500"><a href="#L500">500</a>     return DaemonProtocolValidator.hasExactKeys(value, [</span>
+<span class="line" id="L501"><a href="#L501">501</a>       &quot;kind&quot;,</span>
+<span class="line" id="L502"><a href="#L502">502</a>       &quot;protocolVersion&quot;,</span>
+<span class="line" id="L503"><a href="#L503">503</a>       &quot;instanceId&quot;,</span>
+<span class="line" id="L504"><a href="#L504">504</a>       &quot;processToken&quot;,</span>
+<span class="line" id="L505"><a href="#L505">505</a>       &quot;requestId&quot;,</span>
+<span class="line" id="L506"><a href="#L506">506</a>     ]);</span>
+<span class="line" id="L507"><a href="#L507">507</a>   }</span>
+<span class="line" id="L508"><a href="#L508">508</a> </span>
+<span class="line" id="L509"><a href="#L509">509</a>   private static isExecutorRequest(value: unknown): boolean {</span>
+<span class="line" id="L510"><a href="#L510">510</a>     if (!DaemonProtocolValidator.isRecord(value)) return false;</span>
+<span class="line" id="L511"><a href="#L511">511</a>     return (</span>
+<span class="line" id="L512"><a href="#L512">512</a>       DaemonProtocolValidator.hasExactKeys(value, [</span>
+<span class="line" id="L513"><a href="#L513">513</a>         &quot;argv&quot;,</span>
+<span class="line" id="L514"><a href="#L514">514</a>         &quot;cwd&quot;,</span>
+<span class="line" id="L515"><a href="#L515">515</a>         &quot;telemetryEnabled&quot;,</span>
+<span class="line" id="L516"><a href="#L516">516</a>         &quot;executionMode&quot;,</span>
+<span class="line" id="L517"><a href="#L517">517</a>       ]) &amp;&amp;</span>
+<span class="line" id="L518"><a href="#L518">518</a>       Array.isArray(value.argv) &amp;&amp;</span>
+<span class="line" id="L519"><a href="#L519">519</a>       value.argv.every((argument) =&gt; typeof argument === &quot;string&quot;) &amp;&amp;</span>
+<span class="line" id="L520"><a href="#L520">520</a>       typeof value.cwd === &quot;string&quot; &amp;&amp;</span>
+<span class="line" id="L521"><a href="#L521">521</a>       value.cwd.length &gt; 0 &amp;&amp;</span>
+<span class="line" id="L522"><a href="#L522">522</a>       typeof value.telemetryEnabled === &quot;boolean&quot; &amp;&amp;</span>
+<span class="line" id="L523"><a href="#L523">523</a>       (value.executionMode === &quot;cold&quot; ||</span>
+<span class="line" id="L524"><a href="#L524">524</a>         value.executionMode === &quot;warm&quot; ||</span>
+<span class="line" id="L525"><a href="#L525">525</a>         value.executionMode === &quot;fallback&quot;)</span>
+<span class="line" id="L526"><a href="#L526">526</a>     );</span>
+<span class="line" id="L527"><a href="#L527">527</a>   }</span>
+<span class="line" id="L528"><a href="#L528">528</a> </span>
+<span class="line" id="L529"><a href="#L529">529</a>   private static isCompletionManifest(value: unknown): value is CompletionSpoolManifest {</span>
+<span class="line" id="L530"><a href="#L530">530</a>     return (</span>
+<span class="line" id="L531"><a href="#L531">531</a>       DaemonProtocolValidator.isRecord(value) &amp;&amp;</span>
+<span class="line" id="L532"><a href="#L532">532</a>       DaemonProtocolValidator.hasExactKeys(value, [</span>
+<span class="line" id="L533"><a href="#L533">533</a>         &quot;transferId&quot;,</span>
+<span class="line" id="L534"><a href="#L534">534</a>         &quot;requestId&quot;,</span>
+<span class="line" id="L535"><a href="#L535">535</a>         &quot;instanceId&quot;,</span>
+<span class="line" id="L536"><a href="#L536">536</a>         &quot;exitCode&quot;,</span>
+<span class="line" id="L537"><a href="#L537">537</a>         &quot;rawBytes&quot;,</span>
+<span class="line" id="L538"><a href="#L538">538</a>         &quot;recordCount&quot;,</span>
+<span class="line" id="L539"><a href="#L539">539</a>         &quot;sha256&quot;,</span>
+<span class="line" id="L540"><a href="#L540">540</a>       ]) &amp;&amp;</span>
+<span class="line" id="L541"><a href="#L541">541</a>       DaemonProtocolValidator.isRuntimeString(value.transferId) &amp;&amp;</span>
+<span class="line" id="L542"><a href="#L542">542</a>       DaemonRuntimeValues.isRequestId(value.requestId) &amp;&amp;</span>
+<span class="line" id="L543"><a href="#L543">543</a>       DaemonProtocolValidator.isRuntimeString(value.instanceId) &amp;&amp;</span>
+<span class="line" id="L544"><a href="#L544">544</a>       DaemonProtocolValidator.isCount(value.exitCode) &amp;&amp;</span>
+<span class="line" id="L545"><a href="#L545">545</a>       DaemonProtocolValidator.isCount(value.rawBytes) &amp;&amp;</span>
+<span class="line" id="L546"><a href="#L546">546</a>       DaemonProtocolValidator.isCount(value.recordCount) &amp;&amp;</span>
+<span class="line" id="L547"><a href="#L547">547</a>       DaemonProtocolValidator.isDigest(value.sha256)</span>
+<span class="line" id="L548"><a href="#L548">548</a>     );</span>
+<span class="line" id="L549"><a href="#L549">549</a>   }</span>
+<span class="line" id="L550"><a href="#L550">550</a> </span>
+<span class="line" id="L551"><a href="#L551">551</a>   private static isExecutionStatus(value: unknown): value is DaemonExecutionStatus {</span>
+<span class="line" id="L552"><a href="#L552">552</a>     if (!DaemonProtocolValidator.isRecord(value)) return false;</span>
+<span class="line" id="L553"><a href="#L553">553</a>     if (value.state === &quot;unknown&quot; || value.state === &quot;completed&quot;) {</span>
+<span class="line" id="L554"><a href="#L554">554</a>       return DaemonProtocolValidator.hasExactKeys(value, [&quot;state&quot;]);</span>
+<span class="line" id="L555"><a href="#L555">555</a>     }</span>
+<span class="line" id="L556"><a href="#L556">556</a>     if (value.state === &quot;queued&quot;) {</span>
+<span class="line" id="L557"><a href="#L557">557</a>       return (</span>
+<span class="line" id="L558"><a href="#L558">558</a>         DaemonProtocolValidator.hasExactKeys(value, [&quot;state&quot;, &quot;queuePosition&quot;]) &amp;&amp;</span>
+<span class="line" id="L559"><a href="#L559">559</a>         DaemonProtocolValidator.isCount(value.queuePosition)</span>
+<span class="line" id="L560"><a href="#L560">560</a>       );</span>
+<span class="line" id="L561"><a href="#L561">561</a>     }</span>
+<span class="line" id="L562"><a href="#L562">562</a>     if (value.state === &quot;running&quot;) {</span>
+<span class="line" id="L563"><a href="#L563">563</a>       return (</span>
+<span class="line" id="L564"><a href="#L564">564</a>         DaemonProtocolValidator.hasExactKeys(value, [&quot;state&quot;, &quot;startedAt&quot;]) &amp;&amp;</span>
+<span class="line" id="L565"><a href="#L565">565</a>         DaemonProtocolValidator.isMetric(value.startedAt)</span>
+<span class="line" id="L566"><a href="#L566">566</a>       );</span>
+<span class="line" id="L567"><a href="#L567">567</a>     }</span>
+<span class="line" id="L568"><a href="#L568">568</a>     return (</span>
+<span class="line" id="L569"><a href="#L569">569</a>       value.state === &quot;failed&quot; &amp;&amp;</span>
+<span class="line" id="L570"><a href="#L570">570</a>       DaemonProtocolValidator.hasExactKeys(value, [&quot;state&quot;, &quot;code&quot;]) &amp;&amp;</span>
+<span class="line" id="L571"><a href="#L571">571</a>       DaemonExecutionFailures.isCode(value.code)</span>
+<span class="line" id="L572"><a href="#L572">572</a>     );</span>
+<span class="line" id="L573"><a href="#L573">573</a>   }</span>
+<span class="line" id="L574"><a href="#L574">574</a> </span>
+<span class="line" id="L575"><a href="#L575">575</a>   private static isActivitySnapshot(value: unknown): boolean {</span>
+<span class="line" id="L576"><a href="#L576">576</a>     if (!DaemonProtocolValidator.isRecord(value)) return false;</span>
+<span class="line" id="L577"><a href="#L577">577</a>     const lifecycle = value.lifecycle;</span>
+<span class="line" id="L578"><a href="#L578">578</a>     const current = value.current;</span>
+<span class="line" id="L579"><a href="#L579">579</a>     const expectedKeys = [</span>
+<span class="line" id="L580"><a href="#L580">580</a>       &quot;lifecycle&quot;,</span>
+<span class="line" id="L581"><a href="#L581">581</a>       &quot;pid&quot;,</span>
+<span class="line" id="L582"><a href="#L582">582</a>       &quot;startedAt&quot;,</span>
+<span class="line" id="L583"><a href="#L583">583</a>       &quot;startupElapsedMs&quot;,</span>
+<span class="line" id="L584"><a href="#L584">584</a>       &quot;processRssBytes&quot;,</span>
+<span class="line" id="L585"><a href="#L585">585</a>       &quot;hardProcessRssBytes&quot;,</span>
+<span class="line" id="L586"><a href="#L586">586</a>       &quot;workerGeneration&quot;,</span>
+<span class="line" id="L587"><a href="#L587">587</a>       &quot;queued&quot;,</span>
+<span class="line" id="L588"><a href="#L588">588</a>       &quot;spoolBytes&quot;,</span>
+<span class="line" id="L589"><a href="#L589">589</a>     ];</span>
+<span class="line" id="L590"><a href="#L590">590</a>     if (value.workerHeapUsedBytes !== undefined) expectedKeys.push(&quot;workerHeapUsedBytes&quot;);</span>
+<span class="line" id="L591"><a href="#L591">591</a>     if (value.lastCompletedAgoMs !== undefined) expectedKeys.push(&quot;lastCompletedAgoMs&quot;);</span>
+<span class="line" id="L592"><a href="#L592">592</a>     if (</span>
+<span class="line" id="L593"><a href="#L593">593</a>       lifecycle === &quot;ready&quot; ||</span>
+<span class="line" id="L594"><a href="#L594">594</a>       lifecycle === &quot;busy&quot; ||</span>
+<span class="line" id="L595"><a href="#L595">595</a>       ((lifecycle === &quot;recovering&quot; || lifecycle === &quot;draining&quot;) &amp;&amp; value.fileCount !== undefined)</span>
+<span class="line" id="L596"><a href="#L596">596</a>     ) {</span>
+<span class="line" id="L597"><a href="#L597">597</a>       expectedKeys.push(&quot;fileCount&quot;);</span>
+<span class="line" id="L598"><a href="#L598">598</a>     }</span>
+<span class="line" id="L599"><a href="#L599">599</a>     if (lifecycle === &quot;busy&quot;) expectedKeys.push(&quot;current&quot;);</span>
+<span class="line" id="L600"><a href="#L600">600</a>     if (lifecycle === &quot;recovering&quot;) expectedKeys.push(&quot;recoveryDetail&quot;);</span>
+<span class="line" id="L601"><a href="#L601">601</a>     return (</span>
+<span class="line" id="L602"><a href="#L602">602</a>       (lifecycle === &quot;starting&quot; ||</span>
+<span class="line" id="L603"><a href="#L603">603</a>         lifecycle === &quot;ready&quot; ||</span>
+<span class="line" id="L604"><a href="#L604">604</a>         lifecycle === &quot;busy&quot; ||</span>
+<span class="line" id="L605"><a href="#L605">605</a>         lifecycle === &quot;recovering&quot; ||</span>
+<span class="line" id="L606"><a href="#L606">606</a>         lifecycle === &quot;draining&quot;) &amp;&amp;</span>
+<span class="line" id="L607"><a href="#L607">607</a>       DaemonProtocolValidator.hasExactKeys(value, expectedKeys) &amp;&amp;</span>
+<span class="line" id="L608"><a href="#L608">608</a>       (lifecycle !== &quot;recovering&quot; ||</span>
+<span class="line" id="L609"><a href="#L609">609</a>         value.recoveryDetail === &quot;resource-pressure&quot; ||</span>
+<span class="line" id="L610"><a href="#L610">610</a>         value.recoveryDetail === &quot;worker-replacement&quot;) &amp;&amp;</span>
+<span class="line" id="L611"><a href="#L611">611</a>       DaemonProtocolValidator.isPositiveInteger(value.pid) &amp;&amp;</span>
+<span class="line" id="L612"><a href="#L612">612</a>       DaemonProtocolValidator.isMetric(value.startedAt) &amp;&amp;</span>
+<span class="line" id="L613"><a href="#L613">613</a>       DaemonProtocolValidator.isMetric(value.startupElapsedMs) &amp;&amp;</span>
+<span class="line" id="L614"><a href="#L614">614</a>       (lifecycle === &quot;ready&quot; || lifecycle === &quot;busy&quot;</span>
+<span class="line" id="L615"><a href="#L615">615</a>         ? DaemonProtocolValidator.isCount(value.fileCount)</span>
+<span class="line" id="L616"><a href="#L616">616</a>         : lifecycle === &quot;starting&quot;</span>
+<span class="line" id="L617"><a href="#L617">617</a>           ? value.fileCount === undefined</span>
+<span class="line" id="L618"><a href="#L618">618</a>           : value.fileCount === undefined || DaemonProtocolValidator.isCount(value.fileCount)) &amp;&amp;</span>
+<span class="line" id="L619"><a href="#L619">619</a>       DaemonProtocolValidator.isCount(value.processRssBytes) &amp;&amp;</span>
+<span class="line" id="L620"><a href="#L620">620</a>       DaemonProtocolValidator.isCount(value.hardProcessRssBytes) &amp;&amp;</span>
+<span class="line" id="L621"><a href="#L621">621</a>       (value.workerHeapUsedBytes === undefined ||</span>
+<span class="line" id="L622"><a href="#L622">622</a>         DaemonProtocolValidator.isCount(value.workerHeapUsedBytes)) &amp;&amp;</span>
+<span class="line" id="L623"><a href="#L623">623</a>       DaemonProtocolValidator.isCount(value.workerGeneration) &amp;&amp;</span>
+<span class="line" id="L624"><a href="#L624">624</a>       (lifecycle !== &quot;busy&quot; ||</span>
+<span class="line" id="L625"><a href="#L625">625</a>         (DaemonProtocolValidator.isRecord(current) &amp;&amp;</span>
+<span class="line" id="L626"><a href="#L626">626</a>           DaemonProtocolValidator.hasExactKeys(current, [&quot;requestId&quot;, &quot;command&quot;, &quot;elapsedMs&quot;]) &amp;&amp;</span>
+<span class="line" id="L627"><a href="#L627">627</a>           DaemonRuntimeValues.isRequestId(current.requestId) &amp;&amp;</span>
+<span class="line" id="L628"><a href="#L628">628</a>           DaemonRuntimeValues.isCommandName(current.command) &amp;&amp;</span>
+<span class="line" id="L629"><a href="#L629">629</a>           DaemonProtocolValidator.isMetric(current.elapsedMs))) &amp;&amp;</span>
+<span class="line" id="L630"><a href="#L630">630</a>       DaemonProtocolValidator.isCount(value.queued) &amp;&amp;</span>
+<span class="line" id="L631"><a href="#L631">631</a>       (value.lastCompletedAgoMs === undefined ||</span>
+<span class="line" id="L632"><a href="#L632">632</a>         DaemonProtocolValidator.isMetric(value.lastCompletedAgoMs)) &amp;&amp;</span>
+<span class="line" id="L633"><a href="#L633">633</a>       DaemonProtocolValidator.isCount(value.spoolBytes)</span>
+<span class="line" id="L634"><a href="#L634">634</a>     );</span>
+<span class="line" id="L635"><a href="#L635">635</a>   }</span>
+<span class="line" id="L636"><a href="#L636">636</a> </span>
+<span class="line" id="L637"><a href="#L637">637</a>   private static isProtocolVersion(value: unknown): boolean {</span>
+<span class="line" id="L638"><a href="#L638">638</a>     return Number.isSafeInteger(value) &amp;&amp; Number(value) &gt;= 0;</span>
+<span class="line" id="L639"><a href="#L639">639</a>   }</span>
+<span class="line" id="L640"><a href="#L640">640</a> </span>
+<span class="line" id="L641"><a href="#L641">641</a>   private static isCount(value: unknown): boolean {</span>
+<span class="line" id="L642"><a href="#L642">642</a>     return Number.isSafeInteger(value) &amp;&amp; Number(value) &gt;= 0;</span>
+<span class="line" id="L643"><a href="#L643">643</a>   }</span>
+<span class="line" id="L644"><a href="#L644">644</a> </span>
+<span class="line" id="L645"><a href="#L645">645</a>   private static isPositiveInteger(value: unknown): boolean {</span>
+<span class="line" id="L646"><a href="#L646">646</a>     return Number.isSafeInteger(value) &amp;&amp; Number(value) &gt; 0;</span>
+<span class="line" id="L647"><a href="#L647">647</a>   }</span>
+<span class="line" id="L648"><a href="#L648">648</a> </span>
+<span class="line" id="L649"><a href="#L649">649</a>   private static isMetric(value: unknown): boolean {</span>
+<span class="line" id="L650"><a href="#L650">650</a>     return typeof value === &quot;number&quot; &amp;&amp; Number.isFinite(value) &amp;&amp; value &gt;= 0;</span>
+<span class="line" id="L651"><a href="#L651">651</a>   }</span>
+<span class="line" id="L652"><a href="#L652">652</a> </span>
+<span class="line" id="L653"><a href="#L653">653</a>   private static isRuntimeString(value: unknown): value is string {</span>
+<span class="line" id="L654"><a href="#L654">654</a>     return typeof value === &quot;string&quot; &amp;&amp; value.length &gt; 0;</span>
+<span class="line" id="L655"><a href="#L655">655</a>   }</span>
+<span class="line" id="L656"><a href="#L656">656</a> </span>
+<span class="line" id="L657"><a href="#L657">657</a>   private static isDigest(value: unknown): value is string {</span>
+<span class="line" id="L658"><a href="#L658">658</a>     return typeof value === &quot;string&quot; &amp;&amp; /^[a-f\d]{64}$/.test(value);</span>
+<span class="line" id="L659"><a href="#L659">659</a>   }</span>
+<span class="line" id="L660"><a href="#L660">660</a> </span>
+<span class="line" id="L661"><a href="#L661">661</a>   private static isRecord(value: unknown): value is Record&lt;string, unknown&gt; {</span>
+<span class="line" id="L662"><a href="#L662">662</a>     return typeof value === &quot;object&quot; &amp;&amp; value !== null &amp;&amp; !Array.isArray(value);</span>
+<span class="line" id="L663"><a href="#L663">663</a>   }</span>
+<span class="line" id="L664"><a href="#L664">664</a> </span>
+<span class="line" id="L665"><a href="#L665">665</a>   private static hasExactKeys(value: Record&lt;string, unknown&gt;, keys: readonly string[]): boolean {</span>
+<span class="line" id="L666"><a href="#L666">666</a>     const actual = Object.keys(value).sort();</span>
+<span class="line" id="L667"><a href="#L667">667</a>     const expected = [...keys].sort();</span>
+<span class="line" id="L668"><a href="#L668">668</a>     return (</span>
+<span class="line" id="L669"><a href="#L669">669</a>       actual.length === expected.length &amp;&amp; actual.every((key, index) =&gt; key === expected[index])</span>
+<span class="line" id="L670"><a href="#L670">670</a>     );</span>
+<span class="line" id="L671"><a href="#L671">671</a>   }</span>
+<span class="line" id="L672"><a href="#L672">672</a> }</span>
+</pre><details class="source-disclosure"><summary>Net main → tip change touching this path (copy-aware)</summary><p>This is the net delta, including moves/copies. A historical source snapshot above may precede the final change below.</p><pre class="pr-source">diff --git a/packages/daemon/src/transport/protocol-validator.ts b/packages/daemon/src/transport/protocol-validator.ts
+new file mode 100644
+index 000000000..7df7c48d8
+--- /dev/null
++++ b/packages/daemon/src/transport/protocol-validator.ts
+@@ -0,0 +1,672 @@
++import {
++  DaemonAdmissionRejections,
++  type DaemonRejectedExecutionFrame,
++} from &quot;../daemon-admission.js&quot;;
++import { DaemonExecutionFailures } from &quot;../daemon-execution-failure.js&quot;;
++import type { CompletionSpoolManifest } from &quot;../delivery/completion-spool.js&quot;;
++import type {
++  DaemonExecuteRequest,
++  DaemonExecutionServerFrame,
++  DaemonExecutionStatus,
++  DaemonExecutionStatusRequest,
++  DaemonExecutionStatusResponse,
++  DaemonLifecycleRequest,
++  DaemonLifecycleResponse,
++  DaemonRequest,
++  DaemonResponse,
++} from &quot;./protocol.js&quot;;
++import { DaemonRuntimeValues } from &quot;../process/runtime-values.js&quot;;
++
++export class DaemonProtocolError extends Error {
++  constructor(
++    readonly code: &quot;authentication&quot; | &quot;corrupt&quot; | &quot;incompatible&quot;,
++    message: string,
++    readonly authenticatedInstanceId?: string,
++  ) {
++    super(message);
++  }
++}
++
++export class DaemonProtocolValidator {
++  lifecycleRequest(value: unknown): DaemonLifecycleRequest {
++    const request = this.request(value);
++    if (
++      request.kind !== &quot;identify&quot; &amp;&amp;
++      request.kind !== &quot;terminate&quot; &amp;&amp;
++      request.kind !== &quot;kill&quot; &amp;&amp;
++      request.kind !== &quot;ping&quot; &amp;&amp;
++      request.kind !== &quot;stop&quot;
++    ) {
++      throw new Error(&quot;Malformed daemon lifecycle request&quot;);
++    }
++    return request;
++  }
++
++  request(value: unknown): DaemonRequest {
++    if (!DaemonProtocolValidator.isRecord(value) || typeof value.kind !== &quot;string&quot;) {
++      throw new Error(&quot;Malformed daemon request&quot;);
++    }
++    if (value.kind === &quot;identify&quot; || value.kind === &quot;terminate&quot; || value.kind === &quot;kill&quot;) {
++      if (
++        !DaemonProtocolValidator.hasExactKeys(value, [&quot;kind&quot;, &quot;instanceId&quot;, &quot;processToken&quot;]) ||
++        !DaemonProtocolValidator.isRuntimeString(value.instanceId) ||
++        !DaemonProtocolValidator.isRuntimeString(value.processToken)
++      ) {
++        throw new Error(&quot;Malformed daemon identity request&quot;);
++      }
++      return value as unknown as DaemonRequest;
++    }
++    if (
++      !DaemonProtocolValidator.isProtocolVersion(value.protocolVersion) ||
++      !DaemonProtocolValidator.isRuntimeString(value.instanceId)
++    ) {
++      throw new Error(&quot;Malformed daemon request envelope&quot;);
++    }
++    if (value.kind === &quot;ping&quot; || value.kind === &quot;stop&quot;) {
++      if (!DaemonProtocolValidator.hasExactKeys(value, [&quot;kind&quot;, &quot;protocolVersion&quot;, &quot;instanceId&quot;])) {
++        throw new Error(&quot;Malformed daemon request envelope&quot;);
++      }
++      return value as unknown as DaemonRequest;
++    }
++    if (!DaemonProtocolValidator.isExecutionRequestEnvelope(value)) {
++      throw new Error(&quot;Malformed daemon execution request&quot;);
++    }
++    return value as unknown as DaemonRequest;
++  }
++
++  lifecycleResponse(request: DaemonLifecycleRequest, value: unknown): DaemonLifecycleResponse {
++    const response = this.response(value);
++    if (request.kind === &quot;identify&quot;) {
++      if (response.kind !== &quot;identity&quot;) {
++        throw new DaemonProtocolError(&quot;corrupt&quot;, &quot;Daemon returned a non-identity response&quot;);
++      }
++      if (
++        response.instanceId !== request.instanceId ||
++        response.processToken !== request.processToken
++      ) {
++        throw new DaemonProtocolError(
++          &quot;authentication&quot;,
++          &quot;Daemon identity does not match process instance&quot;,
++          response.instanceId === request.instanceId ? response.instanceId : undefined,
++        );
++      }
++      return response;
++    }
++    if (request.kind === &quot;terminate&quot; || request.kind === &quot;kill&quot;) {
++      const expectedKind = request.kind === &quot;terminate&quot; ? &quot;terminating&quot; : &quot;killing&quot;;
++      if (response.kind !== expectedKind) {
++        throw new DaemonProtocolError(&quot;corrupt&quot;, &quot;Daemon returned a non-termination response&quot;);
++      }
++      if (
++        response.instanceId !== request.instanceId ||
++        response.processToken !== request.processToken
++      ) {
++        throw new DaemonProtocolError(
++          &quot;authentication&quot;,
++          &quot;Daemon termination does not match process instance&quot;,
++          response.instanceId === request.instanceId ? response.instanceId : undefined,
++        );
++      }
++      return response;
++    }
++    if (request.kind === &quot;ping&quot;) {
++      if (response.kind !== &quot;pong&quot;) {
++        throw new DaemonProtocolError(
++          &quot;corrupt&quot;,
++          &quot;Daemon pong does not match request protocol and instance&quot;,
++        );
++      }
++      if (response.instanceId !== request.instanceId) {
++        throw new DaemonProtocolError(
++          &quot;authentication&quot;,
++          &quot;Daemon pong does not match request instance&quot;,
++        );
++      }
++      if (response.protocolVersion !== request.protocolVersion) {
++        throw new DaemonProtocolError(
++          &quot;incompatible&quot;,
++          &quot;Daemon pong does not match request protocol&quot;,
++          response.instanceId,
++        );
++      }
++      return response;
++    }
++    if (response.kind !== &quot;stopped&quot;) {
++      throw new DaemonProtocolError(&quot;corrupt&quot;, &quot;Daemon returned a non-stop response&quot;);
++    }
++    if (response.instanceId !== request.instanceId) {
++      throw new DaemonProtocolError(
++        &quot;authentication&quot;,
++        &quot;Daemon stop response does not match instance&quot;,
++      );
++    }
++    return response;
++  }
++
++  executionStatusResponse(
++    request: DaemonExecutionStatusRequest,
++    value: unknown,
++  ): DaemonExecutionStatusResponse {
++    const response = this.response(value);
++    if (response.kind !== &quot;execution-status&quot;) {
++      throw new DaemonProtocolError(&quot;corrupt&quot;, &quot;Daemon returned a non-status response&quot;);
++    }
++    this.assertExecutionCoordinates(request, response);
++    return response;
++  }
++
++  executionFrame(
++    request: Pick&lt;DaemonExecuteRequest, &quot;instanceId&quot; | &quot;processToken&quot; | &quot;requestId&quot;&gt;,
++    value: unknown,
++  ): DaemonExecutionServerFrame {
++    const response = this.response(value);
++    if (
++      response.kind !== &quot;accepted&quot; &amp;&amp;
++      response.kind !== &quot;rejected&quot; &amp;&amp;
++      response.kind !== &quot;result-manifest&quot; &amp;&amp;
++      response.kind !== &quot;result-end&quot; &amp;&amp;
++      response.kind !== &quot;execution-failed&quot;
++    ) {
++      throw new DaemonProtocolError(&quot;corrupt&quot;, &quot;Daemon returned a non-execution frame&quot;);
++    }
++    this.assertExecutionCoordinates(request, response);
++    return response;
++  }
++
++  resultAcknowledgement(
++    request: Pick&lt;DaemonExecuteRequest, &quot;instanceId&quot; | &quot;processToken&quot; | &quot;requestId&quot;&gt;,
++    transferId: string,
++    value: unknown,
++  ): void {
++    const response = this.response(value);
++    if (
++      response.kind !== &quot;result-acknowledged&quot; ||
++      response.instanceId !== request.instanceId ||
++      response.processToken !== request.processToken ||
++      response.requestId !== request.requestId ||
++      response.transferId !== transferId
++    ) {
++      throw new Error(&quot;Invalid daemon result acknowledgement&quot;);
++    }
++  }
++
++  private response(value: unknown): DaemonResponse {
++    if (!DaemonProtocolValidator.isRecord(value) || typeof value.kind !== &quot;string&quot;) {
++      throw new Error(&quot;Malformed daemon response&quot;);
++    }
++    if (value.kind === &quot;pong&quot;) {
++      this.assertPong(value);
++      return value as unknown as DaemonResponse;
++    }
++    if (value.kind === &quot;identity&quot;) {
++      if (
++        !DaemonProtocolValidator.hasExactKeys(value, [
++          &quot;kind&quot;,
++          &quot;instanceId&quot;,
++          &quot;processToken&quot;,
++          &quot;pid&quot;,
++          &quot;startedAt&quot;,
++        ]) ||
++        !DaemonProtocolValidator.isRuntimeString(value.instanceId) ||
++        !DaemonProtocolValidator.isRuntimeString(value.processToken) ||
++        !DaemonProtocolValidator.isPositiveInteger(value.pid) ||
++        !DaemonProtocolValidator.isMetric(value.startedAt)
++      ) {
++        throw new Error(&quot;Malformed daemon identity&quot;);
++      }
++      return value as unknown as DaemonResponse;
++    }
++    if (value.kind === &quot;terminating&quot; || value.kind === &quot;killing&quot;) {
++      if (
++        !DaemonProtocolValidator.hasExactKeys(value, [&quot;kind&quot;, &quot;instanceId&quot;, &quot;processToken&quot;]) ||
++        !DaemonProtocolValidator.isRuntimeString(value.instanceId) ||
++        !DaemonProtocolValidator.isRuntimeString(value.processToken)
++      ) {
++        throw new Error(&quot;Malformed daemon termination response&quot;);
++      }
++      return value as unknown as DaemonResponse;
++    }
++    if (value.kind === &quot;stopped&quot;) {
++      if (
++        !DaemonProtocolValidator.hasExactKeys(value, [&quot;kind&quot;, &quot;instanceId&quot;]) ||
++        !DaemonProtocolValidator.isRuntimeString(value.instanceId)
++      ) {
++        throw new Error(&quot;Malformed daemon stop response&quot;);
++      }
++      return value as unknown as DaemonResponse;
++    }
++    if (
++      value.kind === &quot;accepted&quot; ||
++      value.kind === &quot;rejected&quot; ||
++      value.kind === &quot;result-manifest&quot; ||
++      value.kind === &quot;result-end&quot; ||
++      value.kind === &quot;execution-failed&quot;
++    ) {
++      this.assertExecutionFrame(value);
++      return value as unknown as DaemonResponse;
++    }
++    if (value.kind === &quot;execution-status&quot;) {
++      if (
++        !DaemonProtocolValidator.hasExactKeys(value, [
++          &quot;kind&quot;,
++          &quot;instanceId&quot;,
++          &quot;processToken&quot;,
++          &quot;requestId&quot;,
++          &quot;status&quot;,
++        ]) ||
++        !DaemonProtocolValidator.isRuntimeString(value.instanceId) ||
++        !DaemonProtocolValidator.isRuntimeString(value.processToken) ||
++        !DaemonRuntimeValues.isRequestId(value.requestId) ||
++        !DaemonProtocolValidator.isExecutionStatus(value.status)
++      ) {
++        throw new Error(&quot;Malformed daemon execution status&quot;);
++      }
++      return value as unknown as DaemonResponse;
++    }
++    if (value.kind === &quot;result-acknowledged&quot;) {
++      if (
++        !DaemonProtocolValidator.hasExactKeys(value, [
++          &quot;kind&quot;,
++          &quot;instanceId&quot;,
++          &quot;processToken&quot;,
++          &quot;requestId&quot;,
++          &quot;transferId&quot;,
++        ]) ||
++        !DaemonProtocolValidator.isRuntimeString(value.instanceId) ||
++        !DaemonProtocolValidator.isRuntimeString(value.processToken) ||
++        !DaemonRuntimeValues.isRequestId(value.requestId) ||
++        !DaemonProtocolValidator.isRuntimeString(value.transferId)
++      ) {
++        throw new Error(&quot;Malformed daemon result acknowledgement&quot;);
++      }
++      return value as unknown as DaemonResponse;
++    }
++    throw new Error(&quot;Malformed daemon response&quot;);
++  }
++
++  private assertExecutionCoordinates(
++    request: Pick&lt;DaemonExecuteRequest, &quot;instanceId&quot; | &quot;processToken&quot; | &quot;requestId&quot;&gt;,
++    response: Pick&lt;DaemonExecutionServerFrame, &quot;instanceId&quot; | &quot;processToken&quot; | &quot;requestId&quot;&gt;,
++  ): void {
++    if (response.instanceId !== request.instanceId) {
++      throw new DaemonProtocolError(&quot;authentication&quot;, &quot;Daemon execution instance does not match&quot;);
++    }
++    if (response.processToken !== request.processToken) {
++      throw new DaemonProtocolError(
++        &quot;authentication&quot;,
++        &quot;Daemon execution process token does not match&quot;,
++        response.instanceId,
++      );
++    }
++    if (response.requestId !== request.requestId) {
++      throw new DaemonProtocolError(
++        &quot;corrupt&quot;,
++        &quot;Daemon execution request identifier does not match&quot;,
++        response.instanceId,
++      );
++    }
++  }
++
++  private assertExecutionFrame(value: Record&lt;string, unknown&gt;): void {
++    if (
++      !DaemonProtocolValidator.isRuntimeString(value.instanceId) ||
++      !DaemonProtocolValidator.isRuntimeString(value.processToken) ||
++      !DaemonRuntimeValues.isRequestId(value.requestId)
++    ) {
++      throw new Error(&quot;Malformed daemon execution frame&quot;);
++    }
++    if (value.kind === &quot;accepted&quot;) {
++      if (
++        !DaemonProtocolValidator.hasExactKeys(value, [
++          &quot;kind&quot;,
++          &quot;instanceId&quot;,
++          &quot;processToken&quot;,
++          &quot;requestId&quot;,
++          &quot;acceptedAt&quot;,
++          &quot;queuePosition&quot;,
++        ]) ||
++        !DaemonProtocolValidator.isMetric(value.acceptedAt) ||
++        !DaemonProtocolValidator.isCount(value.queuePosition)
++      ) {
++        throw new Error(&quot;Malformed daemon acceptance&quot;);
++      }
++      return;
++    }
++    if (value.kind === &quot;rejected&quot;) {
++      if (
++        !DaemonProtocolValidator.hasExactKeys(value, [
++          &quot;kind&quot;,
++          &quot;instanceId&quot;,
++          &quot;processToken&quot;,
++          &quot;requestId&quot;,
++          &quot;code&quot;,
++          &quot;retrySafe&quot;,
++        ]) ||
++        typeof value.retrySafe !== &quot;boolean&quot;
++      ) {
++        throw new Error(&quot;Malformed daemon execution rejection&quot;);
++      }
++      try {
++        DaemonAdmissionRejections.assertConsistent(
++          value as unknown as DaemonRejectedExecutionFrame,
++        );
++      } catch {
++        throw new Error(&quot;Malformed daemon execution rejection&quot;);
++      }
++      return;
++    }
++    if (value.kind === &quot;result-manifest&quot;) {
++      if (
++        !DaemonProtocolValidator.hasExactKeys(value, [
++          &quot;kind&quot;,
++          &quot;instanceId&quot;,
++          &quot;processToken&quot;,
++          &quot;requestId&quot;,
++          &quot;manifest&quot;,
++        ]) ||
++        !DaemonProtocolValidator.isCompletionManifest(value.manifest) ||
++        value.manifest.instanceId !== value.instanceId ||
++        value.manifest.requestId !== value.requestId
++      ) {
++        throw new Error(&quot;Malformed daemon result manifest&quot;);
++      }
++      return;
++    }
++    if (value.kind === &quot;result-end&quot;) {
++      if (
++        !DaemonProtocolValidator.hasExactKeys(value, [
++          &quot;kind&quot;,
++          &quot;instanceId&quot;,
++          &quot;processToken&quot;,
++          &quot;requestId&quot;,
++          &quot;transferId&quot;,
++          &quot;rawBytes&quot;,
++          &quot;recordCount&quot;,
++          &quot;sha256&quot;,
++        ]) ||
++        !DaemonProtocolValidator.isRuntimeString(value.transferId) ||
++        !DaemonProtocolValidator.isCount(value.rawBytes) ||
++        !DaemonProtocolValidator.isCount(value.recordCount) ||
++        !DaemonProtocolValidator.isDigest(value.sha256)
++      ) {
++        throw new Error(&quot;Malformed daemon result end&quot;);
++      }
++      return;
++    }
++    if (
++      !DaemonProtocolValidator.hasExactKeys(value, [
++        &quot;kind&quot;,
++        &quot;instanceId&quot;,
++        &quot;processToken&quot;,
++        &quot;requestId&quot;,
++        &quot;code&quot;,
++      ]) ||
++      !DaemonExecutionFailures.isCode(value.code)
++    ) {
++      throw new Error(&quot;Malformed daemon execution failure&quot;);
++    }
++  }
++
++  private assertPong(value: Record&lt;string, unknown&gt;): void {
++    const expectedKeys = [&quot;kind&quot;, &quot;protocolVersion&quot;, &quot;instanceId&quot;, &quot;symnavVersion&quot;];
++    for (const optionalKey of [
++      &quot;state&quot;,
++      &quot;startedAt&quot;,
++      &quot;fileCount&quot;,
++      &quot;memoryBytes&quot;,
++      &quot;lastNavigationAt&quot;,
++      &quot;currentCommand&quot;,
++      &quot;currentCommandElapsedMs&quot;,
++      &quot;queued&quot;,
++      &quot;activity&quot;,
++    ]) {
++      if (value[optionalKey] !== undefined) expectedKeys.push(optionalKey);
++    }
++    if (
++      !DaemonProtocolValidator.hasExactKeys(value, expectedKeys) ||
++      !DaemonProtocolValidator.isProtocolVersion(value.protocolVersion) ||
++      !DaemonProtocolValidator.isRuntimeString(value.instanceId) ||
++      !DaemonProtocolValidator.isRuntimeString(value.symnavVersion) ||
++      (value.state !== undefined &amp;&amp;
++        value.state !== &quot;starting&quot; &amp;&amp;
++        value.state !== &quot;ready&quot; &amp;&amp;
++        value.state !== &quot;busy&quot;) ||
++      (value.startedAt !== undefined &amp;&amp; !DaemonProtocolValidator.isMetric(value.startedAt)) ||
++      (value.fileCount !== undefined &amp;&amp; !DaemonProtocolValidator.isCount(value.fileCount)) ||
++      (value.memoryBytes !== undefined &amp;&amp; !DaemonProtocolValidator.isCount(value.memoryBytes)) ||
++      (value.lastNavigationAt !== undefined &amp;&amp;
++        !DaemonProtocolValidator.isMetric(value.lastNavigationAt)) ||
++      (value.currentCommand !== undefined &amp;&amp;
++        !DaemonRuntimeValues.isCommandName(value.currentCommand)) ||
++      (value.currentCommandElapsedMs !== undefined &amp;&amp;
++        !DaemonProtocolValidator.isMetric(value.currentCommandElapsedMs)) ||
++      (value.queued !== undefined &amp;&amp; !DaemonProtocolValidator.isCount(value.queued)) ||
++      (value.activity !== undefined &amp;&amp; !DaemonProtocolValidator.isActivitySnapshot(value.activity))
++    ) {
++      throw new Error(&quot;Malformed daemon pong&quot;);
++    }
++  }
++
++  private static isExecutionRequestEnvelope(value: Record&lt;string, unknown&gt;): boolean {
++    if (
++      (value.kind !== &quot;execute&quot; &amp;&amp;
++        value.kind !== &quot;execution-status&quot; &amp;&amp;
++        value.kind !== &quot;result-fetch&quot; &amp;&amp;
++        value.kind !== &quot;result-ack&quot;) ||
++      !DaemonProtocolValidator.isRuntimeString(value.processToken) ||
++      !DaemonRuntimeValues.isRequestId(value.requestId)
++    ) {
++      return false;
++    }
++    if (value.kind === &quot;execute&quot;) {
++      return (
++        DaemonProtocolValidator.hasExactKeys(value, [
++          &quot;kind&quot;,
++          &quot;protocolVersion&quot;,
++          &quot;instanceId&quot;,
++          &quot;processToken&quot;,
++          &quot;requestId&quot;,
++          &quot;commandName&quot;,
++          &quot;request&quot;,
++        ]) &amp;&amp;
++        DaemonRuntimeValues.isCommandName(value.commandName) &amp;&amp;
++        DaemonProtocolValidator.isExecutorRequest(value.request)
++      );
++    }
++    if (value.kind === &quot;result-fetch&quot;) {
++      return (
++        DaemonProtocolValidator.hasExactKeys(value, [
++          &quot;kind&quot;,
++          &quot;protocolVersion&quot;,
++          &quot;instanceId&quot;,
++          &quot;processToken&quot;,
++          &quot;requestId&quot;,
++          &quot;offset&quot;,
++        ]) &amp;&amp; DaemonProtocolValidator.isCount(value.offset)
++      );
++    }
++    if (value.kind === &quot;result-ack&quot;) {
++      return (
++        DaemonProtocolValidator.hasExactKeys(value, [
++          &quot;kind&quot;,
++          &quot;protocolVersion&quot;,
++          &quot;instanceId&quot;,
++          &quot;processToken&quot;,
++          &quot;requestId&quot;,
++          &quot;transferId&quot;,
++        ]) &amp;&amp; DaemonProtocolValidator.isRuntimeString(value.transferId)
++      );
++    }
++    return DaemonProtocolValidator.hasExactKeys(value, [
++      &quot;kind&quot;,
++      &quot;protocolVersion&quot;,
++      &quot;instanceId&quot;,
++      &quot;processToken&quot;,
++      &quot;requestId&quot;,
++    ]);
++  }
++
++  private static isExecutorRequest(value: unknown): boolean {
++    if (!DaemonProtocolValidator.isRecord(value)) return false;
++    return (
++      DaemonProtocolValidator.hasExactKeys(value, [
++        &quot;argv&quot;,
++        &quot;cwd&quot;,
++        &quot;telemetryEnabled&quot;,
++        &quot;executionMode&quot;,
++      ]) &amp;&amp;
++      Array.isArray(value.argv) &amp;&amp;
++      value.argv.every((argument) =&gt; typeof argument === &quot;string&quot;) &amp;&amp;
++      typeof value.cwd === &quot;string&quot; &amp;&amp;
++      value.cwd.length &gt; 0 &amp;&amp;
++      typeof value.telemetryEnabled === &quot;boolean&quot; &amp;&amp;
++      (value.executionMode === &quot;cold&quot; ||
++        value.executionMode === &quot;warm&quot; ||
++        value.executionMode === &quot;fallback&quot;)
++    );
++  }
++
++  private static isCompletionManifest(value: unknown): value is CompletionSpoolManifest {
++    return (
++      DaemonProtocolValidator.isRecord(value) &amp;&amp;
++      DaemonProtocolValidator.hasExactKeys(value, [
++        &quot;transferId&quot;,
++        &quot;requestId&quot;,
++        &quot;instanceId&quot;,
++        &quot;exitCode&quot;,
++        &quot;rawBytes&quot;,
++        &quot;recordCount&quot;,
++        &quot;sha256&quot;,
++      ]) &amp;&amp;
++      DaemonProtocolValidator.isRuntimeString(value.transferId) &amp;&amp;
++      DaemonRuntimeValues.isRequestId(value.requestId) &amp;&amp;
++      DaemonProtocolValidator.isRuntimeString(value.instanceId) &amp;&amp;
++      DaemonProtocolValidator.isCount(value.exitCode) &amp;&amp;
++      DaemonProtocolValidator.isCount(value.rawBytes) &amp;&amp;
++      DaemonProtocolValidator.isCount(value.recordCount) &amp;&amp;
++      DaemonProtocolValidator.isDigest(value.sha256)
++    );
++  }
++
++  private static isExecutionStatus(value: unknown): value is DaemonExecutionStatus {
++    if (!DaemonProtocolValidator.isRecord(value)) return false;
++    if (value.state === &quot;unknown&quot; || value.state === &quot;completed&quot;) {
++      return DaemonProtocolValidator.hasExactKeys(value, [&quot;state&quot;]);
++    }
++    if (value.state === &quot;queued&quot;) {
++      return (
++        DaemonProtocolValidator.hasExactKeys(value, [&quot;state&quot;, &quot;queuePosition&quot;]) &amp;&amp;
++        DaemonProtocolValidator.isCount(value.queuePosition)
++      );
++    }
++    if (value.state === &quot;running&quot;) {
++      return (
++        DaemonProtocolValidator.hasExactKeys(value, [&quot;state&quot;, &quot;startedAt&quot;]) &amp;&amp;
++        DaemonProtocolValidator.isMetric(value.startedAt)
++      );
++    }
++    return (
++      value.state === &quot;failed&quot; &amp;&amp;
++      DaemonProtocolValidator.hasExactKeys(value, [&quot;state&quot;, &quot;code&quot;]) &amp;&amp;
++      DaemonExecutionFailures.isCode(value.code)
++    );
++  }
++
++  private static isActivitySnapshot(value: unknown): boolean {
++    if (!DaemonProtocolValidator.isRecord(value)) return false;
++    const lifecycle = value.lifecycle;
++    const current = value.current;
++    const expectedKeys = [
++      &quot;lifecycle&quot;,
++      &quot;pid&quot;,
++      &quot;startedAt&quot;,
++      &quot;startupElapsedMs&quot;,
++      &quot;processRssBytes&quot;,
++      &quot;hardProcessRssBytes&quot;,
++      &quot;workerGeneration&quot;,
++      &quot;queued&quot;,
++      &quot;spoolBytes&quot;,
++    ];
++    if (value.workerHeapUsedBytes !== undefined) expectedKeys.push(&quot;workerHeapUsedBytes&quot;);
++    if (value.lastCompletedAgoMs !== undefined) expectedKeys.push(&quot;lastCompletedAgoMs&quot;);
++    if (
++      lifecycle === &quot;ready&quot; ||
++      lifecycle === &quot;busy&quot; ||
++      ((lifecycle === &quot;recovering&quot; || lifecycle === &quot;draining&quot;) &amp;&amp; value.fileCount !== undefined)
++    ) {
++      expectedKeys.push(&quot;fileCount&quot;);
++    }
++    if (lifecycle === &quot;busy&quot;) expectedKeys.push(&quot;current&quot;);
++    if (lifecycle === &quot;recovering&quot;) expectedKeys.push(&quot;recoveryDetail&quot;);
++    return (
++      (lifecycle === &quot;starting&quot; ||
++        lifecycle === &quot;ready&quot; ||
++        lifecycle === &quot;busy&quot; ||
++        lifecycle === &quot;recovering&quot; ||
++        lifecycle === &quot;draining&quot;) &amp;&amp;
++      DaemonProtocolValidator.hasExactKeys(value, expectedKeys) &amp;&amp;
++      (lifecycle !== &quot;recovering&quot; ||
++        value.recoveryDetail === &quot;resource-pressure&quot; ||
++        value.recoveryDetail === &quot;worker-replacement&quot;) &amp;&amp;
++      DaemonProtocolValidator.isPositiveInteger(value.pid) &amp;&amp;
++      DaemonProtocolValidator.isMetric(value.startedAt) &amp;&amp;
++      DaemonProtocolValidator.isMetric(value.startupElapsedMs) &amp;&amp;
++      (lifecycle === &quot;ready&quot; || lifecycle === &quot;busy&quot;
++        ? DaemonProtocolValidator.isCount(value.fileCount)
++        : lifecycle === &quot;starting&quot;
++          ? value.fileCount === undefined
++          : value.fileCount === undefined || DaemonProtocolValidator.isCount(value.fileCount)) &amp;&amp;
++      DaemonProtocolValidator.isCount(value.processRssBytes) &amp;&amp;
++      DaemonProtocolValidator.isCount(value.hardProcessRssBytes) &amp;&amp;
++      (value.workerHeapUsedBytes === undefined ||
++        DaemonProtocolValidator.isCount(value.workerHeapUsedBytes)) &amp;&amp;
++      DaemonProtocolValidator.isCount(value.workerGeneration) &amp;&amp;
++      (lifecycle !== &quot;busy&quot; ||
++        (DaemonProtocolValidator.isRecord(current) &amp;&amp;
++          DaemonProtocolValidator.hasExactKeys(current, [&quot;requestId&quot;, &quot;command&quot;, &quot;elapsedMs&quot;]) &amp;&amp;
++          DaemonRuntimeValues.isRequestId(current.requestId) &amp;&amp;
++          DaemonRuntimeValues.isCommandName(current.command) &amp;&amp;
++          DaemonProtocolValidator.isMetric(current.elapsedMs))) &amp;&amp;
++      DaemonProtocolValidator.isCount(value.queued) &amp;&amp;
++      (value.lastCompletedAgoMs === undefined ||
++        DaemonProtocolValidator.isMetric(value.lastCompletedAgoMs)) &amp;&amp;
++      DaemonProtocolValidator.isCount(value.spoolBytes)
++    );
++  }
++
++  private static isProtocolVersion(value: unknown): boolean {
++    return Number.isSafeInteger(value) &amp;&amp; Number(value) &gt;= 0;
++  }
++
++  private static isCount(value: unknown): boolean {
++    return Number.isSafeInteger(value) &amp;&amp; Number(value) &gt;= 0;
++  }
++
++  private static isPositiveInteger(value: unknown): boolean {
++    return Number.isSafeInteger(value) &amp;&amp; Number(value) &gt; 0;
++  }
++
++  private static isMetric(value: unknown): boolean {
++    return typeof value === &quot;number&quot; &amp;&amp; Number.isFinite(value) &amp;&amp; value &gt;= 0;
++  }
++
++  private static isRuntimeString(value: unknown): value is string {
++    return typeof value === &quot;string&quot; &amp;&amp; value.length &gt; 0;
++  }
++
++  private static isDigest(value: unknown): value is string {
++    return typeof value === &quot;string&quot; &amp;&amp; /^[a-f\d]{64}$/.test(value);
++  }
++
++  private static isRecord(value: unknown): value is Record&lt;string, unknown&gt; {
++    return typeof value === &quot;object&quot; &amp;&amp; value !== null &amp;&amp; !Array.isArray(value);
++  }
++
++  private static hasExactKeys(value: Record&lt;string, unknown&gt;, keys: readonly string[]): boolean {
++    const actual = Object.keys(value).sort();
++    const expected = [...keys].sort();
++    return (
++      actual.length === expected.length &amp;&amp; actual.every((key, index) =&gt; key === expected[index])
++    );
++  }
++}
+</pre></details></main></body></html>

@@ -1,0 +1,119 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PR 137 · supplied record</title><link rel="stylesheet" href="../style.css"><body class="source-page"><main><a href="../index.html#provenance">← Page provenance</a><h1>#137 · Isolate daemon transport framing and validation</h1><p>Supplied bundle, frozen with this experiment. The original Markdown is preserved below.</p><pre class="pr-source">## Context
+
+The [daemon architecture contract](plans/005/daemon-architecture-functional-spec.md#included) calls for `LocalDaemonTransport` to split into codec, validator, client, and server responsibilities. One socket facade still owned wire framing, protocol validation, correlation, and every consumer-facing transport method.
+
+## Shape
+
+Before — consumers and protocol mechanics converged on one concrete transport:
+
+```mermaid
+flowchart LR
+    Consumers[&quot;Daemon consumers&quot;]
+    Transport[&quot;LocalDaemonTransport&quot;]
+    Protocol[&quot;Framing + validation&lt;br/&gt;&amp;lt;&amp;lt;embedded&amp;gt;&amp;gt;&quot;]
+    Sockets[&quot;Node sockets&quot;]
+
+    Consumers --&gt;|&quot;uses&quot;| Transport
+    Transport --&gt;|&quot;uses&quot;| Protocol
+    Transport --&gt;|&quot;uses&quot;| Sockets
+
+    classDef removed fill:#ffebe9,stroke:#cf222e,color:#24292f
+    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f
+    class Consumers,Transport changed
+    class Protocol removed
+```
+
+After — consumers use operation-shaped ports while the facade delegates protocol concerns:
+
+```mermaid
+flowchart LR
+    Consumers[&quot;Daemon consumers&quot;]
+    Lifecycle[&quot;Lifecycle ports&lt;br/&gt;&amp;lt;&amp;lt;internal&amp;gt;&amp;gt;&quot;]
+    Execution[&quot;Execution port&lt;br/&gt;&amp;lt;&amp;lt;internal&amp;gt;&amp;gt;&quot;]
+    Server[&quot;Request-server port&lt;br/&gt;&amp;lt;&amp;lt;internal&amp;gt;&amp;gt;&quot;]
+    Transport[&quot;LocalDaemonTransport&lt;br/&gt;Node socket facade&quot;]
+    Codec[&quot;DaemonWireCodec&quot;]
+    Validator[&quot;DaemonProtocolValidator&quot;]
+    Sockets[&quot;Node sockets&quot;]
+
+    Consumers --&gt;|&quot;uses&quot;| Lifecycle
+    Consumers --&gt;|&quot;uses&quot;| Execution
+    Consumers --&gt;|&quot;uses&quot;| Server
+    Transport --&gt;|&quot;implements&quot;| Lifecycle
+    Transport --&gt;|&quot;implements&quot;| Execution
+    Transport --&gt;|&quot;implements&quot;| Server
+    Transport --&gt;|&quot;uses&quot;| Codec
+    Transport --&gt;|&quot;uses&quot;| Validator
+    Transport --&gt;|&quot;uses&quot;| Sockets
+
+    classDef added fill:#dafbe1,stroke:#1a7f37,color:#24292f
+    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f
+    class Lifecycle,Execution,Server,Codec,Validator added
+    class Consumers,Transport changed
+```
+
+Legend: green = added boundary; red = removed embedded ownership; yellow = changed dependency or owner; default = unchanged.
+
+## Where it lives
+
+```text
+.
+└── apps/cli/src/daemon/
+    ├── ++ daemon-transport.ts              # operation-shaped lifecycle, execution, socket, and server ports
+    ├── ++ daemon-wire-codec.ts             # JSON and binary framing with independent capacity limits
+    ├── ++ daemon-protocol-validator.ts      # exact schemas, response correlation, and retry consistency
+    ├── ** local-daemon-transport.ts         # Node socket facade delegates framing and validation
+    ├── -- daemon-result-chunk-codec.ts      # binary chunk framing moved into wire codec ownership
+    └── ** ... 5 daemon consumers            # depend on the narrow ports they use
+```
+
+Legend: `++` added, `**` changed, `~~` moved, `--` removed.
+
+## Decisions
+
+- Chose operation-shaped transport interfaces over `LocalDaemonTransport` and consumer-local transport shapes, because lifecycle observation, execution, and request serving require different capabilities.
+- Chose separate control and transfer decoders over one binary-aware decoder, because only execution transfer connections may interpret high-bit frames as result chunks.
+- Chose response-kind-specific JSON limits over one control limit, because lifecycle responses retain ordinary JSON capacity while execution frames use the smaller execution-control cap.
+- Chose to map `DaemonProtocolError` at the facade boundary over changing `DaemonTransportError`, because delivery, authentication, compatibility, and retry classifications must remain stable.
+- Chose to absorb result-chunk header and digest validation into `DaemonWireCodec` over retaining a standalone chunk codec, because chunk integrity belongs to the binary frame format.
+
+## Look here
+
+- `apps/cli/src/daemon/daemon-transport.ts:15`
+- `apps/cli/src/daemon/daemon-wire-codec.ts:30`
+- `apps/cli/src/daemon/daemon-protocol-validator.ts:30`
+
+
+COMMIT MESSAGES
+
+90f7e5820c0e8d3882547c7b393924930ae57c01
+Specify narrow daemon transport ports
+
+
+749ed0b603779ffbdcc23b126f885a2dbdec5498
+Depend on narrow daemon transport ports
+
+
+e219eeca170b339f6ea901f73c3d27f1400d6ada
+Specify daemon wire framing
+
+
+aaf001643d92fe617d7fcb7a5a206ec335241d8f
+Delegate daemon wire framing
+
+
+c0473870c4c675eb9585e424fa88ea279649691f
+Specify lifecycle response capacity
+
+
+1c55e10dd42d29164893bc00de49d295d96b4fb1
+Preserve lifecycle response capacity
+
+
+4c9afef836f0ecf3c91c68a9f3c2be019553fc67
+Specify daemon protocol validation
+
+
+757c41a213838bec2a5754d270f2b2ea7e029330
+Delegate daemon protocol validation
+</pre></main></body></html>

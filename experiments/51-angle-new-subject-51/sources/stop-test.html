@@ -1,0 +1,433 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>stop-test · pinned source</title><link rel="stylesheet" href="../style.css"><body class="source-page"><main><a href="../index.html#provenance">← Page provenance</a><h1>stop-test</h1><p>apps/cli/test/e2e/daemon/stop.test.ts<br>d07002357d3e9596bfaae910a1ac63b77981620b · tip<br>SHA-256 543428100256a41ccd57f75f6a7ab11d27874ac784748dcfff5f902e61db9830</p><pre class="source-code"><span class="line" id="L1"><a href="#L1">1</a> import type { ChildProcess } from &quot;node:child_process&quot;;</span>
+<span class="line" id="L2"><a href="#L2">2</a> import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from &quot;node:fs&quot;;</span>
+<span class="line" id="L3"><a href="#L3">3</a> import { tmpdir } from &quot;node:os&quot;;</span>
+<span class="line" id="L4"><a href="#L4">4</a> import { join } from &quot;node:path&quot;;</span>
+<span class="line" id="L5"><a href="#L5">5</a> import { afterEach, describe, expect, it } from &quot;vitest&quot;;</span>
+<span class="line" id="L6"><a href="#L6">6</a> import { runSymnavBinary } from &quot;@symnav/testing&quot;;</span>
+<span class="line" id="L7"><a href="#L7">7</a> import { canonicalWorkspaceRoot } from &quot;../../helpers/canonical-workspace-root.js&quot;;</span>
+<span class="line" id="L8"><a href="#L8">8</a> import { E2eProcessCleanup } from &quot;../../helpers/e2e-process-cleanup.js&quot;;</span>
+<span class="line" id="L9"><a href="#L9">9</a> import { CliDaemonTesting } from &quot;../../helpers/daemon-testing.js&quot;;</span>
+<span class="line" id="L10"><a href="#L10">10</a> </span>
+<span class="line" id="L11"><a href="#L11">11</a> describe(&quot;symnav daemon stop&quot;, () =&gt; {</span>
+<span class="line" id="L12"><a href="#L12">12</a>   const stateDirectories: string[] = [];</span>
+<span class="line" id="L13"><a href="#L13">13</a>   const daemonPids: number[] = [];</span>
+<span class="line" id="L14"><a href="#L14">14</a>   const helperProcesses: ChildProcess[] = [];</span>
+<span class="line" id="L15"><a href="#L15">15</a> </span>
+<span class="line" id="L16"><a href="#L16">16</a>   afterEach(async () =&gt; {</span>
+<span class="line" id="L17"><a href="#L17">17</a>     await E2eProcessCleanup.terminate(daemonPids, helperProcesses);</span>
+<span class="line" id="L18"><a href="#L18">18</a>     daemonPids.length = 0;</span>
+<span class="line" id="L19"><a href="#L19">19</a>     helperProcesses.length = 0;</span>
+<span class="line" id="L20"><a href="#L20">20</a>     E2eProcessCleanup.removeDirectories(stateDirectories);</span>
+<span class="line" id="L21"><a href="#L21">21</a>     stateDirectories.length = 0;</span>
+<span class="line" id="L22"><a href="#L22">22</a>   });</span>
+<span class="line" id="L23"><a href="#L23">23</a> </span>
+<span class="line" id="L24"><a href="#L24">24</a>   it(&quot;stops the selected workspace and succeeds again when absent&quot;, () =&gt; {</span>
+<span class="line" id="L25"><a href="#L25">25</a>     const stateDir = temporaryStateDirectory(stateDirectories);</span>
+<span class="line" id="L26"><a href="#L26">26</a>     const cwd = temporaryWorkspace(stateDirectories);</span>
+<span class="line" id="L27"><a href="#L27">27</a>     const started = runSymnavBinary([&quot;daemon&quot;, &quot;start&quot;], {</span>
+<span class="line" id="L28"><a href="#L28">28</a>       cwd,</span>
+<span class="line" id="L29"><a href="#L29">29</a>       env: { SYMNAV_STATE_DIR: stateDir },</span>
+<span class="line" id="L30"><a href="#L30">30</a>     });</span>
+<span class="line" id="L31"><a href="#L31">31</a>     expect(started).toMatchObject({ status: 0, stderr: &quot;&quot; });</span>
+<span class="line" id="L32"><a href="#L32">32</a>     captureDaemonPids(stateDir, daemonPids);</span>
+<span class="line" id="L33"><a href="#L33">33</a> </span>
+<span class="line" id="L34"><a href="#L34">34</a>     const stopped = runSymnavBinary([&quot;daemon&quot;, &quot;stop&quot;], {</span>
+<span class="line" id="L35"><a href="#L35">35</a>       cwd,</span>
+<span class="line" id="L36"><a href="#L36">36</a>       env: { SYMNAV_STATE_DIR: stateDir },</span>
+<span class="line" id="L37"><a href="#L37">37</a>     });</span>
+<span class="line" id="L38"><a href="#L38">38</a>     const absent = runSymnavBinary([&quot;daemon&quot;, &quot;stop&quot;], {</span>
+<span class="line" id="L39"><a href="#L39">39</a>       cwd,</span>
+<span class="line" id="L40"><a href="#L40">40</a>       env: { SYMNAV_STATE_DIR: stateDir },</span>
+<span class="line" id="L41"><a href="#L41">41</a>     });</span>
+<span class="line" id="L42"><a href="#L42">42</a> </span>
+<span class="line" id="L43"><a href="#L43">43</a>     expect(stopped.status).toBe(0);</span>
+<span class="line" id="L44"><a href="#L44">44</a>     expect(stopped.stderr).toBe(&quot;&quot;);</span>
+<span class="line" id="L45"><a href="#L45">45</a>     expect(stopped.stdout).toMatch(/^Stopped daemon for .+ \(pid \d+\)\n$/);</span>
+<span class="line" id="L46"><a href="#L46">46</a>     const events = daemonLogEvents(stateDir, cwd);</span>
+<span class="line" id="L47"><a href="#L47">47</a>     expect(events).toEqual(</span>
+<span class="line" id="L48"><a href="#L48">48</a>       expect.arrayContaining([</span>
+<span class="line" id="L49"><a href="#L49">49</a>         expect.objectContaining({ kind: &quot;start&quot; }),</span>
+<span class="line" id="L50"><a href="#L50">50</a>         expect.objectContaining({ kind: &quot;ready&quot; }),</span>
+<span class="line" id="L51"><a href="#L51">51</a>         expect.objectContaining({ kind: &quot;request-accepted&quot;, command: &quot;version&quot; }),</span>
+<span class="line" id="L52"><a href="#L52">52</a>         expect.objectContaining({ kind: &quot;execution-terminal&quot;, outcome: &quot;completed&quot; }),</span>
+<span class="line" id="L53"><a href="#L53">53</a>         expect.objectContaining({ kind: &quot;startup-completed&quot; }),</span>
+<span class="line" id="L54"><a href="#L54">54</a>         expect.objectContaining({ kind: &quot;stop&quot;, reason: &quot;graceful&quot; }),</span>
+<span class="line" id="L55"><a href="#L55">55</a>       ]),</span>
+<span class="line" id="L56"><a href="#L56">56</a>     );</span>
+<span class="line" id="L57"><a href="#L57">57</a>     expect(absent.status).toBe(0);</span>
+<span class="line" id="L58"><a href="#L58">58</a>     expect(absent.stderr).toBe(&quot;&quot;);</span>
+<span class="line" id="L59"><a href="#L59">59</a>     expect(absent.stdout).toMatch(/^No daemon running for .+\n$/);</span>
+<span class="line" id="L60"><a href="#L60">60</a>   });</span>
+<span class="line" id="L61"><a href="#L61">61</a> </span>
+<span class="line" id="L62"><a href="#L62">62</a>   it(&quot;supports global --cwd and JSON output&quot;, () =&gt; {</span>
+<span class="line" id="L63"><a href="#L63">63</a>     const stateDir = temporaryStateDirectory(stateDirectories);</span>
+<span class="line" id="L64"><a href="#L64">64</a>     const cwd = temporaryWorkspace(stateDirectories);</span>
+<span class="line" id="L65"><a href="#L65">65</a>     const started = runSymnavBinary([&quot;--cwd&quot;, cwd, &quot;daemon&quot;, &quot;start&quot;], {</span>
+<span class="line" id="L66"><a href="#L66">66</a>       cwd: tmpdir(),</span>
+<span class="line" id="L67"><a href="#L67">67</a>       env: { SYMNAV_STATE_DIR: stateDir },</span>
+<span class="line" id="L68"><a href="#L68">68</a>     });</span>
+<span class="line" id="L69"><a href="#L69">69</a>     expect(started.status).toBe(0);</span>
+<span class="line" id="L70"><a href="#L70">70</a>     captureDaemonPids(stateDir, daemonPids);</span>
+<span class="line" id="L71"><a href="#L71">71</a> </span>
+<span class="line" id="L72"><a href="#L72">72</a>     const result = runSymnavBinary([&quot;--cwd&quot;, cwd, &quot;daemon&quot;, &quot;stop&quot;, &quot;--json&quot;], {</span>
+<span class="line" id="L73"><a href="#L73">73</a>       cwd: tmpdir(),</span>
+<span class="line" id="L74"><a href="#L74">74</a>       env: { SYMNAV_STATE_DIR: stateDir },</span>
+<span class="line" id="L75"><a href="#L75">75</a>     });</span>
+<span class="line" id="L76"><a href="#L76">76</a>     expect(result.status).toBe(0);</span>
+<span class="line" id="L77"><a href="#L77">77</a>     expect(result.stderr).toBe(&quot;&quot;);</span>
+<span class="line" id="L78"><a href="#L78">78</a>     expect(JSON.parse(result.stdout)).toEqual(</span>
+<span class="line" id="L79"><a href="#L79">79</a>       expect.objectContaining({ status: &quot;stopped&quot;, pid: expect.any(Number) }),</span>
+<span class="line" id="L80"><a href="#L80">80</a>     );</span>
+<span class="line" id="L81"><a href="#L81">81</a>   });</span>
+<span class="line" id="L82"><a href="#L82">82</a> });</span>
+<span class="line" id="L83"><a href="#L83">83</a> </span>
+<span class="line" id="L84"><a href="#L84">84</a> function temporaryStateDirectory(directories: string[]): string {</span>
+<span class="line" id="L85"><a href="#L85">85</a>   const directory = mkdtempSync(join(tmpdir(), &quot;symnav-daemon-stop-e2e-&quot;));</span>
+<span class="line" id="L86"><a href="#L86">86</a>   directories.push(directory);</span>
+<span class="line" id="L87"><a href="#L87">87</a>   return directory;</span>
+<span class="line" id="L88"><a href="#L88">88</a> }</span>
+<span class="line" id="L89"><a href="#L89">89</a> </span>
+<span class="line" id="L90"><a href="#L90">90</a> function temporaryWorkspace(directories: string[]): string {</span>
+<span class="line" id="L91"><a href="#L91">91</a>   const directory = mkdtempSync(join(tmpdir(), &quot;symnav-daemon-stop-workspace-&quot;));</span>
+<span class="line" id="L92"><a href="#L92">92</a>   directories.push(directory);</span>
+<span class="line" id="L93"><a href="#L93">93</a>   mkdirSync(join(directory, &quot;.git&quot;));</span>
+<span class="line" id="L94"><a href="#L94">94</a>   writeFileSync(join(directory, &quot;input.ts&quot;), &quot;export const value = 1;\n&quot;);</span>
+<span class="line" id="L95"><a href="#L95">95</a>   return directory;</span>
+<span class="line" id="L96"><a href="#L96">96</a> }</span>
+<span class="line" id="L97"><a href="#L97">97</a> </span>
+<span class="line" id="L98"><a href="#L98">98</a> function captureDaemonPids(stateDir: string, pids: number[]): void {</span>
+<span class="line" id="L99"><a href="#L99">99</a>   pids.push(...new CliDaemonTesting(stateDir).processIds());</span>
+<span class="line" id="L100"><a href="#L100">100</a> }</span>
+<span class="line" id="L101"><a href="#L101">101</a> </span>
+<span class="line" id="L102"><a href="#L102">102</a> function daemonLogEvents(</span>
+<span class="line" id="L103"><a href="#L103">103</a>   stateDir: string,</span>
+<span class="line" id="L104"><a href="#L104">104</a>   workspaceRoot: string,</span>
+<span class="line" id="L105"><a href="#L105">105</a> ): readonly Record&lt;string, unknown&gt;[] {</span>
+<span class="line" id="L106"><a href="#L106">106</a>   return new CliDaemonTesting(stateDir).inspector.readDiagnostics(</span>
+<span class="line" id="L107"><a href="#L107">107</a>     canonicalWorkspaceRoot(realpathSync(workspaceRoot)),</span>
+<span class="line" id="L108"><a href="#L108">108</a>   ).events;</span>
+<span class="line" id="L109"><a href="#L109">109</a> }</span>
+</pre><details class="source-disclosure"><summary>Net main → tip change touching this path (copy-aware)</summary><p>This is the net delta, including moves/copies. A historical source snapshot above may precede the final change below.</p><pre class="pr-source">diff --git a/apps/cli/test/e2e/daemon/stop.test.ts b/apps/cli/test/e2e/daemon/stop.test.ts
+index 922530d1b..f205d7f10 100644
+--- a/apps/cli/test/e2e/daemon/stop.test.ts
++++ b/apps/cli/test/e2e/daemon/stop.test.ts
+@@ -1,29 +1,12 @@
+-import { spawn, type ChildProcess } from &quot;node:child_process&quot;;
+-import {
+-  existsSync,
+-  mkdirSync,
+-  mkdtempSync,
+-  readFileSync,
+-  realpathSync,
+-  writeFileSync,
+-} from &quot;node:fs&quot;;
++import type { ChildProcess } from &quot;node:child_process&quot;;
++import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from &quot;node:fs&quot;;
+ import { tmpdir } from &quot;node:os&quot;;
+ import { join } from &quot;node:path&quot;;
+-import { fileURLToPath } from &quot;node:url&quot;;
+ import { afterEach, describe, expect, it } from &quot;vitest&quot;;
+ import { runSymnavBinary } from &quot;@symnav/testing&quot;;
+-import { canonicalStateDir } from &quot;@symnav/telemetry&quot;;
+-import {
+-  DAEMON_PROTOCOL_VERSION,
+-  DAEMON_RECORD_SCHEMA_VERSION,
+-  type DaemonRecord,
+-} from &quot;../../../src/daemon/daemon-protocol.js&quot;;
+-import { DaemonRegistry } from &quot;../../../src/daemon/daemon-registry.js&quot;;
+-import { DaemonWorkspaceIdentity } from &quot;../../../src/daemon/daemon-workspace-identity.js&quot;;
+-import { LocalDaemonTransport } from &quot;../../../src/daemon/local-daemon-transport.js&quot;;
+ import { canonicalWorkspaceRoot } from &quot;../../helpers/canonical-workspace-root.js&quot;;
+ import { E2eProcessCleanup } from &quot;../../helpers/e2e-process-cleanup.js&quot;;
+-import { DaemonStateFiles } from &quot;../../helpers/daemon-state-files.js&quot;;
++import { CliDaemonTesting } from &quot;../../helpers/daemon-testing.js&quot;;
+ 
+ describe(&quot;symnav daemon stop&quot;, () =&gt; {
+   const stateDirectories: string[] = [];
+@@ -60,7 +43,7 @@ describe(&quot;symnav daemon stop&quot;, () =&gt; {
+     expect(stopped.status).toBe(0);
+     expect(stopped.stderr).toBe(&quot;&quot;);
+     expect(stopped.stdout).toMatch(/^Stopped daemon for .+ \(pid \d+\)\n$/);
+-    const events = daemonLogEvents(stateDir);
++    const events = daemonLogEvents(stateDir, cwd);
+     expect(events).toEqual(
+       expect.arrayContaining([
+         expect.objectContaining({ kind: &quot;start&quot; }),
+@@ -96,249 +79,8 @@ describe(&quot;symnav daemon stop&quot;, () =&gt; {
+       expect.objectContaining({ status: &quot;stopped&quot;, pid: expect.any(Number) }),
+     );
+   });
+-
+-  it(&quot;waits for a launched starting process to exit before reporting stopped&quot;, async () =&gt; {
+-    const stateDir = temporaryStateDirectory(stateDirectories);
+-    const cwd = temporaryWorkspace(stateDirectories);
+-    const identity = DaemonWorkspaceIdentity.from(
+-      canonicalWorkspaceRoot(realpathSync(cwd)),
+-      canonicalStateDir(stateDir),
+-    );
+-    const registry = new DaemonRegistry(identity.registryDirectory);
+-    const instanceId = &quot;starting-stop&quot;;
+-    const processToken = &quot;starting-stop-process&quot;;
+-    const child = spawn(process.execPath, [&quot;-e&quot;, &quot;setInterval(() =&gt; undefined, 1000)&quot;], {
+-      stdio: &quot;ignore&quot;,
+-    });
+-    helperProcesses.push(child);
+-    if (child.pid === undefined) throw new Error(&quot;Starting process did not receive a PID&quot;);
+-    expect(registry.acquireStartup(identity, instanceId)).toBeDefined();
+-    const record: DaemonRecord = {
+-      schemaVersion: DAEMON_RECORD_SCHEMA_VERSION,
+-      protocolVersion: DAEMON_PROTOCOL_VERSION,
+-      symnavVersion: &quot;test&quot;,
+-      workspaceRoot: identity.workspaceRoot,
+-      workspaceKey: identity.workspaceKey,
+-      stateKey: identity.stateKey,
+-      identityKey: identity.identityKey,
+-      instanceId,
+-      processToken,
+-      endpoint: identity.endpoint(instanceId),
+-      pid: child.pid,
+-      state: &quot;starting&quot;,
+-      startedAt: Date.now(),
+-      memoryCapBytes: Number.MAX_SAFE_INTEGER,
+-    };
+-    expect(registry.writeStartingIfStartupOwner(identity, record)).toBe(true);
+-
+-    const stopped = await runBuiltStop(cwd, stateDir);
+-
+-    expect(stopped).toEqual({
+-      status: 0,
+-      stdout: expect.stringMatching(/^\{&quot;status&quot;:&quot;stopped&quot;/),
+-      stderr: &quot;&quot;,
+-    });
+-    expect(processIsAlive(record.pid)).toBe(false);
+-    expect(registry.readStoredInstance(identity, instanceId)).toBeUndefined();
+-    expect(registry.startupOwner(identity)).toBeUndefined();
+-    helperProcesses.splice(helperProcesses.indexOf(child), 1);
+-  }, 15_000);
+-
+-  it(&quot;drains an in-flight request before the built stop command returns&quot;, async () =&gt; {
+-    const stateDir = temporaryStateDirectory(stateDirectories);
+-    const cwd = temporaryWorkspace(stateDirectories);
+-    const releasePath = join(stateDir, &quot;release-request&quot;);
+-    const runtime = await startControlledDaemon(
+-      stateDir,
+-      canonicalWorkspaceRoot(realpathSync(cwd)),
+-      releasePath,
+-    );
+-    helperProcesses.push(runtime.child);
+-    const transport = new LocalDaemonTransport({ requestTimeoutMs: 10_000 });
+-    const execution = transport.execute(runtime.record.endpoint, {
+-      kind: &quot;execute&quot;,
+-      protocolVersion: DAEMON_PROTOCOL_VERSION,
+-      instanceId: runtime.record.instanceId,
+-      processToken: runtime.record.processToken,
+-      requestId: &quot;built-drain&quot;,
+-      request: { argv: [&quot;--version&quot;], cwd, telemetryEnabled: false },
+-    });
+-    await waitUntil(() =&gt; existsSync(runtime.requestStartedPath));
+-    const stopping = runBuiltStop(cwd, stateDir);
+-    await new Promise((resolve) =&gt; setTimeout(resolve, 100));
+-    writeFileSync(releasePath, &quot;release&quot;);
+-
+-    const response = await (await execution).completion;
+-    const stopped = await stopping;
+-
+-    expect(response).toMatchObject({ status: &quot;completed&quot;, result: { exitCode: 0 } });
+-    expect(stopped).toEqual({
+-      status: 0,
+-      stdout: expect.stringMatching(/^\{&quot;status&quot;:&quot;stopped&quot;/),
+-      stderr: &quot;&quot;,
+-    });
+-    await waitForProcess(runtime.child);
+-    helperProcesses.splice(helperProcesses.indexOf(runtime.child), 1);
+-  }, 15_000);
+-
+-  it(&quot;force-kills stuck work before the built stop command renders success&quot;, async () =&gt; {
+-    const stateDir = temporaryStateDirectory(stateDirectories);
+-    const cwd = temporaryWorkspace(stateDirectories);
+-    const runtime = await startControlledDaemon(
+-      stateDir,
+-      canonicalWorkspaceRoot(realpathSync(cwd)),
+-    );
+-    helperProcesses.push(runtime.child);
+-    const transport = new LocalDaemonTransport({ requestTimeoutMs: 10_000 });
+-    const execution = transport.execute(runtime.record.endpoint, {
+-      kind: &quot;execute&quot;,
+-      protocolVersion: DAEMON_PROTOCOL_VERSION,
+-      instanceId: runtime.record.instanceId,
+-      processToken: runtime.record.processToken,
+-      requestId: &quot;built-force&quot;,
+-      request: { argv: [&quot;--version&quot;], cwd, telemetryEnabled: false },
+-    });
+-    await waitUntil(() =&gt; existsSync(runtime.requestStartedPath));
+-
+-    const stopped = await runBuiltStop(cwd, stateDir);
+-
+-    expect(stopped).toEqual({
+-      status: 0,
+-      stdout: expect.stringMatching(/^\{&quot;status&quot;:&quot;killed&quot;/),
+-      stderr: &quot;&quot;,
+-    });
+-    expect(() =&gt; process.kill(runtime.record.pid, 0)).toThrow();
+-    await expect(execution.then((receipt) =&gt; receipt.completion)).resolves.toMatchObject({
+-      status: &quot;failed&quot;,
+-      code: &quot;stopping&quot;,
+-    });
+-    await waitForProcess(runtime.child);
+-    helperProcesses.splice(helperProcesses.indexOf(runtime.child), 1);
+-  }, 15_000);
+ });
+ 
+-interface ControlledDaemon {
+-  readonly child: ChildProcess;
+-  readonly record: DaemonRecord;
+-  readonly requestStartedPath: string;
+-}
+-
+-async function startControlledDaemon(
+-  stateDirectory: string,
+-  workspaceRoot: string,
+-  releasePath?: string,
+-): Promise&lt;ControlledDaemon&gt; {
+-  const identity = DaemonWorkspaceIdentity.from(workspaceRoot, canonicalStateDir(stateDirectory));
+-  const registry = new DaemonRegistry(identity.registryDirectory);
+-  const instanceId = `controlled-${releasePath === undefined ? &quot;forced&quot; : &quot;draining&quot;}`;
+-  const processToken = `${instanceId}-token`;
+-  const readyPath = join(stateDirectory, `${instanceId}-ready`);
+-  const requestStartedPath = join(stateDirectory, `${instanceId}-request`);
+-  const lease = registry.acquireStartup(identity, instanceId);
+-  if (lease === undefined) throw new Error(&quot;Expected controlled daemon startup ownership&quot;);
+-  const child = spawn(
+-    process.execPath,
+-    [
+-      fileURLToPath(new URL(&quot;../../../node_modules/tsx/dist/cli.mjs&quot;, import.meta.url)),
+-      fileURLToPath(new URL(&quot;../../helpers/workspace-daemon-stuck.ts&quot;, import.meta.url)),
+-      workspaceRoot,
+-      stateDirectory,
+-      instanceId,
+-      processToken,
+-      readyPath,
+-      requestStartedPath,
+-      ...(releasePath === undefined ? [] : [releasePath]),
+-    ],
+-    { stdio: &quot;ignore&quot; },
+-  );
+-  await waitUntil(() =&gt; existsSync(`${readyPath}.boot`));
+-  const daemonPid = Number(readFileSync(`${readyPath}.boot`, &quot;utf8&quot;));
+-  const record: DaemonRecord = {
+-    schemaVersion: DAEMON_RECORD_SCHEMA_VERSION,
+-    protocolVersion: DAEMON_PROTOCOL_VERSION,
+-    symnavVersion: &quot;test&quot;,
+-    workspaceRoot,
+-    workspaceKey: identity.workspaceKey,
+-    stateKey: identity.stateKey,
+-    identityKey: identity.identityKey,
+-    instanceId,
+-    processToken,
+-    endpoint: identity.endpoint(instanceId),
+-    pid: daemonPid,
+-    state: &quot;starting&quot;,
+-    startedAt: Date.now(),
+-    memoryCapBytes: Number.MAX_SAFE_INTEGER,
+-  };
+-  if (!registry.writeStartingIfStartupOwner(identity, record)) {
+-    throw new Error(&quot;Controlled daemon lost startup ownership&quot;);
+-  }
+-  await waitUntil(() =&gt; existsSync(readyPath));
+-  lease.release();
+-  const readyRecord = registry.read(identity);
+-  if (readyRecord?.state !== &quot;ready&quot;) throw new Error(&quot;Controlled daemon did not become ready&quot;);
+-  return { child, record: readyRecord, requestStartedPath };
+-}
+-
+-function runBuiltStop(
+-  cwd: string,
+-  stateDirectory: string,
+-): Promise&lt;{ readonly status: number | null; readonly stdout: string; readonly stderr: string }&gt; {
+-  const child = spawn(
+-    process.execPath,
+-    [fileURLToPath(new URL(&quot;../../../dist/cli.js&quot;, import.meta.url)), &quot;daemon&quot;, &quot;stop&quot;, &quot;--json&quot;],
+-    {
+-      cwd,
+-      env: { ...process.env, SYMNAV_STATE_DIR: stateDirectory, SYMNAV_TELEMETRY: &quot;0&quot; },
+-      stdio: [&quot;ignore&quot;, &quot;pipe&quot;, &quot;pipe&quot;],
+-    },
+-  );
+-  let stdout = &quot;&quot;;
+-  let stderr = &quot;&quot;;
+-  child.stdout?.setEncoding(&quot;utf8&quot;).on(&quot;data&quot;, (chunk: string) =&gt; {
+-    stdout += chunk;
+-  });
+-  child.stderr?.setEncoding(&quot;utf8&quot;).on(&quot;data&quot;, (chunk: string) =&gt; {
+-    stderr += chunk;
+-  });
+-  return new Promise((resolve, reject) =&gt; {
+-    child.once(&quot;error&quot;, reject);
+-    child.once(&quot;exit&quot;, (status) =&gt; resolve({ status, stdout, stderr }));
+-  });
+-}
+-
+-function waitForProcess(child: ChildProcess): Promise&lt;void&gt; {
+-  if (child.exitCode !== null) {
+-    return child.exitCode === 0
+-      ? Promise.resolve()
+-      : Promise.reject(new Error(`Controlled daemon exited with code ${String(child.exitCode)}`));
+-  }
+-  return new Promise((resolve, reject) =&gt; {
+-    child.once(&quot;error&quot;, reject);
+-    child.once(&quot;exit&quot;, (code) =&gt; {
+-      if (code === 0) resolve();
+-      else reject(new Error(`Controlled daemon exited with code ${String(code)}`));
+-    });
+-  });
+-}
+-
+-async function waitUntil(predicate: () =&gt; boolean): Promise&lt;void&gt; {
+-  const deadline = Date.now() + 5_000;
+-  while (Date.now() &lt;= deadline) {
+-    if (predicate()) return;
+-    await new Promise((resolve) =&gt; setTimeout(resolve, 10));
+-  }
+-  throw new Error(&quot;Timed out waiting for controlled daemon state&quot;);
+-}
+-
+-function processIsAlive(pid: number): boolean {
+-  try {
+-    process.kill(pid, 0);
+-    return true;
+-  } catch {
+-    return false;
+-  }
+-}
+-
+ function temporaryStateDirectory(directories: string[]): string {
+   const directory = mkdtempSync(join(tmpdir(), &quot;symnav-daemon-stop-e2e-&quot;));
+   directories.push(directory);
+@@ -354,18 +96,14 @@ function temporaryWorkspace(directories: string[]): string {
+ }
+ 
+ function captureDaemonPids(stateDir: string, pids: number[]): void {
+-  for (const recordPath of DaemonStateFiles.matchingPaths(stateDir, &quot;.json&quot;)) {
+-    const record = JSON.parse(readFileSync(recordPath, &quot;utf8&quot;)) as { pid: number };
+-    pids.push(record.pid);
+-  }
++  pids.push(...new CliDaemonTesting(stateDir).processIds());
+ }
+ 
+-function daemonLogEvents(stateDir: string): readonly Record&lt;string, unknown&gt;[] {
+-  const logPath = DaemonStateFiles.matchingPaths(stateDir, &quot;.log&quot;)[0];
+-  if (logPath === undefined) return [];
+-  return readFileSync(logPath, &quot;utf8&quot;)
+-    .trim()
+-    .split(&quot;\n&quot;)
+-    .filter((line) =&gt; line.startsWith(&quot;{&quot;))
+-    .map((line) =&gt; JSON.parse(line) as Record&lt;string, unknown&gt;);
++function daemonLogEvents(
++  stateDir: string,
++  workspaceRoot: string,
++): readonly Record&lt;string, unknown&gt;[] {
++  return new CliDaemonTesting(stateDir).inspector.readDiagnostics(
++    canonicalWorkspaceRoot(realpathSync(workspaceRoot)),
++  ).events;
+ }
+</pre></details></main></body></html>

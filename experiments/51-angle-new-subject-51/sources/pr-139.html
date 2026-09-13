@@ -1,0 +1,181 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PR 139 · supplied record</title><link rel="stylesheet" href="../style.css"><body class="source-page"><main><a href="../index.html#provenance">← Page provenance</a><h1>#139 · Route outbound daemon sockets through one client</h1><p>Supplied bundle, frozen with this experiment. The original Markdown is preserved below.</p><pre class="pr-source">## Context
+
+`LocalDaemonTransport` repeated Node socket connection, timeout, read-flow, write-backpressure, and closure mechanics across five outbound paths. One low-level client now owns those mechanics while protocol and delivery decisions remain in the transport façade.
+
+## Shape
+
+Before — each outbound exchange managed a raw socket:
+
+```mermaid
+flowchart LR
+    Transport[&quot;LocalDaemonTransport&quot;] --&gt;|&quot;opens&quot;| Lifecycle[&quot;Lifecycle socket&quot;]
+    Transport --&gt;|&quot;opens&quot;| Execution[&quot;Execution socket&quot;]
+    Transport --&gt;|&quot;opens&quot;| Results[&quot;Result and acknowledgement sockets&quot;]
+    Transport --&gt;|&quot;opens&quot;| Probe[&quot;Endpoint probe&quot;]
+
+    classDef removed fill:#ffebe9,stroke:#cf222e,color:#24292f
+    class Lifecycle,Execution,Results,Probe removed
+```
+
+After — all outbound paths consume one byte-connection port:
+
+```mermaid
+flowchart LR
+    Transport[&quot;LocalDaemonTransport&quot;] --&gt;|&quot;uses&quot;| Port[&quot;DaemonSocketClient&quot;]
+    Client[&quot;LocalDaemonSocketClient&quot;] --&gt;|&quot;implements&quot;| Port
+    Client --&gt;|&quot;owns&quot;| Socket[&quot;node:net Socket&quot;]
+    Transport --&gt;|&quot;retains&quot;| Protocol[&quot;Codec, validation, delivery state&quot;]
+
+    classDef added fill:#dafbe1,stroke:#1a7f37,color:#24292f
+    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f
+    class Client added
+    class Transport changed
+```
+
+Legend: green = added; yellow = changed; red = removed; default = unchanged.
+
+## Where it lives
+
+```text
+.
+└── apps/cli/src/daemon/
+    ├── ++ local-daemon-socket-client.ts                 # sole outbound Node socket owner
+    ├── ++ local-daemon-socket-client.test.ts            # byte flow, timeout, backpressure, and closure
+    ├── ++ local-daemon-transport-socket-client.test.ts  # delegation across five outbound paths
+    ├── ** local-daemon-transport.ts                     # retains protocol and delivery semantics
+    └── ** ... 2 transport test files                    # remove superseded private helper coverage
+```
+
+Legend: `++` added, `**` changed, `~~` moved, `--` removed.
+
+## Public surface
+
+```ts
+export class LocalDaemonSocketClient implements DaemonSocketClient {
+  connect(endpoint: string, timeoutMs?: number): Promise&lt;DaemonSocketConnection&gt;;
+}
+```
+
+## Decisions
+
+- Chose a pull-driven async iterator over forwarded `data` events, because consumer demand now controls socket resume and each delivered chunk pauses reads again.
+- Chose a connection-owned FIFO over façade-owned drain handling, because frames must preserve write-call order across backpressure.
+- Kept protocol decoding and delivery-state translation in `LocalDaemonTransport` over moving them into the socket client, because raw EOF and errors cannot classify request correlation or retry safety.
+- Kept inbound server sockets in `LocalDaemonTransport` over extracting both directions together, because server binding and shutdown form the separate Phase 18 boundary.
+
+## Look here
+
+- `apps/cli/src/daemon/local-daemon-socket-client.ts:25`
+- `apps/cli/src/daemon/local-daemon-socket-client.ts:51`
+- `apps/cli/src/daemon/local-daemon-transport.ts:270`
+
+
+COMMIT MESSAGES
+
+354f4dd7609ed83df6fe39aead05795108d95db5
+Specify daemon socket byte connections
+
+
+4408567f972da3f01c6c0e5a2f004e41e7cbd2f4
+Connect daemon socket byte streams
+
+
+005f07624f624f94cc78a46ebc0db01e6f6ee13d
+Specify pull-driven daemon socket reads
+
+
+37df9db46671d06da2ecbb0bb4eba604d782c2ae
+Pause daemon sockets between consumer reads
+
+
+8a22b38e8c107ba5705c193ee65216975ff3558a
+Specify ordered daemon socket writes
+
+
+37ad54d6e3e09e6bccabb7864d055dfa12d62e5f
+Queue daemon socket writes through drain
+
+
+43aac15d378cf81065ea2cbb4a640539ebad0f6a
+Specify daemon socket connection refusal
+
+
+53dbc2cb7f6a141cb549fa6baeec612cbe78a561
+Reject refused daemon socket connections
+
+
+2cb84193aace20dc6307b5c3cd02eea5e7b54403
+Specify daemon socket connection timeouts
+
+
+5d6df744e1b18319f652c614f807cf5ab926a038
+Enforce daemon socket connection timeouts
+
+
+a04b57be55d288e9aaaaeabd2da83d01f474f244
+Specify daemon socket reset propagation
+
+
+a3b5983b79da3cdf688935bec081280345b329f4
+Propagate daemon socket resets
+
+
+f3b654c29e71e16573afae0a7b211faf0fe7bcbe
+Specify daemon socket write failures
+
+
+fa4e8cf2654a39c5a6e9c4e3ff27aac19981af6b
+Propagate daemon socket write failures
+
+
+621ca6065c2e5a6b9009b0d31d115e3ca3b9dfa9
+Specify daemon socket drain failures
+
+
+6725e12faadfded3bccaeba7a000d2b4da8fd5f3
+Propagate daemon socket drain failures
+
+
+38a4740f5c4b4288393cbf149b4ad23ffcd70a80
+Specify idempotent daemon socket closure
+
+
+6e77152f2f2e43c758d312435b7ce075c6c7f014
+Make daemon socket closure idempotent
+
+
+ff2af306264be21d9c0043cfddde05561eabce53
+Specify lifecycle socket client delegation
+
+
+6d1fc71125cda6a6b8a64d032babd661d44c5ea3
+Delegate daemon lifecycle sockets
+
+
+b60e50bf5c8f94dcc24086e5647ab0da06b9729f
+Specify execution socket client delegation
+
+
+a9d7eafa25d7a133d9d0da866003f4ddf8a169f3
+Delegate daemon execution sockets
+
+
+fc1f586b3ca3e76673e5e57536a58f136333b36e
+Specify result socket client delegation
+
+
+40d5e063b53e86c9e3a21bf9443eb74cb36072fa
+Delegate daemon result sockets
+
+
+e0d5d691a7dd23d01356c21e5bdea233102787d3
+Specify endpoint probe socket delegation
+
+
+678dae9a74d847b10050ebabc38e8863c9788208
+Delegate daemon endpoint probes
+
+
+29a747e95fa142aa7b88c8b84fcb9c2fd9b18d9a
+Remove raw daemon client socket mechanics
+</pre></main></body></html>

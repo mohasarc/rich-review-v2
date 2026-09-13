@@ -1,0 +1,125 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PR 140 · supplied record</title><link rel="stylesheet" href="../style.css"><body class="source-page"><main><a href="../index.html#provenance">← Page provenance</a><h1>#140 · Route daemon lifecycle exchanges through one client</h1><p>Supplied bundle, frozen with this experiment. The original Markdown is preserved below.</p><pre class="pr-source">## Context
+
+Part 16 separated raw outbound socket mechanics, but `LocalDaemonTransport` still owned protocol-level lifecycle and acknowledgement state machines. This part gives those bounded exchanges one owner while preserving existing timeout and delivery-classification contracts.
+
+## Shape
+
+Before — the transport façade implemented each one-response exchange:
+
+```mermaid
+flowchart LR
+    Callers[&quot;Observer, controller, startup, and status&quot;] --&gt;|&quot;uses&quot;| Facade[&quot;LocalDaemonTransport&quot;]
+    Facade --&gt;|&quot;uses&quot;| Lifecycle[&quot;Embedded lifecycle and execution-status logic&quot;]
+    Facade --&gt;|&quot;uses&quot;| Acknowledgement[&quot;Embedded result-acknowledgement logic&quot;]
+    Facade --&gt;|&quot;uses&quot;| Socket[&quot;DaemonSocketClient&quot;]
+
+    classDef removed fill:#ffebe9,stroke:#cf222e,color:#24292f
+    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f
+    class Lifecycle,Acknowledgement removed
+    class Facade changed
+```
+
+After — the façade delegates bounded exchanges to one lifecycle client:
+
+```mermaid
+flowchart LR
+    Callers[&quot;Observer, controller, startup, and status&quot;] --&gt;|&quot;uses&quot;| Facade[&quot;LocalDaemonTransport&quot;]
+    Facade --&gt;|&quot;uses&quot;| Client[&quot;DaemonLifecycleClient&quot;]
+    Client --&gt;|&quot;uses&quot;| Socket[&quot;DaemonSocketClient&quot;]
+    Client --&gt;|&quot;uses&quot;| Protocol[&quot;Codec and validator&quot;]
+
+    classDef added fill:#dafbe1,stroke:#1a7f37,color:#24292f
+    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f
+    class Client added
+    class Facade changed
+```
+
+Legend: green = added; yellow = changed; red = removed; default = unchanged.
+
+## Where it lives
+
+```text
+.
+└── apps/cli/src/
+    ├── commands/daemon/
+    │   └── ** register-daemon-command.ts          # injects daemon-status response timeout
+    └── daemon/
+        ├── ++ daemon-lifecycle-client.ts           # owns bounded one-response exchanges
+        ├── ++ daemon-lifecycle-client.test.ts      # locks correlation, cleanup, and delivery states
+        ├── ++ daemon-transport-error.ts             # owns shared transport failure classification
+        ├── ** local-daemon-transport.ts             # composes and delegates lifecycle requests
+        └── ** ... 7 files                           # update imports and composition oracles
+```
+
+Legend: `++` added, `**` changed, `~~` moved, `--` removed.
+
+## Public surface
+
+```ts
+export class DaemonLifecycleClient implements DaemonLifecycleRequester {
+  constructor(options: DaemonLifecycleClientOptions);
+  request(endpoint: string, request: DaemonLifecycleRequest): Promise&lt;DaemonLifecycleResponse&gt;;
+  executionStatus(
+    endpoint: string,
+    request: DaemonExecutionStatusRequest,
+  ): Promise&lt;DaemonExecutionStatus&gt;;
+  acknowledgeResult(
+    endpoint: string,
+    request: Pick&lt;DaemonExecuteRequest, &quot;protocolVersion&quot; | &quot;instanceId&quot; | &quot;processToken&quot; | &quot;requestId&quot;&gt;,
+    transferId: string,
+  ): Promise&lt;void&gt;;
+}
+```
+
+## Decisions
+
+- Chose one client for lifecycle, execution-status, and result-acknowledgement exchanges over separate request-specific clients, because all three share bounded response, correlation, timeout, and cleanup semantics.
+- Kept result acknowledgement off `DaemonLifecycleRequester` over widening the port, because only result completion needs that exchange.
+- Chose timeout injection at composition over request-kind selection, because daemon status and ordinary routing both send `ping` with different deadlines.
+- Chose semantic validation before assigning `accepted` over treating every decoded frame as accepted, because malformed shapes and authenticated protocol errors have distinct existing delivery states.
+- Chose a shared transport-error module over lifecycle-client ownership, because execution routing and record observation still consume the same failure classification.
+
+## Look here
+
+- `apps/cli/src/daemon/daemon-lifecycle-client.ts:94`
+- `apps/cli/src/daemon/daemon-lifecycle-client.ts:159`
+- `apps/cli/src/commands/daemon/register-daemon-command.ts:110`
+
+
+COMMIT MESSAGES
+
+3f1cee5e86f17c830069ff6370fb2041e344db32
+Extract daemon transport errors
+
+
+428653cac2181c124f404348a5b735419f28f9db
+Specify daemon lifecycle exchanges
+
+
+7d85c7f3fdf8acc7052da7e136c752ef49941e4f
+Request correlated daemon lifecycle responses
+
+
+d8025c617da559eeba9459586638bc7e5c57825b
+Specify daemon result acknowledgement exchange
+
+
+9468c5e4e1aea8182b3afbc8cd55b710959b0ade
+Acknowledge daemon result transfers
+
+
+67e1a59303be8ccd585f93e0a9a287834811cfd3
+Specify lifecycle response timeout composition
+
+
+5d33f009ee3b7897d1c00eeca120c003d0d31100
+Delegate daemon lifecycle exchanges
+
+
+d50909d088e9bd2c6afb687bd4780efb0992abe7
+Specify lifecycle response delivery states
+
+
+85d65db811b6dcb57a88e9018245c57fb9b4c61e
+Preserve lifecycle response delivery states
+</pre></main></body></html>

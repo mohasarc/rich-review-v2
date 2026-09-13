@@ -1,0 +1,163 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PR 144 · supplied record</title><link rel="stylesheet" href="../style.css"><body class="source-page"><main><a href="../index.html#provenance">← Page provenance</a><h1>#144 · Project daemon activity from explicit snapshots</h1><p>Supplied bundle, frozen with this experiment. The original Markdown is preserved below.</p><pre class="pr-source">## Context
+
+`WorkspaceDaemon` derived lifecycle detail and legacy pong fields inline from process, queue, resource, and worker state. The next worker-generation extraction needs the same worker snapshot contract without inheriting process-owned formatting.
+
+## Shape
+
+Before — the process shell owned snapshot capture and projection:
+
+```mermaid
+flowchart LR
+    Request[&quot;Ping/status request&quot;] --&gt;|calls| Daemon[&quot;WorkspaceDaemon&quot;]
+    Sources[&quot;Queue, resource, worker,&lt;br/&gt;clock, and process state&quot;] --&gt;|supplies values| Inline[&quot;activitySnapshot&lt;br/&gt;&amp;lt;&amp;lt;private&amp;gt;&amp;gt;&quot;]
+    Daemon --&gt;|calls| Inline
+    Inline --&gt;|returns| Output[&quot;Activity + legacy pong&quot;]
+
+    classDef removed fill:#ffebe9,stroke:#cf222e,color:#24292f
+    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f
+    class Inline removed
+    class Daemon changed
+```
+
+After — the process shell captures values and one pure projector owns output shape:
+
+```mermaid
+flowchart LR
+    Request[&quot;Ping/status request&quot;] --&gt;|calls| Daemon[&quot;WorkspaceDaemon&quot;]
+    Sources[&quot;Queue, resource, worker,&lt;br/&gt;clock, and process snapshots&quot;] --&gt;|supplies values| Daemon
+    Daemon --&gt;|passes explicit input| Projector[&quot;DaemonActivityProjector&lt;br/&gt;&amp;lt;&amp;lt;stateless&amp;gt;&amp;gt;&quot;]
+    Projector --&gt;|returns frozen values| Output[&quot;Activity + legacy pong&quot;]
+
+    classDef added fill:#dafbe1,stroke:#1a7f37,color:#24292f
+    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f
+    class Projector added
+    class Daemon changed
+```
+
+Legend: green = added; yellow = changed; red = removed; default = unchanged.
+
+## Where it lives
+
+```text
+.
+└── apps/cli/src/daemon/
+    ├── ++ daemon-activity-projector.ts       # owns activity and pong projection
+    ├── ++ daemon-activity-projector.test.ts  # locks precedence, optionality, sampling, and freezing
+    ├── ** workspace-daemon.ts                # supplies explicit snapshot values
+    └── ** workspace-daemon-requests.test.ts  # proves runtime adoption and output identity
+```
+
+Legend: `++` added, `**` changed, `~~` moved, `--` removed.
+
+## Public surface
+
+```ts
+export interface DaemonWorkerGenerationSnapshot {
+  readonly generation: number; readonly ready: boolean; readonly fileCount?: number;
+}
+export interface DaemonActivityProjectionInput {
+  readonly nowMonotonicMs: number; readonly pid: number; readonly processRssBytes: number;
+  readonly startedAt: number; readonly startedMonotonicAt: number;
+  readonly lastNavigationAt?: number; readonly lastCompletedMonotonicAt?: number;
+  readonly productVersion: string; readonly instanceId: string; readonly hardProcessRssBytes: number;
+  readonly queue: WorkspaceRequestQueueSnapshot; readonly resources: DaemonResourceSnapshot;
+  readonly worker: DaemonWorkerGenerationSnapshot;
+}
+export interface DaemonActivityProjection { readonly activity: DaemonActivitySnapshot; readonly pong: DaemonPong; }
+export class DaemonActivityProjector {
+  static project(input: DaemonActivityProjectionInput): DaemonActivityProjection;
+}
+```
+
+## Decisions
+
+- Chose a static projector over an injected service, because projection depends only on explicit snapshot values.
+- Chose explicit clock and process values over callbacks, because the projector must remain deterministic and own no mutable dependency.
+- Chose worker snapshot generation over resource snapshot generation, because replacement status exposes the in-progress generation before resource readiness publication.
+- Chose sampled `resources.spoolBytes` over a completion-store read, because status reports the resource supervisor&#x27;s last observation.
+- Kept legacy pong `fileCount` independent of worker readiness over matching activity optionality, because existing pong output retains the last supplied count during startup and replacement.
+
+## Look here
+
+- `apps/cli/src/daemon/daemon-activity-projector.ts:37`
+- `apps/cli/src/daemon/daemon-activity-projector.test.ts:127`
+- `apps/cli/src/daemon/workspace-daemon.ts:449`
+
+
+COMMIT MESSAGES
+
+52592b836510a41feb4d91b876092d2bc577cc54
+Define daemon activity projection inputs
+
+
+c6939500661c9faccedd55e2404977b7ad81bb66
+Specify daemon activity lifecycle precedence
+
+
+31c465b2f72caa61cd8acbade5c9031ba58ff2b7
+Project daemon activity lifecycle
+
+
+f8a7001f90c0d7a7ec4bbbaa6b9b1c7f6d97e2cb
+Specify daemon activity detail optionality
+
+
+1401bf7dce8768255d3f6960d626cb8633989e7a
+Project daemon activity details
+
+
+1175fc95af5dd22489d0194ef5f7ed2e9f755d4f
+Specify daemon activity timing
+
+
+50c0a6a4e05e24257f1cdd69b8fdc15b9037f84d
+Clamp daemon activity timing
+
+
+d03f78905ea77be01592c837a2a7169b4d242c96
+Specify daemon activity recovery detail
+
+
+75d1d8f949ce9a69644b8fff34030b09dcdb2d48
+Project daemon activity recovery detail
+
+
+8b91e50119355277ed6333bff8757ca3f4c413a1
+Specify replacement activity generation
+
+
+c6f30e7176b524a42a13998af585b3a495f02fe3
+Project replacement activity generation
+
+
+32ecc119d8de426840886bd0ca234007995e852e
+Specify sampled activity spool bytes
+
+
+39e24c7827290da22a8262e5779c8f89d2864a45
+Use sampled activity spool bytes
+
+
+4e4c7a97ed785e013349fcf545c2a2b192fe035b
+Characterize legacy recovery activity
+
+
+6ab72f2ddbd029a3e5d0e827fbeabfd6c5df6a7b
+Specify frozen daemon activity projections
+
+
+9b076a439d20e04111a3a97039bf30b36677676a
+Freeze daemon activity projections
+
+
+f0b64985d8866b5a0d5e9c54548efbd50eb82a91
+Order daemon activity projection steps
+
+
+dd9f503fc81262b7ece07d09c3529f8bb369ca16
+Specify daemon activity projector adoption
+
+
+9ea7979c2bf819a33f3257c25ba3de7c99b59fed
+Delegate daemon activity projection
+</pre></main></body></html>

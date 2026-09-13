@@ -1,0 +1,142 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PR 142 · supplied record</title><link rel="stylesheet" href="../style.css"><body class="source-page"><main><a href="../index.html#provenance">← Page provenance</a><h1>#142 · Preserve accepted execution recovery in one client</h1><p>Supplied bundle, frozen with this experiment. The original Markdown is preserved below.</p><pre class="pr-source">## Context
+
+Outbound execution still lived in `LocalDaemonTransport` after lifecycle and socket mechanics gained dedicated owners. Accepted work requires independent recovery budgets for result fetches within an attempt and identical-request reattachments across attempts.
+
+## Shape
+
+Before — the transport façade embedded the execution state machine:
+
+```mermaid
+flowchart LR
+    Callers[&quot;Daemon command callers&quot;] --&gt;|&quot;execute&quot;| Facade[&quot;LocalDaemonTransport&quot;]
+    Facade --&gt;|&quot;owns&quot;| Embedded[&quot;Embedded admission, transfer, acknowledgement, and recovery&quot;]
+    Embedded --&gt;|&quot;uses&quot;| Socket[&quot;DaemonSocketClient&quot;]
+    Embedded --&gt;|&quot;uses&quot;| Lifecycle[&quot;DaemonLifecycleClient&quot;]
+    Embedded --&gt;|&quot;creates&quot;| Output[&quot;Result capture&quot;]
+
+    classDef removed fill:#ffebe9,stroke:#cf222e,color:#24292f
+    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f
+    class Embedded removed
+    class Facade changed
+```
+
+After — the façade delegates the complete state machine to one execution client:
+
+```mermaid
+flowchart LR
+    Callers[&quot;Daemon command callers&quot;] --&gt;|&quot;execute&quot;| Facade[&quot;LocalDaemonTransport&quot;]
+    Facade --&gt;|&quot;delegates&quot;| Client[&quot;DaemonExecutionClient&quot;]
+    Client --&gt;|&quot;uses&quot;| Socket[&quot;DaemonSocketClient&quot;]
+    Client --&gt;|&quot;acknowledges through&quot;| Lifecycle[&quot;DaemonLifecycleClient&quot;]
+    Client --&gt;|&quot;creates per attempt&quot;| Output[&quot;Result capture&quot;]
+
+    classDef added fill:#dafbe1,stroke:#1a7f37,color:#24292f
+    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f
+    class Client added
+    class Facade changed
+```
+
+Legend: green = added; yellow = changed; red = removed; default = unchanged.
+
+## Where it lives
+
+```text
+.
+└── apps/cli/src/daemon/
+    ├── ++ daemon-execution-client.ts               # owns outbound execution and accepted recovery
+    ├── ++ daemon-execution-client.test.ts          # locks direct ownership and identical-request recovery
+    ├── ** local-daemon-transport.ts                # composes and delegates to execution client
+    └── ** local-daemon-transport-execution.test.ts # retains transport-level delivery oracles
+```
+
+Legend: `++` added, `**` changed, `~~` moved, `--` removed.
+
+## Public surface
+
+```ts
+export class DaemonExecutionClient implements DaemonExecutionRequester {
+  constructor(options: DaemonExecutionClientOptions);
+  execute(endpoint: string, request: DaemonExecuteRequest): Promise&lt;DaemonExecutionReceipt&gt;;
+}
+```
+
+## Decisions
+
+- Chose a dedicated execution client over a generic response chain, because admission, accepted completion, transfer, acknowledgement, and recovery share one state machine.
+- Chose a fresh output capture per execute attempt over reusing interrupted capture state, because duplicate-request reattachment starts a new delivery while result fetch resumes the current delivery.
+- Chose independent numeric policy counters over boolean recovery flags, because fetch resumes and accepted reattachments have separate configurable budgets.
+- Chose the lifecycle client&#x27;s acknowledgement-only surface over widening `DaemonLifecycleRequester`, because only result completion needs acknowledgement.
+- Chose an internal fetch-ended error over changing the public exhausted-fetch failure, because final exhaustion must retain accepted-corruption behavior without replaying execution.
+
+## Look here
+
+- `apps/cli/src/daemon/daemon-execution-client.ts:46`
+- `apps/cli/src/daemon/daemon-execution-client.ts:75`
+- `apps/cli/src/daemon/daemon-execution-client.ts:300`
+
+
+COMMIT MESSAGES
+
+7eb8dd4ce839affcd1d34cdc7ffd0a4e41942f3f
+Characterize execution admission deadlines
+
+
+30c4b5474f5737b56f61cbcece57cc02307e9aab
+Specify result fetch resume budgets
+
+
+f1e1d4842e96106102f2a80ff48e4a1452ed7031
+Honor repeated result fetch resumes
+
+
+6acb1fb1a36f0f25eb37e5c820a71ab5454b7227
+Characterize execution reattachment budgets
+
+
+149f4b6a04fa6d6c6c9c0cc4be3cd8b512612a24
+Characterize failed execution reattachment
+
+
+5419a881e35b4fcf6dbc899b8cbafcdab0986f1c
+Characterize isolated execution reattachment
+
+
+9330f32b5ba86e7c93d071c1e46de28f5a93da21
+Characterize execution output disposal
+
+
+7d972ae215621adbe2decc8a1a0b76bf9de8d877
+Assign daemon execution client ownership
+
+
+815bfc9d6414b45341f8ffd369d9bcc0885fde6d
+Extract one-attempt daemon execution
+
+
+ea64fe2dff70c1593dadb1619fb62dd0b1c2ccd2
+Specify accepted execution recovery ownership
+
+
+2c8829f23c041ba2d08c6fb753ba618bcbdb2d47
+Own accepted execution recovery
+
+
+6939ec682a53dd3b4df79ae96a314380aac48c6f
+Delegate daemon execution exchanges
+
+
+76eaea78b1a27d0e59e30e708fc25265e70c70fb
+Specify exhausted result fetch failure
+
+
+40f90692114acf55fcec8524daca93a63e9b0cdd
+Preserve exhausted result fetch failures
+
+
+40dc23233febc557e98e482bee073f72f162b118
+Specify original accepted-close failure
+
+
+5e9ee2752b12f845a9f168072d37fd388462a748
+Retain original accepted-close failure
+</pre></main></body></html>

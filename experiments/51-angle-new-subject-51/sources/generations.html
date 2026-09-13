@@ -1,0 +1,507 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>generations · pinned source</title><link rel="stylesheet" href="../style.css"><body class="source-page"><main><a href="../index.html#provenance">← Page provenance</a><h1>generations</h1><p>packages/daemon/src/worker/worker-generation-manager.ts<br>d07002357d3e9596bfaae910a1ac63b77981620b · tip<br>SHA-256 51b49b4d10c01a195764fca1ba12b17eacd47318f178f2b34ff3f198c4d22cea</p><pre class="source-code"><span class="line" id="L1"><a href="#L1">1</a> import type { DaemonCommandName, DaemonExecutorRequest } from &quot;@symnav/daemon&quot;;</span>
+<span class="line" id="L2"><a href="#L2">2</a> import type { DaemonOutputSink } from &quot;../daemon-executor.js&quot;;</span>
+<span class="line" id="L3"><a href="#L3">3</a> import {</span>
+<span class="line" id="L4"><a href="#L4">4</a>   DaemonNavigationWorkerExitedError,</span>
+<span class="line" id="L5"><a href="#L5">5</a>   type DaemonNavigationWorker,</span>
+<span class="line" id="L6"><a href="#L6">6</a>   type DaemonNavigationWorkerExit,</span>
+<span class="line" id="L7"><a href="#L7">7</a> } from &quot;./navigation-worker.js&quot;;</span>
+<span class="line" id="L8"><a href="#L8">8</a> import type { DaemonNavigationWorkerResponse } from &quot;./worker-protocol.js&quot;;</span>
+<span class="line" id="L9"><a href="#L9">9</a> import type {</span>
+<span class="line" id="L10"><a href="#L10">10</a>   DaemonWorkerDiagnostic,</span>
+<span class="line" id="L11"><a href="#L11">11</a>   DaemonWorkerReplacementCause,</span>
+<span class="line" id="L12"><a href="#L12">12</a> } from &quot;../transport/protocol.js&quot;;</span>
+<span class="line" id="L13"><a href="#L13">13</a> </span>
+<span class="line" id="L14"><a href="#L14">14</a> export type DaemonWorkerReadyReport = Extract&lt;</span>
+<span class="line" id="L15"><a href="#L15">15</a>   DaemonNavigationWorkerResponse,</span>
+<span class="line" id="L16"><a href="#L16">16</a>   { readonly kind: &quot;ready&quot; }</span>
+<span class="line" id="L17"><a href="#L17">17</a> &gt;;</span>
+<span class="line" id="L18"><a href="#L18">18</a> </span>
+<span class="line" id="L19"><a href="#L19">19</a> export type DaemonWorkerExecutionReport = Extract&lt;</span>
+<span class="line" id="L20"><a href="#L20">20</a>   DaemonNavigationWorkerResponse,</span>
+<span class="line" id="L21"><a href="#L21">21</a>   { readonly kind: &quot;result&quot; }</span>
+<span class="line" id="L22"><a href="#L22">22</a> &gt;;</span>
+<span class="line" id="L23"><a href="#L23">23</a> </span>
+<span class="line" id="L24"><a href="#L24">24</a> export type DaemonWorkerResourceReport = Extract&lt;</span>
+<span class="line" id="L25"><a href="#L25">25</a>   DaemonNavigationWorkerResponse,</span>
+<span class="line" id="L26"><a href="#L26">26</a>   { readonly kind: &quot;heap&quot; }</span>
+<span class="line" id="L27"><a href="#L27">27</a> &gt;;</span>
+<span class="line" id="L28"><a href="#L28">28</a> </span>
+<span class="line" id="L29"><a href="#L29">29</a> export interface DaemonWorkerExecuteRequest {</span>
+<span class="line" id="L30"><a href="#L30">30</a>   readonly commandName: DaemonCommandName;</span>
+<span class="line" id="L31"><a href="#L31">31</a>   readonly request: DaemonExecutorRequest;</span>
+<span class="line" id="L32"><a href="#L32">32</a> }</span>
+<span class="line" id="L33"><a href="#L33">33</a> </span>
+<span class="line" id="L34"><a href="#L34">34</a> export interface DaemonWorkerGenerationSnapshot {</span>
+<span class="line" id="L35"><a href="#L35">35</a>   readonly generation: number;</span>
+<span class="line" id="L36"><a href="#L36">36</a>   readonly ready: boolean;</span>
+<span class="line" id="L37"><a href="#L37">37</a>   readonly fileCount?: number;</span>
+<span class="line" id="L38"><a href="#L38">38</a> }</span>
+<span class="line" id="L39"><a href="#L39">39</a> </span>
+<span class="line" id="L40"><a href="#L40">40</a> export interface DaemonWorkerExitRecovery {</span>
+<span class="line" id="L41"><a href="#L41">41</a>   recover(exit: DaemonNavigationWorkerExit): Promise&lt;void&gt;;</span>
+<span class="line" id="L42"><a href="#L42">42</a> }</span>
+<span class="line" id="L43"><a href="#L43">43</a> </span>
+<span class="line" id="L44"><a href="#L44">44</a> export interface DaemonWorkerGenerationManagerOptions {</span>
+<span class="line" id="L45"><a href="#L45">45</a>   readonly workspaceRoot: string;</span>
+<span class="line" id="L46"><a href="#L46">46</a>   readonly createWorker: (generation: number) =&gt; DaemonNavigationWorker;</span>
+<span class="line" id="L47"><a href="#L47">47</a>   readonly initialWorker?: DaemonNavigationWorker;</span>
+<span class="line" id="L48"><a href="#L48">48</a>   readonly exitRecovery: DaemonWorkerExitRecovery;</span>
+<span class="line" id="L49"><a href="#L49">49</a>   readonly onActiveResourceInterruption: (cause: DaemonWorkerReplacementCause) =&gt; void;</span>
+<span class="line" id="L50"><a href="#L50">50</a>   readonly onDiagnostic: (diagnostic: DaemonWorkerDiagnostic) =&gt; void;</span>
+<span class="line" id="L51"><a href="#L51">51</a> }</span>
+<span class="line" id="L52"><a href="#L52">52</a> </span>
+<span class="line" id="L53"><a href="#L53">53</a> interface DaemonWorkerGeneration {</span>
+<span class="line" id="L54"><a href="#L54">54</a>   readonly worker: DaemonNavigationWorker;</span>
+<span class="line" id="L55"><a href="#L55">55</a>   ready: Promise&lt;DaemonWorkerReadyReport&gt; | undefined;</span>
+<span class="line" id="L56"><a href="#L56">56</a> }</span>
+<span class="line" id="L57"><a href="#L57">57</a> </span>
+<span class="line" id="L58"><a href="#L58">58</a> export class DaemonWorkerGenerationManager {</span>
+<span class="line" id="L59"><a href="#L59">59</a>   private currentGeneration: DaemonWorkerGeneration;</span>
+<span class="line" id="L60"><a href="#L60">60</a>   private startOperation: Promise&lt;DaemonWorkerReadyReport&gt; | undefined;</span>
+<span class="line" id="L61"><a href="#L61">61</a>   private replacementOperation: Promise&lt;DaemonWorkerReadyReport&gt; | undefined;</span>
+<span class="line" id="L62"><a href="#L62">62</a>   private recoveryOperation: Promise&lt;void&gt; | undefined;</span>
+<span class="line" id="L63"><a href="#L63">63</a>   private closeOperation: Promise&lt;void&gt; | undefined;</span>
+<span class="line" id="L64"><a href="#L64">64</a>   private terminationOperation: Promise&lt;void&gt; | undefined;</span>
+<span class="line" id="L65"><a href="#L65">65</a>   private protocolReadyGeneration: DaemonWorkerGeneration | undefined;</span>
+<span class="line" id="L66"><a href="#L66">66</a>   private readinessActivated = false;</span>
+<span class="line" id="L67"><a href="#L67">67</a>   private workerReady = false;</span>
+<span class="line" id="L68"><a href="#L68">68</a>   private fileCount: number | undefined;</span>
+<span class="line" id="L69"><a href="#L69">69</a>   private stopping = false;</span>
+<span class="line" id="L70"><a href="#L70">70</a> </span>
+<span class="line" id="L71"><a href="#L71">71</a>   constructor(private readonly options: DaemonWorkerGenerationManagerOptions) {</span>
+<span class="line" id="L72"><a href="#L72">72</a>     const worker = options.initialWorker ?? options.createWorker(1);</span>
+<span class="line" id="L73"><a href="#L73">73</a>     this.currentGeneration = this.createGeneration(worker);</span>
+<span class="line" id="L74"><a href="#L74">74</a>   }</span>
+<span class="line" id="L75"><a href="#L75">75</a> </span>
+<span class="line" id="L76"><a href="#L76">76</a>   get snapshot(): DaemonWorkerGenerationSnapshot {</span>
+<span class="line" id="L77"><a href="#L77">77</a>     return Object.freeze({</span>
+<span class="line" id="L78"><a href="#L78">78</a>       generation: this.currentGeneration.worker.generation,</span>
+<span class="line" id="L79"><a href="#L79">79</a>       ready: this.workerReady,</span>
+<span class="line" id="L80"><a href="#L80">80</a>       ...(this.fileCount === undefined ? {} : { fileCount: this.fileCount }),</span>
+<span class="line" id="L81"><a href="#L81">81</a>     });</span>
+<span class="line" id="L82"><a href="#L82">82</a>   }</span>
+<span class="line" id="L83"><a href="#L83">83</a> </span>
+<span class="line" id="L84"><a href="#L84">84</a>   start(): Promise&lt;DaemonWorkerReadyReport&gt; {</span>
+<span class="line" id="L85"><a href="#L85">85</a>     if (this.startOperation !== undefined) return this.startOperation;</span>
+<span class="line" id="L86"><a href="#L86">86</a>     const generation = this.currentGeneration;</span>
+<span class="line" id="L87"><a href="#L87">87</a>     generation.ready = this.startGeneration(generation);</span>
+<span class="line" id="L88"><a href="#L88">88</a>     this.startOperation = this.waitForReadyGeneration(generation).then((report) =&gt; {</span>
+<span class="line" id="L89"><a href="#L89">89</a>       this.publishProtocolReady(generation, report);</span>
+<span class="line" id="L90"><a href="#L90">90</a>       return report;</span>
+<span class="line" id="L91"><a href="#L91">91</a>     });</span>
+<span class="line" id="L92"><a href="#L92">92</a>     return this.startOperation;</span>
+<span class="line" id="L93"><a href="#L93">93</a>   }</span>
+<span class="line" id="L94"><a href="#L94">94</a> </span>
+<span class="line" id="L95"><a href="#L95">95</a>   activateReadiness(): void {</span>
+<span class="line" id="L96"><a href="#L96">96</a>     if (this.protocolReadyGeneration !== this.currentGeneration) {</span>
+<span class="line" id="L97"><a href="#L97">97</a>       throw new Error(&quot;Navigation worker protocol readiness is unavailable&quot;);</span>
+<span class="line" id="L98"><a href="#L98">98</a>     }</span>
+<span class="line" id="L99"><a href="#L99">99</a>     this.readinessActivated = true;</span>
+<span class="line" id="L100"><a href="#L100">100</a>     this.workerReady = true;</span>
+<span class="line" id="L101"><a href="#L101">101</a>   }</span>
+<span class="line" id="L102"><a href="#L102">102</a> </span>
+<span class="line" id="L103"><a href="#L103">103</a>   execute(</span>
+<span class="line" id="L104"><a href="#L104">104</a>     requestId: string,</span>
+<span class="line" id="L105"><a href="#L105">105</a>     request: DaemonWorkerExecuteRequest,</span>
+<span class="line" id="L106"><a href="#L106">106</a>     output: DaemonOutputSink,</span>
+<span class="line" id="L107"><a href="#L107">107</a>   ): Promise&lt;DaemonWorkerExecutionReport&gt; {</span>
+<span class="line" id="L108"><a href="#L108">108</a>     const generation = this.currentGeneration;</span>
+<span class="line" id="L109"><a href="#L109">109</a>     const ready = generation.ready ?? this.start();</span>
+<span class="line" id="L110"><a href="#L110">110</a>     return ready</span>
+<span class="line" id="L111"><a href="#L111">111</a>       .then(() =&gt;</span>
+<span class="line" id="L112"><a href="#L112">112</a>         generation.worker.execute(requestId, request.commandName, request.request, output),</span>
+<span class="line" id="L113"><a href="#L113">113</a>       )</span>
+<span class="line" id="L114"><a href="#L114">114</a>       .then((response): DaemonWorkerExecutionReport =&gt; {</span>
+<span class="line" id="L115"><a href="#L115">115</a>         if (</span>
+<span class="line" id="L116"><a href="#L116">116</a>           response.kind !== &quot;result&quot; ||</span>
+<span class="line" id="L117"><a href="#L117">117</a>           response.requestId !== requestId ||</span>
+<span class="line" id="L118"><a href="#L118">118</a>           response.generation !== generation.worker.generation</span>
+<span class="line" id="L119"><a href="#L119">119</a>         ) {</span>
+<span class="line" id="L120"><a href="#L120">120</a>           throw new Error(&quot;Navigation worker returned an uncorrelated result&quot;);</span>
+<span class="line" id="L121"><a href="#L121">121</a>         }</span>
+<span class="line" id="L122"><a href="#L122">122</a>         return response;</span>
+<span class="line" id="L123"><a href="#L123">123</a>       });</span>
+<span class="line" id="L124"><a href="#L124">124</a>   }</span>
+<span class="line" id="L125"><a href="#L125">125</a> </span>
+<span class="line" id="L126"><a href="#L126">126</a>   replace(cause: DaemonWorkerReplacementCause): Promise&lt;DaemonWorkerReadyReport&gt; {</span>
+<span class="line" id="L127"><a href="#L127">127</a>     if (this.replacementOperation !== undefined) return this.replacementOperation;</span>
+<span class="line" id="L128"><a href="#L128">128</a>     const operation = this.replaceGeneration(cause);</span>
+<span class="line" id="L129"><a href="#L129">129</a>     this.replacementOperation = operation;</span>
+<span class="line" id="L130"><a href="#L130">130</a>     void operation.then(</span>
+<span class="line" id="L131"><a href="#L131">131</a>       () =&gt; this.clearReplacement(operation),</span>
+<span class="line" id="L132"><a href="#L132">132</a>       () =&gt; this.clearReplacement(operation),</span>
+<span class="line" id="L133"><a href="#L133">133</a>     );</span>
+<span class="line" id="L134"><a href="#L134">134</a>     return operation;</span>
+<span class="line" id="L135"><a href="#L135">135</a>   }</span>
+<span class="line" id="L136"><a href="#L136">136</a> </span>
+<span class="line" id="L137"><a href="#L137">137</a>   async releaseTransientResources(): Promise&lt;DaemonWorkerResourceReport&gt; {</span>
+<span class="line" id="L138"><a href="#L138">138</a>     const response = await this.currentGeneration.worker.releaseTransientResources();</span>
+<span class="line" id="L139"><a href="#L139">139</a>     if (response.kind !== &quot;heap&quot;) {</span>
+<span class="line" id="L140"><a href="#L140">140</a>       throw new Error(&quot;Navigation worker did not report heap usage&quot;);</span>
+<span class="line" id="L141"><a href="#L141">141</a>     }</span>
+<span class="line" id="L142"><a href="#L142">142</a>     this.options.onDiagnostic({</span>
+<span class="line" id="L143"><a href="#L143">143</a>       kind: &quot;resources-released&quot;,</span>
+<span class="line" id="L144"><a href="#L144">144</a>       workerGeneration: response.generation,</span>
+<span class="line" id="L145"><a href="#L145">145</a>       workerHeapUsedBytes: response.usedHeapBytes,</span>
+<span class="line" id="L146"><a href="#L146">146</a>       workerHeapLimitBytes: response.heapLimitBytes,</span>
+<span class="line" id="L147"><a href="#L147">147</a>     });</span>
+<span class="line" id="L148"><a href="#L148">148</a>     return response;</span>
+<span class="line" id="L149"><a href="#L149">149</a>   }</span>
+<span class="line" id="L150"><a href="#L150">150</a> </span>
+<span class="line" id="L151"><a href="#L151">151</a>   close(): Promise&lt;void&gt; {</span>
+<span class="line" id="L152"><a href="#L152">152</a>     if (this.closeOperation !== undefined) return this.closeOperation;</span>
+<span class="line" id="L153"><a href="#L153">153</a>     this.stopping = true;</span>
+<span class="line" id="L154"><a href="#L154">154</a>     this.workerReady = false;</span>
+<span class="line" id="L155"><a href="#L155">155</a>     this.closeOperation = this.currentGeneration.worker.drainAndClose();</span>
+<span class="line" id="L156"><a href="#L156">156</a>     return this.closeOperation;</span>
+<span class="line" id="L157"><a href="#L157">157</a>   }</span>
+<span class="line" id="L158"><a href="#L158">158</a> </span>
+<span class="line" id="L159"><a href="#L159">159</a>   terminate(): Promise&lt;void&gt; {</span>
+<span class="line" id="L160"><a href="#L160">160</a>     if (this.terminationOperation !== undefined) return this.terminationOperation;</span>
+<span class="line" id="L161"><a href="#L161">161</a>     this.stopping = true;</span>
+<span class="line" id="L162"><a href="#L162">162</a>     this.workerReady = false;</span>
+<span class="line" id="L163"><a href="#L163">163</a>     this.terminationOperation = this.currentGeneration.worker.terminate();</span>
+<span class="line" id="L164"><a href="#L164">164</a>     return this.terminationOperation;</span>
+<span class="line" id="L165"><a href="#L165">165</a>   }</span>
+<span class="line" id="L166"><a href="#L166">166</a> </span>
+<span class="line" id="L167"><a href="#L167">167</a>   private async replaceGeneration(</span>
+<span class="line" id="L168"><a href="#L168">168</a>     cause: DaemonWorkerReplacementCause,</span>
+<span class="line" id="L169"><a href="#L169">169</a>   ): Promise&lt;DaemonWorkerReadyReport&gt; {</span>
+<span class="line" id="L170"><a href="#L170">170</a>     const previous = this.currentGeneration;</span>
+<span class="line" id="L171"><a href="#L171">171</a>     if (cause !== &quot;worker-exit&quot;) this.options.onActiveResourceInterruption(cause);</span>
+<span class="line" id="L172"><a href="#L172">172</a>     this.workerReady = false;</span>
+<span class="line" id="L173"><a href="#L173">173</a>     this.protocolReadyGeneration = undefined;</span>
+<span class="line" id="L174"><a href="#L174">174</a>     const nextWorker = this.options.createWorker(previous.worker.generation + 1);</span>
+<span class="line" id="L175"><a href="#L175">175</a>     if (nextWorker.generation !== previous.worker.generation + 1) {</span>
+<span class="line" id="L176"><a href="#L176">176</a>       throw new Error(&quot;Navigation worker factory returned the wrong generation&quot;);</span>
+<span class="line" id="L177"><a href="#L177">177</a>     }</span>
+<span class="line" id="L178"><a href="#L178">178</a>     const next = this.createGeneration(nextWorker);</span>
+<span class="line" id="L179"><a href="#L179">179</a>     this.currentGeneration = next;</span>
+<span class="line" id="L180"><a href="#L180">180</a>     next.ready = this.startGeneration(next);</span>
+<span class="line" id="L181"><a href="#L181">181</a>     await previous.worker.terminate().catch(() =&gt; undefined);</span>
+<span class="line" id="L182"><a href="#L182">182</a>     const report = await next.ready;</span>
+<span class="line" id="L183"><a href="#L183">183</a>     this.publishProtocolReady(next, report);</span>
+<span class="line" id="L184"><a href="#L184">184</a>     this.options.onDiagnostic({</span>
+<span class="line" id="L185"><a href="#L185">185</a>       kind: &quot;worker-replaced&quot;,</span>
+<span class="line" id="L186"><a href="#L186">186</a>       cause,</span>
+<span class="line" id="L187"><a href="#L187">187</a>       previousWorkerGeneration: previous.worker.generation,</span>
+<span class="line" id="L188"><a href="#L188">188</a>       workerGeneration: next.worker.generation,</span>
+<span class="line" id="L189"><a href="#L189">189</a>       fileCount: report.fileCount,</span>
+<span class="line" id="L190"><a href="#L190">190</a>       ...report.startupDurations,</span>
+<span class="line" id="L191"><a href="#L191">191</a>     });</span>
+<span class="line" id="L192"><a href="#L192">192</a>     return report;</span>
+<span class="line" id="L193"><a href="#L193">193</a>   }</span>
+<span class="line" id="L194"><a href="#L194">194</a> </span>
+<span class="line" id="L195"><a href="#L195">195</a>   private startGeneration(generation: DaemonWorkerGeneration): Promise&lt;DaemonWorkerReadyReport&gt; {</span>
+<span class="line" id="L196"><a href="#L196">196</a>     return generation.worker</span>
+<span class="line" id="L197"><a href="#L197">197</a>       .start(this.options.workspaceRoot)</span>
+<span class="line" id="L198"><a href="#L198">198</a>       .then((response): DaemonWorkerReadyReport =&gt; {</span>
+<span class="line" id="L199"><a href="#L199">199</a>         if (response.kind !== &quot;ready&quot; || response.generation !== generation.worker.generation) {</span>
+<span class="line" id="L200"><a href="#L200">200</a>           throw new Error(&quot;Navigation worker did not become ready&quot;);</span>
+<span class="line" id="L201"><a href="#L201">201</a>         }</span>
+<span class="line" id="L202"><a href="#L202">202</a>         return response;</span>
+<span class="line" id="L203"><a href="#L203">203</a>       });</span>
+<span class="line" id="L204"><a href="#L204">204</a>   }</span>
+<span class="line" id="L205"><a href="#L205">205</a> </span>
+<span class="line" id="L206"><a href="#L206">206</a>   private async waitForReadyGeneration(</span>
+<span class="line" id="L207"><a href="#L207">207</a>     generation: DaemonWorkerGeneration,</span>
+<span class="line" id="L208"><a href="#L208">208</a>   ): Promise&lt;DaemonWorkerReadyReport&gt; {</span>
+<span class="line" id="L209"><a href="#L209">209</a>     try {</span>
+<span class="line" id="L210"><a href="#L210">210</a>       if (generation.ready === undefined) throw new Error(&quot;Navigation worker is not starting&quot;);</span>
+<span class="line" id="L211"><a href="#L211">211</a>       return await generation.ready;</span>
+<span class="line" id="L212"><a href="#L212">212</a>     } catch (error) {</span>
+<span class="line" id="L213"><a href="#L213">213</a>       if (!(error instanceof DaemonNavigationWorkerExitedError)) throw error;</span>
+<span class="line" id="L214"><a href="#L214">214</a>       await generation.worker.exited;</span>
+<span class="line" id="L215"><a href="#L215">215</a>       const recovery = this.recoveryOperation;</span>
+<span class="line" id="L216"><a href="#L216">216</a>       if (recovery === undefined) throw error;</span>
+<span class="line" id="L217"><a href="#L217">217</a>       await recovery;</span>
+<span class="line" id="L218"><a href="#L218">218</a>       const replacement = this.currentGeneration;</span>
+<span class="line" id="L219"><a href="#L219">219</a>       if (replacement === generation || replacement.ready === undefined) throw error;</span>
+<span class="line" id="L220"><a href="#L220">220</a>       return replacement.ready;</span>
+<span class="line" id="L221"><a href="#L221">221</a>     }</span>
+<span class="line" id="L222"><a href="#L222">222</a>   }</span>
+<span class="line" id="L223"><a href="#L223">223</a> </span>
+<span class="line" id="L224"><a href="#L224">224</a>   private createGeneration(worker: DaemonNavigationWorker): DaemonWorkerGeneration {</span>
+<span class="line" id="L225"><a href="#L225">225</a>     const generation: DaemonWorkerGeneration = { worker, ready: undefined };</span>
+<span class="line" id="L226"><a href="#L226">226</a>     void worker.exited.then((exit) =&gt; this.observeExit(generation, exit));</span>
+<span class="line" id="L227"><a href="#L227">227</a>     return generation;</span>
+<span class="line" id="L228"><a href="#L228">228</a>   }</span>
+<span class="line" id="L229"><a href="#L229">229</a> </span>
+<span class="line" id="L230"><a href="#L230">230</a>   private observeExit(generation: DaemonWorkerGeneration, exit: DaemonNavigationWorkerExit): void {</span>
+<span class="line" id="L231"><a href="#L231">231</a>     if (this.stopping || generation !== this.currentGeneration) return;</span>
+<span class="line" id="L232"><a href="#L232">232</a>     const recovery = this.options.exitRecovery.recover(exit);</span>
+<span class="line" id="L233"><a href="#L233">233</a>     this.recoveryOperation = recovery;</span>
+<span class="line" id="L234"><a href="#L234">234</a>     void recovery.catch(() =&gt; undefined);</span>
+<span class="line" id="L235"><a href="#L235">235</a>   }</span>
+<span class="line" id="L236"><a href="#L236">236</a> </span>
+<span class="line" id="L237"><a href="#L237">237</a>   private publishProtocolReady(</span>
+<span class="line" id="L238"><a href="#L238">238</a>     generation: DaemonWorkerGeneration,</span>
+<span class="line" id="L239"><a href="#L239">239</a>     report: DaemonWorkerReadyReport,</span>
+<span class="line" id="L240"><a href="#L240">240</a>   ): void {</span>
+<span class="line" id="L241"><a href="#L241">241</a>     if (generation !== this.currentGeneration) return;</span>
+<span class="line" id="L242"><a href="#L242">242</a>     this.protocolReadyGeneration = generation;</span>
+<span class="line" id="L243"><a href="#L243">243</a>     this.fileCount = report.fileCount;</span>
+<span class="line" id="L244"><a href="#L244">244</a>     if (this.readinessActivated) this.workerReady = true;</span>
+<span class="line" id="L245"><a href="#L245">245</a>   }</span>
+<span class="line" id="L246"><a href="#L246">246</a> </span>
+<span class="line" id="L247"><a href="#L247">247</a>   private clearReplacement(operation: Promise&lt;DaemonWorkerReadyReport&gt;): void {</span>
+<span class="line" id="L248"><a href="#L248">248</a>     if (this.replacementOperation === operation) this.replacementOperation = undefined;</span>
+<span class="line" id="L249"><a href="#L249">249</a>   }</span>
+<span class="line" id="L250"><a href="#L250">250</a> }</span>
+</pre><details class="source-disclosure"><summary>Net main → tip change touching this path (copy-aware)</summary><p>This is the net delta, including moves/copies. A historical source snapshot above may precede the final change below.</p><pre class="pr-source">diff --git a/packages/daemon/src/worker/worker-generation-manager.ts b/packages/daemon/src/worker/worker-generation-manager.ts
+new file mode 100644
+index 000000000..e74473db5
+--- /dev/null
++++ b/packages/daemon/src/worker/worker-generation-manager.ts
+@@ -0,0 +1,250 @@
++import type { DaemonCommandName, DaemonExecutorRequest } from &quot;@symnav/daemon&quot;;
++import type { DaemonOutputSink } from &quot;../daemon-executor.js&quot;;
++import {
++  DaemonNavigationWorkerExitedError,
++  type DaemonNavigationWorker,
++  type DaemonNavigationWorkerExit,
++} from &quot;./navigation-worker.js&quot;;
++import type { DaemonNavigationWorkerResponse } from &quot;./worker-protocol.js&quot;;
++import type {
++  DaemonWorkerDiagnostic,
++  DaemonWorkerReplacementCause,
++} from &quot;../transport/protocol.js&quot;;
++
++export type DaemonWorkerReadyReport = Extract&lt;
++  DaemonNavigationWorkerResponse,
++  { readonly kind: &quot;ready&quot; }
++&gt;;
++
++export type DaemonWorkerExecutionReport = Extract&lt;
++  DaemonNavigationWorkerResponse,
++  { readonly kind: &quot;result&quot; }
++&gt;;
++
++export type DaemonWorkerResourceReport = Extract&lt;
++  DaemonNavigationWorkerResponse,
++  { readonly kind: &quot;heap&quot; }
++&gt;;
++
++export interface DaemonWorkerExecuteRequest {
++  readonly commandName: DaemonCommandName;
++  readonly request: DaemonExecutorRequest;
++}
++
++export interface DaemonWorkerGenerationSnapshot {
++  readonly generation: number;
++  readonly ready: boolean;
++  readonly fileCount?: number;
++}
++
++export interface DaemonWorkerExitRecovery {
++  recover(exit: DaemonNavigationWorkerExit): Promise&lt;void&gt;;
++}
++
++export interface DaemonWorkerGenerationManagerOptions {
++  readonly workspaceRoot: string;
++  readonly createWorker: (generation: number) =&gt; DaemonNavigationWorker;
++  readonly initialWorker?: DaemonNavigationWorker;
++  readonly exitRecovery: DaemonWorkerExitRecovery;
++  readonly onActiveResourceInterruption: (cause: DaemonWorkerReplacementCause) =&gt; void;
++  readonly onDiagnostic: (diagnostic: DaemonWorkerDiagnostic) =&gt; void;
++}
++
++interface DaemonWorkerGeneration {
++  readonly worker: DaemonNavigationWorker;
++  ready: Promise&lt;DaemonWorkerReadyReport&gt; | undefined;
++}
++
++export class DaemonWorkerGenerationManager {
++  private currentGeneration: DaemonWorkerGeneration;
++  private startOperation: Promise&lt;DaemonWorkerReadyReport&gt; | undefined;
++  private replacementOperation: Promise&lt;DaemonWorkerReadyReport&gt; | undefined;
++  private recoveryOperation: Promise&lt;void&gt; | undefined;
++  private closeOperation: Promise&lt;void&gt; | undefined;
++  private terminationOperation: Promise&lt;void&gt; | undefined;
++  private protocolReadyGeneration: DaemonWorkerGeneration | undefined;
++  private readinessActivated = false;
++  private workerReady = false;
++  private fileCount: number | undefined;
++  private stopping = false;
++
++  constructor(private readonly options: DaemonWorkerGenerationManagerOptions) {
++    const worker = options.initialWorker ?? options.createWorker(1);
++    this.currentGeneration = this.createGeneration(worker);
++  }
++
++  get snapshot(): DaemonWorkerGenerationSnapshot {
++    return Object.freeze({
++      generation: this.currentGeneration.worker.generation,
++      ready: this.workerReady,
++      ...(this.fileCount === undefined ? {} : { fileCount: this.fileCount }),
++    });
++  }
++
++  start(): Promise&lt;DaemonWorkerReadyReport&gt; {
++    if (this.startOperation !== undefined) return this.startOperation;
++    const generation = this.currentGeneration;
++    generation.ready = this.startGeneration(generation);
++    this.startOperation = this.waitForReadyGeneration(generation).then((report) =&gt; {
++      this.publishProtocolReady(generation, report);
++      return report;
++    });
++    return this.startOperation;
++  }
++
++  activateReadiness(): void {
++    if (this.protocolReadyGeneration !== this.currentGeneration) {
++      throw new Error(&quot;Navigation worker protocol readiness is unavailable&quot;);
++    }
++    this.readinessActivated = true;
++    this.workerReady = true;
++  }
++
++  execute(
++    requestId: string,
++    request: DaemonWorkerExecuteRequest,
++    output: DaemonOutputSink,
++  ): Promise&lt;DaemonWorkerExecutionReport&gt; {
++    const generation = this.currentGeneration;
++    const ready = generation.ready ?? this.start();
++    return ready
++      .then(() =&gt;
++        generation.worker.execute(requestId, request.commandName, request.request, output),
++      )
++      .then((response): DaemonWorkerExecutionReport =&gt; {
++        if (
++          response.kind !== &quot;result&quot; ||
++          response.requestId !== requestId ||
++          response.generation !== generation.worker.generation
++        ) {
++          throw new Error(&quot;Navigation worker returned an uncorrelated result&quot;);
++        }
++        return response;
++      });
++  }
++
++  replace(cause: DaemonWorkerReplacementCause): Promise&lt;DaemonWorkerReadyReport&gt; {
++    if (this.replacementOperation !== undefined) return this.replacementOperation;
++    const operation = this.replaceGeneration(cause);
++    this.replacementOperation = operation;
++    void operation.then(
++      () =&gt; this.clearReplacement(operation),
++      () =&gt; this.clearReplacement(operation),
++    );
++    return operation;
++  }
++
++  async releaseTransientResources(): Promise&lt;DaemonWorkerResourceReport&gt; {
++    const response = await this.currentGeneration.worker.releaseTransientResources();
++    if (response.kind !== &quot;heap&quot;) {
++      throw new Error(&quot;Navigation worker did not report heap usage&quot;);
++    }
++    this.options.onDiagnostic({
++      kind: &quot;resources-released&quot;,
++      workerGeneration: response.generation,
++      workerHeapUsedBytes: response.usedHeapBytes,
++      workerHeapLimitBytes: response.heapLimitBytes,
++    });
++    return response;
++  }
++
++  close(): Promise&lt;void&gt; {
++    if (this.closeOperation !== undefined) return this.closeOperation;
++    this.stopping = true;
++    this.workerReady = false;
++    this.closeOperation = this.currentGeneration.worker.drainAndClose();
++    return this.closeOperation;
++  }
++
++  terminate(): Promise&lt;void&gt; {
++    if (this.terminationOperation !== undefined) return this.terminationOperation;
++    this.stopping = true;
++    this.workerReady = false;
++    this.terminationOperation = this.currentGeneration.worker.terminate();
++    return this.terminationOperation;
++  }
++
++  private async replaceGeneration(
++    cause: DaemonWorkerReplacementCause,
++  ): Promise&lt;DaemonWorkerReadyReport&gt; {
++    const previous = this.currentGeneration;
++    if (cause !== &quot;worker-exit&quot;) this.options.onActiveResourceInterruption(cause);
++    this.workerReady = false;
++    this.protocolReadyGeneration = undefined;
++    const nextWorker = this.options.createWorker(previous.worker.generation + 1);
++    if (nextWorker.generation !== previous.worker.generation + 1) {
++      throw new Error(&quot;Navigation worker factory returned the wrong generation&quot;);
++    }
++    const next = this.createGeneration(nextWorker);
++    this.currentGeneration = next;
++    next.ready = this.startGeneration(next);
++    await previous.worker.terminate().catch(() =&gt; undefined);
++    const report = await next.ready;
++    this.publishProtocolReady(next, report);
++    this.options.onDiagnostic({
++      kind: &quot;worker-replaced&quot;,
++      cause,
++      previousWorkerGeneration: previous.worker.generation,
++      workerGeneration: next.worker.generation,
++      fileCount: report.fileCount,
++      ...report.startupDurations,
++    });
++    return report;
++  }
++
++  private startGeneration(generation: DaemonWorkerGeneration): Promise&lt;DaemonWorkerReadyReport&gt; {
++    return generation.worker
++      .start(this.options.workspaceRoot)
++      .then((response): DaemonWorkerReadyReport =&gt; {
++        if (response.kind !== &quot;ready&quot; || response.generation !== generation.worker.generation) {
++          throw new Error(&quot;Navigation worker did not become ready&quot;);
++        }
++        return response;
++      });
++  }
++
++  private async waitForReadyGeneration(
++    generation: DaemonWorkerGeneration,
++  ): Promise&lt;DaemonWorkerReadyReport&gt; {
++    try {
++      if (generation.ready === undefined) throw new Error(&quot;Navigation worker is not starting&quot;);
++      return await generation.ready;
++    } catch (error) {
++      if (!(error instanceof DaemonNavigationWorkerExitedError)) throw error;
++      await generation.worker.exited;
++      const recovery = this.recoveryOperation;
++      if (recovery === undefined) throw error;
++      await recovery;
++      const replacement = this.currentGeneration;
++      if (replacement === generation || replacement.ready === undefined) throw error;
++      return replacement.ready;
++    }
++  }
++
++  private createGeneration(worker: DaemonNavigationWorker): DaemonWorkerGeneration {
++    const generation: DaemonWorkerGeneration = { worker, ready: undefined };
++    void worker.exited.then((exit) =&gt; this.observeExit(generation, exit));
++    return generation;
++  }
++
++  private observeExit(generation: DaemonWorkerGeneration, exit: DaemonNavigationWorkerExit): void {
++    if (this.stopping || generation !== this.currentGeneration) return;
++    const recovery = this.options.exitRecovery.recover(exit);
++    this.recoveryOperation = recovery;
++    void recovery.catch(() =&gt; undefined);
++  }
++
++  private publishProtocolReady(
++    generation: DaemonWorkerGeneration,
++    report: DaemonWorkerReadyReport,
++  ): void {
++    if (generation !== this.currentGeneration) return;
++    this.protocolReadyGeneration = generation;
++    this.fileCount = report.fileCount;
++    if (this.readinessActivated) this.workerReady = true;
++  }
++
++  private clearReplacement(operation: Promise&lt;DaemonWorkerReadyReport&gt;): void {
++    if (this.replacementOperation === operation) this.replacementOperation = undefined;
++  }
++}
+</pre></details></main></body></html>

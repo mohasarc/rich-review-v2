@@ -1,0 +1,198 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PR 135 · supplied record</title><link rel="stylesheet" href="../style.css"><body class="source-page"><main><a href="../index.html#provenance">← Page provenance</a><h1>#135 · Execute daemon work through an injected host module</h1><p>Supplied bundle, frozen with this experiment. The original Markdown is preserved below.</p><pre class="pr-source">## Context
+
+Daemon workers constructed CLI and core execution objects directly, despite `@symnav/daemon` needing to remain free of internal package dependencies. This range injects the CLI executor through an absolute module URL and preserves execution, output, diagnostics, readiness, and resource-reporting behavior.
+
+## Shape
+
+Before — worker code owned host-specific execution construction:
+
+```mermaid
+flowchart LR
+    Worker[&quot;Daemon worker&lt;br/&gt;CLI/core imports&quot;]
+    Adapter[&quot;RetainedWorkspaceProgram&quot;]
+    Session[&quot;WorkspaceSession +&lt;br/&gt;CliProgramExecutor&quot;]
+
+    Worker --&gt;|&quot;constructs&quot;| Adapter
+    Adapter --&gt;|&quot;constructs&quot;| Session
+
+    style Worker fill:#fff2cc,stroke:#bf9000
+    style Adapter fill:#ffdddd,stroke:#cc0000
+```
+
+After — CLI supplies a validated host module through process and worker configuration:
+
+```mermaid
+flowchart LR
+    Composition[&quot;CLI composition&quot;]
+    Configuration[&quot;daemon process +&lt;br/&gt;worker configuration&quot;]
+    Worker[&quot;Daemon worker&lt;br/&gt;daemon contracts only&quot;]
+    Loader[&quot;DaemonExecutorModuleLoader&quot;]
+    Executor[&quot;CLI DaemonExecutor&quot;]
+    Session[&quot;WorkspaceSession +&lt;br/&gt;CliProgramExecutor&quot;]
+
+    Composition --&gt;|&quot;absolute file URL&quot;| Configuration
+    Configuration --&gt;|&quot;worker data&quot;| Worker
+    Worker --&gt;|&quot;module URL + host options&quot;| Loader
+    Loader --&gt;|&quot;validated factory result&quot;| Executor
+    Executor --&gt;|&quot;retained session&quot;| Session
+
+    style Composition fill:#fff2cc,stroke:#bf9000
+    style Configuration fill:#fff2cc,stroke:#bf9000
+    style Worker fill:#fff2cc,stroke:#bf9000
+    style Loader fill:#ddffdd,stroke:#008800
+    style Executor fill:#ddffdd,stroke:#008800
+```
+
+Legend: green = added ownership; red = removed ownership; yellow = changed path.
+
+- Worker output is sequenced and rechunked at the daemon policy cap before each acknowledgement.
+- Recursive diagnostics remain opaque across the host boundary while known timing and refresh fields are projected defensively.
+- The final test-only commit resolves Phase 12&#x27;s material carry: deferred adapter sampling and a no-op worker callback now fail mutation-resistant request-local heap tests.
+
+## Where it lives
+
+```text
+.
+├── packages/daemon/
+│   ├── ** src/daemon-diagnostics.ts                   # validates recursive JSON-like diagnostics
+│   ├── ** src/daemon-executor.ts                      # owns host contracts and module loading
+│   ├── ** src/index.ts                                # exposes the daemon package surface
+│   └── ** ... 3 contract and public-import tests      # lock the dependency-free boundary
+└── apps/cli/
+    ├── ++ src/daemon-executor.ts                      # implements the injected host factory
+    ├── ++ src/daemon-executor.test.ts                 # proves synchronous phase sampling
+    ├── ** src/commands/daemon/register-daemon-command.ts # supplies the executor module URL
+    ├── ** src/daemon/
+    │   ├── ** daemon-navigation-worker-entry.ts       # loads, validates, executes, and samples
+    │   ├── ** daemon-navigation-worker-protocol.ts    # carries daemon-owned messages
+    │   ├── ** daemon-process-launcher.ts              # propagates strict process configuration
+    │   ├── ++ local-daemon-output.ts                  # bridges daemon output to CLI storage
+    │   ├── -- retained-workspace-program.ts           # superseded worker-local adapter
+    │   └── ** ... 20 files                            # preserve lifecycle and transport behavior
+    └── test/
+        ├── ++ helpers/injected-daemon-executor-fixture.mjs
+        ├── ++ helpers/resource-sampling-daemon-executor-fixture.mjs
+        └── ** ... 7 files                             # preserve process, parity, and lifecycle behavior
+```
+
+Legend: `++` added, `**` changed, `~~` moved, `--` removed.
+
+## Public surface
+
+Added at the `@symnav/daemon` root and CLI executor module:
+
+```ts
+export class DaemonDiagnosticValues {
+  static isDiagnostics(value: unknown): value is DaemonDiagnostics;
+}
+export interface DaemonSequencedOutputRecord extends DaemonOutputRecord { readonly sequence: number; }
+export interface DaemonOutputSink { append(record: DaemonSequencedOutputRecord): Promise&lt;void&gt;; }
+export class DaemonExecutorModuleLoader {
+  static load(moduleUrl: DaemonExecutorModuleUrl, options: DaemonExecutorFactoryOptions): Promise&lt;DaemonExecutor&gt;;
+}
+export function createDaemonExecutor(options: DaemonExecutorFactoryOptions): DaemonExecutor;
+export function daemonExecutorModuleUrl(): DaemonExecutorModuleUrl;
+```
+
+Changed:
+
+```ts
+export interface DaemonExecutorFactoryOptions {
+  readonly stateDirectory: string;
+  readonly productVersion: string;
+  readonly sampleResources: () =&gt; void;
+}
+```
+
+## Decisions
+
+- Chose an absolute injected file URL over importing CLI code from daemon mechanisms, because the daemon package must keep zero internal dependencies.
+- Chose recursive JSON-like diagnostics over a CLI refresh-summary contract, because worker telemetry can project known fields without owning host-specific diagnostics.
+- Chose worker-side rechunking and sequencing over transport metadata in executor output, because chunk limits and acknowledgement flow belong to the worker protocol.
+- Chose runtime validation over trusting dynamically imported TypeScript shapes, because invalid host modules must retain existing initialization and execution failure handling.
+- Chose a daemon-owned no-payload sampling callback over sharing CLI command-phase types, because synchronous phase boundaries must update the active request&#x27;s heap high-water without reversing dependency direction.
+
+## Look here
+
+- `packages/daemon/src/daemon-executor.ts:105`
+- `apps/cli/src/daemon/daemon-navigation-worker-entry.ts:89`
+- `apps/cli/src/daemon-executor.ts:53`
+
+
+COMMIT MESSAGES
+
+cb7acede90ecbd049d389d2e894bcb2bc42bca3d
+Specify the CLI daemon executor
+
+
+86cbadc59091373441cb18db5a906d8ef51eca59
+Implement the CLI daemon executor
+
+
+6bd8c92b029261cc193eb8c28b287f0f429f0d3c
+Specify daemon output and diagnostic contracts
+
+
+d384ae398714575e00b6bb11b983336d4b6b1544
+Define daemon output and diagnostic contracts
+
+
+98595d68285a236ccfc0829e3a25f0ebc474972b
+Specify daemon-owned worker messages
+
+
+b722a4a6f16768c7ebfba1d33ee3e1a210db2c50
+Use daemon-owned worker messages
+
+
+c139cbe94d841247c0ba16b8957af3ce50d5fc5e
+Specify executor module URL propagation
+
+
+9bfc705527257f011032c2f322deca5d5eead39a
+Thread the executor module URL
+
+
+93e93c4997ea7e7e3b97bbd3ee8eac3275ff49d6
+Specify strict daemon process configuration
+
+
+c7a51af6fa0e23b26728e9fe4c4089eac7d4c920
+Validate daemon process configuration exactly
+
+
+d176d50b8acbff3eb81d33d813500524f2591eef
+Specify executor module loading
+
+
+0c2c8fccd15672c8c0f018d4036eb99a888c17db
+Load injected daemon executor modules
+
+
+169115c8057f6bc441d3745be4e2e43296472494
+Specify injected worker execution
+
+
+d5f127b6ad0cb6f1524036f0760dc050071ad896
+Execute workers through injected host modules
+
+
+47853f2e2a32c158aaa6e0bb284f3aff140f5418
+Prove injected executor readiness parity
+
+
+c6bea77410cedc9357663c3d95afc9ab2b6e073b
+Prove synchronous worker resource sampling
+
+
+38dfceb5548025edf0d23d37051535981c6de819
+Cover encoded executor module paths
+
+
+0d5218023c3043ba26ecf847746861c454f89922
+Load executor modules through the host runtime
+
+
+323888b8df93cedde4f49494c4e56c42a9410d6f
+Budget retained executor integration tests
+</pre></main></body></html>

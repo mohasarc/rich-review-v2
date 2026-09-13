@@ -1,0 +1,119 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PR 147 · supplied record</title><link rel="stylesheet" href="../style.css"><body class="source-page"><main><a href="../index.html#provenance">← Page provenance</a><h1>#147 · Serialize accepted daemon execution in one session</h1><p>Supplied bundle, frozen with this experiment. The original Markdown is preserved below.</p><pre class="pr-source">## Context
+
+Implements Phase 24 of the daemon architecture plan. This stack layer follows delivery-session PR #146 and isolates accepted execution before Phase 25 replaces the residual process coordinator. Exact local CI parity passed 2,414 tests with eight expected skips; focused session, transport, parity, scale, stop, commit-replay, and mutation checks preserve protocol, timing, and lifecycle behavior.
+
+## Shape
+
+Before — `WorkspaceDaemon` coordinates accepted execution directly:
+
+```mermaid
+flowchart LR
+    Process[&quot;WorkspaceDaemon&lt;br/&gt;&amp;lt;&amp;lt;process and execution owner&amp;gt;&amp;gt;&quot;] --&gt;|uses| Ledger[&quot;AcceptedRequestLedger&lt;br/&gt;&amp;lt;&amp;lt;request state&amp;gt;&amp;gt;&quot;]
+    Process --&gt;|uses| Queue[&quot;WorkspaceRequestQueue&lt;br/&gt;&amp;lt;&amp;lt;FIFO turns&amp;gt;&amp;gt;&quot;]
+    Process --&gt;|uses| Delivery[&quot;DaemonDeliverySession&lt;br/&gt;&amp;lt;&amp;lt;completion delivery&amp;gt;&amp;gt;&quot;]
+
+    classDef removed fill:#ffebe9,stroke:#cf222e,color:#24292f
+    class Process removed
+```
+
+After — one session coordinates accepted turns over existing owners:
+
+```mermaid
+flowchart LR
+    Process[&quot;WorkspaceDaemon&lt;br/&gt;&amp;lt;&amp;lt;process shell&amp;gt;&amp;gt;&quot;] --&gt;|uses| Session[&quot;AcceptedExecutionSession&lt;br/&gt;&amp;lt;&amp;lt;turn coordinator&amp;gt;&amp;gt;&quot;]
+    Session --&gt;|uses| Ledger[&quot;AcceptedRequestLedger&lt;br/&gt;&amp;lt;&amp;lt;request state&amp;gt;&amp;gt;&quot;]
+    Session --&gt;|uses| Queue[&quot;WorkspaceRequestQueue&lt;br/&gt;&amp;lt;&amp;lt;FIFO turns&amp;gt;&amp;gt;&quot;]
+    Session --&gt;|uses| Delivery[&quot;DaemonDeliverySession&lt;br/&gt;&amp;lt;&amp;lt;completion delivery&amp;gt;&amp;gt;&quot;]
+
+    classDef added fill:#dafbe1,stroke:#1a7f37,color:#24292f
+    classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f
+    class Session added
+    class Process changed
+```
+
+Legend: green = added; red = removed; yellow = changed; unfilled = pre-existing and unchanged.
+
+## Where it lives
+
+```text
+.
+└── apps/cli/src/daemon/
+    ├── ++ accepted-execution-session-contracts.ts # defines injected session ports and snapshots
+    ├── ++ accepted-execution-session.ts           # owns admission-to-turn serialization
+    ├── ++ accepted-execution-session.test.ts      # locks timing, barriers, failures, and duplicates
+    ├── ** accepted-request-ledger.ts               # retains immutable acceptance metadata
+    └── ** workspace-daemon.ts                      # composes and delegates to the session
+```
+
+Legend: `++` added, `**` changed, `~~` moved, `--` removed.
+
+## Public surface
+
+Added internal coordination surface:
+
+```ts
+export class AcceptedExecutionSession {
+  constructor(options: AcceptedExecutionSessionOptions);
+  get snapshot(): AcceptedExecutionSnapshot;
+  compatibilityFor(request: DaemonExecuteRequest): AcceptedRequestCompatibility;
+  accept(request: AuthenticatedDaemonExecuteRequest): AcceptedExecutionAdmission;
+  status(requestId: string): DaemonExecutionStatus;
+  markActiveResourceInterrupted(cause: DaemonWorkerReplacementCause): void;
+  scheduleAtTurnBoundary(operation: () =&gt; Promise&lt;void&gt;): Promise&lt;void&gt;;
+  drain(): Promise&lt;void&gt;;
+  close(): void;
+}
+```
+
+Changed ledger entry surface:
+
+```ts
+export interface AcceptedRequestEntry {
+  readonly acceptedAt: number;
+  readonly queuePosition: number;
+  readonly state: AcceptedRequestState;
+}
+```
+
+No package export, CLI command, protocol shape, option, or environment surface changes.
+
+## Decisions
+
+- Chose immutable acceptance metadata on each ledger entry over a parallel process map, because queued, running, terminal, and acknowledged states share one original acceptance identity.
+- Chose an injected session over moving ledger, queue, delivery, worker, resource, lifetime, or shutdown state, because each dependency remains authoritative for its own mechanism.
+- Chose a narrow process-lifecycle port over exposing the process shell, because execution needs only shutdown classification, workspace presence, and post-delivery deletion transition.
+- Chose turn-boundary sampling inside each queued operation over post-hoc process scheduling, because sampling must gate the next FIFO turn after success or failure.
+- Chose duplicate attachment over acceptance replay, because request identity remains daemon-lifetime idempotent without another trace, queue turn, clock read, or lifetime reset.
+
+## Look here
+
+- `apps/cli/src/daemon/accepted-execution-session.ts:44`
+- `apps/cli/src/daemon/accepted-execution-session.ts:93`
+- `apps/cli/src/daemon/workspace-daemon.ts:193`
+
+
+COMMIT MESSAGES
+
+4143208490ac3ae8402287755a1aac9e219c79a1
+Specify immutable request acceptance metadata
+
+
+5866d667729f0a71454f46c522fd42c510900222
+Retain acceptance metadata on ledger entries
+
+
+9e4a8251c9e9615713cc3bca6571a000cff8b10d
+Specify accepted execution session ownership
+
+
+626697aa57ebc46625d7e3b0d97608299e78fd6d
+Define accepted execution session contracts
+
+
+6282cd65e09d9629b758260c43883b6060fe1db7
+Own accepted execution turns in one session
+
+
+ba53c8e1662fd86d198b95321c90d9c9bef10184
+Delegate accepted execution from workspace daemon
+</pre></main></body></html>

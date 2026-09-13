@@ -1,0 +1,181 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>transport · pinned source</title><link rel="stylesheet" href="../style.css"><body class="source-page"><main><a href="../index.html#provenance">← Page provenance</a><h1>transport</h1><p>packages/daemon/src/transport/daemon-transport.ts<br>d07002357d3e9596bfaae910a1ac63b77981620b · tip<br>SHA-256 cfc99a3098357731d2c4a5e5f6364c9f2d74384d6bce21668fcd094af761d27f</p><pre class="source-code"><span class="line" id="L1"><a href="#L1">1</a> import type { DaemonPolicy } from &quot;../daemon-policy.js&quot;;</span>
+<span class="line" id="L2"><a href="#L2">2</a> import { DaemonClientResultCapture, type DaemonOutputCapture } from &quot;./client-result-capture.js&quot;;</span>
+<span class="line" id="L3"><a href="#L3">3</a> import { DaemonExecutionClient } from &quot;./execution-client.js&quot;;</span>
+<span class="line" id="L4"><a href="#L4">4</a> import { DaemonLifecycleClient } from &quot;./lifecycle-client.js&quot;;</span>
+<span class="line" id="L5"><a href="#L5">5</a> import { DaemonProtocolValidator } from &quot;./protocol-validator.js&quot;;</span>
+<span class="line" id="L6"><a href="#L6">6</a> import type { DaemonRequestServer, DaemonSocketClient } from &quot;./contracts.js&quot;;</span>
+<span class="line" id="L7"><a href="#L7">7</a> import { DaemonWireCodec } from &quot;./wire-codec.js&quot;;</span>
+<span class="line" id="L8"><a href="#L8">8</a> import { LocalDaemonSocketClient } from &quot;./socket-client.js&quot;;</span>
+<span class="line" id="L9"><a href="#L9">9</a> import { LocalDaemonSocketServer } from &quot;./socket-server.js&quot;;</span>
+<span class="line" id="L10"><a href="#L10">10</a> </span>
+<span class="line" id="L11"><a href="#L11">11</a> export interface DaemonTransportOptions {</span>
+<span class="line" id="L12"><a href="#L12">12</a>   readonly policy: DaemonPolicy;</span>
+<span class="line" id="L13"><a href="#L13">13</a>   readonly lifecycleResponseTimeoutMs?: number;</span>
+<span class="line" id="L14"><a href="#L14">14</a>   readonly writeChunkSize?: number;</span>
+<span class="line" id="L15"><a href="#L15">15</a>   readonly captureDirectory?: string;</span>
+<span class="line" id="L16"><a href="#L16">16</a>   readonly codec?: DaemonWireCodec;</span>
+<span class="line" id="L17"><a href="#L17">17</a>   readonly validator?: DaemonProtocolValidator;</span>
+<span class="line" id="L18"><a href="#L18">18</a>   readonly sockets?: DaemonSocketClient;</span>
+<span class="line" id="L19"><a href="#L19">19</a>   readonly lifecycle?: DaemonLifecycleClient;</span>
+<span class="line" id="L20"><a href="#L20">20</a>   readonly execution?: DaemonExecutionClient;</span>
+<span class="line" id="L21"><a href="#L21">21</a>   readonly server?: DaemonRequestServer;</span>
+<span class="line" id="L22"><a href="#L22">22</a>   readonly createOutput?: () =&gt; DaemonOutputCapture;</span>
+<span class="line" id="L23"><a href="#L23">23</a> }</span>
+<span class="line" id="L24"><a href="#L24">24</a> </span>
+<span class="line" id="L25"><a href="#L25">25</a> export interface DaemonTransportComponents {</span>
+<span class="line" id="L26"><a href="#L26">26</a>   readonly lifecycle: DaemonLifecycleClient;</span>
+<span class="line" id="L27"><a href="#L27">27</a>   readonly execution: DaemonExecutionClient;</span>
+<span class="line" id="L28"><a href="#L28">28</a>   readonly server: DaemonRequestServer;</span>
+<span class="line" id="L29"><a href="#L29">29</a> }</span>
+<span class="line" id="L30"><a href="#L30">30</a> </span>
+<span class="line" id="L31"><a href="#L31">31</a> export class DaemonTransportFactory {</span>
+<span class="line" id="L32"><a href="#L32">32</a>   static create(options: DaemonTransportOptions): DaemonTransportComponents {</span>
+<span class="line" id="L33"><a href="#L33">33</a>     const policy = options.policy;</span>
+<span class="line" id="L34"><a href="#L34">34</a>     const codec =</span>
+<span class="line" id="L35"><a href="#L35">35</a>       options.codec ??</span>
+<span class="line" id="L36"><a href="#L36">36</a>       new DaemonWireCodec({</span>
+<span class="line" id="L37"><a href="#L37">37</a>         maximumJsonPayloadBytes: policy.values.transport.maximumJsonPayloadBytes,</span>
+<span class="line" id="L38"><a href="#L38">38</a>         maximumExecutionControlPayloadBytes:</span>
+<span class="line" id="L39"><a href="#L39">39</a>           policy.values.transport.maximumExecutionControlPayloadBytes,</span>
+<span class="line" id="L40"><a href="#L40">40</a>         maximumChunkRawBytes: policy.values.output.maximumChunkRawBytes,</span>
+<span class="line" id="L41"><a href="#L41">41</a>       });</span>
+<span class="line" id="L42"><a href="#L42">42</a>     const validator = options.validator ?? new DaemonProtocolValidator();</span>
+<span class="line" id="L43"><a href="#L43">43</a>     const sockets =</span>
+<span class="line" id="L44"><a href="#L44">44</a>       options.sockets ??</span>
+<span class="line" id="L45"><a href="#L45">45</a>       new LocalDaemonSocketClient(</span>
+<span class="line" id="L46"><a href="#L46">46</a>         options.writeChunkSize === undefined ? {} : { writeChunkSize: options.writeChunkSize },</span>
+<span class="line" id="L47"><a href="#L47">47</a>       );</span>
+<span class="line" id="L48"><a href="#L48">48</a>     const lifecycle =</span>
+<span class="line" id="L49"><a href="#L49">49</a>       options.lifecycle ??</span>
+<span class="line" id="L50"><a href="#L50">50</a>       new DaemonLifecycleClient({</span>
+<span class="line" id="L51"><a href="#L51">51</a>         sockets,</span>
+<span class="line" id="L52"><a href="#L52">52</a>         codec,</span>
+<span class="line" id="L53"><a href="#L53">53</a>         validator,</span>
+<span class="line" id="L54"><a href="#L54">54</a>         responseTimeoutMs:</span>
+<span class="line" id="L55"><a href="#L55">55</a>           options.lifecycleResponseTimeoutMs ?? policy.values.transport.singleResponseTimeoutMs,</span>
+<span class="line" id="L56"><a href="#L56">56</a>       });</span>
+<span class="line" id="L57"><a href="#L57">57</a>     const execution =</span>
+<span class="line" id="L58"><a href="#L58">58</a>       options.execution ??</span>
+<span class="line" id="L59"><a href="#L59">59</a>       new DaemonExecutionClient({</span>
+<span class="line" id="L60"><a href="#L60">60</a>         sockets,</span>
+<span class="line" id="L61"><a href="#L61">61</a>         lifecycle,</span>
+<span class="line" id="L62"><a href="#L62">62</a>         codec,</span>
+<span class="line" id="L63"><a href="#L63">63</a>         validator,</span>
+<span class="line" id="L64"><a href="#L64">64</a>         createOutput:</span>
+<span class="line" id="L65"><a href="#L65">65</a>           options.createOutput ??</span>
+<span class="line" id="L66"><a href="#L66">66</a>           (() =&gt;</span>
+<span class="line" id="L67"><a href="#L67">67</a>             new DaemonClientResultCapture({</span>
+<span class="line" id="L68"><a href="#L68">68</a>               policy: policy.values.output,</span>
+<span class="line" id="L69"><a href="#L69">69</a>               ...(options.captureDirectory === undefined</span>
+<span class="line" id="L70"><a href="#L70">70</a>                 ? {}</span>
+<span class="line" id="L71"><a href="#L71">71</a>                 : { directory: options.captureDirectory }),</span>
+<span class="line" id="L72"><a href="#L72">72</a>             })),</span>
+<span class="line" id="L73"><a href="#L73">73</a>         transportPolicy: policy.values.transport,</span>
+<span class="line" id="L74"><a href="#L74">74</a>         deliveryPolicy: policy.values.delivery,</span>
+<span class="line" id="L75"><a href="#L75">75</a>       });</span>
+<span class="line" id="L76"><a href="#L76">76</a>     const server =</span>
+<span class="line" id="L77"><a href="#L77">77</a>       options.server ??</span>
+<span class="line" id="L78"><a href="#L78">78</a>       new LocalDaemonSocketServer({</span>
+<span class="line" id="L79"><a href="#L79">79</a>         sockets,</span>
+<span class="line" id="L80"><a href="#L80">80</a>         codec,</span>
+<span class="line" id="L81"><a href="#L81">81</a>         validator,</span>
+<span class="line" id="L82"><a href="#L82">82</a>         policy: policy.values.transport,</span>
+<span class="line" id="L83"><a href="#L83">83</a>         ...(options.writeChunkSize === undefined ? {} : { writeChunkSize: options.writeChunkSize }),</span>
+<span class="line" id="L84"><a href="#L84">84</a>       });</span>
+<span class="line" id="L85"><a href="#L85">85</a>     return { lifecycle, execution, server };</span>
+<span class="line" id="L86"><a href="#L86">86</a>   }</span>
+<span class="line" id="L87"><a href="#L87">87</a> }</span>
+</pre><details class="source-disclosure"><summary>Net main → tip change touching this path (copy-aware)</summary><p>This is the net delta, including moves/copies. A historical source snapshot above may precede the final change below.</p><pre class="pr-source">diff --git a/packages/daemon/src/transport/daemon-transport.ts b/packages/daemon/src/transport/daemon-transport.ts
+new file mode 100644
+index 000000000..c4a0535d4
+--- /dev/null
++++ b/packages/daemon/src/transport/daemon-transport.ts
+@@ -0,0 +1,87 @@
++import type { DaemonPolicy } from &quot;../daemon-policy.js&quot;;
++import { DaemonClientResultCapture, type DaemonOutputCapture } from &quot;./client-result-capture.js&quot;;
++import { DaemonExecutionClient } from &quot;./execution-client.js&quot;;
++import { DaemonLifecycleClient } from &quot;./lifecycle-client.js&quot;;
++import { DaemonProtocolValidator } from &quot;./protocol-validator.js&quot;;
++import type { DaemonRequestServer, DaemonSocketClient } from &quot;./contracts.js&quot;;
++import { DaemonWireCodec } from &quot;./wire-codec.js&quot;;
++import { LocalDaemonSocketClient } from &quot;./socket-client.js&quot;;
++import { LocalDaemonSocketServer } from &quot;./socket-server.js&quot;;
++
++export interface DaemonTransportOptions {
++  readonly policy: DaemonPolicy;
++  readonly lifecycleResponseTimeoutMs?: number;
++  readonly writeChunkSize?: number;
++  readonly captureDirectory?: string;
++  readonly codec?: DaemonWireCodec;
++  readonly validator?: DaemonProtocolValidator;
++  readonly sockets?: DaemonSocketClient;
++  readonly lifecycle?: DaemonLifecycleClient;
++  readonly execution?: DaemonExecutionClient;
++  readonly server?: DaemonRequestServer;
++  readonly createOutput?: () =&gt; DaemonOutputCapture;
++}
++
++export interface DaemonTransportComponents {
++  readonly lifecycle: DaemonLifecycleClient;
++  readonly execution: DaemonExecutionClient;
++  readonly server: DaemonRequestServer;
++}
++
++export class DaemonTransportFactory {
++  static create(options: DaemonTransportOptions): DaemonTransportComponents {
++    const policy = options.policy;
++    const codec =
++      options.codec ??
++      new DaemonWireCodec({
++        maximumJsonPayloadBytes: policy.values.transport.maximumJsonPayloadBytes,
++        maximumExecutionControlPayloadBytes:
++          policy.values.transport.maximumExecutionControlPayloadBytes,
++        maximumChunkRawBytes: policy.values.output.maximumChunkRawBytes,
++      });
++    const validator = options.validator ?? new DaemonProtocolValidator();
++    const sockets =
++      options.sockets ??
++      new LocalDaemonSocketClient(
++        options.writeChunkSize === undefined ? {} : { writeChunkSize: options.writeChunkSize },
++      );
++    const lifecycle =
++      options.lifecycle ??
++      new DaemonLifecycleClient({
++        sockets,
++        codec,
++        validator,
++        responseTimeoutMs:
++          options.lifecycleResponseTimeoutMs ?? policy.values.transport.singleResponseTimeoutMs,
++      });
++    const execution =
++      options.execution ??
++      new DaemonExecutionClient({
++        sockets,
++        lifecycle,
++        codec,
++        validator,
++        createOutput:
++          options.createOutput ??
++          (() =&gt;
++            new DaemonClientResultCapture({
++              policy: policy.values.output,
++              ...(options.captureDirectory === undefined
++                ? {}
++                : { directory: options.captureDirectory }),
++            })),
++        transportPolicy: policy.values.transport,
++        deliveryPolicy: policy.values.delivery,
++      });
++    const server =
++      options.server ??
++      new LocalDaemonSocketServer({
++        sockets,
++        codec,
++        validator,
++        policy: policy.values.transport,
++        ...(options.writeChunkSize === undefined ? {} : { writeChunkSize: options.writeChunkSize }),
++      });
++    return { lifecycle, execution, server };
++  }
++}
+</pre></details></main></body></html>

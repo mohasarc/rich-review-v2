@@ -1,0 +1,695 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>queries-test · pinned source</title><link rel="stylesheet" href="../style.css"><body class="source-page"><main><a href="../index.html#provenance">← Page provenance</a><h1>queries-test</h1><p>packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts<br>d07002357d3e9596bfaae910a1ac63b77981620b · tip<br>SHA-256 ad2a4257636c33ff77462a0447652ee1bc674ef68e6f45a86fcd18b69e18bb11</p><pre class="source-code"><span class="line" id="L1"><a href="#L1">1</a> import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from &quot;node:fs&quot;;</span>
+<span class="line" id="L2"><a href="#L2">2</a> import { tmpdir } from &quot;node:os&quot;;</span>
+<span class="line" id="L3"><a href="#L3">3</a> import { join, relative } from &quot;node:path&quot;;</span>
+<span class="line" id="L4"><a href="#L4">4</a> </span>
+<span class="line" id="L5"><a href="#L5">5</a> import { afterEach, describe, expect, it, vi } from &quot;vitest&quot;;</span>
+<span class="line" id="L6"><a href="#L6">6</a> import { SyntaxKind } from &quot;ts-morph&quot;;</span>
+<span class="line" id="L7"><a href="#L7">7</a> </span>
+<span class="line" id="L8"><a href="#L8">8</a> import {</span>
+<span class="line" id="L9"><a href="#L9">9</a>   GraphTraverser,</span>
+<span class="line" id="L10"><a href="#L10">10</a>   InMemoryFileSystem,</span>
+<span class="line" id="L11"><a href="#L11">11</a>   NodeFileSystem,</span>
+<span class="line" id="L12"><a href="#L12">12</a>   type SymbolIdentity,</span>
+<span class="line" id="L13"><a href="#L13">13</a>   type WorkspaceFile,</span>
+<span class="line" id="L14"><a href="#L14">14</a>   type WorkspaceSnapshot,</span>
+<span class="line" id="L15"><a href="#L15">15</a> } from &quot;@symnav/core&quot;;</span>
+<span class="line" id="L16"><a href="#L16">16</a> </span>
+<span class="line" id="L17"><a href="#L17">17</a> import { TypeScriptBackend } from &quot;./typescript-backend.js&quot;;</span>
+<span class="line" id="L18"><a href="#L18">18</a> import type { TypeScriptProjectGraph } from &quot;./typescript-project-graph.js&quot;;</span>
+<span class="line" id="L19"><a href="#L19">19</a> import { TypeScriptSemanticQueryService } from &quot;./typescript-semantic-query-service.js&quot;;</span>
+<span class="line" id="L20"><a href="#L20">20</a> import { TypeScriptWorkspaceState } from &quot;./typescript-workspace-state.js&quot;;</span>
+<span class="line" id="L21"><a href="#L21">21</a> </span>
+<span class="line" id="L22"><a href="#L22">22</a> const mutableFixtures: MutableSemanticFixture[] = [];</span>
+<span class="line" id="L23"><a href="#L23">23</a> </span>
+<span class="line" id="L24"><a href="#L24">24</a> afterEach(() =&gt; {</span>
+<span class="line" id="L25"><a href="#L25">25</a>   for (const fixture of mutableFixtures.splice(0)) fixture.dispose();</span>
+<span class="line" id="L26"><a href="#L26">26</a> });</span>
+<span class="line" id="L27"><a href="#L27">27</a> </span>
+<span class="line" id="L28"><a href="#L28">28</a> describe(&quot;TypeScriptSemanticQueryService&quot;, () =&gt; {</span>
+<span class="line" id="L29"><a href="#L29">29</a>   it(&quot;shares each identity query promise independently within one turn&quot;, async () =&gt; {</span>
+<span class="line" id="L30"><a href="#L30">30</a>     const fileSystem = new InMemoryFileSystem({</span>
+<span class="line" id="L31"><a href="#L31">31</a>       &quot;/repo/src/app.ts&quot;: [</span>
+<span class="line" id="L32"><a href="#L32">32</a>         &quot;export function target(): void {}&quot;,</span>
+<span class="line" id="L33"><a href="#L33">33</a>         &quot;export function caller(): void { target(); }&quot;,</span>
+<span class="line" id="L34"><a href="#L34">34</a>         &quot;&quot;,</span>
+<span class="line" id="L35"><a href="#L35">35</a>       ].join(&quot;\n&quot;),</span>
+<span class="line" id="L36"><a href="#L36">36</a>     });</span>
+<span class="line" id="L37"><a href="#L37">37</a>     const files = workspaceFiles(fileSystem, &quot;src/app.ts&quot;);</span>
+<span class="line" id="L38"><a href="#L38">38</a>     const snapshot: WorkspaceSnapshot = { root: &quot;/repo&quot;, files };</span>
+<span class="line" id="L39"><a href="#L39">39</a>     const state = new TypeScriptWorkspaceState(fileSystem);</span>
+<span class="line" id="L40"><a href="#L40">40</a>     await state.refresh(files);</span>
+<span class="line" id="L41"><a href="#L41">41</a>     const queries = new TypeScriptSemanticQueryService(undefined, state);</span>
+<span class="line" id="L42"><a href="#L42">42</a>     const target = identity(&quot;src/app.ts&quot;, &quot;target&quot;);</span>
+<span class="line" id="L43"><a href="#L43">43</a>     const caller = identity(&quot;src/app.ts&quot;, &quot;caller&quot;);</span>
+<span class="line" id="L44"><a href="#L44">44</a>     queries.beginTurn(snapshot.files);</span>
+<span class="line" id="L45"><a href="#L45">45</a> </span>
+<span class="line" id="L46"><a href="#L46">46</a>     const definitions = queries.findDefinitions(target);</span>
+<span class="line" id="L47"><a href="#L47">47</a>     const callTarget = queries.findCallTarget(target);</span>
+<span class="line" id="L48"><a href="#L48">48</a>     const callers = queries.findCallers(target);</span>
+<span class="line" id="L49"><a href="#L49">49</a>     const callees = queries.findCallees(caller);</span>
+<span class="line" id="L50"><a href="#L50">50</a> </span>
+<span class="line" id="L51"><a href="#L51">51</a>     expect(queries.findDefinitions(target)).toBe(definitions);</span>
+<span class="line" id="L52"><a href="#L52">52</a>     expect(queries.findCallTarget(target)).toBe(callTarget);</span>
+<span class="line" id="L53"><a href="#L53">53</a>     expect(queries.findCallers(target)).toBe(callers);</span>
+<span class="line" id="L54"><a href="#L54">54</a>     expect(queries.findCallees(caller)).toBe(callees);</span>
+<span class="line" id="L55"><a href="#L55">55</a>     await expect(definitions).resolves.toHaveLength(1);</span>
+<span class="line" id="L56"><a href="#L56">56</a>     await expect(callTarget).resolves.toMatchObject({ outcome: &quot;resolved&quot; });</span>
+<span class="line" id="L57"><a href="#L57">57</a>     await expect(callers).resolves.toHaveLength(1);</span>
+<span class="line" id="L58"><a href="#L58">58</a>     await expect(callees).resolves.toHaveLength(1);</span>
+<span class="line" id="L59"><a href="#L59">59</a>   });</span>
+<span class="line" id="L60"><a href="#L60">60</a> </span>
+<span class="line" id="L61"><a href="#L61">61</a>   it(&quot;caches empty position results while rehydrating nodes for every access&quot;, async () =&gt; {</span>
+<span class="line" id="L62"><a href="#L62">62</a>     const fileSystem = new InMemoryFileSystem({</span>
+<span class="line" id="L63"><a href="#L63">63</a>       &quot;/repo/src/app.ts&quot;: [</span>
+<span class="line" id="L64"><a href="#L64">64</a>         &quot;export function target(): void {}&quot;,</span>
+<span class="line" id="L65"><a href="#L65">65</a>         &quot;export function caller(): void { target(); missing(); }&quot;,</span>
+<span class="line" id="L66"><a href="#L66">66</a>         &quot;&quot;,</span>
+<span class="line" id="L67"><a href="#L67">67</a>       ].join(&quot;\n&quot;),</span>
+<span class="line" id="L68"><a href="#L68">68</a>     });</span>
+<span class="line" id="L69"><a href="#L69">69</a>     const files = workspaceFiles(fileSystem, &quot;src/app.ts&quot;);</span>
+<span class="line" id="L70"><a href="#L70">70</a>     const state = new TypeScriptWorkspaceState(fileSystem);</span>
+<span class="line" id="L71"><a href="#L71">71</a>     await state.refresh(files);</span>
+<span class="line" id="L72"><a href="#L72">72</a>     const resolvedPositions: number[] = [];</span>
+<span class="line" id="L73"><a href="#L73">73</a>     const queries = new TypeScriptSemanticQueryService(undefined, state, {</span>
+<span class="line" id="L74"><a href="#L74">74</a>       callTargetResolution: (_relativePath, start) =&gt; resolvedPositions.push(start),</span>
+<span class="line" id="L75"><a href="#L75">75</a>     });</span>
+<span class="line" id="L76"><a href="#L76">76</a>     queries.beginTurn(files);</span>
+<span class="line" id="L77"><a href="#L77">77</a>     const sourceFile = state.sourceFile(&quot;src/app.ts&quot;);</span>
+<span class="line" id="L78"><a href="#L78">78</a>     const identifiers = sourceFile?.getDescendantsOfKind(SyntaxKind.Identifier) ?? [];</span>
+<span class="line" id="L79"><a href="#L79">79</a>     const targetCall = [...identifiers].reverse().find((node) =&gt; node.getText() === &quot;target&quot;);</span>
+<span class="line" id="L80"><a href="#L80">80</a>     const missingCall = [...identifiers].reverse().find((node) =&gt; node.getText() === &quot;missing&quot;);</span>
+<span class="line" id="L81"><a href="#L81">81</a>     if (!targetCall || !missingCall) throw new Error(&quot;expected call identifiers&quot;);</span>
+<span class="line" id="L82"><a href="#L82">82</a> </span>
+<span class="line" id="L83"><a href="#L83">83</a>     const firstDefinitions = queries.definitionNodesOf(targetCall);</span>
+<span class="line" id="L84"><a href="#L84">84</a>     const secondDefinitions = queries.definitionNodesOf(targetCall);</span>
+<span class="line" id="L85"><a href="#L85">85</a>     const firstMissing = queries.definitionNodesOf(missingCall);</span>
+<span class="line" id="L86"><a href="#L86">86</a>     const secondMissing = queries.definitionNodesOf(missingCall);</span>
+<span class="line" id="L87"><a href="#L87">87</a> </span>
+<span class="line" id="L88"><a href="#L88">88</a>     expect(firstDefinitions).not.toBe(secondDefinitions);</span>
+<span class="line" id="L89"><a href="#L89">89</a>     expect(firstDefinitions[0]).toBe(secondDefinitions[0]);</span>
+<span class="line" id="L90"><a href="#L90">90</a>     expect(firstMissing).toEqual([]);</span>
+<span class="line" id="L91"><a href="#L91">91</a>     expect(secondMissing).toEqual([]);</span>
+<span class="line" id="L92"><a href="#L92">92</a>     expect(resolvedPositions).toEqual([targetCall.getStart(), missingCall.getStart()]);</span>
+<span class="line" id="L93"><a href="#L93">93</a>   });</span>
+<span class="line" id="L94"><a href="#L94">94</a> </span>
+<span class="line" id="L95"><a href="#L95">95</a>   it(&quot;retains asynchronous definition and callee failures for the turn&quot;, async () =&gt; {</span>
+<span class="line" id="L96"><a href="#L96">96</a>     const failure = new Error(&quot;semantic failure&quot;);</span>
+<span class="line" id="L97"><a href="#L97">97</a>     const ensureFiles = vi.fn(() =&gt; Promise.reject(failure));</span>
+<span class="line" id="L98"><a href="#L98">98</a>     const state = { ensureFiles } as unknown as TypeScriptWorkspaceState;</span>
+<span class="line" id="L99"><a href="#L99">99</a>     const queries = new TypeScriptSemanticQueryService(undefined, state);</span>
+<span class="line" id="L100"><a href="#L100">100</a>     const target = identity(&quot;src/app.ts&quot;, &quot;target&quot;);</span>
+<span class="line" id="L101"><a href="#L101">101</a>     queries.beginTurn([]);</span>
+<span class="line" id="L102"><a href="#L102">102</a> </span>
+<span class="line" id="L103"><a href="#L103">103</a>     const definitions = queries.findDefinitions(target);</span>
+<span class="line" id="L104"><a href="#L104">104</a>     const callees = queries.findCallees(target);</span>
+<span class="line" id="L105"><a href="#L105">105</a> </span>
+<span class="line" id="L106"><a href="#L106">106</a>     expect(queries.findDefinitions(target)).toBe(definitions);</span>
+<span class="line" id="L107"><a href="#L107">107</a>     expect(queries.findCallees(target)).toBe(callees);</span>
+<span class="line" id="L108"><a href="#L108">108</a>     await expect(definitions).rejects.toBe(failure);</span>
+<span class="line" id="L109"><a href="#L109">109</a>     await expect(callees).rejects.toBe(failure);</span>
+<span class="line" id="L110"><a href="#L110">110</a>     expect(ensureFiles).toHaveBeenCalledTimes(2);</span>
+<span class="line" id="L111"><a href="#L111">111</a>   });</span>
+<span class="line" id="L112"><a href="#L112">112</a> </span>
+<span class="line" id="L113"><a href="#L113">113</a>   it(&quot;retries synchronous reference discovery failures&quot;, async () =&gt; {</span>
+<span class="line" id="L114"><a href="#L114">114</a>     const failure = new Error(&quot;reference failure&quot;);</span>
+<span class="line" id="L115"><a href="#L115">115</a>     const locateSemanticCopies = vi.fn(() =&gt; {</span>
+<span class="line" id="L116"><a href="#L116">116</a>       throw failure;</span>
+<span class="line" id="L117"><a href="#L117">117</a>     });</span>
+<span class="line" id="L118"><a href="#L118">118</a>     const state = { locateSemanticCopies } as unknown as TypeScriptWorkspaceState;</span>
+<span class="line" id="L119"><a href="#L119">119</a>     let referenceSearches = 0;</span>
+<span class="line" id="L120"><a href="#L120">120</a>     const queries = new TypeScriptSemanticQueryService(undefined, state, {</span>
+<span class="line" id="L121"><a href="#L121">121</a>       referenceSearch: () =&gt; {</span>
+<span class="line" id="L122"><a href="#L122">122</a>         referenceSearches += 1;</span>
+<span class="line" id="L123"><a href="#L123">123</a>       },</span>
+<span class="line" id="L124"><a href="#L124">124</a>     });</span>
+<span class="line" id="L125"><a href="#L125">125</a>     const target = identity(&quot;src/app.ts&quot;, &quot;target&quot;);</span>
+<span class="line" id="L126"><a href="#L126">126</a>     queries.beginTurn([]);</span>
+<span class="line" id="L127"><a href="#L127">127</a> </span>
+<span class="line" id="L128"><a href="#L128">128</a>     await expect(queries.findReferences(target)).rejects.toBe(failure);</span>
+<span class="line" id="L129"><a href="#L129">129</a>     await expect(queries.findReferences(target)).rejects.toBe(failure);</span>
+<span class="line" id="L130"><a href="#L130">130</a> </span>
+<span class="line" id="L131"><a href="#L131">131</a>     expect(locateSemanticCopies).toHaveBeenCalledTimes(2);</span>
+<span class="line" id="L132"><a href="#L132">132</a>     expect(referenceSearches).toBe(2);</span>
+<span class="line" id="L133"><a href="#L133">133</a>   });</span>
+<span class="line" id="L134"><a href="#L134">134</a> </span>
+<span class="line" id="L135"><a href="#L135">135</a>   it(&quot;preserves the current turn when backend refresh fails&quot;, async () =&gt; {</span>
+<span class="line" id="L136"><a href="#L136">136</a>     const failure = new Error(&quot;refresh failure&quot;);</span>
+<span class="line" id="L137"><a href="#L137">137</a>     let refreshFails = false;</span>
+<span class="line" id="L138"><a href="#L138">138</a>     const state = {</span>
+<span class="line" id="L139"><a href="#L139">139</a>       refresh: vi.fn(() =&gt; {</span>
+<span class="line" id="L140"><a href="#L140">140</a>         if (refreshFails) return Promise.reject(failure);</span>
+<span class="line" id="L141"><a href="#L141">141</a>         return Promise.resolve({ added: 0, changed: 0, removed: 0, unchanged: 0 });</span>
+<span class="line" id="L142"><a href="#L142">142</a>       }),</span>
+<span class="line" id="L143"><a href="#L143">143</a>       ensureFiles: vi.fn(() =&gt; Promise.resolve()),</span>
+<span class="line" id="L144"><a href="#L144">144</a>       locate: vi.fn(() =&gt; []),</span>
+<span class="line" id="L145"><a href="#L145">145</a>     } as unknown as TypeScriptWorkspaceState;</span>
+<span class="line" id="L146"><a href="#L146">146</a>     let definitionSearches = 0;</span>
+<span class="line" id="L147"><a href="#L147">147</a>     const backend = new TypeScriptBackend(new InMemoryFileSystem({}), state, undefined, {</span>
+<span class="line" id="L148"><a href="#L148">148</a>       definitionSearch: () =&gt; {</span>
+<span class="line" id="L149"><a href="#L149">149</a>         definitionSearches += 1;</span>
+<span class="line" id="L150"><a href="#L150">150</a>       },</span>
+<span class="line" id="L151"><a href="#L151">151</a>     });</span>
+<span class="line" id="L152"><a href="#L152">152</a>     const snapshot: WorkspaceSnapshot = { root: &quot;/repo&quot;, files: [] };</span>
+<span class="line" id="L153"><a href="#L153">153</a>     const target = identity(&quot;src/app.ts&quot;, &quot;target&quot;);</span>
+<span class="line" id="L154"><a href="#L154">154</a>     await backend.refresh({ snapshot, coverage: &quot;workspace&quot; });</span>
+<span class="line" id="L155"><a href="#L155">155</a>     const definitions = await backend.findDefinitions([], target);</span>
+<span class="line" id="L156"><a href="#L156">156</a>     refreshFails = true;</span>
+<span class="line" id="L157"><a href="#L157">157</a> </span>
+<span class="line" id="L158"><a href="#L158">158</a>     await expect(backend.refresh({ snapshot, coverage: &quot;workspace&quot; })).rejects.toBe(failure);</span>
+<span class="line" id="L159"><a href="#L159">159</a> </span>
+<span class="line" id="L160"><a href="#L160">160</a>     await expect(backend.findDefinitions([], target)).resolves.toBe(definitions);</span>
+<span class="line" id="L161"><a href="#L161">161</a>     expect(definitionSearches).toBe(1);</span>
+<span class="line" id="L162"><a href="#L162">162</a>   });</span>
+<span class="line" id="L163"><a href="#L163">163</a> </span>
+<span class="line" id="L164"><a href="#L164">164</a>   it(&quot;clears caches before awaiting project release and rejects at the backend boundary&quot;, async () =&gt; {</span>
+<span class="line" id="L165"><a href="#L165">165</a>     const releaseFailure = new Error(&quot;project release failed&quot;);</span>
+<span class="line" id="L166"><a href="#L166">166</a>     let rejectProjectRelease: ((reason: unknown) =&gt; void) | undefined;</span>
+<span class="line" id="L167"><a href="#L167">167</a>     const projectRelease = new Promise&lt;void&gt;((_resolve, reject) =&gt; {</span>
+<span class="line" id="L168"><a href="#L168">168</a>       rejectProjectRelease = reject;</span>
+<span class="line" id="L169"><a href="#L169">169</a>     });</span>
+<span class="line" id="L170"><a href="#L170">170</a>     void projectRelease.catch(() =&gt; undefined);</span>
+<span class="line" id="L171"><a href="#L171">171</a>     const firstProjectRelease = vi.fn(() =&gt; projectRelease);</span>
+<span class="line" id="L172"><a href="#L172">172</a>     const laterProjectRelease = vi.fn();</span>
+<span class="line" id="L173"><a href="#L173">173</a>     const projectGraph = {</span>
+<span class="line" id="L174"><a href="#L174">174</a>       releaseTransientResources: vi.fn(async () =&gt; {</span>
+<span class="line" id="L175"><a href="#L175">175</a>         await firstProjectRelease();</span>
+<span class="line" id="L176"><a href="#L176">176</a>         laterProjectRelease();</span>
+<span class="line" id="L177"><a href="#L177">177</a>       }),</span>
+<span class="line" id="L178"><a href="#L178">178</a>     } as unknown as TypeScriptProjectGraph;</span>
+<span class="line" id="L179"><a href="#L179">179</a>     const state = {</span>
+<span class="line" id="L180"><a href="#L180">180</a>       refresh: vi.fn(() =&gt; Promise.resolve({ added: 0, changed: 0, removed: 0, unchanged: 0 })),</span>
+<span class="line" id="L181"><a href="#L181">181</a>       ensureFiles: vi.fn(() =&gt; Promise.resolve()),</span>
+<span class="line" id="L182"><a href="#L182">182</a>       locate: vi.fn(() =&gt; []),</span>
+<span class="line" id="L183"><a href="#L183">183</a>     } as unknown as TypeScriptWorkspaceState;</span>
+<span class="line" id="L184"><a href="#L184">184</a>     let definitionSearches = 0;</span>
+<span class="line" id="L185"><a href="#L185">185</a>     const backend = new TypeScriptBackend(new InMemoryFileSystem({}), state, projectGraph, {</span>
+<span class="line" id="L186"><a href="#L186">186</a>       definitionSearch: () =&gt; {</span>
+<span class="line" id="L187"><a href="#L187">187</a>         definitionSearches += 1;</span>
+<span class="line" id="L188"><a href="#L188">188</a>       },</span>
+<span class="line" id="L189"><a href="#L189">189</a>     });</span>
+<span class="line" id="L190"><a href="#L190">190</a>     const snapshot: WorkspaceSnapshot = { root: &quot;/repo&quot;, files: [] };</span>
+<span class="line" id="L191"><a href="#L191">191</a>     const target = identity(&quot;src/app.ts&quot;, &quot;target&quot;);</span>
+<span class="line" id="L192"><a href="#L192">192</a>     await backend.refresh({ snapshot, coverage: &quot;selection&quot; });</span>
+<span class="line" id="L193"><a href="#L193">193</a>     const beforeRelease = await backend.findDefinitions([], target);</span>
+<span class="line" id="L194"><a href="#L194">194</a> </span>
+<span class="line" id="L195"><a href="#L195">195</a>     const release = backend.releaseTransientResources();</span>
+<span class="line" id="L196"><a href="#L196">196</a>     let releaseSettled = false;</span>
+<span class="line" id="L197"><a href="#L197">197</a>     void release.then(</span>
+<span class="line" id="L198"><a href="#L198">198</a>       () =&gt; {</span>
+<span class="line" id="L199"><a href="#L199">199</a>         releaseSettled = true;</span>
+<span class="line" id="L200"><a href="#L200">200</a>       },</span>
+<span class="line" id="L201"><a href="#L201">201</a>       () =&gt; {</span>
+<span class="line" id="L202"><a href="#L202">202</a>         releaseSettled = true;</span>
+<span class="line" id="L203"><a href="#L203">203</a>       },</span>
+<span class="line" id="L204"><a href="#L204">204</a>     );</span>
+<span class="line" id="L205"><a href="#L205">205</a>     const afterRelease = await backend.findDefinitions([], target);</span>
+<span class="line" id="L206"><a href="#L206">206</a> </span>
+<span class="line" id="L207"><a href="#L207">207</a>     expect(afterRelease).not.toBe(beforeRelease);</span>
+<span class="line" id="L208"><a href="#L208">208</a>     expect(definitionSearches).toBe(2);</span>
+<span class="line" id="L209"><a href="#L209">209</a>     expect(projectGraph.releaseTransientResources).toHaveBeenCalledOnce();</span>
+<span class="line" id="L210"><a href="#L210">210</a>     await Promise.resolve();</span>
+<span class="line" id="L211"><a href="#L211">211</a>     expect(releaseSettled).toBe(false);</span>
+<span class="line" id="L212"><a href="#L212">212</a> </span>
+<span class="line" id="L213"><a href="#L213">213</a>     rejectProjectRelease?.(releaseFailure);</span>
+<span class="line" id="L214"><a href="#L214">214</a>     await expect(release).rejects.toBe(releaseFailure);</span>
+<span class="line" id="L215"><a href="#L215">215</a>     expect(firstProjectRelease).toHaveBeenCalledOnce();</span>
+<span class="line" id="L216"><a href="#L216">216</a>     expect(laterProjectRelease).not.toHaveBeenCalled();</span>
+<span class="line" id="L217"><a href="#L217">217</a>   });</span>
+<span class="line" id="L218"><a href="#L218">218</a> </span>
+<span class="line" id="L219"><a href="#L219">219</a>   it(&quot;shares one reference search across caller and reference projections&quot;, async () =&gt; {</span>
+<span class="line" id="L220"><a href="#L220">220</a>     const fileSystem = new InMemoryFileSystem({</span>
+<span class="line" id="L221"><a href="#L221">221</a>       &quot;/repo/src/lib.ts&quot;: &quot;export function target(): void {}\n&quot;,</span>
+<span class="line" id="L222"><a href="#L222">222</a>       &quot;/repo/src/app.ts&quot;: [</span>
+<span class="line" id="L223"><a href="#L223">223</a>         &#x27;import { target } from &quot;./lib.js&quot;;&#x27;,</span>
+<span class="line" id="L224"><a href="#L224">224</a>         &quot;export function caller(): void { target(); }&quot;,</span>
+<span class="line" id="L225"><a href="#L225">225</a>         &quot;&quot;,</span>
+<span class="line" id="L226"><a href="#L226">226</a>       ].join(&quot;\n&quot;),</span>
+<span class="line" id="L227"><a href="#L227">227</a>     });</span>
+<span class="line" id="L228"><a href="#L228">228</a>     const referenceSearches: SymbolIdentity[] = [];</span>
+<span class="line" id="L229"><a href="#L229">229</a>     const backend = new TypeScriptBackend(fileSystem, undefined, undefined, {</span>
+<span class="line" id="L230"><a href="#L230">230</a>       referenceSearch: (identity) =&gt; referenceSearches.push(identity),</span>
+<span class="line" id="L231"><a href="#L231">231</a>     });</span>
+<span class="line" id="L232"><a href="#L232">232</a>     const files = workspaceFiles(fileSystem, &quot;src/app.ts&quot;, &quot;src/lib.ts&quot;);</span>
+<span class="line" id="L233"><a href="#L233">233</a>     const target = identity(&quot;src/lib.ts&quot;, &quot;target&quot;);</span>
+<span class="line" id="L234"><a href="#L234">234</a>     await backend.refresh({ snapshot: { root: &quot;/repo&quot;, files }, coverage: &quot;workspace&quot; });</span>
+<span class="line" id="L235"><a href="#L235">235</a> </span>
+<span class="line" id="L236"><a href="#L236">236</a>     await expect(backend.findCallers(files, target)).resolves.toHaveLength(1);</span>
+<span class="line" id="L237"><a href="#L237">237</a>     await expect(backend.findReferences(files, target)).resolves.toHaveLength(2);</span>
+<span class="line" id="L238"><a href="#L238">238</a>     expect(referenceSearches).toEqual([target]);</span>
+<span class="line" id="L239"><a href="#L239">239</a>   });</span>
+<span class="line" id="L240"><a href="#L240">240</a> </span>
+<span class="line" id="L241"><a href="#L241">241</a>   it(&quot;shares caches within one turn and clears them for the next turn&quot;, async () =&gt; {</span>
+<span class="line" id="L242"><a href="#L242">242</a>     const fileSystem = new InMemoryFileSystem({</span>
+<span class="line" id="L243"><a href="#L243">243</a>       &quot;/repo/src/lib.ts&quot;: &quot;export function target(): void {}\n&quot;,</span>
+<span class="line" id="L244"><a href="#L244">244</a>       &quot;/repo/src/app.ts&quot;: [</span>
+<span class="line" id="L245"><a href="#L245">245</a>         &#x27;import { target } from &quot;./lib.js&quot;;&#x27;,</span>
+<span class="line" id="L246"><a href="#L246">246</a>         &quot;export function caller(): void { target(); }&quot;,</span>
+<span class="line" id="L247"><a href="#L247">247</a>         &quot;&quot;,</span>
+<span class="line" id="L248"><a href="#L248">248</a>       ].join(&quot;\n&quot;),</span>
+<span class="line" id="L249"><a href="#L249">249</a>     });</span>
+<span class="line" id="L250"><a href="#L250">250</a>     let referenceSearches = 0;</span>
+<span class="line" id="L251"><a href="#L251">251</a>     const backend = new TypeScriptBackend(fileSystem, undefined, undefined, {</span>
+<span class="line" id="L252"><a href="#L252">252</a>       referenceSearch: () =&gt; {</span>
+<span class="line" id="L253"><a href="#L253">253</a>         referenceSearches += 1;</span>
+<span class="line" id="L254"><a href="#L254">254</a>       },</span>
+<span class="line" id="L255"><a href="#L255">255</a>     });</span>
+<span class="line" id="L256"><a href="#L256">256</a>     const files = workspaceFiles(fileSystem, &quot;src/app.ts&quot;, &quot;src/lib.ts&quot;);</span>
+<span class="line" id="L257"><a href="#L257">257</a>     const snapshot: WorkspaceSnapshot = { root: &quot;/repo&quot;, files };</span>
+<span class="line" id="L258"><a href="#L258">258</a>     const target = identity(&quot;src/lib.ts&quot;, &quot;target&quot;);</span>
+<span class="line" id="L259"><a href="#L259">259</a>     await backend.refresh({ snapshot, coverage: &quot;workspace&quot; });</span>
+<span class="line" id="L260"><a href="#L260">260</a> </span>
+<span class="line" id="L261"><a href="#L261">261</a>     await backend.findReferences(files, target);</span>
+<span class="line" id="L262"><a href="#L262">262</a>     await backend.findReferences(files, target);</span>
+<span class="line" id="L263"><a href="#L263">263</a>     expect(referenceSearches).toBe(1);</span>
+<span class="line" id="L264"><a href="#L264">264</a> </span>
+<span class="line" id="L265"><a href="#L265">265</a>     await backend.refresh({ snapshot, coverage: &quot;workspace&quot; });</span>
+<span class="line" id="L266"><a href="#L266">266</a>     await backend.findReferences(files, target);</span>
+<span class="line" id="L267"><a href="#L267">267</a>     expect(referenceSearches).toBe(2);</span>
+<span class="line" id="L268"><a href="#L268">268</a>   });</span>
+<span class="line" id="L269"><a href="#L269">269</a> </span>
+<span class="line" id="L270"><a href="#L270">270</a>   it(&quot;resolves each call position once while grouping repeated targets&quot;, async () =&gt; {</span>
+<span class="line" id="L271"><a href="#L271">271</a>     const fileSystem = new InMemoryFileSystem({</span>
+<span class="line" id="L272"><a href="#L272">272</a>       &quot;/repo/src/app.ts&quot;: [</span>
+<span class="line" id="L273"><a href="#L273">273</a>         &quot;export function target(value: string): string;&quot;,</span>
+<span class="line" id="L274"><a href="#L274">274</a>         &quot;export function target(value: number): string;&quot;,</span>
+<span class="line" id="L275"><a href="#L275">275</a>         &quot;export function target(value: string | number): string { return String(value); }&quot;,</span>
+<span class="line" id="L276"><a href="#L276">276</a>         &quot;export function caller(): string { return `${target(1)}:${target(&#x27;x&#x27;)}`; }&quot;,</span>
+<span class="line" id="L277"><a href="#L277">277</a>         &quot;&quot;,</span>
+<span class="line" id="L278"><a href="#L278">278</a>       ].join(&quot;\n&quot;),</span>
+<span class="line" id="L279"><a href="#L279">279</a>     });</span>
+<span class="line" id="L280"><a href="#L280">280</a>     const resolvedPositions: string[] = [];</span>
+<span class="line" id="L281"><a href="#L281">281</a>     const backend = new TypeScriptBackend(fileSystem, undefined, undefined, {</span>
+<span class="line" id="L282"><a href="#L282">282</a>       callTargetResolution: (relativePath, start) =&gt;</span>
+<span class="line" id="L283"><a href="#L283">283</a>         resolvedPositions.push(`${relativePath}:${start}`),</span>
+<span class="line" id="L284"><a href="#L284">284</a>     });</span>
+<span class="line" id="L285"><a href="#L285">285</a>     const files = workspaceFiles(fileSystem, &quot;src/app.ts&quot;);</span>
+<span class="line" id="L286"><a href="#L286">286</a>     const caller = identity(&quot;src/app.ts&quot;, &quot;caller&quot;);</span>
+<span class="line" id="L287"><a href="#L287">287</a>     await backend.refresh({ snapshot: { root: &quot;/repo&quot;, files }, coverage: &quot;workspace&quot; });</span>
+<span class="line" id="L288"><a href="#L288">288</a> </span>
+<span class="line" id="L289"><a href="#L289">289</a>     const first = await backend.findCallees(files, caller);</span>
+<span class="line" id="L290"><a href="#L290">290</a>     const second = await backend.findCallees(files, caller);</span>
+<span class="line" id="L291"><a href="#L291">291</a> </span>
+<span class="line" id="L292"><a href="#L292">292</a>     expect(first).toBe(second);</span>
+<span class="line" id="L293"><a href="#L293">293</a>     expect(first.map((edge) =&gt; edge.symbol.kind.nativeLabel)).toEqual([</span>
+<span class="line" id="L294"><a href="#L294">294</a>       &quot;function-overload-signature&quot;,</span>
+<span class="line" id="L295"><a href="#L295">295</a>       &quot;function-overload-signature&quot;,</span>
+<span class="line" id="L296"><a href="#L296">296</a>     ]);</span>
+<span class="line" id="L297"><a href="#L297">297</a>     expect(resolvedPositions).toHaveLength(2);</span>
+<span class="line" id="L298"><a href="#L298">298</a>     expect(new Set(resolvedPositions).size).toBe(2);</span>
+<span class="line" id="L299"><a href="#L299">299</a>   });</span>
+<span class="line" id="L300"><a href="#L300">300</a> </span>
+<span class="line" id="L301"><a href="#L301">301</a>   it(&quot;queries each declaration position once across diamond graph paths&quot;, async () =&gt; {</span>
+<span class="line" id="L302"><a href="#L302">302</a>     const fileSystem = new InMemoryFileSystem({</span>
+<span class="line" id="L303"><a href="#L303">303</a>       &quot;/repo/src/graph.ts&quot;: [</span>
+<span class="line" id="L304"><a href="#L304">304</a>         &quot;export function leaf(): void {}&quot;,</span>
+<span class="line" id="L305"><a href="#L305">305</a>         &quot;export function left(): void { leaf(); }&quot;,</span>
+<span class="line" id="L306"><a href="#L306">306</a>         &quot;export function right(): void { leaf(); }&quot;,</span>
+<span class="line" id="L307"><a href="#L307">307</a>         &quot;export function root(): void { left(); right(); }&quot;,</span>
+<span class="line" id="L308"><a href="#L308">308</a>         &quot;&quot;,</span>
+<span class="line" id="L309"><a href="#L309">309</a>       ].join(&quot;\n&quot;),</span>
+<span class="line" id="L310"><a href="#L310">310</a>     });</span>
+<span class="line" id="L311"><a href="#L311">311</a>     const resolvedPositions: string[] = [];</span>
+<span class="line" id="L312"><a href="#L312">312</a>     const backend = new TypeScriptBackend(fileSystem, undefined, undefined, {</span>
+<span class="line" id="L313"><a href="#L313">313</a>       callTargetResolution: (relativePath, start) =&gt;</span>
+<span class="line" id="L314"><a href="#L314">314</a>         resolvedPositions.push(`${relativePath}:${start}`),</span>
+<span class="line" id="L315"><a href="#L315">315</a>     });</span>
+<span class="line" id="L316"><a href="#L316">316</a>     const files = workspaceFiles(fileSystem, &quot;src/graph.ts&quot;);</span>
+<span class="line" id="L317"><a href="#L317">317</a>     await backend.refresh({ snapshot: { root: &quot;/repo&quot;, files }, coverage: &quot;workspace&quot; });</span>
+<span class="line" id="L318"><a href="#L318">318</a>     const [root] = await backend.findDefinitions(files, identity(&quot;src/graph.ts&quot;, &quot;root&quot;));</span>
+<span class="line" id="L319"><a href="#L319">319</a>     if (!root) throw new Error(&quot;expected root declaration&quot;);</span>
+<span class="line" id="L320"><a href="#L320">320</a> </span>
+<span class="line" id="L321"><a href="#L321">321</a>     const paths = await new GraphTraverser({ backend, files, root, depth: 2 }).traverseOutgoing();</span>
+<span class="line" id="L322"><a href="#L322">322</a> </span>
+<span class="line" id="L323"><a href="#L323">323</a>     expect(paths).toHaveLength(2);</span>
+<span class="line" id="L324"><a href="#L324">324</a>     expect(paths.map((path) =&gt; path.steps.at(-1)?.symbol.identity)).toEqual([</span>
+<span class="line" id="L325"><a href="#L325">325</a>       identity(&quot;src/graph.ts&quot;, &quot;leaf&quot;),</span>
+<span class="line" id="L326"><a href="#L326">326</a>       identity(&quot;src/graph.ts&quot;, &quot;leaf&quot;),</span>
+<span class="line" id="L327"><a href="#L327">327</a>     ]);</span>
+<span class="line" id="L328"><a href="#L328">328</a>     expect(resolvedPositions).toHaveLength(4);</span>
+<span class="line" id="L329"><a href="#L329">329</a>     expect(new Set(resolvedPositions).size).toBe(4);</span>
+<span class="line" id="L330"><a href="#L330">330</a>   });</span>
+<span class="line" id="L331"><a href="#L331">331</a> </span>
+<span class="line" id="L332"><a href="#L332">332</a>   it(&quot;rebuilds released fresh semantics once in an unchanged turn&quot;, async () =&gt; {</span>
+<span class="line" id="L333"><a href="#L333">333</a>     const fixture = new MutableSemanticFixture();</span>
+<span class="line" id="L334"><a href="#L334">334</a>     mutableFixtures.push(fixture);</span>
+<span class="line" id="L335"><a href="#L335">335</a>     let referenceSearches = 0;</span>
+<span class="line" id="L336"><a href="#L336">336</a>     let semanticReleases = 0;</span>
+<span class="line" id="L337"><a href="#L337">337</a>     let semanticProjectLoads = 0;</span>
+<span class="line" id="L338"><a href="#L338">338</a>     const backend = new TypeScriptBackend(fixture.fileSystem, undefined, undefined, {</span>
+<span class="line" id="L339"><a href="#L339">339</a>       referenceSearch: () =&gt; {</span>
+<span class="line" id="L340"><a href="#L340">340</a>         referenceSearches += 1;</span>
+<span class="line" id="L341"><a href="#L341">341</a>       },</span>
+<span class="line" id="L342"><a href="#L342">342</a>       semanticCacheReleased: () =&gt; {</span>
+<span class="line" id="L343"><a href="#L343">343</a>         semanticReleases += 1;</span>
+<span class="line" id="L344"><a href="#L344">344</a>       },</span>
+<span class="line" id="L345"><a href="#L345">345</a>       semanticProjectLoaded: () =&gt; {</span>
+<span class="line" id="L346"><a href="#L346">346</a>         semanticProjectLoads += 1;</span>
+<span class="line" id="L347"><a href="#L347">347</a>       },</span>
+<span class="line" id="L348"><a href="#L348">348</a>     });</span>
+<span class="line" id="L349"><a href="#L349">349</a>     let snapshot = await fixture.snapshot();</span>
+<span class="line" id="L350"><a href="#L350">350</a>     let files = snapshot.files;</span>
+<span class="line" id="L351"><a href="#L351">351</a>     const stable = identity(&quot;src/stable.ts&quot;, &quot;stableTarget&quot;);</span>
+<span class="line" id="L352"><a href="#L352">352</a>     const original = identity(&quot;src/lib.ts&quot;, &quot;originalTarget&quot;);</span>
+<span class="line" id="L353"><a href="#L353">353</a>     await backend.refresh({ snapshot, coverage: &quot;workspace&quot; });</span>
+<span class="line" id="L354"><a href="#L354">354</a>     const [preparedDeclaration] = await backend.findDefinitions(files, stable);</span>
+<span class="line" id="L355"><a href="#L355">355</a>     const stableFile = files.find((file) =&gt; file.relative === &quot;src/stable.ts&quot;);</span>
+<span class="line" id="L356"><a href="#L356">356</a>     if (!stableFile) throw new Error(&quot;expected stable source&quot;);</span>
+<span class="line" id="L357"><a href="#L357">357</a>     const preparedEntries = await backend.fileEntries(stableFile);</span>
+<span class="line" id="L358"><a href="#L358">358</a>     await expect(backend.findReferences(files, original)).resolves.toHaveLength(2);</span>
+<span class="line" id="L359"><a href="#L359">359</a>     expect(semanticProjectLoads).toBe(1);</span>
+<span class="line" id="L360"><a href="#L360">360</a> </span>
+<span class="line" id="L361"><a href="#L361">361</a>     fixture.writeConfiguration(&quot;@fresh&quot;);</span>
+<span class="line" id="L362"><a href="#L362">362</a>     fixture.write(&quot;src/lib.ts&quot;, &quot;export function freshTarget(): void {}\n&quot;);</span>
+<span class="line" id="L363"><a href="#L363">363</a>     fixture.write(</span>
+<span class="line" id="L364"><a href="#L364">364</a>       &quot;src/app.ts&quot;,</span>
+<span class="line" id="L365"><a href="#L365">365</a>       [</span>
+<span class="line" id="L366"><a href="#L366">366</a>         &#x27;import { freshTarget } from &quot;@fresh&quot;;&#x27;,</span>
+<span class="line" id="L367"><a href="#L367">367</a>         &quot;export function caller(): void { freshTarget(); }&quot;,</span>
+<span class="line" id="L368"><a href="#L368">368</a>         &quot;&quot;,</span>
+<span class="line" id="L369"><a href="#L369">369</a>       ].join(&quot;\n&quot;),</span>
+<span class="line" id="L370"><a href="#L370">370</a>     );</span>
+<span class="line" id="L371"><a href="#L371">371</a>     snapshot = await fixture.snapshot();</span>
+<span class="line" id="L372"><a href="#L372">372</a>     files = snapshot.files;</span>
+<span class="line" id="L373"><a href="#L373">373</a>     await backend.refresh({ snapshot, coverage: &quot;workspace&quot; });</span>
+<span class="line" id="L374"><a href="#L374">374</a> </span>
+<span class="line" id="L375"><a href="#L375">375</a>     await expect(</span>
+<span class="line" id="L376"><a href="#L376">376</a>       backend.resolveSymbols(files, &quot;originalTarget&quot;, { mode: &quot;exact&quot; }),</span>
+<span class="line" id="L377"><a href="#L377">377</a>     ).resolves.toEqual([]);</span>
+<span class="line" id="L378"><a href="#L378">378</a>     await expect(backend.findDefinitions(files, stable)).resolves.toContain(preparedDeclaration);</span>
+<span class="line" id="L379"><a href="#L379">379</a>     await expect(backend.fileEntries(stableFile)).resolves.toBe(preparedEntries);</span>
+<span class="line" id="L380"><a href="#L380">380</a> </span>
+<span class="line" id="L381"><a href="#L381">381</a>     const fresh = identity(&quot;src/lib.ts&quot;, &quot;freshTarget&quot;);</span>
+<span class="line" id="L382"><a href="#L382">382</a>     const preparedReferences = await backend.findReferences(files, fresh);</span>
+<span class="line" id="L383"><a href="#L383">383</a>     const preparedCallers = await backend.findCallers(files, fresh);</span>
+<span class="line" id="L384"><a href="#L384">384</a>     const preparedCallees = await backend.findCallees(files, fresh);</span>
+<span class="line" id="L385"><a href="#L385">385</a>     expect(semanticProjectLoads).toBe(2);</span>
+<span class="line" id="L386"><a href="#L386">386</a>     expect(referenceSearches).toBe(2);</span>
+<span class="line" id="L387"><a href="#L387">387</a> </span>
+<span class="line" id="L388"><a href="#L388">388</a>     await backend.releaseTransientResources();</span>
+<span class="line" id="L389"><a href="#L389">389</a>     await backend.refresh({ snapshot, coverage: &quot;workspace&quot; });</span>
+<span class="line" id="L390"><a href="#L390">390</a> </span>
+<span class="line" id="L391"><a href="#L391">391</a>     expect(semanticReleases).toBe(1);</span>
+<span class="line" id="L392"><a href="#L392">392</a>     expect(semanticProjectLoads).toBe(2);</span>
+<span class="line" id="L393"><a href="#L393">393</a>     await expect(backend.findDefinitions(files, stable)).resolves.toContain(preparedDeclaration);</span>
+<span class="line" id="L394"><a href="#L394">394</a>     await expect(backend.fileEntries(stableFile)).resolves.toBe(preparedEntries);</span>
+<span class="line" id="L395"><a href="#L395">395</a> </span>
+<span class="line" id="L396"><a href="#L396">396</a>     await expect(backend.findReferences(files, fresh)).resolves.toEqual(preparedReferences);</span>
+<span class="line" id="L397"><a href="#L397">397</a>     expect(semanticProjectLoads).toBe(3);</span>
+<span class="line" id="L398"><a href="#L398">398</a>     await expect(backend.findCallers(files, fresh)).resolves.toEqual(preparedCallers);</span>
+<span class="line" id="L399"><a href="#L399">399</a>     await expect(backend.findCallees(files, fresh)).resolves.toEqual(preparedCallees);</span>
+<span class="line" id="L400"><a href="#L400">400</a>     expect(semanticProjectLoads).toBe(3);</span>
+<span class="line" id="L401"><a href="#L401">401</a>     expect(referenceSearches).toBe(3);</span>
+<span class="line" id="L402"><a href="#L402">402</a>   });</span>
+<span class="line" id="L403"><a href="#L403">403</a> });</span>
+<span class="line" id="L404"><a href="#L404">404</a> </span>
+<span class="line" id="L405"><a href="#L405">405</a> class MutableSemanticFixture {</span>
+<span class="line" id="L406"><a href="#L406">406</a>   readonly root = mkdtempSync(join(tmpdir(), &quot;symnav-semantic-release-&quot;));</span>
+<span class="line" id="L407"><a href="#L407">407</a>   readonly fileSystem = new NodeFileSystem();</span>
+<span class="line" id="L408"><a href="#L408">408</a> </span>
+<span class="line" id="L409"><a href="#L409">409</a>   constructor() {</span>
+<span class="line" id="L410"><a href="#L410">410</a>     mkdirSync(join(this.root, &quot;src&quot;), { recursive: true });</span>
+<span class="line" id="L411"><a href="#L411">411</a>     this.writeConfiguration(&quot;@original&quot;);</span>
+<span class="line" id="L412"><a href="#L412">412</a>     this.write(&quot;src/lib.ts&quot;, &quot;export function originalTarget(): void {}\n&quot;);</span>
+<span class="line" id="L413"><a href="#L413">413</a>     this.write(</span>
+<span class="line" id="L414"><a href="#L414">414</a>       &quot;src/app.ts&quot;,</span>
+<span class="line" id="L415"><a href="#L415">415</a>       [</span>
+<span class="line" id="L416"><a href="#L416">416</a>         &#x27;import { originalTarget } from &quot;@original&quot;;&#x27;,</span>
+<span class="line" id="L417"><a href="#L417">417</a>         &quot;export function caller(): void { originalTarget(); }&quot;,</span>
+<span class="line" id="L418"><a href="#L418">418</a>         &quot;&quot;,</span>
+<span class="line" id="L419"><a href="#L419">419</a>       ].join(&quot;\n&quot;),</span>
+<span class="line" id="L420"><a href="#L420">420</a>     );</span>
+<span class="line" id="L421"><a href="#L421">421</a>     this.write(&quot;src/stable.ts&quot;, &quot;export function stableTarget(): void {}\n&quot;);</span>
+<span class="line" id="L422"><a href="#L422">422</a>   }</span>
+<span class="line" id="L423"><a href="#L423">423</a> </span>
+<span class="line" id="L424"><a href="#L424">424</a>   dispose(): void {</span>
+<span class="line" id="L425"><a href="#L425">425</a>     rmSync(this.root, { recursive: true, force: true });</span>
+<span class="line" id="L426"><a href="#L426">426</a>   }</span>
+<span class="line" id="L427"><a href="#L427">427</a> </span>
+<span class="line" id="L428"><a href="#L428">428</a>   write(relativePath: string, content: string): void {</span>
+<span class="line" id="L429"><a href="#L429">429</a>     writeFileSync(join(this.root, relativePath), content);</span>
+<span class="line" id="L430"><a href="#L430">430</a>   }</span>
+<span class="line" id="L431"><a href="#L431">431</a> </span>
+<span class="line" id="L432"><a href="#L432">432</a>   writeConfiguration(alias: string): void {</span>
+<span class="line" id="L433"><a href="#L433">433</a>     this.write(</span>
+<span class="line" id="L434"><a href="#L434">434</a>       &quot;tsconfig.json&quot;,</span>
+<span class="line" id="L435"><a href="#L435">435</a>       JSON.stringify({</span>
+<span class="line" id="L436"><a href="#L436">436</a>         compilerOptions: { baseUrl: &quot;.&quot;, paths: { [alias]: [&quot;src/lib.ts&quot;] } },</span>
+<span class="line" id="L437"><a href="#L437">437</a>         include: [&quot;src/**/*.ts&quot;],</span>
+<span class="line" id="L438"><a href="#L438">438</a>       }),</span>
+<span class="line" id="L439"><a href="#L439">439</a>     );</span>
+<span class="line" id="L440"><a href="#L440">440</a>   }</span>
+<span class="line" id="L441"><a href="#L441">441</a> </span>
+<span class="line" id="L442"><a href="#L442">442</a>   async snapshot(): Promise&lt;WorkspaceSnapshot&gt; {</span>
+<span class="line" id="L443"><a href="#L443">443</a>     const relativePaths = [&quot;src/app.ts&quot;, &quot;src/lib.ts&quot;, &quot;src/stable.ts&quot;];</span>
+<span class="line" id="L444"><a href="#L444">444</a>     return {</span>
+<span class="line" id="L445"><a href="#L445">445</a>       root: this.root.replaceAll(&quot;\\&quot;, &quot;/&quot;),</span>
+<span class="line" id="L446"><a href="#L446">446</a>       files: await Promise.all(</span>
+<span class="line" id="L447"><a href="#L447">447</a>         relativePaths.map(async (relativePath) =&gt; {</span>
+<span class="line" id="L448"><a href="#L448">448</a>           const absolute = join(this.root, relativePath).replaceAll(&quot;\\&quot;, &quot;/&quot;);</span>
+<span class="line" id="L449"><a href="#L449">449</a>           return {</span>
+<span class="line" id="L450"><a href="#L450">450</a>             relative: relative(this.root, absolute).replaceAll(&quot;\\&quot;, &quot;/&quot;),</span>
+<span class="line" id="L451"><a href="#L451">451</a>             absolute,</span>
+<span class="line" id="L452"><a href="#L452">452</a>             metadata: await this.fileSystem.metadata(absolute),</span>
+<span class="line" id="L453"><a href="#L453">453</a>           };</span>
+<span class="line" id="L454"><a href="#L454">454</a>         }),</span>
+<span class="line" id="L455"><a href="#L455">455</a>       ),</span>
+<span class="line" id="L456"><a href="#L456">456</a>     };</span>
+<span class="line" id="L457"><a href="#L457">457</a>   }</span>
+<span class="line" id="L458"><a href="#L458">458</a> }</span>
+<span class="line" id="L459"><a href="#L459">459</a> </span>
+<span class="line" id="L460"><a href="#L460">460</a> function workspaceFiles(</span>
+<span class="line" id="L461"><a href="#L461">461</a>   fileSystem: InMemoryFileSystem,</span>
+<span class="line" id="L462"><a href="#L462">462</a>   ...relativePaths: readonly string[]</span>
+<span class="line" id="L463"><a href="#L463">463</a> ): readonly WorkspaceFile[] {</span>
+<span class="line" id="L464"><a href="#L464">464</a>   return relativePaths.map((relative) =&gt; ({</span>
+<span class="line" id="L465"><a href="#L465">465</a>     relative,</span>
+<span class="line" id="L466"><a href="#L466">466</a>     absolute: `/repo/${relative}`,</span>
+<span class="line" id="L467"><a href="#L467">467</a>     metadata: fileSystem.metadataSync(`/repo/${relative}`),</span>
+<span class="line" id="L468"><a href="#L468">468</a>   }));</span>
+<span class="line" id="L469"><a href="#L469">469</a> }</span>
+<span class="line" id="L470"><a href="#L470">470</a> </span>
+<span class="line" id="L471"><a href="#L471">471</a> function identity(file: string, name: string): SymbolIdentity {</span>
+<span class="line" id="L472"><a href="#L472">472</a>   return { file, segments: [{ name }] };</span>
+<span class="line" id="L473"><a href="#L473">473</a> }</span>
+</pre><details class="source-disclosure"><summary>Net main → tip change touching this path (copy-aware)</summary><p>This is the net delta, including moves/copies. A historical source snapshot above may precede the final change below.</p><pre class="pr-source">diff --git a/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts b/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts
+index 3c9844217..1efc8d126 100644
+--- a/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts
++++ b/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts
+@@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from &quot;node:fs&quot;;
+ import { tmpdir } from &quot;node:os&quot;;
+ import { join, relative } from &quot;node:path&quot;;
+ 
+-import { afterEach, describe, expect, it } from &quot;vitest&quot;;
++import { afterEach, describe, expect, it, vi } from &quot;vitest&quot;;
++import { SyntaxKind } from &quot;ts-morph&quot;;
+ 
+ import {
+   GraphTraverser,
+@@ -14,6 +15,9 @@ import {
+ } from &quot;@symnav/core&quot;;
+ 
+ import { TypeScriptBackend } from &quot;./typescript-backend.js&quot;;
++import type { TypeScriptProjectGraph } from &quot;./typescript-project-graph.js&quot;;
++import { TypeScriptSemanticQueryService } from &quot;./typescript-semantic-query-service.js&quot;;
++import { TypeScriptWorkspaceState } from &quot;./typescript-workspace-state.js&quot;;
+ 
+ const mutableFixtures: MutableSemanticFixture[] = [];
+ 
+@@ -22,6 +26,196 @@ afterEach(() =&gt; {
+ });
+ 
+ describe(&quot;TypeScriptSemanticQueryService&quot;, () =&gt; {
++  it(&quot;shares each identity query promise independently within one turn&quot;, async () =&gt; {
++    const fileSystem = new InMemoryFileSystem({
++      &quot;/repo/src/app.ts&quot;: [
++        &quot;export function target(): void {}&quot;,
++        &quot;export function caller(): void { target(); }&quot;,
++        &quot;&quot;,
++      ].join(&quot;\n&quot;),
++    });
++    const files = workspaceFiles(fileSystem, &quot;src/app.ts&quot;);
++    const snapshot: WorkspaceSnapshot = { root: &quot;/repo&quot;, files };
++    const state = new TypeScriptWorkspaceState(fileSystem);
++    await state.refresh(files);
++    const queries = new TypeScriptSemanticQueryService(undefined, state);
++    const target = identity(&quot;src/app.ts&quot;, &quot;target&quot;);
++    const caller = identity(&quot;src/app.ts&quot;, &quot;caller&quot;);
++    queries.beginTurn(snapshot.files);
++
++    const definitions = queries.findDefinitions(target);
++    const callTarget = queries.findCallTarget(target);
++    const callers = queries.findCallers(target);
++    const callees = queries.findCallees(caller);
++
++    expect(queries.findDefinitions(target)).toBe(definitions);
++    expect(queries.findCallTarget(target)).toBe(callTarget);
++    expect(queries.findCallers(target)).toBe(callers);
++    expect(queries.findCallees(caller)).toBe(callees);
++    await expect(definitions).resolves.toHaveLength(1);
++    await expect(callTarget).resolves.toMatchObject({ outcome: &quot;resolved&quot; });
++    await expect(callers).resolves.toHaveLength(1);
++    await expect(callees).resolves.toHaveLength(1);
++  });
++
++  it(&quot;caches empty position results while rehydrating nodes for every access&quot;, async () =&gt; {
++    const fileSystem = new InMemoryFileSystem({
++      &quot;/repo/src/app.ts&quot;: [
++        &quot;export function target(): void {}&quot;,
++        &quot;export function caller(): void { target(); missing(); }&quot;,
++        &quot;&quot;,
++      ].join(&quot;\n&quot;),
++    });
++    const files = workspaceFiles(fileSystem, &quot;src/app.ts&quot;);
++    const state = new TypeScriptWorkspaceState(fileSystem);
++    await state.refresh(files);
++    const resolvedPositions: number[] = [];
++    const queries = new TypeScriptSemanticQueryService(undefined, state, {
++      callTargetResolution: (_relativePath, start) =&gt; resolvedPositions.push(start),
++    });
++    queries.beginTurn(files);
++    const sourceFile = state.sourceFile(&quot;src/app.ts&quot;);
++    const identifiers = sourceFile?.getDescendantsOfKind(SyntaxKind.Identifier) ?? [];
++    const targetCall = [...identifiers].reverse().find((node) =&gt; node.getText() === &quot;target&quot;);
++    const missingCall = [...identifiers].reverse().find((node) =&gt; node.getText() === &quot;missing&quot;);
++    if (!targetCall || !missingCall) throw new Error(&quot;expected call identifiers&quot;);
++
++    const firstDefinitions = queries.definitionNodesOf(targetCall);
++    const secondDefinitions = queries.definitionNodesOf(targetCall);
++    const firstMissing = queries.definitionNodesOf(missingCall);
++    const secondMissing = queries.definitionNodesOf(missingCall);
++
++    expect(firstDefinitions).not.toBe(secondDefinitions);
++    expect(firstDefinitions[0]).toBe(secondDefinitions[0]);
++    expect(firstMissing).toEqual([]);
++    expect(secondMissing).toEqual([]);
++    expect(resolvedPositions).toEqual([targetCall.getStart(), missingCall.getStart()]);
++  });
++
++  it(&quot;retains asynchronous definition and callee failures for the turn&quot;, async () =&gt; {
++    const failure = new Error(&quot;semantic failure&quot;);
++    const ensureFiles = vi.fn(() =&gt; Promise.reject(failure));
++    const state = { ensureFiles } as unknown as TypeScriptWorkspaceState;
++    const queries = new TypeScriptSemanticQueryService(undefined, state);
++    const target = identity(&quot;src/app.ts&quot;, &quot;target&quot;);
++    queries.beginTurn([]);
++
++    const definitions = queries.findDefinitions(target);
++    const callees = queries.findCallees(target);
++
++    expect(queries.findDefinitions(target)).toBe(definitions);
++    expect(queries.findCallees(target)).toBe(callees);
++    await expect(definitions).rejects.toBe(failure);
++    await expect(callees).rejects.toBe(failure);
++    expect(ensureFiles).toHaveBeenCalledTimes(2);
++  });
++
++  it(&quot;retries synchronous reference discovery failures&quot;, async () =&gt; {
++    const failure = new Error(&quot;reference failure&quot;);
++    const locateSemanticCopies = vi.fn(() =&gt; {
++      throw failure;
++    });
++    const state = { locateSemanticCopies } as unknown as TypeScriptWorkspaceState;
++    let referenceSearches = 0;
++    const queries = new TypeScriptSemanticQueryService(undefined, state, {
++      referenceSearch: () =&gt; {
++        referenceSearches += 1;
++      },
++    });
++    const target = identity(&quot;src/app.ts&quot;, &quot;target&quot;);
++    queries.beginTurn([]);
++
++    await expect(queries.findReferences(target)).rejects.toBe(failure);
++    await expect(queries.findReferences(target)).rejects.toBe(failure);
++
++    expect(locateSemanticCopies).toHaveBeenCalledTimes(2);
++    expect(referenceSearches).toBe(2);
++  });
++
++  it(&quot;preserves the current turn when backend refresh fails&quot;, async () =&gt; {
++    const failure = new Error(&quot;refresh failure&quot;);
++    let refreshFails = false;
++    const state = {
++      refresh: vi.fn(() =&gt; {
++        if (refreshFails) return Promise.reject(failure);
++        return Promise.resolve({ added: 0, changed: 0, removed: 0, unchanged: 0 });
++      }),
++      ensureFiles: vi.fn(() =&gt; Promise.resolve()),
++      locate: vi.fn(() =&gt; []),
++    } as unknown as TypeScriptWorkspaceState;
++    let definitionSearches = 0;
++    const backend = new TypeScriptBackend(new InMemoryFileSystem({}), state, undefined, {
++      definitionSearch: () =&gt; {
++        definitionSearches += 1;
++      },
++    });
++    const snapshot: WorkspaceSnapshot = { root: &quot;/repo&quot;, files: [] };
++    const target = identity(&quot;src/app.ts&quot;, &quot;target&quot;);
++    await backend.refresh({ snapshot, coverage: &quot;workspace&quot; });
++    const definitions = await backend.findDefinitions([], target);
++    refreshFails = true;
++
++    await expect(backend.refresh({ snapshot, coverage: &quot;workspace&quot; })).rejects.toBe(failure);
++
++    await expect(backend.findDefinitions([], target)).resolves.toBe(definitions);
++    expect(definitionSearches).toBe(1);
++  });
++
++  it(&quot;clears caches before awaiting project release and rejects at the backend boundary&quot;, async () =&gt; {
++    const releaseFailure = new Error(&quot;project release failed&quot;);
++    let rejectProjectRelease: ((reason: unknown) =&gt; void) | undefined;
++    const projectRelease = new Promise&lt;void&gt;((_resolve, reject) =&gt; {
++      rejectProjectRelease = reject;
++    });
++    void projectRelease.catch(() =&gt; undefined);
++    const firstProjectRelease = vi.fn(() =&gt; projectRelease);
++    const laterProjectRelease = vi.fn();
++    const projectGraph = {
++      releaseTransientResources: vi.fn(async () =&gt; {
++        await firstProjectRelease();
++        laterProjectRelease();
++      }),
++    } as unknown as TypeScriptProjectGraph;
++    const state = {
++      refresh: vi.fn(() =&gt; Promise.resolve({ added: 0, changed: 0, removed: 0, unchanged: 0 })),
++      ensureFiles: vi.fn(() =&gt; Promise.resolve()),
++      locate: vi.fn(() =&gt; []),
++    } as unknown as TypeScriptWorkspaceState;
++    let definitionSearches = 0;
++    const backend = new TypeScriptBackend(new InMemoryFileSystem({}), state, projectGraph, {
++      definitionSearch: () =&gt; {
++        definitionSearches += 1;
++      },
++    });
++    const snapshot: WorkspaceSnapshot = { root: &quot;/repo&quot;, files: [] };
++    const target = identity(&quot;src/app.ts&quot;, &quot;target&quot;);
++    await backend.refresh({ snapshot, coverage: &quot;selection&quot; });
++    const beforeRelease = await backend.findDefinitions([], target);
++
++    const release = backend.releaseTransientResources();
++    let releaseSettled = false;
++    void release.then(
++      () =&gt; {
++        releaseSettled = true;
++      },
++      () =&gt; {
++        releaseSettled = true;
++      },
++    );
++    const afterRelease = await backend.findDefinitions([], target);
++
++    expect(afterRelease).not.toBe(beforeRelease);
++    expect(definitionSearches).toBe(2);
++    expect(projectGraph.releaseTransientResources).toHaveBeenCalledOnce();
++    await Promise.resolve();
++    expect(releaseSettled).toBe(false);
++
++    rejectProjectRelease?.(releaseFailure);
++    await expect(release).rejects.toBe(releaseFailure);
++    expect(firstProjectRelease).toHaveBeenCalledOnce();
++    expect(laterProjectRelease).not.toHaveBeenCalled();
++  });
++
+   it(&quot;shares one reference search across caller and reference projections&quot;, async () =&gt; {
+     const fileSystem = new InMemoryFileSystem({
+       &quot;/repo/src/lib.ts&quot;: &quot;export function target(): void {}\n&quot;,
+</pre></details></main></body></html>

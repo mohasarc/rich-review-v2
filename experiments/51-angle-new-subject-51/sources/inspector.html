@@ -1,0 +1,341 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>inspector · pinned source</title><link rel="stylesheet" href="../style.css"><body class="source-page"><main><a href="../index.html#provenance">← Page provenance</a><h1>inspector</h1><p>packages/daemon/src/testing/daemon-testing-inspector.ts<br>d07002357d3e9596bfaae910a1ac63b77981620b · tip<br>SHA-256 ea18f4ad4d56a1f0be4eb9dc5254f295baeeb5b7a1c470d56dd29730ca0d8602</p><pre class="source-code"><span class="line" id="L1"><a href="#L1">1</a> import { lstatSync, readFileSync, readdirSync, statSync } from &quot;node:fs&quot;;</span>
+<span class="line" id="L2"><a href="#L2">2</a> import { join } from &quot;node:path&quot;;</span>
+<span class="line" id="L3"><a href="#L3">3</a> import type { DaemonDiagnosticValue } from &quot;../daemon-diagnostics.js&quot;;</span>
+<span class="line" id="L4"><a href="#L4">4</a> import { DaemonDiagnosticValues } from &quot;../daemon-diagnostics.js&quot;;</span>
+<span class="line" id="L5"><a href="#L5">5</a> import { DaemonPolicy } from &quot;../daemon-policy.js&quot;;</span>
+<span class="line" id="L6"><a href="#L6">6</a> import { DaemonRegistry } from &quot;../registry/registry.js&quot;;</span>
+<span class="line" id="L7"><a href="#L7">7</a> import { DaemonWorkspaceIdentity } from &quot;../registry/workspace-identity.js&quot;;</span>
+<span class="line" id="L8"><a href="#L8">8</a> </span>
+<span class="line" id="L9"><a href="#L9">9</a> export interface DaemonTestingInstance {</span>
+<span class="line" id="L10"><a href="#L10">10</a>   readonly workspaceRoot: string;</span>
+<span class="line" id="L11"><a href="#L11">11</a>   readonly pid: number;</span>
+<span class="line" id="L12"><a href="#L12">12</a>   readonly instanceId: string;</span>
+<span class="line" id="L13"><a href="#L13">13</a>   readonly state: &quot;starting&quot; | &quot;ready&quot;;</span>
+<span class="line" id="L14"><a href="#L14">14</a> }</span>
+<span class="line" id="L15"><a href="#L15">15</a> </span>
+<span class="line" id="L16"><a href="#L16">16</a> export type DaemonTestingDiagnosticEvent = Readonly&lt;Record&lt;string, DaemonDiagnosticValue&gt;&gt;;</span>
+<span class="line" id="L17"><a href="#L17">17</a> </span>
+<span class="line" id="L18"><a href="#L18">18</a> export interface DaemonTestingDiagnosticPage {</span>
+<span class="line" id="L19"><a href="#L19">19</a>   readonly events: readonly DaemonTestingDiagnosticEvent[];</span>
+<span class="line" id="L20"><a href="#L20">20</a>   readonly nextCursor: number;</span>
+<span class="line" id="L21"><a href="#L21">21</a> }</span>
+<span class="line" id="L22"><a href="#L22">22</a> </span>
+<span class="line" id="L23"><a href="#L23">23</a> export interface DaemonTestingSpoolUsage {</span>
+<span class="line" id="L24"><a href="#L24">24</a>   readonly fileCount: number;</span>
+<span class="line" id="L25"><a href="#L25">25</a>   readonly bytes: number;</span>
+<span class="line" id="L26"><a href="#L26">26</a> }</span>
+<span class="line" id="L27"><a href="#L27">27</a> </span>
+<span class="line" id="L28"><a href="#L28">28</a> export class DaemonTestingInspector {</span>
+<span class="line" id="L29"><a href="#L29">29</a>   readonly #stateDirectory: string;</span>
+<span class="line" id="L30"><a href="#L30">30</a> </span>
+<span class="line" id="L31"><a href="#L31">31</a>   constructor(canonicalStateDirectory: string) {</span>
+<span class="line" id="L32"><a href="#L32">32</a>     this.#stateDirectory = canonicalStateDirectory;</span>
+<span class="line" id="L33"><a href="#L33">33</a>   }</span>
+<span class="line" id="L34"><a href="#L34">34</a> </span>
+<span class="line" id="L35"><a href="#L35">35</a>   listInstances(): readonly DaemonTestingInstance[] {</span>
+<span class="line" id="L36"><a href="#L36">36</a>     try {</span>
+<span class="line" id="L37"><a href="#L37">37</a>       return new DaemonRegistry(</span>
+<span class="line" id="L38"><a href="#L38">38</a>         DaemonWorkspaceIdentity.registryDirectory(this.#stateDirectory),</span>
+<span class="line" id="L39"><a href="#L39">39</a>         DaemonPolicy.currentSystem().values.startup,</span>
+<span class="line" id="L40"><a href="#L40">40</a>       )</span>
+<span class="line" id="L41"><a href="#L41">41</a>         .list()</span>
+<span class="line" id="L42"><a href="#L42">42</a>         .map(({ workspaceRoot, pid, instanceId, state }) =&gt; ({</span>
+<span class="line" id="L43"><a href="#L43">43</a>           workspaceRoot,</span>
+<span class="line" id="L44"><a href="#L44">44</a>           pid,</span>
+<span class="line" id="L45"><a href="#L45">45</a>           instanceId,</span>
+<span class="line" id="L46"><a href="#L46">46</a>           state,</span>
+<span class="line" id="L47"><a href="#L47">47</a>         }))</span>
+<span class="line" id="L48"><a href="#L48">48</a>         .sort(</span>
+<span class="line" id="L49"><a href="#L49">49</a>           (left, right) =&gt;</span>
+<span class="line" id="L50"><a href="#L50">50</a>             left.workspaceRoot.localeCompare(right.workspaceRoot) ||</span>
+<span class="line" id="L51"><a href="#L51">51</a>             left.instanceId.localeCompare(right.instanceId),</span>
+<span class="line" id="L52"><a href="#L52">52</a>         );</span>
+<span class="line" id="L53"><a href="#L53">53</a>     } catch (error) {</span>
+<span class="line" id="L54"><a href="#L54">54</a>       if ([&quot;ENOENT&quot;, &quot;ENOTDIR&quot;].includes(DaemonTestingInspector.errorCode(error) ?? &quot;&quot;)) return [];</span>
+<span class="line" id="L55"><a href="#L55">55</a>       throw error;</span>
+<span class="line" id="L56"><a href="#L56">56</a>     }</span>
+<span class="line" id="L57"><a href="#L57">57</a>   }</span>
+<span class="line" id="L58"><a href="#L58">58</a> </span>
+<span class="line" id="L59"><a href="#L59">59</a>   hasStateArtifacts(): boolean {</span>
+<span class="line" id="L60"><a href="#L60">60</a>     try {</span>
+<span class="line" id="L61"><a href="#L61">61</a>       statSync(DaemonWorkspaceIdentity.registryDirectory(this.#stateDirectory));</span>
+<span class="line" id="L62"><a href="#L62">62</a>       return true;</span>
+<span class="line" id="L63"><a href="#L63">63</a>     } catch (error) {</span>
+<span class="line" id="L64"><a href="#L64">64</a>       if ([&quot;ENOENT&quot;, &quot;ENOTDIR&quot;].includes(DaemonTestingInspector.errorCode(error) ?? &quot;&quot;)) {</span>
+<span class="line" id="L65"><a href="#L65">65</a>         return false;</span>
+<span class="line" id="L66"><a href="#L66">66</a>       }</span>
+<span class="line" id="L67"><a href="#L67">67</a>       throw error;</span>
+<span class="line" id="L68"><a href="#L68">68</a>     }</span>
+<span class="line" id="L69"><a href="#L69">69</a>   }</span>
+<span class="line" id="L70"><a href="#L70">70</a> </span>
+<span class="line" id="L71"><a href="#L71">71</a>   readDiagnostics(canonicalWorkspaceRoot: string, cursor = 0): DaemonTestingDiagnosticPage {</span>
+<span class="line" id="L72"><a href="#L72">72</a>     if (!Number.isSafeInteger(cursor) || cursor &lt; 0) throw new Error(&quot;Invalid diagnostic cursor&quot;);</span>
+<span class="line" id="L73"><a href="#L73">73</a>     const identity = DaemonWorkspaceIdentity.from(canonicalWorkspaceRoot, this.#stateDirectory);</span>
+<span class="line" id="L74"><a href="#L74">74</a>     const events = DaemonTestingInspector.diagnosticEvents(identity);</span>
+<span class="line" id="L75"><a href="#L75">75</a>     return { events: events.slice(cursor), nextCursor: events.length };</span>
+<span class="line" id="L76"><a href="#L76">76</a>   }</span>
+<span class="line" id="L77"><a href="#L77">77</a> </span>
+<span class="line" id="L78"><a href="#L78">78</a>   completionSpoolUsage(canonicalWorkspaceRoot: string): DaemonTestingSpoolUsage {</span>
+<span class="line" id="L79"><a href="#L79">79</a>     const identity = DaemonWorkspaceIdentity.from(canonicalWorkspaceRoot, this.#stateDirectory);</span>
+<span class="line" id="L80"><a href="#L80">80</a>     return DaemonTestingInspector.directoryUsage(identity.spoolDirectory);</span>
+<span class="line" id="L81"><a href="#L81">81</a>   }</span>
+<span class="line" id="L82"><a href="#L82">82</a> </span>
+<span class="line" id="L83"><a href="#L83">83</a>   private static diagnosticEvents(</span>
+<span class="line" id="L84"><a href="#L84">84</a>     identity: DaemonWorkspaceIdentity,</span>
+<span class="line" id="L85"><a href="#L85">85</a>   ): readonly DaemonTestingDiagnosticEvent[] {</span>
+<span class="line" id="L86"><a href="#L86">86</a>     return DaemonTestingInspector.diagnosticPaths(identity).flatMap((path) =&gt;</span>
+<span class="line" id="L87"><a href="#L87">87</a>       DaemonTestingInspector.diagnosticEventsFrom(path),</span>
+<span class="line" id="L88"><a href="#L88">88</a>     );</span>
+<span class="line" id="L89"><a href="#L89">89</a>   }</span>
+<span class="line" id="L90"><a href="#L90">90</a> </span>
+<span class="line" id="L91"><a href="#L91">91</a>   private static diagnosticPaths(identity: DaemonWorkspaceIdentity): readonly string[] {</span>
+<span class="line" id="L92"><a href="#L92">92</a>     let names: readonly string[];</span>
+<span class="line" id="L93"><a href="#L93">93</a>     try {</span>
+<span class="line" id="L94"><a href="#L94">94</a>       names = readdirSync(identity.identityDirectory);</span>
+<span class="line" id="L95"><a href="#L95">95</a>     } catch (error) {</span>
+<span class="line" id="L96"><a href="#L96">96</a>       if ([&quot;ENOENT&quot;, &quot;ENOTDIR&quot;].includes(DaemonTestingInspector.errorCode(error) ?? &quot;&quot;)) return [];</span>
+<span class="line" id="L97"><a href="#L97">97</a>       throw error;</span>
+<span class="line" id="L98"><a href="#L98">98</a>     }</span>
+<span class="line" id="L99"><a href="#L99">99</a>     const backupPattern = /^daemon\.log\.(\d+)$/;</span>
+<span class="line" id="L100"><a href="#L100">100</a>     const backups = names</span>
+<span class="line" id="L101"><a href="#L101">101</a>       .flatMap((name) =&gt; {</span>
+<span class="line" id="L102"><a href="#L102">102</a>         const match = backupPattern.exec(name);</span>
+<span class="line" id="L103"><a href="#L103">103</a>         return match === null ? [] : [{ name, index: Number(match[1]) }];</span>
+<span class="line" id="L104"><a href="#L104">104</a>       })</span>
+<span class="line" id="L105"><a href="#L105">105</a>       .sort((left, right) =&gt; right.index - left.index)</span>
+<span class="line" id="L106"><a href="#L106">106</a>       .map(({ name }) =&gt; join(identity.identityDirectory, name));</span>
+<span class="line" id="L107"><a href="#L107">107</a>     return names.includes(&quot;daemon.log&quot;) ? [...backups, identity.logPath] : backups;</span>
+<span class="line" id="L108"><a href="#L108">108</a>   }</span>
+<span class="line" id="L109"><a href="#L109">109</a> </span>
+<span class="line" id="L110"><a href="#L110">110</a>   private static diagnosticEventsFrom(path: string): readonly DaemonTestingDiagnosticEvent[] {</span>
+<span class="line" id="L111"><a href="#L111">111</a>     let contents: string;</span>
+<span class="line" id="L112"><a href="#L112">112</a>     try {</span>
+<span class="line" id="L113"><a href="#L113">113</a>       contents = readFileSync(path, &quot;utf8&quot;);</span>
+<span class="line" id="L114"><a href="#L114">114</a>     } catch (error) {</span>
+<span class="line" id="L115"><a href="#L115">115</a>       if (DaemonTestingInspector.errorCode(error) === &quot;ENOENT&quot;) return [];</span>
+<span class="line" id="L116"><a href="#L116">116</a>       throw error;</span>
+<span class="line" id="L117"><a href="#L117">117</a>     }</span>
+<span class="line" id="L118"><a href="#L118">118</a>     return contents</span>
+<span class="line" id="L119"><a href="#L119">119</a>       .split(&quot;\n&quot;)</span>
+<span class="line" id="L120"><a href="#L120">120</a>       .filter((line) =&gt; line.length &gt; 0)</span>
+<span class="line" id="L121"><a href="#L121">121</a>       .flatMap((line) =&gt; {</span>
+<span class="line" id="L122"><a href="#L122">122</a>         try {</span>
+<span class="line" id="L123"><a href="#L123">123</a>           const value: unknown = JSON.parse(line);</span>
+<span class="line" id="L124"><a href="#L124">124</a>           return DaemonDiagnosticValues.isDiagnostics(value) ? [value] : [];</span>
+<span class="line" id="L125"><a href="#L125">125</a>         } catch (error) {</span>
+<span class="line" id="L126"><a href="#L126">126</a>           if (error instanceof SyntaxError) return [];</span>
+<span class="line" id="L127"><a href="#L127">127</a>           throw error;</span>
+<span class="line" id="L128"><a href="#L128">128</a>         }</span>
+<span class="line" id="L129"><a href="#L129">129</a>       });</span>
+<span class="line" id="L130"><a href="#L130">130</a>   }</span>
+<span class="line" id="L131"><a href="#L131">131</a> </span>
+<span class="line" id="L132"><a href="#L132">132</a>   private static directoryUsage(directory: string): DaemonTestingSpoolUsage {</span>
+<span class="line" id="L133"><a href="#L133">133</a>     let entries;</span>
+<span class="line" id="L134"><a href="#L134">134</a>     try {</span>
+<span class="line" id="L135"><a href="#L135">135</a>       entries = readdirSync(directory, { withFileTypes: true });</span>
+<span class="line" id="L136"><a href="#L136">136</a>     } catch (error) {</span>
+<span class="line" id="L137"><a href="#L137">137</a>       if ([&quot;ENOENT&quot;, &quot;ENOTDIR&quot;].includes(DaemonTestingInspector.errorCode(error) ?? &quot;&quot;)) {</span>
+<span class="line" id="L138"><a href="#L138">138</a>         return { fileCount: 0, bytes: 0 };</span>
+<span class="line" id="L139"><a href="#L139">139</a>       }</span>
+<span class="line" id="L140"><a href="#L140">140</a>       throw error;</span>
+<span class="line" id="L141"><a href="#L141">141</a>     }</span>
+<span class="line" id="L142"><a href="#L142">142</a>     return entries.reduce&lt;DaemonTestingSpoolUsage&gt;(</span>
+<span class="line" id="L143"><a href="#L143">143</a>       (usage, entry) =&gt; {</span>
+<span class="line" id="L144"><a href="#L144">144</a>         const path = join(directory, entry.name);</span>
+<span class="line" id="L145"><a href="#L145">145</a>         if (entry.isDirectory()) {</span>
+<span class="line" id="L146"><a href="#L146">146</a>           const nested = DaemonTestingInspector.directoryUsage(path);</span>
+<span class="line" id="L147"><a href="#L147">147</a>           return {</span>
+<span class="line" id="L148"><a href="#L148">148</a>             fileCount: usage.fileCount + nested.fileCount,</span>
+<span class="line" id="L149"><a href="#L149">149</a>             bytes: usage.bytes + nested.bytes,</span>
+<span class="line" id="L150"><a href="#L150">150</a>           };</span>
+<span class="line" id="L151"><a href="#L151">151</a>         }</span>
+<span class="line" id="L152"><a href="#L152">152</a>         if (!entry.isFile()) return usage;</span>
+<span class="line" id="L153"><a href="#L153">153</a>         return {</span>
+<span class="line" id="L154"><a href="#L154">154</a>           fileCount: usage.fileCount + 1,</span>
+<span class="line" id="L155"><a href="#L155">155</a>           bytes: usage.bytes + lstatSync(path).size,</span>
+<span class="line" id="L156"><a href="#L156">156</a>         };</span>
+<span class="line" id="L157"><a href="#L157">157</a>       },</span>
+<span class="line" id="L158"><a href="#L158">158</a>       { fileCount: 0, bytes: 0 },</span>
+<span class="line" id="L159"><a href="#L159">159</a>     );</span>
+<span class="line" id="L160"><a href="#L160">160</a>   }</span>
+<span class="line" id="L161"><a href="#L161">161</a> </span>
+<span class="line" id="L162"><a href="#L162">162</a>   private static errorCode(error: unknown): string | undefined {</span>
+<span class="line" id="L163"><a href="#L163">163</a>     return typeof error === &quot;object&quot; &amp;&amp; error !== null &amp;&amp; &quot;code&quot; in error</span>
+<span class="line" id="L164"><a href="#L164">164</a>       ? String(error.code)</span>
+<span class="line" id="L165"><a href="#L165">165</a>       : undefined;</span>
+<span class="line" id="L166"><a href="#L166">166</a>   }</span>
+<span class="line" id="L167"><a href="#L167">167</a> }</span>
+</pre><details class="source-disclosure"><summary>Net main → tip change touching this path (copy-aware)</summary><p>This is the net delta, including moves/copies. A historical source snapshot above may precede the final change below.</p><pre class="pr-source">diff --git a/packages/daemon/src/testing/daemon-testing-inspector.ts b/packages/daemon/src/testing/daemon-testing-inspector.ts
+new file mode 100644
+index 000000000..acd9f56e6
+--- /dev/null
++++ b/packages/daemon/src/testing/daemon-testing-inspector.ts
+@@ -0,0 +1,167 @@
++import { lstatSync, readFileSync, readdirSync, statSync } from &quot;node:fs&quot;;
++import { join } from &quot;node:path&quot;;
++import type { DaemonDiagnosticValue } from &quot;../daemon-diagnostics.js&quot;;
++import { DaemonDiagnosticValues } from &quot;../daemon-diagnostics.js&quot;;
++import { DaemonPolicy } from &quot;../daemon-policy.js&quot;;
++import { DaemonRegistry } from &quot;../registry/registry.js&quot;;
++import { DaemonWorkspaceIdentity } from &quot;../registry/workspace-identity.js&quot;;
++
++export interface DaemonTestingInstance {
++  readonly workspaceRoot: string;
++  readonly pid: number;
++  readonly instanceId: string;
++  readonly state: &quot;starting&quot; | &quot;ready&quot;;
++}
++
++export type DaemonTestingDiagnosticEvent = Readonly&lt;Record&lt;string, DaemonDiagnosticValue&gt;&gt;;
++
++export interface DaemonTestingDiagnosticPage {
++  readonly events: readonly DaemonTestingDiagnosticEvent[];
++  readonly nextCursor: number;
++}
++
++export interface DaemonTestingSpoolUsage {
++  readonly fileCount: number;
++  readonly bytes: number;
++}
++
++export class DaemonTestingInspector {
++  readonly #stateDirectory: string;
++
++  constructor(canonicalStateDirectory: string) {
++    this.#stateDirectory = canonicalStateDirectory;
++  }
++
++  listInstances(): readonly DaemonTestingInstance[] {
++    try {
++      return new DaemonRegistry(
++        DaemonWorkspaceIdentity.registryDirectory(this.#stateDirectory),
++        DaemonPolicy.currentSystem().values.startup,
++      )
++        .list()
++        .map(({ workspaceRoot, pid, instanceId, state }) =&gt; ({
++          workspaceRoot,
++          pid,
++          instanceId,
++          state,
++        }))
++        .sort(
++          (left, right) =&gt;
++            left.workspaceRoot.localeCompare(right.workspaceRoot) ||
++            left.instanceId.localeCompare(right.instanceId),
++        );
++    } catch (error) {
++      if ([&quot;ENOENT&quot;, &quot;ENOTDIR&quot;].includes(DaemonTestingInspector.errorCode(error) ?? &quot;&quot;)) return [];
++      throw error;
++    }
++  }
++
++  hasStateArtifacts(): boolean {
++    try {
++      statSync(DaemonWorkspaceIdentity.registryDirectory(this.#stateDirectory));
++      return true;
++    } catch (error) {
++      if ([&quot;ENOENT&quot;, &quot;ENOTDIR&quot;].includes(DaemonTestingInspector.errorCode(error) ?? &quot;&quot;)) {
++        return false;
++      }
++      throw error;
++    }
++  }
++
++  readDiagnostics(canonicalWorkspaceRoot: string, cursor = 0): DaemonTestingDiagnosticPage {
++    if (!Number.isSafeInteger(cursor) || cursor &lt; 0) throw new Error(&quot;Invalid diagnostic cursor&quot;);
++    const identity = DaemonWorkspaceIdentity.from(canonicalWorkspaceRoot, this.#stateDirectory);
++    const events = DaemonTestingInspector.diagnosticEvents(identity);
++    return { events: events.slice(cursor), nextCursor: events.length };
++  }
++
++  completionSpoolUsage(canonicalWorkspaceRoot: string): DaemonTestingSpoolUsage {
++    const identity = DaemonWorkspaceIdentity.from(canonicalWorkspaceRoot, this.#stateDirectory);
++    return DaemonTestingInspector.directoryUsage(identity.spoolDirectory);
++  }
++
++  private static diagnosticEvents(
++    identity: DaemonWorkspaceIdentity,
++  ): readonly DaemonTestingDiagnosticEvent[] {
++    return DaemonTestingInspector.diagnosticPaths(identity).flatMap((path) =&gt;
++      DaemonTestingInspector.diagnosticEventsFrom(path),
++    );
++  }
++
++  private static diagnosticPaths(identity: DaemonWorkspaceIdentity): readonly string[] {
++    let names: readonly string[];
++    try {
++      names = readdirSync(identity.identityDirectory);
++    } catch (error) {
++      if ([&quot;ENOENT&quot;, &quot;ENOTDIR&quot;].includes(DaemonTestingInspector.errorCode(error) ?? &quot;&quot;)) return [];
++      throw error;
++    }
++    const backupPattern = /^daemon\.log\.(\d+)$/;
++    const backups = names
++      .flatMap((name) =&gt; {
++        const match = backupPattern.exec(name);
++        return match === null ? [] : [{ name, index: Number(match[1]) }];
++      })
++      .sort((left, right) =&gt; right.index - left.index)
++      .map(({ name }) =&gt; join(identity.identityDirectory, name));
++    return names.includes(&quot;daemon.log&quot;) ? [...backups, identity.logPath] : backups;
++  }
++
++  private static diagnosticEventsFrom(path: string): readonly DaemonTestingDiagnosticEvent[] {
++    let contents: string;
++    try {
++      contents = readFileSync(path, &quot;utf8&quot;);
++    } catch (error) {
++      if (DaemonTestingInspector.errorCode(error) === &quot;ENOENT&quot;) return [];
++      throw error;
++    }
++    return contents
++      .split(&quot;\n&quot;)
++      .filter((line) =&gt; line.length &gt; 0)
++      .flatMap((line) =&gt; {
++        try {
++          const value: unknown = JSON.parse(line);
++          return DaemonDiagnosticValues.isDiagnostics(value) ? [value] : [];
++        } catch (error) {
++          if (error instanceof SyntaxError) return [];
++          throw error;
++        }
++      });
++  }
++
++  private static directoryUsage(directory: string): DaemonTestingSpoolUsage {
++    let entries;
++    try {
++      entries = readdirSync(directory, { withFileTypes: true });
++    } catch (error) {
++      if ([&quot;ENOENT&quot;, &quot;ENOTDIR&quot;].includes(DaemonTestingInspector.errorCode(error) ?? &quot;&quot;)) {
++        return { fileCount: 0, bytes: 0 };
++      }
++      throw error;
++    }
++    return entries.reduce&lt;DaemonTestingSpoolUsage&gt;(
++      (usage, entry) =&gt; {
++        const path = join(directory, entry.name);
++        if (entry.isDirectory()) {
++          const nested = DaemonTestingInspector.directoryUsage(path);
++          return {
++            fileCount: usage.fileCount + nested.fileCount,
++            bytes: usage.bytes + nested.bytes,
++          };
++        }
++        if (!entry.isFile()) return usage;
++        return {
++          fileCount: usage.fileCount + 1,
++          bytes: usage.bytes + lstatSync(path).size,
++        };
++      },
++      { fileCount: 0, bytes: 0 },
++    );
++  }
++
++  private static errorCode(error: unknown): string | undefined {
++    return typeof error === &quot;object&quot; &amp;&amp; error !== null &amp;&amp; &quot;code&quot; in error
++      ? String(error.code)
++      : undefined;
++  }
++}
+</pre></details></main></body></html>

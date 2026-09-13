@@ -1,0 +1,128 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PR 123 · supplied record</title><link rel="stylesheet" href="../style.css"><body class="source-page"><main><a href="../index.html#provenance">← Page provenance</a><h1>#123 · Move workspace source caching to core</h1><p>Supplied bundle, frozen with this experiment. The original Markdown is preserved below.</p><pre class="pr-source">## Context
+
+Daemon workers and future hosts need source-byte caching without depending on the TypeScript backend. Moving ownership must preserve current snapshot-replacement behavior, including selection refreshes evicting omitted bytes.
+
+## Shape
+
+Before — TypeScript owned the reusable cache:
+
+```mermaid
+flowchart LR
+    Backend[&quot;TypeScriptBackend&lt;br/&gt;refresh owner&quot;] --&gt;|uses| Cache[&quot;WorkspaceSourceCache&lt;br/&gt;&amp;lt;&amp;lt;backend private&amp;gt;&amp;gt;&quot;]
+    Cache --&gt;|uses| FileSystem[&quot;FileSystem&lt;br/&gt;&amp;lt;&amp;lt;core contract&amp;gt;&amp;gt;&quot;]
+    style Cache fill:#ffdddd,stroke:#cc0000
+```
+
+After — core owns the cache and TypeScript consumes its export:
+
+```mermaid
+flowchart LR
+    Backend[&quot;TypeScriptBackend&lt;br/&gt;refresh owner&quot;] --&gt;|uses| Cache[&quot;WorkspaceSourceCache&lt;br/&gt;&amp;lt;&amp;lt;core export&amp;gt;&amp;gt;&quot;]
+    Cache --&gt;|uses| FileSystem[&quot;FileSystem&lt;br/&gt;&amp;lt;&amp;lt;core contract&amp;gt;&amp;gt;&quot;]
+    style Backend fill:#fff2cc,stroke:#bf9000
+    style Cache fill:#ddffdd,stroke:#008800
+```
+
+Legend: green = added; red = removed; yellow = changed.
+
+## Where it lives
+
+```text
+.
+├── ** .github/PULL_REQUEST_TEMPLATE.md               # defines context/shape-based PR descriptions
+├── apps/cli/test/integration/commands/overview/
+│   └── ** overview-command.test.ts                   # guards selected-file isolation across 4,000 siblings
+├── packages/
+│   ├── core/src/
+│   │   ├── ** index.ts                               # exports the cache
+│   │   └── workspace/
+│   │       ├── ~~ workspace-source-cache.ts          # moved from packages/backend-typescript/src/typescript-backend/
+│   │       └── ++ workspace-source-cache.test.ts     # locks replacement and delegation
+│   └── backend-typescript/
+│       ├── src/typescript-backend/
+│       │   └── ** typescript-backend.ts              # consumes the core cache
+│       └── test/integration/
+│           └── ** typescript-backend.test.ts         # locks selection eviction
+└── plans/005/
+    └── ** daemon-follow-ups-functional-spec.md       # defers selection-aware retention
+```
+
+## Public surface
+
+Added:
+
+```ts
+export class WorkspaceSourceCache implements FileSystem {
+  constructor(fileSystem: FileSystem);
+  refresh(snapshot: WorkspaceSnapshot): void;
+  readFile(absPath: string): Promise&lt;string&gt;;
+  readFileSync(absPath: string): string;
+  exists(absPath: string): Promise&lt;boolean&gt;;
+  listDir(absPath: string): Promise&lt;readonly string[]&gt;;
+  isDirectory(absPath: string): Promise&lt;boolean&gt;;
+  metadata(absPath: string): Promise&lt;FileMetadata&gt;;
+  existsSync(absPath: string): boolean;
+  listDirSync(absPath: string): readonly string[];
+  isDirectorySync(absPath: string): boolean;
+  metadataSync(absPath: string): FileMetadata;
+}
+```
+
+## Decisions
+
+- Chose core ownership over TypeScript-backend ownership, because daemon workers and future hosts need the cache without importing TypeScript code.
+- Chose snapshot replacement over coverage-aware merging, because this refactor preserves current selection-eviction behavior and defers retention changes.
+- Chose a `FileSystem` facade over cache-specific reads, because existing TypeScript services already consume filesystem injection.
+
+## Look here
+
+- `packages/core/src/workspace/workspace-source-cache.ts:10`
+- `packages/backend-typescript/src/typescript-backend/typescript-backend.ts:79`
+- `apps/cli/test/integration/commands/overview/overview-command.test.ts:224`
+
+
+COMMIT MESSAGES
+
+eded8cdc8be17998c5746f173ba3db6ded81f08a
+Characterize backend selection replacement
+
+
+e1339da273c11bc8cea6a9c2018563cfcc1b6c9d
+Characterize overview selection isolation
+
+
+b1f46e6ae6af1a0cf17d26430d2ae7d2032cb65f
+Add core source-cache replacement
+
+
+a4e39edabe2738e20c1a0e5999541d0d2ddd06a1
+Guard cached source path replacement
+
+
+4519202dc547b2fd379bc8367ba622d29538e9e3
+Invalidate changed cached revisions
+
+
+3556a9cd66a2276c9a9aea841338e956ae5ed040
+Guard unchanged cached revisions
+
+
+4d17681b46901a8f09224718d816a69b019692f7
+Share cached synchronous source reads
+
+
+15dda7bec9ffa26cde89fe64fbac7c04d4976fed
+Delegate uncached filesystem operations
+
+
+f9b705cf0379a2dbfdf42fe730dbc3fa40462ee9
+Use core WorkspaceSourceCache in TypeScript
+
+
+4f37b9c216d7bdf4d88f1f92fb1997e03204e621
+Record selection-aware source-cache follow-up
+
+
+78dd77de23445e73bc3ae0ccd24a44c884a3fea5
+Update pull request template
+</pre></main></body></html>

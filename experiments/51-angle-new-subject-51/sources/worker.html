@@ -1,0 +1,448 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>worker · pinned source</title><link rel="stylesheet" href="../style.css"><body class="source-page"><main><a href="../index.html#provenance">← Page provenance</a><h1>worker</h1><p>packages/daemon/src/worker/navigation-worker.ts<br>d07002357d3e9596bfaae910a1ac63b77981620b · tip<br>SHA-256 4f074bdfa32f4070fb9bf046c89f313daeb28ea1f3185809dc907daf0438ebde</p><pre class="source-code"><span class="line" id="L1"><a href="#L1">1</a> import { Worker } from &quot;node:worker_threads&quot;;</span>
+<span class="line" id="L2"><a href="#L2">2</a> import {</span>
+<span class="line" id="L3"><a href="#L3">3</a>   type DaemonCommandName,</span>
+<span class="line" id="L4"><a href="#L4">4</a>   type DaemonExecutorRequest,</span>
+<span class="line" id="L5"><a href="#L5">5</a>   type DaemonExecutorModuleUrl,</span>
+<span class="line" id="L6"><a href="#L6">6</a> } from &quot;@symnav/daemon&quot;;</span>
+<span class="line" id="L7"><a href="#L7">7</a> import type { DaemonOutputSink, DaemonSequencedOutputRecord } from &quot;../daemon-executor.js&quot;;</span>
+<span class="line" id="L8"><a href="#L8">8</a> import { DaemonPolicyCodec, type SerializedDaemonPolicy } from &quot;../daemon-policy.js&quot;;</span>
+<span class="line" id="L9"><a href="#L9">9</a> import {</span>
+<span class="line" id="L10"><a href="#L10">10</a>   DaemonNavigationWorkerProtocol,</span>
+<span class="line" id="L11"><a href="#L11">11</a>   type DaemonNavigationWorkerRequest,</span>
+<span class="line" id="L12"><a href="#L12">12</a>   type DaemonNavigationWorkerResponse,</span>
+<span class="line" id="L13"><a href="#L13">13</a> } from &quot;./worker-protocol.js&quot;;</span>
+<span class="line" id="L14"><a href="#L14">14</a> </span>
+<span class="line" id="L15"><a href="#L15">15</a> export interface DaemonNavigationWorkerExit {</span>
+<span class="line" id="L16"><a href="#L16">16</a>   readonly generation: number;</span>
+<span class="line" id="L17"><a href="#L17">17</a>   readonly cause: &quot;closed&quot; | &quot;terminated&quot; | &quot;out-of-memory&quot; | &quot;error&quot;;</span>
+<span class="line" id="L18"><a href="#L18">18</a>   readonly errorName?: string;</span>
+<span class="line" id="L19"><a href="#L19">19</a> }</span>
+<span class="line" id="L20"><a href="#L20">20</a> </span>
+<span class="line" id="L21"><a href="#L21">21</a> export class DaemonNavigationWorkerExitedError extends Error {</span>
+<span class="line" id="L22"><a href="#L22">22</a>   constructor(</span>
+<span class="line" id="L23"><a href="#L23">23</a>     readonly exit: DaemonNavigationWorkerExit,</span>
+<span class="line" id="L24"><a href="#L24">24</a>     message = `Daemon navigation worker exited (${exit.cause})`,</span>
+<span class="line" id="L25"><a href="#L25">25</a>   ) {</span>
+<span class="line" id="L26"><a href="#L26">26</a>     super(message);</span>
+<span class="line" id="L27"><a href="#L27">27</a>     this.name = &quot;DaemonNavigationWorkerExitedError&quot;;</span>
+<span class="line" id="L28"><a href="#L28">28</a>   }</span>
+<span class="line" id="L29"><a href="#L29">29</a> }</span>
+<span class="line" id="L30"><a href="#L30">30</a> </span>
+<span class="line" id="L31"><a href="#L31">31</a> export interface DaemonNavigationWorker {</span>
+<span class="line" id="L32"><a href="#L32">32</a>   readonly generation: number;</span>
+<span class="line" id="L33"><a href="#L33">33</a>   readonly exited: Promise&lt;DaemonNavigationWorkerExit&gt;;</span>
+<span class="line" id="L34"><a href="#L34">34</a>   start(workspaceRoot: string): Promise&lt;DaemonNavigationWorkerResponse&gt;;</span>
+<span class="line" id="L35"><a href="#L35">35</a>   execute(</span>
+<span class="line" id="L36"><a href="#L36">36</a>     requestId: string,</span>
+<span class="line" id="L37"><a href="#L37">37</a>     commandName: DaemonCommandName,</span>
+<span class="line" id="L38"><a href="#L38">38</a>     request: DaemonExecutorRequest,</span>
+<span class="line" id="L39"><a href="#L39">39</a>     output: DaemonOutputSink,</span>
+<span class="line" id="L40"><a href="#L40">40</a>   ): Promise&lt;DaemonNavigationWorkerResponse&gt;;</span>
+<span class="line" id="L41"><a href="#L41">41</a>   releaseTransientResources(): Promise&lt;DaemonNavigationWorkerResponse&gt;;</span>
+<span class="line" id="L42"><a href="#L42">42</a>   drainAndClose(): Promise&lt;void&gt;;</span>
+<span class="line" id="L43"><a href="#L43">43</a>   terminate(): Promise&lt;void&gt;;</span>
+<span class="line" id="L44"><a href="#L44">44</a> }</span>
+<span class="line" id="L45"><a href="#L45">45</a> </span>
+<span class="line" id="L46"><a href="#L46">46</a> export interface DaemonNavigationWorkerConfiguration {</span>
+<span class="line" id="L47"><a href="#L47">47</a>   readonly stateDirectory: string;</span>
+<span class="line" id="L48"><a href="#L48">48</a>   readonly productVersion: string;</span>
+<span class="line" id="L49"><a href="#L49">49</a>   readonly executorModuleUrl: DaemonExecutorModuleUrl;</span>
+<span class="line" id="L50"><a href="#L50">50</a>   readonly policy: SerializedDaemonPolicy;</span>
+<span class="line" id="L51"><a href="#L51">51</a> }</span>
+<span class="line" id="L52"><a href="#L52">52</a> </span>
+<span class="line" id="L53"><a href="#L53">53</a> export interface NodeDaemonNavigationWorkerOptions {</span>
+<span class="line" id="L54"><a href="#L54">54</a>   readonly generation: number;</span>
+<span class="line" id="L55"><a href="#L55">55</a>   readonly configuration: DaemonNavigationWorkerConfiguration;</span>
+<span class="line" id="L56"><a href="#L56">56</a>   readonly resourceLimits: {</span>
+<span class="line" id="L57"><a href="#L57">57</a>     readonly maxOldGenerationSizeMb: number;</span>
+<span class="line" id="L58"><a href="#L58">58</a>   };</span>
+<span class="line" id="L59"><a href="#L59">59</a>   readonly entryUrl?: URL;</span>
+<span class="line" id="L60"><a href="#L60">60</a>   readonly workerData?: Readonly&lt;Record&lt;string, unknown&gt;&gt;;</span>
+<span class="line" id="L61"><a href="#L61">61</a> }</span>
+<span class="line" id="L62"><a href="#L62">62</a> </span>
+<span class="line" id="L63"><a href="#L63">63</a> interface PendingWorkerResponse {</span>
+<span class="line" id="L64"><a href="#L64">64</a>   readonly resolve: (response: DaemonNavigationWorkerResponse) =&gt; void;</span>
+<span class="line" id="L65"><a href="#L65">65</a>   readonly reject: (error: Error) =&gt; void;</span>
+<span class="line" id="L66"><a href="#L66">66</a>   readonly appendOutput: (record: DaemonSequencedOutputRecord) =&gt; Promise&lt;void&gt;;</span>
+<span class="line" id="L67"><a href="#L67">67</a>   nextSequence: number;</span>
+<span class="line" id="L68"><a href="#L68">68</a>   chunkInFlight: boolean;</span>
+<span class="line" id="L69"><a href="#L69">69</a> }</span>
+<span class="line" id="L70"><a href="#L70">70</a> </span>
+<span class="line" id="L71"><a href="#L71">71</a> export class NodeDaemonNavigationWorker implements DaemonNavigationWorker {</span>
+<span class="line" id="L72"><a href="#L72">72</a>   readonly generation: number;</span>
+<span class="line" id="L73"><a href="#L73">73</a>   readonly exited: Promise&lt;DaemonNavigationWorkerExit&gt;;</span>
+<span class="line" id="L74"><a href="#L74">74</a>   private readonly worker: Worker;</span>
+<span class="line" id="L75"><a href="#L75">75</a>   private readonly pending = new Map&lt;string, PendingWorkerResponse&gt;();</span>
+<span class="line" id="L76"><a href="#L76">76</a>   private readonly completed = new Set&lt;string&gt;();</span>
+<span class="line" id="L77"><a href="#L77">77</a>   private resolveExited!: (exit: DaemonNavigationWorkerExit) =&gt; void;</span>
+<span class="line" id="L78"><a href="#L78">78</a>   private exit: DaemonNavigationWorkerExit | undefined;</span>
+<span class="line" id="L79"><a href="#L79">79</a>   private terminating = false;</span>
+<span class="line" id="L80"><a href="#L80">80</a>   private closeAcknowledged = false;</span>
+<span class="line" id="L81"><a href="#L81">81</a>   private communicationFailure: Error | undefined;</span>
+<span class="line" id="L82"><a href="#L82">82</a>   private communicationFailureCode: string | undefined;</span>
+<span class="line" id="L83"><a href="#L83">83</a>   private releaseSequence = 0;</span>
+<span class="line" id="L84"><a href="#L84">84</a>   private readonly maximumChunkRawBytes: number;</span>
+<span class="line" id="L85"><a href="#L85">85</a> </span>
+<span class="line" id="L86"><a href="#L86">86</a>   constructor(options: NodeDaemonNavigationWorkerOptions) {</span>
+<span class="line" id="L87"><a href="#L87">87</a>     this.generation = options.generation;</span>
+<span class="line" id="L88"><a href="#L88">88</a>     this.maximumChunkRawBytes = DaemonPolicyCodec.deserialize(</span>
+<span class="line" id="L89"><a href="#L89">89</a>       options.configuration.policy,</span>
+<span class="line" id="L90"><a href="#L90">90</a>     ).values.output.maximumChunkRawBytes;</span>
+<span class="line" id="L91"><a href="#L91">91</a>     this.exited = new Promise((resolve) =&gt; {</span>
+<span class="line" id="L92"><a href="#L92">92</a>       this.resolveExited = resolve;</span>
+<span class="line" id="L93"><a href="#L93">93</a>     });</span>
+<span class="line" id="L94"><a href="#L94">94</a>     this.worker = new Worker(options.entryUrl ?? new URL(&quot;../worker-entry.js&quot;, import.meta.url), {</span>
+<span class="line" id="L95"><a href="#L95">95</a>       workerData: {</span>
+<span class="line" id="L96"><a href="#L96">96</a>         ...options.workerData,</span>
+<span class="line" id="L97"><a href="#L97">97</a>         stateDirectory: options.configuration.stateDirectory,</span>
+<span class="line" id="L98"><a href="#L98">98</a>         generation: options.generation,</span>
+<span class="line" id="L99"><a href="#L99">99</a>         productVersion: options.configuration.productVersion,</span>
+<span class="line" id="L100"><a href="#L100">100</a>         executorModuleUrl: options.configuration.executorModuleUrl,</span>
+<span class="line" id="L101"><a href="#L101">101</a>         policy: options.configuration.policy,</span>
+<span class="line" id="L102"><a href="#L102">102</a>       },</span>
+<span class="line" id="L103"><a href="#L103">103</a>       resourceLimits: options.resourceLimits,</span>
+<span class="line" id="L104"><a href="#L104">104</a>     });</span>
+<span class="line" id="L105"><a href="#L105">105</a>     this.worker.on(&quot;message&quot;, (value: unknown) =&gt; void this.receive(value));</span>
+<span class="line" id="L106"><a href="#L106">106</a>     this.worker.once(&quot;error&quot;, (error) =&gt; this.failCommunication(error));</span>
+<span class="line" id="L107"><a href="#L107">107</a>     this.worker.once(&quot;exit&quot;, () =&gt; this.finishExit());</span>
+<span class="line" id="L108"><a href="#L108">108</a>   }</span>
+<span class="line" id="L109"><a href="#L109">109</a> </span>
+<span class="line" id="L110"><a href="#L110">110</a>   start(workspaceRoot: string): Promise&lt;DaemonNavigationWorkerResponse&gt; {</span>
+<span class="line" id="L111"><a href="#L111">111</a>     return this.send(&quot;initialize&quot;, {</span>
+<span class="line" id="L112"><a href="#L112">112</a>       kind: &quot;initialize&quot;,</span>
+<span class="line" id="L113"><a href="#L113">113</a>       generation: this.generation,</span>
+<span class="line" id="L114"><a href="#L114">114</a>       workspaceRoot,</span>
+<span class="line" id="L115"><a href="#L115">115</a>     });</span>
+<span class="line" id="L116"><a href="#L116">116</a>   }</span>
+<span class="line" id="L117"><a href="#L117">117</a> </span>
+<span class="line" id="L118"><a href="#L118">118</a>   execute(</span>
+<span class="line" id="L119"><a href="#L119">119</a>     requestId: string,</span>
+<span class="line" id="L120"><a href="#L120">120</a>     commandName: DaemonCommandName,</span>
+<span class="line" id="L121"><a href="#L121">121</a>     request: DaemonExecutorRequest,</span>
+<span class="line" id="L122"><a href="#L122">122</a>     output: DaemonOutputSink,</span>
+<span class="line" id="L123"><a href="#L123">123</a>   ): Promise&lt;DaemonNavigationWorkerResponse&gt; {</span>
+<span class="line" id="L124"><a href="#L124">124</a>     return this.send(</span>
+<span class="line" id="L125"><a href="#L125">125</a>       `execute:${requestId}`,</span>
+<span class="line" id="L126"><a href="#L126">126</a>       {</span>
+<span class="line" id="L127"><a href="#L127">127</a>         kind: &quot;execute&quot;,</span>
+<span class="line" id="L128"><a href="#L128">128</a>         generation: this.generation,</span>
+<span class="line" id="L129"><a href="#L129">129</a>         requestId,</span>
+<span class="line" id="L130"><a href="#L130">130</a>         commandName,</span>
+<span class="line" id="L131"><a href="#L131">131</a>         request,</span>
+<span class="line" id="L132"><a href="#L132">132</a>       },</span>
+<span class="line" id="L133"><a href="#L133">133</a>       output.append.bind(output),</span>
+<span class="line" id="L134"><a href="#L134">134</a>     );</span>
+<span class="line" id="L135"><a href="#L135">135</a>   }</span>
+<span class="line" id="L136"><a href="#L136">136</a> </span>
+<span class="line" id="L137"><a href="#L137">137</a>   releaseTransientResources(): Promise&lt;DaemonNavigationWorkerResponse&gt; {</span>
+<span class="line" id="L138"><a href="#L138">138</a>     const operationId = `${this.generation}:${this.releaseSequence}`;</span>
+<span class="line" id="L139"><a href="#L139">139</a>     this.releaseSequence += 1;</span>
+<span class="line" id="L140"><a href="#L140">140</a>     return this.send(`release-transient:${operationId}`, {</span>
+<span class="line" id="L141"><a href="#L141">141</a>       kind: &quot;release-transient&quot;,</span>
+<span class="line" id="L142"><a href="#L142">142</a>       generation: this.generation,</span>
+<span class="line" id="L143"><a href="#L143">143</a>       operationId,</span>
+<span class="line" id="L144"><a href="#L144">144</a>     });</span>
+<span class="line" id="L145"><a href="#L145">145</a>   }</span>
+<span class="line" id="L146"><a href="#L146">146</a> </span>
+<span class="line" id="L147"><a href="#L147">147</a>   async drainAndClose(): Promise&lt;void&gt; {</span>
+<span class="line" id="L148"><a href="#L148">148</a>     if (this.exit !== undefined) return;</span>
+<span class="line" id="L149"><a href="#L149">149</a>     await this.send(&quot;close&quot;, { kind: &quot;close&quot;, generation: this.generation });</span>
+<span class="line" id="L150"><a href="#L150">150</a>     await this.exited;</span>
+<span class="line" id="L151"><a href="#L151">151</a>   }</span>
+<span class="line" id="L152"><a href="#L152">152</a> </span>
+<span class="line" id="L153"><a href="#L153">153</a>   async terminate(): Promise&lt;void&gt; {</span>
+<span class="line" id="L154"><a href="#L154">154</a>     if (this.exit !== undefined) return;</span>
+<span class="line" id="L155"><a href="#L155">155</a>     this.terminating = true;</span>
+<span class="line" id="L156"><a href="#L156">156</a>     await this.worker.terminate();</span>
+<span class="line" id="L157"><a href="#L157">157</a>     await this.exited;</span>
+<span class="line" id="L158"><a href="#L158">158</a>   }</span>
+<span class="line" id="L159"><a href="#L159">159</a> </span>
+<span class="line" id="L160"><a href="#L160">160</a>   private send(</span>
+<span class="line" id="L161"><a href="#L161">161</a>     key: string,</span>
+<span class="line" id="L162"><a href="#L162">162</a>     request: DaemonNavigationWorkerRequest,</span>
+<span class="line" id="L163"><a href="#L163">163</a>     appendOutput: ((record: DaemonSequencedOutputRecord) =&gt; Promise&lt;void&gt;) | undefined = undefined,</span>
+<span class="line" id="L164"><a href="#L164">164</a>   ): Promise&lt;DaemonNavigationWorkerResponse&gt; {</span>
+<span class="line" id="L165"><a href="#L165">165</a>     if (this.exit !== undefined)</span>
+<span class="line" id="L166"><a href="#L166">166</a>       return Promise.reject(new Error(&quot;Daemon navigation worker exited&quot;));</span>
+<span class="line" id="L167"><a href="#L167">167</a>     if (this.pending.has(key) || this.completed.has(key)) {</span>
+<span class="line" id="L168"><a href="#L168">168</a>       return Promise.reject(new Error(`Duplicate daemon navigation worker request: ${key}`));</span>
+<span class="line" id="L169"><a href="#L169">169</a>     }</span>
+<span class="line" id="L170"><a href="#L170">170</a>     const response = new Promise&lt;DaemonNavigationWorkerResponse&gt;((resolve, reject) =&gt; {</span>
+<span class="line" id="L171"><a href="#L171">171</a>       this.pending.set(key, {</span>
+<span class="line" id="L172"><a href="#L172">172</a>         resolve,</span>
+<span class="line" id="L173"><a href="#L173">173</a>         reject,</span>
+<span class="line" id="L174"><a href="#L174">174</a>         appendOutput:</span>
+<span class="line" id="L175"><a href="#L175">175</a>           appendOutput ?? (() =&gt; Promise.reject(new Error(&quot;Worker output sink is unavailable&quot;))),</span>
+<span class="line" id="L176"><a href="#L176">176</a>         nextSequence: 0,</span>
+<span class="line" id="L177"><a href="#L177">177</a>         chunkInFlight: false,</span>
+<span class="line" id="L178"><a href="#L178">178</a>       });</span>
+<span class="line" id="L179"><a href="#L179">179</a>     });</span>
+<span class="line" id="L180"><a href="#L180">180</a>     this.worker.postMessage(DaemonNavigationWorkerProtocol.request(request));</span>
+<span class="line" id="L181"><a href="#L181">181</a>     return response;</span>
+<span class="line" id="L182"><a href="#L182">182</a>   }</span>
+<span class="line" id="L183"><a href="#L183">183</a> </span>
+<span class="line" id="L184"><a href="#L184">184</a>   private async receive(value: unknown): Promise&lt;void&gt; {</span>
+<span class="line" id="L185"><a href="#L185">185</a>     let response: DaemonNavigationWorkerResponse;</span>
+<span class="line" id="L186"><a href="#L186">186</a>     try {</span>
+<span class="line" id="L187"><a href="#L187">187</a>       response = DaemonNavigationWorkerProtocol.response(value, this.maximumChunkRawBytes);</span>
+<span class="line" id="L188"><a href="#L188">188</a>     } catch (error) {</span>
+<span class="line" id="L189"><a href="#L189">189</a>       this.failCommunication(error);</span>
+<span class="line" id="L190"><a href="#L190">190</a>       return;</span>
+<span class="line" id="L191"><a href="#L191">191</a>     }</span>
+<span class="line" id="L192"><a href="#L192">192</a>     if (response.generation !== this.generation) return;</span>
+<span class="line" id="L193"><a href="#L193">193</a>     if (response.kind === &quot;output-chunk&quot;) {</span>
+<span class="line" id="L194"><a href="#L194">194</a>       await this.receiveOutputChunk(response);</span>
+<span class="line" id="L195"><a href="#L195">195</a>       return;</span>
+<span class="line" id="L196"><a href="#L196">196</a>     }</span>
+<span class="line" id="L197"><a href="#L197">197</a>     const key = NodeDaemonNavigationWorker.responseKey(response);</span>
+<span class="line" id="L198"><a href="#L198">198</a>     if (this.completed.has(key)) {</span>
+<span class="line" id="L199"><a href="#L199">199</a>       this.failCommunication(new Error(`Duplicate daemon navigation worker response: ${key}`));</span>
+<span class="line" id="L200"><a href="#L200">200</a>       return;</span>
+<span class="line" id="L201"><a href="#L201">201</a>     }</span>
+<span class="line" id="L202"><a href="#L202">202</a>     const pending = this.pending.get(key);</span>
+<span class="line" id="L203"><a href="#L203">203</a>     if (pending === undefined) {</span>
+<span class="line" id="L204"><a href="#L204">204</a>       this.failCommunication(new Error(`Uncorrelated daemon navigation worker response: ${key}`));</span>
+<span class="line" id="L205"><a href="#L205">205</a>       return;</span>
+<span class="line" id="L206"><a href="#L206">206</a>     }</span>
+<span class="line" id="L207"><a href="#L207">207</a>     this.pending.delete(key);</span>
+<span class="line" id="L208"><a href="#L208">208</a>     this.completed.add(key);</span>
+<span class="line" id="L209"><a href="#L209">209</a>     if (response.kind === &quot;failed&quot;) {</span>
+<span class="line" id="L210"><a href="#L210">210</a>       pending.reject(new Error(`Daemon navigation worker ${response.failureCode} failure`));</span>
+<span class="line" id="L211"><a href="#L211">211</a>       return;</span>
+<span class="line" id="L212"><a href="#L212">212</a>     }</span>
+<span class="line" id="L213"><a href="#L213">213</a>     if (response.kind === &quot;closed&quot;) this.closeAcknowledged = true;</span>
+<span class="line" id="L214"><a href="#L214">214</a>     pending.resolve(response);</span>
+<span class="line" id="L215"><a href="#L215">215</a>   }</span>
+<span class="line" id="L216"><a href="#L216">216</a> </span>
+<span class="line" id="L217"><a href="#L217">217</a>   private async receiveOutputChunk(</span>
+<span class="line" id="L218"><a href="#L218">218</a>     response: Extract&lt;DaemonNavigationWorkerResponse, { kind: &quot;output-chunk&quot; }&gt;,</span>
+<span class="line" id="L219"><a href="#L219">219</a>   ): Promise&lt;void&gt; {</span>
+<span class="line" id="L220"><a href="#L220">220</a>     const key = `execute:${response.requestId}`;</span>
+<span class="line" id="L221"><a href="#L221">221</a>     const pending = this.pending.get(key);</span>
+<span class="line" id="L222"><a href="#L222">222</a>     if (</span>
+<span class="line" id="L223"><a href="#L223">223</a>       pending === undefined ||</span>
+<span class="line" id="L224"><a href="#L224">224</a>       pending.chunkInFlight ||</span>
+<span class="line" id="L225"><a href="#L225">225</a>       response.sequence !== pending.nextSequence</span>
+<span class="line" id="L226"><a href="#L226">226</a>     ) {</span>
+<span class="line" id="L227"><a href="#L227">227</a>       this.failCommunication(new Error(`Unexpected daemon navigation worker output: ${key}`));</span>
+<span class="line" id="L228"><a href="#L228">228</a>       return;</span>
+<span class="line" id="L229"><a href="#L229">229</a>     }</span>
+<span class="line" id="L230"><a href="#L230">230</a>     pending.chunkInFlight = true;</span>
+<span class="line" id="L231"><a href="#L231">231</a>     try {</span>
+<span class="line" id="L232"><a href="#L232">232</a>       const record: DaemonSequencedOutputRecord = {</span>
+<span class="line" id="L233"><a href="#L233">233</a>         sequence: response.sequence,</span>
+<span class="line" id="L234"><a href="#L234">234</a>         stream: response.stream,</span>
+<span class="line" id="L235"><a href="#L235">235</a>         bytes: response.bytes,</span>
+<span class="line" id="L236"><a href="#L236">236</a>       };</span>
+<span class="line" id="L237"><a href="#L237">237</a>       await pending.appendOutput(record);</span>
+<span class="line" id="L238"><a href="#L238">238</a>       pending.nextSequence += 1;</span>
+<span class="line" id="L239"><a href="#L239">239</a>       pending.chunkInFlight = false;</span>
+<span class="line" id="L240"><a href="#L240">240</a>       const acknowledgement: DaemonNavigationWorkerRequest = {</span>
+<span class="line" id="L241"><a href="#L241">241</a>         kind: &quot;output-ack&quot;,</span>
+<span class="line" id="L242"><a href="#L242">242</a>         generation: this.generation,</span>
+<span class="line" id="L243"><a href="#L243">243</a>         requestId: response.requestId,</span>
+<span class="line" id="L244"><a href="#L244">244</a>         sequence: response.sequence,</span>
+<span class="line" id="L245"><a href="#L245">245</a>       };</span>
+<span class="line" id="L246"><a href="#L246">246</a>       this.worker.postMessage(DaemonNavigationWorkerProtocol.request(acknowledgement));</span>
+<span class="line" id="L247"><a href="#L247">247</a>     } catch (error) {</span>
+<span class="line" id="L248"><a href="#L248">248</a>       this.failCommunication(error);</span>
+<span class="line" id="L249"><a href="#L249">249</a>     }</span>
+<span class="line" id="L250"><a href="#L250">250</a>   }</span>
+<span class="line" id="L251"><a href="#L251">251</a> </span>
+<span class="line" id="L252"><a href="#L252">252</a>   private failCommunication(error: unknown): void {</span>
+<span class="line" id="L253"><a href="#L253">253</a>     if (this.exit !== undefined) return;</span>
+<span class="line" id="L254"><a href="#L254">254</a>     const failure = error instanceof Error ? error : new Error(String(error));</span>
+<span class="line" id="L255"><a href="#L255">255</a>     this.communicationFailure = failure;</span>
+<span class="line" id="L256"><a href="#L256">256</a>     this.communicationFailureCode =</span>
+<span class="line" id="L257"><a href="#L257">257</a>       typeof error === &quot;object&quot; &amp;&amp;</span>
+<span class="line" id="L258"><a href="#L258">258</a>       error !== null &amp;&amp;</span>
+<span class="line" id="L259"><a href="#L259">259</a>       &quot;code&quot; in error &amp;&amp;</span>
+<span class="line" id="L260"><a href="#L260">260</a>       typeof error.code === &quot;string&quot;</span>
+<span class="line" id="L261"><a href="#L261">261</a>         ? error.code</span>
+<span class="line" id="L262"><a href="#L262">262</a>         : undefined;</span>
+<span class="line" id="L263"><a href="#L263">263</a>     void this.worker.terminate();</span>
+<span class="line" id="L264"><a href="#L264">264</a>   }</span>
+<span class="line" id="L265"><a href="#L265">265</a> </span>
+<span class="line" id="L266"><a href="#L266">266</a>   private finishExit(): void {</span>
+<span class="line" id="L267"><a href="#L267">267</a>     if (this.exit !== undefined) return;</span>
+<span class="line" id="L268"><a href="#L268">268</a>     const communicationErrorName = this.communicationFailure?.name;</span>
+<span class="line" id="L269"><a href="#L269">269</a>     const communicationFailureIdentity = this.communicationFailureCode ?? communicationErrorName;</span>
+<span class="line" id="L270"><a href="#L270">270</a>     const cause = communicationFailureIdentity</span>
+<span class="line" id="L271"><a href="#L271">271</a>       ? communicationFailureIdentity === &quot;ERR_WORKER_OUT_OF_MEMORY&quot;</span>
+<span class="line" id="L272"><a href="#L272">272</a>         ? &quot;out-of-memory&quot;</span>
+<span class="line" id="L273"><a href="#L273">273</a>         : &quot;error&quot;</span>
+<span class="line" id="L274"><a href="#L274">274</a>       : this.terminating</span>
+<span class="line" id="L275"><a href="#L275">275</a>         ? &quot;terminated&quot;</span>
+<span class="line" id="L276"><a href="#L276">276</a>         : this.closeAcknowledged</span>
+<span class="line" id="L277"><a href="#L277">277</a>           ? &quot;closed&quot;</span>
+<span class="line" id="L278"><a href="#L278">278</a>           : &quot;error&quot;;</span>
+<span class="line" id="L279"><a href="#L279">279</a>     this.exit = {</span>
+<span class="line" id="L280"><a href="#L280">280</a>       generation: this.generation,</span>
+<span class="line" id="L281"><a href="#L281">281</a>       cause,</span>
+<span class="line" id="L282"><a href="#L282">282</a>       ...(communicationFailureIdentity === undefined</span>
+<span class="line" id="L283"><a href="#L283">283</a>         ? {}</span>
+<span class="line" id="L284"><a href="#L284">284</a>         : { errorName: communicationFailureIdentity }),</span>
+<span class="line" id="L285"><a href="#L285">285</a>     };</span>
+<span class="line" id="L286"><a href="#L286">286</a>     const failure = new DaemonNavigationWorkerExitedError(</span>
+<span class="line" id="L287"><a href="#L287">287</a>       this.exit,</span>
+<span class="line" id="L288"><a href="#L288">288</a>       this.communicationFailure?.message,</span>
+<span class="line" id="L289"><a href="#L289">289</a>     );</span>
+<span class="line" id="L290"><a href="#L290">290</a>     for (const pending of this.pending.values()) pending.reject(failure);</span>
+<span class="line" id="L291"><a href="#L291">291</a>     this.pending.clear();</span>
+<span class="line" id="L292"><a href="#L292">292</a>     this.resolveExited(this.exit);</span>
+<span class="line" id="L293"><a href="#L293">293</a>   }</span>
+<span class="line" id="L294"><a href="#L294">294</a> </span>
+<span class="line" id="L295"><a href="#L295">295</a>   private static responseKey(response: DaemonNavigationWorkerResponse): string {</span>
+<span class="line" id="L296"><a href="#L296">296</a>     if (response.kind === &quot;ready&quot;) return &quot;initialize&quot;;</span>
+<span class="line" id="L297"><a href="#L297">297</a>     if (response.kind === &quot;result&quot;) return `execute:${response.requestId}`;</span>
+<span class="line" id="L298"><a href="#L298">298</a>     if (response.kind === &quot;heap&quot;) return `release-transient:${response.operationId}`;</span>
+<span class="line" id="L299"><a href="#L299">299</a>     if (response.kind === &quot;closed&quot;) return &quot;close&quot;;</span>
+<span class="line" id="L300"><a href="#L300">300</a>     if (response.kind === &quot;failed&quot; &amp;&amp; response.operationId !== undefined) {</span>
+<span class="line" id="L301"><a href="#L301">301</a>       return `release-transient:${response.operationId}`;</span>
+<span class="line" id="L302"><a href="#L302">302</a>     }</span>
+<span class="line" id="L303"><a href="#L303">303</a>     return response.requestId === undefined ? &quot;initialize&quot; : `execute:${response.requestId}`;</span>
+<span class="line" id="L304"><a href="#L304">304</a>   }</span>
+<span class="line" id="L305"><a href="#L305">305</a> }</span>
+</pre><details class="source-disclosure"><summary>Net main → tip change touching this path (copy-aware)</summary><p>This is the net delta, including moves/copies. A historical source snapshot above may precede the final change below.</p><pre class="pr-source">diff --git a/apps/cli/src/daemon/daemon-navigation-worker.ts b/packages/daemon/src/worker/navigation-worker.ts
+similarity index 84%
+rename from apps/cli/src/daemon/daemon-navigation-worker.ts
+rename to packages/daemon/src/worker/navigation-worker.ts
+index c3b51ef9d..8fd249b94 100644
+--- a/apps/cli/src/daemon/daemon-navigation-worker.ts
++++ b/packages/daemon/src/worker/navigation-worker.ts
+@@ -1,10 +1,16 @@
+ import { Worker } from &quot;node:worker_threads&quot;;
+-import type { CliExecutionRequest, CommandOutputRecord } from &quot;../command-execution-result.js&quot;;
++import {
++  type DaemonCommandName,
++  type DaemonExecutorRequest,
++  type DaemonExecutorModuleUrl,
++} from &quot;@symnav/daemon&quot;;
++import type { DaemonOutputSink, DaemonSequencedOutputRecord } from &quot;../daemon-executor.js&quot;;
++import { DaemonPolicyCodec, type SerializedDaemonPolicy } from &quot;../daemon-policy.js&quot;;
+ import {
+   DaemonNavigationWorkerProtocol,
+   type DaemonNavigationWorkerRequest,
+   type DaemonNavigationWorkerResponse,
+-} from &quot;./daemon-navigation-worker-protocol.js&quot;;
++} from &quot;./worker-protocol.js&quot;;
+ 
+ export interface DaemonNavigationWorkerExit {
+   readonly generation: number;
+@@ -28,8 +34,9 @@ export interface DaemonNavigationWorker {
+   start(workspaceRoot: string): Promise&lt;DaemonNavigationWorkerResponse&gt;;
+   execute(
+     requestId: string,
+-    request: CliExecutionRequest,
+-    output: { append(record: CommandOutputRecord): Promise&lt;void&gt; },
++    commandName: DaemonCommandName,
++    request: DaemonExecutorRequest,
++    output: DaemonOutputSink,
+   ): Promise&lt;DaemonNavigationWorkerResponse&gt;;
+   releaseTransientResources(): Promise&lt;DaemonNavigationWorkerResponse&gt;;
+   drainAndClose(): Promise&lt;void&gt;;
+@@ -38,6 +45,9 @@ export interface DaemonNavigationWorker {
+ 
+ export interface DaemonNavigationWorkerConfiguration {
+   readonly stateDirectory: string;
++  readonly productVersion: string;
++  readonly executorModuleUrl: DaemonExecutorModuleUrl;
++  readonly policy: SerializedDaemonPolicy;
+ }
+ 
+ export interface NodeDaemonNavigationWorkerOptions {
+@@ -53,7 +63,7 @@ export interface NodeDaemonNavigationWorkerOptions {
+ interface PendingWorkerResponse {
+   readonly resolve: (response: DaemonNavigationWorkerResponse) =&gt; void;
+   readonly reject: (error: Error) =&gt; void;
+-  readonly appendOutput: (record: CommandOutputRecord) =&gt; Promise&lt;void&gt;;
++  readonly appendOutput: (record: DaemonSequencedOutputRecord) =&gt; Promise&lt;void&gt;;
+   nextSequence: number;
+   chunkInFlight: boolean;
+ }
+@@ -71,23 +81,27 @@ export class NodeDaemonNavigationWorker implements DaemonNavigationWorker {
+   private communicationFailure: Error | undefined;
+   private communicationFailureCode: string | undefined;
+   private releaseSequence = 0;
++  private readonly maximumChunkRawBytes: number;
+ 
+   constructor(options: NodeDaemonNavigationWorkerOptions) {
+     this.generation = options.generation;
++    this.maximumChunkRawBytes = DaemonPolicyCodec.deserialize(
++      options.configuration.policy,
++    ).values.output.maximumChunkRawBytes;
+     this.exited = new Promise((resolve) =&gt; {
+       this.resolveExited = resolve;
+     });
+-    this.worker = new Worker(
+-      options.entryUrl ?? new URL(&quot;./daemon-navigation-worker-entry.js&quot;, import.meta.url),
+-      {
+-        workerData: {
+-          stateDirectory: options.configuration.stateDirectory,
+-          generation: options.generation,
+-          ...options.workerData,
+-        },
+-        resourceLimits: options.resourceLimits,
++    this.worker = new Worker(options.entryUrl ?? new URL(&quot;../worker-entry.js&quot;, import.meta.url), {
++      workerData: {
++        ...options.workerData,
++        stateDirectory: options.configuration.stateDirectory,
++        generation: options.generation,
++        productVersion: options.configuration.productVersion,
++        executorModuleUrl: options.configuration.executorModuleUrl,
++        policy: options.configuration.policy,
+       },
+-    );
++      resourceLimits: options.resourceLimits,
++    });
+     this.worker.on(&quot;message&quot;, (value: unknown) =&gt; void this.receive(value));
+     this.worker.once(&quot;error&quot;, (error) =&gt; this.failCommunication(error));
+     this.worker.once(&quot;exit&quot;, () =&gt; this.finishExit());
+@@ -103,8 +117,9 @@ export class NodeDaemonNavigationWorker implements DaemonNavigationWorker {
+ 
+   execute(
+     requestId: string,
+-    request: CliExecutionRequest,
+-    output: { append(record: CommandOutputRecord): Promise&lt;void&gt; },
++    commandName: DaemonCommandName,
++    request: DaemonExecutorRequest,
++    output: DaemonOutputSink,
+   ): Promise&lt;DaemonNavigationWorkerResponse&gt; {
+     return this.send(
+       `execute:${requestId}`,
+@@ -112,6 +127,7 @@ export class NodeDaemonNavigationWorker implements DaemonNavigationWorker {
+         kind: &quot;execute&quot;,
+         generation: this.generation,
+         requestId,
++        commandName,
+         request,
+       },
+       output.append.bind(output),
+@@ -144,7 +160,7 @@ export class NodeDaemonNavigationWorker implements DaemonNavigationWorker {
+   private send(
+     key: string,
+     request: DaemonNavigationWorkerRequest,
+-    appendOutput: ((record: CommandOutputRecord) =&gt; Promise&lt;void&gt;) | undefined = undefined,
++    appendOutput: ((record: DaemonSequencedOutputRecord) =&gt; Promise&lt;void&gt;) | undefined = undefined,
+   ): Promise&lt;DaemonNavigationWorkerResponse&gt; {
+     if (this.exit !== undefined)
+       return Promise.reject(new Error(&quot;Daemon navigation worker exited&quot;));
+@@ -168,7 +184,7 @@ export class NodeDaemonNavigationWorker implements DaemonNavigationWorker {
+   private async receive(value: unknown): Promise&lt;void&gt; {
+     let response: DaemonNavigationWorkerResponse;
+     try {
+-      response = DaemonNavigationWorkerProtocol.response(value);
++      response = DaemonNavigationWorkerProtocol.response(value, this.maximumChunkRawBytes);
+     } catch (error) {
+       this.failCommunication(error);
+       return;
+@@ -213,7 +229,7 @@ export class NodeDaemonNavigationWorker implements DaemonNavigationWorker {
+     }
+     pending.chunkInFlight = true;
+     try {
+-      const record: CommandOutputRecord = {
++      const record: DaemonSequencedOutputRecord = {
+         sequence: response.sequence,
+         stream: response.stream,
+         bytes: response.bytes,
+</pre></details></main></body></html>

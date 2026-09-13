@@ -1,0 +1,585 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>codec · pinned source</title><link rel="stylesheet" href="../style.css"><body class="source-page"><main><a href="../index.html#provenance">← Page provenance</a><h1>codec</h1><p>packages/daemon/src/transport/wire-codec.ts<br>d07002357d3e9596bfaae910a1ac63b77981620b · tip<br>SHA-256 dbd1b4a04fc6bc8b01812f5635a930d6623ce567bae97dbb6dbdd4e8dfd61559</p><pre class="source-code"><span class="line" id="L1"><a href="#L1">1</a> import { createHash } from &quot;node:crypto&quot;;</span>
+<span class="line" id="L2"><a href="#L2">2</a> import type { DaemonResultChunk, DaemonServerMessage } from &quot;./protocol.js&quot;;</span>
+<span class="line" id="L3"><a href="#L3">3</a> </span>
+<span class="line" id="L4"><a href="#L4">4</a> const BINARY_FRAME_FLAG = 0x80000000;</span>
+<span class="line" id="L5"><a href="#L5">5</a> const FRAME_LENGTH_MASK = 0x7fffffff;</span>
+<span class="line" id="L6"><a href="#L6">6</a> const FRAME_PREFIX_BYTES = 4;</span>
+<span class="line" id="L7"><a href="#L7">7</a> const BINARY_HEADER_LENGTH_BYTES = 4;</span>
+<span class="line" id="L8"><a href="#L8">8</a> </span>
+<span class="line" id="L9"><a href="#L9">9</a> export interface DaemonFrameDecoder&lt;Frame&gt; {</span>
+<span class="line" id="L10"><a href="#L10">10</a>   append(bytes: Uint8Array): readonly Frame[];</span>
+<span class="line" id="L11"><a href="#L11">11</a>   assertComplete(): void;</span>
+<span class="line" id="L12"><a href="#L12">12</a> }</span>
+<span class="line" id="L13"><a href="#L13">13</a> </span>
+<span class="line" id="L14"><a href="#L14">14</a> export interface DaemonWireLimits {</span>
+<span class="line" id="L15"><a href="#L15">15</a>   readonly maximumJsonPayloadBytes: number;</span>
+<span class="line" id="L16"><a href="#L16">16</a>   readonly maximumExecutionControlPayloadBytes: number;</span>
+<span class="line" id="L17"><a href="#L17">17</a>   readonly maximumChunkRawBytes: number;</span>
+<span class="line" id="L18"><a href="#L18">18</a> }</span>
+<span class="line" id="L19"><a href="#L19">19</a> </span>
+<span class="line" id="L20"><a href="#L20">20</a> interface DaemonResultChunkHeader {</span>
+<span class="line" id="L21"><a href="#L21">21</a>   readonly transferId: string;</span>
+<span class="line" id="L22"><a href="#L22">22</a>   readonly requestId: string;</span>
+<span class="line" id="L23"><a href="#L23">23</a>   readonly offset: number;</span>
+<span class="line" id="L24"><a href="#L24">24</a>   readonly sequence: number;</span>
+<span class="line" id="L25"><a href="#L25">25</a>   readonly stream: &quot;stdout&quot; | &quot;stderr&quot;;</span>
+<span class="line" id="L26"><a href="#L26">26</a>   readonly payloadLength: number;</span>
+<span class="line" id="L27"><a href="#L27">27</a>   readonly sha256: string;</span>
+<span class="line" id="L28"><a href="#L28">28</a> }</span>
+<span class="line" id="L29"><a href="#L29">29</a> </span>
+<span class="line" id="L30"><a href="#L30">30</a> export class DaemonWireCodec {</span>
+<span class="line" id="L31"><a href="#L31">31</a>   constructor(private readonly limits: DaemonWireLimits) {}</span>
+<span class="line" id="L32"><a href="#L32">32</a> </span>
+<span class="line" id="L33"><a href="#L33">33</a>   encodeControl(value: unknown): Uint8Array {</span>
+<span class="line" id="L34"><a href="#L34">34</a>     return this.encodeJson(value, this.limits.maximumJsonPayloadBytes);</span>
+<span class="line" id="L35"><a href="#L35">35</a>   }</span>
+<span class="line" id="L36"><a href="#L36">36</a> </span>
+<span class="line" id="L37"><a href="#L37">37</a>   encodeServerMessage(message: DaemonServerMessage): Uint8Array {</span>
+<span class="line" id="L38"><a href="#L38">38</a>     if (&quot;kind&quot; in message) {</span>
+<span class="line" id="L39"><a href="#L39">39</a>       const maximumPayloadBytes = DaemonWireCodec.isExecutionControl(message.kind)</span>
+<span class="line" id="L40"><a href="#L40">40</a>         ? this.limits.maximumExecutionControlPayloadBytes</span>
+<span class="line" id="L41"><a href="#L41">41</a>         : this.limits.maximumJsonPayloadBytes;</span>
+<span class="line" id="L42"><a href="#L42">42</a>       return this.encodeJson(message, maximumPayloadBytes);</span>
+<span class="line" id="L43"><a href="#L43">43</a>     }</span>
+<span class="line" id="L44"><a href="#L44">44</a>     return DaemonResultChunkCodec.encode(message, this.limits);</span>
+<span class="line" id="L45"><a href="#L45">45</a>   }</span>
+<span class="line" id="L46"><a href="#L46">46</a> </span>
+<span class="line" id="L47"><a href="#L47">47</a>   controlDecoder(): DaemonFrameDecoder&lt;unknown&gt; {</span>
+<span class="line" id="L48"><a href="#L48">48</a>     return new DaemonControlFrameDecoder(this.limits.maximumJsonPayloadBytes);</span>
+<span class="line" id="L49"><a href="#L49">49</a>   }</span>
+<span class="line" id="L50"><a href="#L50">50</a> </span>
+<span class="line" id="L51"><a href="#L51">51</a>   transferDecoder(): DaemonFrameDecoder&lt;unknown | DaemonResultChunk&gt; {</span>
+<span class="line" id="L52"><a href="#L52">52</a>     return new DaemonTransferFrameDecoder(this.limits);</span>
+<span class="line" id="L53"><a href="#L53">53</a>   }</span>
+<span class="line" id="L54"><a href="#L54">54</a> </span>
+<span class="line" id="L55"><a href="#L55">55</a>   private encodeJson(value: unknown, maximumPayloadBytes: number): Uint8Array {</span>
+<span class="line" id="L56"><a href="#L56">56</a>     const payload = Buffer.from(JSON.stringify(value), &quot;utf8&quot;);</span>
+<span class="line" id="L57"><a href="#L57">57</a>     if (payload.byteLength &gt; maximumPayloadBytes) {</span>
+<span class="line" id="L58"><a href="#L58">58</a>       throw new Error(`Daemon frame exceeds ${maximumPayloadBytes} bytes`);</span>
+<span class="line" id="L59"><a href="#L59">59</a>     }</span>
+<span class="line" id="L60"><a href="#L60">60</a>     const prefix = Buffer.alloc(FRAME_PREFIX_BYTES);</span>
+<span class="line" id="L61"><a href="#L61">61</a>     prefix.writeUInt32BE(payload.byteLength);</span>
+<span class="line" id="L62"><a href="#L62">62</a>     return Buffer.concat([prefix, payload]);</span>
+<span class="line" id="L63"><a href="#L63">63</a>   }</span>
+<span class="line" id="L64"><a href="#L64">64</a> </span>
+<span class="line" id="L65"><a href="#L65">65</a>   private static isExecutionControl(kind: string): boolean {</span>
+<span class="line" id="L66"><a href="#L66">66</a>     return (</span>
+<span class="line" id="L67"><a href="#L67">67</a>       kind === &quot;accepted&quot; ||</span>
+<span class="line" id="L68"><a href="#L68">68</a>       kind === &quot;rejected&quot; ||</span>
+<span class="line" id="L69"><a href="#L69">69</a>       kind === &quot;result-manifest&quot; ||</span>
+<span class="line" id="L70"><a href="#L70">70</a>       kind === &quot;result-end&quot; ||</span>
+<span class="line" id="L71"><a href="#L71">71</a>       kind === &quot;execution-failed&quot; ||</span>
+<span class="line" id="L72"><a href="#L72">72</a>       kind === &quot;execution-status&quot; ||</span>
+<span class="line" id="L73"><a href="#L73">73</a>       kind === &quot;result-acknowledged&quot;</span>
+<span class="line" id="L74"><a href="#L74">74</a>     );</span>
+<span class="line" id="L75"><a href="#L75">75</a>   }</span>
+<span class="line" id="L76"><a href="#L76">76</a> }</span>
+<span class="line" id="L77"><a href="#L77">77</a> </span>
+<span class="line" id="L78"><a href="#L78">78</a> class DaemonControlFrameDecoder implements DaemonFrameDecoder&lt;unknown&gt; {</span>
+<span class="line" id="L79"><a href="#L79">79</a>   private buffered = Buffer.alloc(0);</span>
+<span class="line" id="L80"><a href="#L80">80</a> </span>
+<span class="line" id="L81"><a href="#L81">81</a>   constructor(private readonly maximumPayloadBytes: number) {}</span>
+<span class="line" id="L82"><a href="#L82">82</a> </span>
+<span class="line" id="L83"><a href="#L83">83</a>   append(bytes: Uint8Array): readonly unknown[] {</span>
+<span class="line" id="L84"><a href="#L84">84</a>     this.buffered = Buffer.concat([this.buffered, bytes]);</span>
+<span class="line" id="L85"><a href="#L85">85</a>     const values: unknown[] = [];</span>
+<span class="line" id="L86"><a href="#L86">86</a>     while (this.buffered.byteLength &gt;= FRAME_PREFIX_BYTES) {</span>
+<span class="line" id="L87"><a href="#L87">87</a>       const payloadLength = this.buffered.readUInt32BE(0);</span>
+<span class="line" id="L88"><a href="#L88">88</a>       if (payloadLength &gt; this.maximumPayloadBytes) {</span>
+<span class="line" id="L89"><a href="#L89">89</a>         throw new Error(`Daemon frame exceeds ${this.maximumPayloadBytes} bytes`);</span>
+<span class="line" id="L90"><a href="#L90">90</a>       }</span>
+<span class="line" id="L91"><a href="#L91">91</a>       if (this.buffered.byteLength &lt; payloadLength + FRAME_PREFIX_BYTES) break;</span>
+<span class="line" id="L92"><a href="#L92">92</a>       const payload = this.buffered.subarray(</span>
+<span class="line" id="L93"><a href="#L93">93</a>         FRAME_PREFIX_BYTES,</span>
+<span class="line" id="L94"><a href="#L94">94</a>         payloadLength + FRAME_PREFIX_BYTES,</span>
+<span class="line" id="L95"><a href="#L95">95</a>       );</span>
+<span class="line" id="L96"><a href="#L96">96</a>       this.buffered = this.buffered.subarray(payloadLength + FRAME_PREFIX_BYTES);</span>
+<span class="line" id="L97"><a href="#L97">97</a>       try {</span>
+<span class="line" id="L98"><a href="#L98">98</a>         values.push(JSON.parse(payload.toString(&quot;utf8&quot;)));</span>
+<span class="line" id="L99"><a href="#L99">99</a>       } catch {</span>
+<span class="line" id="L100"><a href="#L100">100</a>         throw new Error(&quot;Daemon frame contains malformed JSON&quot;);</span>
+<span class="line" id="L101"><a href="#L101">101</a>       }</span>
+<span class="line" id="L102"><a href="#L102">102</a>     }</span>
+<span class="line" id="L103"><a href="#L103">103</a>     return values;</span>
+<span class="line" id="L104"><a href="#L104">104</a>   }</span>
+<span class="line" id="L105"><a href="#L105">105</a> </span>
+<span class="line" id="L106"><a href="#L106">106</a>   assertComplete(): void {</span>
+<span class="line" id="L107"><a href="#L107">107</a>     if (this.buffered.byteLength !== 0) {</span>
+<span class="line" id="L108"><a href="#L108">108</a>       throw new Error(&quot;Daemon connection ended with a truncated frame&quot;);</span>
+<span class="line" id="L109"><a href="#L109">109</a>     }</span>
+<span class="line" id="L110"><a href="#L110">110</a>   }</span>
+<span class="line" id="L111"><a href="#L111">111</a> }</span>
+<span class="line" id="L112"><a href="#L112">112</a> </span>
+<span class="line" id="L113"><a href="#L113">113</a> class DaemonTransferFrameDecoder implements DaemonFrameDecoder&lt;unknown | DaemonResultChunk&gt; {</span>
+<span class="line" id="L114"><a href="#L114">114</a>   private buffered = Buffer.alloc(0);</span>
+<span class="line" id="L115"><a href="#L115">115</a> </span>
+<span class="line" id="L116"><a href="#L116">116</a>   constructor(private readonly limits: DaemonWireLimits) {}</span>
+<span class="line" id="L117"><a href="#L117">117</a> </span>
+<span class="line" id="L118"><a href="#L118">118</a>   append(bytes: Uint8Array): readonly (unknown | DaemonResultChunk)[] {</span>
+<span class="line" id="L119"><a href="#L119">119</a>     this.buffered = Buffer.concat([this.buffered, bytes]);</span>
+<span class="line" id="L120"><a href="#L120">120</a>     const values: (unknown | DaemonResultChunk)[] = [];</span>
+<span class="line" id="L121"><a href="#L121">121</a>     while (this.buffered.byteLength &gt;= FRAME_PREFIX_BYTES) {</span>
+<span class="line" id="L122"><a href="#L122">122</a>       const encodedLength = this.buffered.readUInt32BE(0);</span>
+<span class="line" id="L123"><a href="#L123">123</a>       const binary = (encodedLength &amp; BINARY_FRAME_FLAG) !== 0;</span>
+<span class="line" id="L124"><a href="#L124">124</a>       const payloadLength = encodedLength &amp; FRAME_LENGTH_MASK;</span>
+<span class="line" id="L125"><a href="#L125">125</a>       const maximumPayloadBytes = binary</span>
+<span class="line" id="L126"><a href="#L126">126</a>         ? this.limits.maximumExecutionControlPayloadBytes + this.limits.maximumChunkRawBytes</span>
+<span class="line" id="L127"><a href="#L127">127</a>         : this.limits.maximumExecutionControlPayloadBytes;</span>
+<span class="line" id="L128"><a href="#L128">128</a>       if (payloadLength &gt; maximumPayloadBytes) {</span>
+<span class="line" id="L129"><a href="#L129">129</a>         throw new Error(&quot;Daemon result frame exceeds capacity&quot;);</span>
+<span class="line" id="L130"><a href="#L130">130</a>       }</span>
+<span class="line" id="L131"><a href="#L131">131</a>       if (this.buffered.byteLength &lt; payloadLength + FRAME_PREFIX_BYTES) break;</span>
+<span class="line" id="L132"><a href="#L132">132</a>       const payload = this.buffered.subarray(</span>
+<span class="line" id="L133"><a href="#L133">133</a>         FRAME_PREFIX_BYTES,</span>
+<span class="line" id="L134"><a href="#L134">134</a>         payloadLength + FRAME_PREFIX_BYTES,</span>
+<span class="line" id="L135"><a href="#L135">135</a>       );</span>
+<span class="line" id="L136"><a href="#L136">136</a>       this.buffered = this.buffered.subarray(payloadLength + FRAME_PREFIX_BYTES);</span>
+<span class="line" id="L137"><a href="#L137">137</a>       if (binary) {</span>
+<span class="line" id="L138"><a href="#L138">138</a>         values.push(DaemonResultChunkCodec.decode(payload, this.limits));</span>
+<span class="line" id="L139"><a href="#L139">139</a>         continue;</span>
+<span class="line" id="L140"><a href="#L140">140</a>       }</span>
+<span class="line" id="L141"><a href="#L141">141</a>       try {</span>
+<span class="line" id="L142"><a href="#L142">142</a>         values.push(JSON.parse(payload.toString(&quot;utf8&quot;)));</span>
+<span class="line" id="L143"><a href="#L143">143</a>       } catch {</span>
+<span class="line" id="L144"><a href="#L144">144</a>         throw new Error(&quot;Daemon control frame contains malformed JSON&quot;);</span>
+<span class="line" id="L145"><a href="#L145">145</a>       }</span>
+<span class="line" id="L146"><a href="#L146">146</a>     }</span>
+<span class="line" id="L147"><a href="#L147">147</a>     return values;</span>
+<span class="line" id="L148"><a href="#L148">148</a>   }</span>
+<span class="line" id="L149"><a href="#L149">149</a> </span>
+<span class="line" id="L150"><a href="#L150">150</a>   assertComplete(): void {</span>
+<span class="line" id="L151"><a href="#L151">151</a>     if (this.buffered.byteLength !== 0) {</span>
+<span class="line" id="L152"><a href="#L152">152</a>       throw new Error(&quot;Daemon result transfer ended with a truncated frame&quot;);</span>
+<span class="line" id="L153"><a href="#L153">153</a>     }</span>
+<span class="line" id="L154"><a href="#L154">154</a>   }</span>
+<span class="line" id="L155"><a href="#L155">155</a> }</span>
+<span class="line" id="L156"><a href="#L156">156</a> </span>
+<span class="line" id="L157"><a href="#L157">157</a> class DaemonResultChunkCodec {</span>
+<span class="line" id="L158"><a href="#L158">158</a>   static encode(chunk: DaemonResultChunk, limits: DaemonWireLimits): Uint8Array {</span>
+<span class="line" id="L159"><a href="#L159">159</a>     DaemonResultChunkCodec.assertChunk(chunk, limits.maximumChunkRawBytes);</span>
+<span class="line" id="L160"><a href="#L160">160</a>     const header: DaemonResultChunkHeader = {</span>
+<span class="line" id="L161"><a href="#L161">161</a>       transferId: chunk.transferId,</span>
+<span class="line" id="L162"><a href="#L162">162</a>       requestId: chunk.requestId,</span>
+<span class="line" id="L163"><a href="#L163">163</a>       offset: chunk.offset,</span>
+<span class="line" id="L164"><a href="#L164">164</a>       sequence: chunk.sequence,</span>
+<span class="line" id="L165"><a href="#L165">165</a>       stream: chunk.stream,</span>
+<span class="line" id="L166"><a href="#L166">166</a>       payloadLength: chunk.bytes.byteLength,</span>
+<span class="line" id="L167"><a href="#L167">167</a>       sha256: createHash(&quot;sha256&quot;).update(chunk.bytes).digest(&quot;hex&quot;),</span>
+<span class="line" id="L168"><a href="#L168">168</a>     };</span>
+<span class="line" id="L169"><a href="#L169">169</a>     const headerBytes = Buffer.from(JSON.stringify(header));</span>
+<span class="line" id="L170"><a href="#L170">170</a>     if (</span>
+<span class="line" id="L171"><a href="#L171">171</a>       BINARY_HEADER_LENGTH_BYTES + headerBytes.byteLength &gt;</span>
+<span class="line" id="L172"><a href="#L172">172</a>       limits.maximumExecutionControlPayloadBytes</span>
+<span class="line" id="L173"><a href="#L173">173</a>     ) {</span>
+<span class="line" id="L174"><a href="#L174">174</a>       throw new Error(&quot;Daemon result frame exceeds capacity&quot;);</span>
+<span class="line" id="L175"><a href="#L175">175</a>     }</span>
+<span class="line" id="L176"><a href="#L176">176</a>     const payloadLength =</span>
+<span class="line" id="L177"><a href="#L177">177</a>       BINARY_HEADER_LENGTH_BYTES + headerBytes.byteLength + chunk.bytes.byteLength;</span>
+<span class="line" id="L178"><a href="#L178">178</a>     const encoded = Buffer.alloc(FRAME_PREFIX_BYTES + payloadLength);</span>
+<span class="line" id="L179"><a href="#L179">179</a>     encoded.writeUInt32BE((BINARY_FRAME_FLAG | payloadLength) &gt;&gt;&gt; 0, 0);</span>
+<span class="line" id="L180"><a href="#L180">180</a>     encoded.writeUInt32BE(headerBytes.byteLength, FRAME_PREFIX_BYTES);</span>
+<span class="line" id="L181"><a href="#L181">181</a>     headerBytes.copy(encoded, FRAME_PREFIX_BYTES + BINARY_HEADER_LENGTH_BYTES);</span>
+<span class="line" id="L182"><a href="#L182">182</a>     Buffer.from(chunk.bytes).copy(</span>
+<span class="line" id="L183"><a href="#L183">183</a>       encoded,</span>
+<span class="line" id="L184"><a href="#L184">184</a>       FRAME_PREFIX_BYTES + BINARY_HEADER_LENGTH_BYTES + headerBytes.byteLength,</span>
+<span class="line" id="L185"><a href="#L185">185</a>     );</span>
+<span class="line" id="L186"><a href="#L186">186</a>     return encoded;</span>
+<span class="line" id="L187"><a href="#L187">187</a>   }</span>
+<span class="line" id="L188"><a href="#L188">188</a> </span>
+<span class="line" id="L189"><a href="#L189">189</a>   static decode(payload: Buffer, limits: DaemonWireLimits): DaemonResultChunk {</span>
+<span class="line" id="L190"><a href="#L190">190</a>     if (payload.byteLength &lt; BINARY_HEADER_LENGTH_BYTES) {</span>
+<span class="line" id="L191"><a href="#L191">191</a>       throw new Error(&quot;Truncated daemon result chunk header&quot;);</span>
+<span class="line" id="L192"><a href="#L192">192</a>     }</span>
+<span class="line" id="L193"><a href="#L193">193</a>     const headerLength = payload.readUInt32BE(0);</span>
+<span class="line" id="L194"><a href="#L194">194</a>     if (headerLength === 0 || headerLength &gt; payload.byteLength - BINARY_HEADER_LENGTH_BYTES) {</span>
+<span class="line" id="L195"><a href="#L195">195</a>       throw new Error(&quot;Invalid daemon result chunk header length&quot;);</span>
+<span class="line" id="L196"><a href="#L196">196</a>     }</span>
+<span class="line" id="L197"><a href="#L197">197</a>     if (BINARY_HEADER_LENGTH_BYTES + headerLength &gt; limits.maximumExecutionControlPayloadBytes) {</span>
+<span class="line" id="L198"><a href="#L198">198</a>       throw new Error(&quot;Daemon result frame exceeds capacity&quot;);</span>
+<span class="line" id="L199"><a href="#L199">199</a>     }</span>
+<span class="line" id="L200"><a href="#L200">200</a>     let parsed: unknown;</span>
+<span class="line" id="L201"><a href="#L201">201</a>     try {</span>
+<span class="line" id="L202"><a href="#L202">202</a>       parsed = JSON.parse(</span>
+<span class="line" id="L203"><a href="#L203">203</a>         payload</span>
+<span class="line" id="L204"><a href="#L204">204</a>           .subarray(BINARY_HEADER_LENGTH_BYTES, BINARY_HEADER_LENGTH_BYTES + headerLength)</span>
+<span class="line" id="L205"><a href="#L205">205</a>           .toString(&quot;utf8&quot;),</span>
+<span class="line" id="L206"><a href="#L206">206</a>       );</span>
+<span class="line" id="L207"><a href="#L207">207</a>     } catch {</span>
+<span class="line" id="L208"><a href="#L208">208</a>       throw new Error(&quot;Malformed daemon result chunk header&quot;);</span>
+<span class="line" id="L209"><a href="#L209">209</a>     }</span>
+<span class="line" id="L210"><a href="#L210">210</a>     const bytes = payload.subarray(BINARY_HEADER_LENGTH_BYTES + headerLength);</span>
+<span class="line" id="L211"><a href="#L211">211</a>     if (</span>
+<span class="line" id="L212"><a href="#L212">212</a>       !DaemonResultChunkCodec.isHeader(parsed, limits.maximumChunkRawBytes) ||</span>
+<span class="line" id="L213"><a href="#L213">213</a>       parsed.payloadLength !== bytes.byteLength</span>
+<span class="line" id="L214"><a href="#L214">214</a>     ) {</span>
+<span class="line" id="L215"><a href="#L215">215</a>       throw new Error(&quot;Invalid daemon result chunk header&quot;);</span>
+<span class="line" id="L216"><a href="#L216">216</a>     }</span>
+<span class="line" id="L217"><a href="#L217">217</a>     if (createHash(&quot;sha256&quot;).update(bytes).digest(&quot;hex&quot;) !== parsed.sha256) {</span>
+<span class="line" id="L218"><a href="#L218">218</a>       throw new Error(&quot;Corrupt daemon result chunk payload&quot;);</span>
+<span class="line" id="L219"><a href="#L219">219</a>     }</span>
+<span class="line" id="L220"><a href="#L220">220</a>     const chunk: DaemonResultChunk = {</span>
+<span class="line" id="L221"><a href="#L221">221</a>       transferId: parsed.transferId,</span>
+<span class="line" id="L222"><a href="#L222">222</a>       requestId: parsed.requestId,</span>
+<span class="line" id="L223"><a href="#L223">223</a>       offset: parsed.offset,</span>
+<span class="line" id="L224"><a href="#L224">224</a>       sequence: parsed.sequence,</span>
+<span class="line" id="L225"><a href="#L225">225</a>       stream: parsed.stream,</span>
+<span class="line" id="L226"><a href="#L226">226</a>       bytes: Uint8Array.from(bytes),</span>
+<span class="line" id="L227"><a href="#L227">227</a>     };</span>
+<span class="line" id="L228"><a href="#L228">228</a>     DaemonResultChunkCodec.assertChunk(chunk, limits.maximumChunkRawBytes);</span>
+<span class="line" id="L229"><a href="#L229">229</a>     return chunk;</span>
+<span class="line" id="L230"><a href="#L230">230</a>   }</span>
+<span class="line" id="L231"><a href="#L231">231</a> </span>
+<span class="line" id="L232"><a href="#L232">232</a>   private static assertChunk(chunk: DaemonResultChunk, maximumChunkRawBytes: number): void {</span>
+<span class="line" id="L233"><a href="#L233">233</a>     if (</span>
+<span class="line" id="L234"><a href="#L234">234</a>       chunk.transferId.length === 0 ||</span>
+<span class="line" id="L235"><a href="#L235">235</a>       chunk.requestId.length === 0 ||</span>
+<span class="line" id="L236"><a href="#L236">236</a>       !Number.isSafeInteger(chunk.offset) ||</span>
+<span class="line" id="L237"><a href="#L237">237</a>       chunk.offset &lt; 0 ||</span>
+<span class="line" id="L238"><a href="#L238">238</a>       !Number.isSafeInteger(chunk.sequence) ||</span>
+<span class="line" id="L239"><a href="#L239">239</a>       chunk.sequence &lt; 0 ||</span>
+<span class="line" id="L240"><a href="#L240">240</a>       (chunk.stream !== &quot;stdout&quot; &amp;&amp; chunk.stream !== &quot;stderr&quot;) ||</span>
+<span class="line" id="L241"><a href="#L241">241</a>       !(chunk.bytes instanceof Uint8Array) ||</span>
+<span class="line" id="L242"><a href="#L242">242</a>       chunk.bytes.byteLength &gt; maximumChunkRawBytes</span>
+<span class="line" id="L243"><a href="#L243">243</a>     ) {</span>
+<span class="line" id="L244"><a href="#L244">244</a>       throw new Error(&quot;Invalid daemon result chunk&quot;);</span>
+<span class="line" id="L245"><a href="#L245">245</a>     }</span>
+<span class="line" id="L246"><a href="#L246">246</a>   }</span>
+<span class="line" id="L247"><a href="#L247">247</a> </span>
+<span class="line" id="L248"><a href="#L248">248</a>   private static isHeader(</span>
+<span class="line" id="L249"><a href="#L249">249</a>     value: unknown,</span>
+<span class="line" id="L250"><a href="#L250">250</a>     maximumChunkRawBytes: number,</span>
+<span class="line" id="L251"><a href="#L251">251</a>   ): value is DaemonResultChunkHeader {</span>
+<span class="line" id="L252"><a href="#L252">252</a>     if (typeof value !== &quot;object&quot; || value === null || Array.isArray(value)) return false;</span>
+<span class="line" id="L253"><a href="#L253">253</a>     const header = value as Record&lt;string, unknown&gt;;</span>
+<span class="line" id="L254"><a href="#L254">254</a>     const expectedKeys = [</span>
+<span class="line" id="L255"><a href="#L255">255</a>       &quot;offset&quot;,</span>
+<span class="line" id="L256"><a href="#L256">256</a>       &quot;payloadLength&quot;,</span>
+<span class="line" id="L257"><a href="#L257">257</a>       &quot;requestId&quot;,</span>
+<span class="line" id="L258"><a href="#L258">258</a>       &quot;sequence&quot;,</span>
+<span class="line" id="L259"><a href="#L259">259</a>       &quot;sha256&quot;,</span>
+<span class="line" id="L260"><a href="#L260">260</a>       &quot;stream&quot;,</span>
+<span class="line" id="L261"><a href="#L261">261</a>       &quot;transferId&quot;,</span>
+<span class="line" id="L262"><a href="#L262">262</a>     ];</span>
+<span class="line" id="L263"><a href="#L263">263</a>     return (</span>
+<span class="line" id="L264"><a href="#L264">264</a>       DaemonResultChunkCodec.hasExactKeys(header, expectedKeys) &amp;&amp;</span>
+<span class="line" id="L265"><a href="#L265">265</a>       typeof header.transferId === &quot;string&quot; &amp;&amp;</span>
+<span class="line" id="L266"><a href="#L266">266</a>       header.transferId.length &gt; 0 &amp;&amp;</span>
+<span class="line" id="L267"><a href="#L267">267</a>       typeof header.requestId === &quot;string&quot; &amp;&amp;</span>
+<span class="line" id="L268"><a href="#L268">268</a>       header.requestId.length &gt; 0 &amp;&amp;</span>
+<span class="line" id="L269"><a href="#L269">269</a>       Number.isSafeInteger(header.offset) &amp;&amp;</span>
+<span class="line" id="L270"><a href="#L270">270</a>       Number(header.offset) &gt;= 0 &amp;&amp;</span>
+<span class="line" id="L271"><a href="#L271">271</a>       Number.isSafeInteger(header.sequence) &amp;&amp;</span>
+<span class="line" id="L272"><a href="#L272">272</a>       Number(header.sequence) &gt;= 0 &amp;&amp;</span>
+<span class="line" id="L273"><a href="#L273">273</a>       (header.stream === &quot;stdout&quot; || header.stream === &quot;stderr&quot;) &amp;&amp;</span>
+<span class="line" id="L274"><a href="#L274">274</a>       Number.isSafeInteger(header.payloadLength) &amp;&amp;</span>
+<span class="line" id="L275"><a href="#L275">275</a>       Number(header.payloadLength) &gt;= 0 &amp;&amp;</span>
+<span class="line" id="L276"><a href="#L276">276</a>       Number(header.payloadLength) &lt;= maximumChunkRawBytes &amp;&amp;</span>
+<span class="line" id="L277"><a href="#L277">277</a>       typeof header.sha256 === &quot;string&quot; &amp;&amp;</span>
+<span class="line" id="L278"><a href="#L278">278</a>       /^[a-f\d]{64}$/.test(header.sha256)</span>
+<span class="line" id="L279"><a href="#L279">279</a>     );</span>
+<span class="line" id="L280"><a href="#L280">280</a>   }</span>
+<span class="line" id="L281"><a href="#L281">281</a> </span>
+<span class="line" id="L282"><a href="#L282">282</a>   private static hasExactKeys(value: Record&lt;string, unknown&gt;, keys: readonly string[]): boolean {</span>
+<span class="line" id="L283"><a href="#L283">283</a>     const actual = Object.keys(value).sort();</span>
+<span class="line" id="L284"><a href="#L284">284</a>     const expected = [...keys].sort();</span>
+<span class="line" id="L285"><a href="#L285">285</a>     return (</span>
+<span class="line" id="L286"><a href="#L286">286</a>       actual.length === expected.length &amp;&amp; actual.every((key, index) =&gt; key === expected[index])</span>
+<span class="line" id="L287"><a href="#L287">287</a>     );</span>
+<span class="line" id="L288"><a href="#L288">288</a>   }</span>
+<span class="line" id="L289"><a href="#L289">289</a> }</span>
+</pre><details class="source-disclosure"><summary>Net main → tip change touching this path (copy-aware)</summary><p>This is the net delta, including moves/copies. A historical source snapshot above may precede the final change below.</p><pre class="pr-source">diff --git a/packages/daemon/src/transport/wire-codec.ts b/packages/daemon/src/transport/wire-codec.ts
+new file mode 100644
+index 000000000..ae643f6db
+--- /dev/null
++++ b/packages/daemon/src/transport/wire-codec.ts
+@@ -0,0 +1,289 @@
++import { createHash } from &quot;node:crypto&quot;;
++import type { DaemonResultChunk, DaemonServerMessage } from &quot;./protocol.js&quot;;
++
++const BINARY_FRAME_FLAG = 0x80000000;
++const FRAME_LENGTH_MASK = 0x7fffffff;
++const FRAME_PREFIX_BYTES = 4;
++const BINARY_HEADER_LENGTH_BYTES = 4;
++
++export interface DaemonFrameDecoder&lt;Frame&gt; {
++  append(bytes: Uint8Array): readonly Frame[];
++  assertComplete(): void;
++}
++
++export interface DaemonWireLimits {
++  readonly maximumJsonPayloadBytes: number;
++  readonly maximumExecutionControlPayloadBytes: number;
++  readonly maximumChunkRawBytes: number;
++}
++
++interface DaemonResultChunkHeader {
++  readonly transferId: string;
++  readonly requestId: string;
++  readonly offset: number;
++  readonly sequence: number;
++  readonly stream: &quot;stdout&quot; | &quot;stderr&quot;;
++  readonly payloadLength: number;
++  readonly sha256: string;
++}
++
++export class DaemonWireCodec {
++  constructor(private readonly limits: DaemonWireLimits) {}
++
++  encodeControl(value: unknown): Uint8Array {
++    return this.encodeJson(value, this.limits.maximumJsonPayloadBytes);
++  }
++
++  encodeServerMessage(message: DaemonServerMessage): Uint8Array {
++    if (&quot;kind&quot; in message) {
++      const maximumPayloadBytes = DaemonWireCodec.isExecutionControl(message.kind)
++        ? this.limits.maximumExecutionControlPayloadBytes
++        : this.limits.maximumJsonPayloadBytes;
++      return this.encodeJson(message, maximumPayloadBytes);
++    }
++    return DaemonResultChunkCodec.encode(message, this.limits);
++  }
++
++  controlDecoder(): DaemonFrameDecoder&lt;unknown&gt; {
++    return new DaemonControlFrameDecoder(this.limits.maximumJsonPayloadBytes);
++  }
++
++  transferDecoder(): DaemonFrameDecoder&lt;unknown | DaemonResultChunk&gt; {
++    return new DaemonTransferFrameDecoder(this.limits);
++  }
++
++  private encodeJson(value: unknown, maximumPayloadBytes: number): Uint8Array {
++    const payload = Buffer.from(JSON.stringify(value), &quot;utf8&quot;);
++    if (payload.byteLength &gt; maximumPayloadBytes) {
++      throw new Error(`Daemon frame exceeds ${maximumPayloadBytes} bytes`);
++    }
++    const prefix = Buffer.alloc(FRAME_PREFIX_BYTES);
++    prefix.writeUInt32BE(payload.byteLength);
++    return Buffer.concat([prefix, payload]);
++  }
++
++  private static isExecutionControl(kind: string): boolean {
++    return (
++      kind === &quot;accepted&quot; ||
++      kind === &quot;rejected&quot; ||
++      kind === &quot;result-manifest&quot; ||
++      kind === &quot;result-end&quot; ||
++      kind === &quot;execution-failed&quot; ||
++      kind === &quot;execution-status&quot; ||
++      kind === &quot;result-acknowledged&quot;
++    );
++  }
++}
++
++class DaemonControlFrameDecoder implements DaemonFrameDecoder&lt;unknown&gt; {
++  private buffered = Buffer.alloc(0);
++
++  constructor(private readonly maximumPayloadBytes: number) {}
++
++  append(bytes: Uint8Array): readonly unknown[] {
++    this.buffered = Buffer.concat([this.buffered, bytes]);
++    const values: unknown[] = [];
++    while (this.buffered.byteLength &gt;= FRAME_PREFIX_BYTES) {
++      const payloadLength = this.buffered.readUInt32BE(0);
++      if (payloadLength &gt; this.maximumPayloadBytes) {
++        throw new Error(`Daemon frame exceeds ${this.maximumPayloadBytes} bytes`);
++      }
++      if (this.buffered.byteLength &lt; payloadLength + FRAME_PREFIX_BYTES) break;
++      const payload = this.buffered.subarray(
++        FRAME_PREFIX_BYTES,
++        payloadLength + FRAME_PREFIX_BYTES,
++      );
++      this.buffered = this.buffered.subarray(payloadLength + FRAME_PREFIX_BYTES);
++      try {
++        values.push(JSON.parse(payload.toString(&quot;utf8&quot;)));
++      } catch {
++        throw new Error(&quot;Daemon frame contains malformed JSON&quot;);
++      }
++    }
++    return values;
++  }
++
++  assertComplete(): void {
++    if (this.buffered.byteLength !== 0) {
++      throw new Error(&quot;Daemon connection ended with a truncated frame&quot;);
++    }
++  }
++}
++
++class DaemonTransferFrameDecoder implements DaemonFrameDecoder&lt;unknown | DaemonResultChunk&gt; {
++  private buffered = Buffer.alloc(0);
++
++  constructor(private readonly limits: DaemonWireLimits) {}
++
++  append(bytes: Uint8Array): readonly (unknown | DaemonResultChunk)[] {
++    this.buffered = Buffer.concat([this.buffered, bytes]);
++    const values: (unknown | DaemonResultChunk)[] = [];
++    while (this.buffered.byteLength &gt;= FRAME_PREFIX_BYTES) {
++      const encodedLength = this.buffered.readUInt32BE(0);
++      const binary = (encodedLength &amp; BINARY_FRAME_FLAG) !== 0;
++      const payloadLength = encodedLength &amp; FRAME_LENGTH_MASK;
++      const maximumPayloadBytes = binary
++        ? this.limits.maximumExecutionControlPayloadBytes + this.limits.maximumChunkRawBytes
++        : this.limits.maximumExecutionControlPayloadBytes;
++      if (payloadLength &gt; maximumPayloadBytes) {
++        throw new Error(&quot;Daemon result frame exceeds capacity&quot;);
++      }
++      if (this.buffered.byteLength &lt; payloadLength + FRAME_PREFIX_BYTES) break;
++      const payload = this.buffered.subarray(
++        FRAME_PREFIX_BYTES,
++        payloadLength + FRAME_PREFIX_BYTES,
++      );
++      this.buffered = this.buffered.subarray(payloadLength + FRAME_PREFIX_BYTES);
++      if (binary) {
++        values.push(DaemonResultChunkCodec.decode(payload, this.limits));
++        continue;
++      }
++      try {
++        values.push(JSON.parse(payload.toString(&quot;utf8&quot;)));
++      } catch {
++        throw new Error(&quot;Daemon control frame contains malformed JSON&quot;);
++      }
++    }
++    return values;
++  }
++
++  assertComplete(): void {
++    if (this.buffered.byteLength !== 0) {
++      throw new Error(&quot;Daemon result transfer ended with a truncated frame&quot;);
++    }
++  }
++}
++
++class DaemonResultChunkCodec {
++  static encode(chunk: DaemonResultChunk, limits: DaemonWireLimits): Uint8Array {
++    DaemonResultChunkCodec.assertChunk(chunk, limits.maximumChunkRawBytes);
++    const header: DaemonResultChunkHeader = {
++      transferId: chunk.transferId,
++      requestId: chunk.requestId,
++      offset: chunk.offset,
++      sequence: chunk.sequence,
++      stream: chunk.stream,
++      payloadLength: chunk.bytes.byteLength,
++      sha256: createHash(&quot;sha256&quot;).update(chunk.bytes).digest(&quot;hex&quot;),
++    };
++    const headerBytes = Buffer.from(JSON.stringify(header));
++    if (
++      BINARY_HEADER_LENGTH_BYTES + headerBytes.byteLength &gt;
++      limits.maximumExecutionControlPayloadBytes
++    ) {
++      throw new Error(&quot;Daemon result frame exceeds capacity&quot;);
++    }
++    const payloadLength =
++      BINARY_HEADER_LENGTH_BYTES + headerBytes.byteLength + chunk.bytes.byteLength;
++    const encoded = Buffer.alloc(FRAME_PREFIX_BYTES + payloadLength);
++    encoded.writeUInt32BE((BINARY_FRAME_FLAG | payloadLength) &gt;&gt;&gt; 0, 0);
++    encoded.writeUInt32BE(headerBytes.byteLength, FRAME_PREFIX_BYTES);
++    headerBytes.copy(encoded, FRAME_PREFIX_BYTES + BINARY_HEADER_LENGTH_BYTES);
++    Buffer.from(chunk.bytes).copy(
++      encoded,
++      FRAME_PREFIX_BYTES + BINARY_HEADER_LENGTH_BYTES + headerBytes.byteLength,
++    );
++    return encoded;
++  }
++
++  static decode(payload: Buffer, limits: DaemonWireLimits): DaemonResultChunk {
++    if (payload.byteLength &lt; BINARY_HEADER_LENGTH_BYTES) {
++      throw new Error(&quot;Truncated daemon result chunk header&quot;);
++    }
++    const headerLength = payload.readUInt32BE(0);
++    if (headerLength === 0 || headerLength &gt; payload.byteLength - BINARY_HEADER_LENGTH_BYTES) {
++      throw new Error(&quot;Invalid daemon result chunk header length&quot;);
++    }
++    if (BINARY_HEADER_LENGTH_BYTES + headerLength &gt; limits.maximumExecutionControlPayloadBytes) {
++      throw new Error(&quot;Daemon result frame exceeds capacity&quot;);
++    }
++    let parsed: unknown;
++    try {
++      parsed = JSON.parse(
++        payload
++          .subarray(BINARY_HEADER_LENGTH_BYTES, BINARY_HEADER_LENGTH_BYTES + headerLength)
++          .toString(&quot;utf8&quot;),
++      );
++    } catch {
++      throw new Error(&quot;Malformed daemon result chunk header&quot;);
++    }
++    const bytes = payload.subarray(BINARY_HEADER_LENGTH_BYTES + headerLength);
++    if (
++      !DaemonResultChunkCodec.isHeader(parsed, limits.maximumChunkRawBytes) ||
++      parsed.payloadLength !== bytes.byteLength
++    ) {
++      throw new Error(&quot;Invalid daemon result chunk header&quot;);
++    }
++    if (createHash(&quot;sha256&quot;).update(bytes).digest(&quot;hex&quot;) !== parsed.sha256) {
++      throw new Error(&quot;Corrupt daemon result chunk payload&quot;);
++    }
++    const chunk: DaemonResultChunk = {
++      transferId: parsed.transferId,
++      requestId: parsed.requestId,
++      offset: parsed.offset,
++      sequence: parsed.sequence,
++      stream: parsed.stream,
++      bytes: Uint8Array.from(bytes),
++    };
++    DaemonResultChunkCodec.assertChunk(chunk, limits.maximumChunkRawBytes);
++    return chunk;
++  }
++
++  private static assertChunk(chunk: DaemonResultChunk, maximumChunkRawBytes: number): void {
++    if (
++      chunk.transferId.length === 0 ||
++      chunk.requestId.length === 0 ||
++      !Number.isSafeInteger(chunk.offset) ||
++      chunk.offset &lt; 0 ||
++      !Number.isSafeInteger(chunk.sequence) ||
++      chunk.sequence &lt; 0 ||
++      (chunk.stream !== &quot;stdout&quot; &amp;&amp; chunk.stream !== &quot;stderr&quot;) ||
++      !(chunk.bytes instanceof Uint8Array) ||
++      chunk.bytes.byteLength &gt; maximumChunkRawBytes
++    ) {
++      throw new Error(&quot;Invalid daemon result chunk&quot;);
++    }
++  }
++
++  private static isHeader(
++    value: unknown,
++    maximumChunkRawBytes: number,
++  ): value is DaemonResultChunkHeader {
++    if (typeof value !== &quot;object&quot; || value === null || Array.isArray(value)) return false;
++    const header = value as Record&lt;string, unknown&gt;;
++    const expectedKeys = [
++      &quot;offset&quot;,
++      &quot;payloadLength&quot;,
++      &quot;requestId&quot;,
++      &quot;sequence&quot;,
++      &quot;sha256&quot;,
++      &quot;stream&quot;,
++      &quot;transferId&quot;,
++    ];
++    return (
++      DaemonResultChunkCodec.hasExactKeys(header, expectedKeys) &amp;&amp;
++      typeof header.transferId === &quot;string&quot; &amp;&amp;
++      header.transferId.length &gt; 0 &amp;&amp;
++      typeof header.requestId === &quot;string&quot; &amp;&amp;
++      header.requestId.length &gt; 0 &amp;&amp;
++      Number.isSafeInteger(header.offset) &amp;&amp;
++      Number(header.offset) &gt;= 0 &amp;&amp;
++      Number.isSafeInteger(header.sequence) &amp;&amp;
++      Number(header.sequence) &gt;= 0 &amp;&amp;
++      (header.stream === &quot;stdout&quot; || header.stream === &quot;stderr&quot;) &amp;&amp;
++      Number.isSafeInteger(header.payloadLength) &amp;&amp;
++      Number(header.payloadLength) &gt;= 0 &amp;&amp;
++      Number(header.payloadLength) &lt;= maximumChunkRawBytes &amp;&amp;
++      typeof header.sha256 === &quot;string&quot; &amp;&amp;
++      /^[a-f\d]{64}$/.test(header.sha256)
++    );
++  }
++
++  private static hasExactKeys(value: Record&lt;string, unknown&gt;, keys: readonly string[]): boolean {
++    const actual = Object.keys(value).sort();
++    const expected = [...keys].sort();
++    return (
++      actual.length === expected.length &amp;&amp; actual.every((key, index) =&gt; key === expected[index])
++    );
++  }
++}
+</pre></details></main></body></html>

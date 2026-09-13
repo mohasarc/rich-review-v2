@@ -1,0 +1,375 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>reachability · pinned source</title><link rel="stylesheet" href="../style.css"><body class="source-page"><main><a href="../index.html#provenance">← Page provenance</a><h1>reachability</h1><p>meta-tests/src/cli-daemon-reachability.test.ts<br>d07002357d3e9596bfaae910a1ac63b77981620b · tip<br>SHA-256 e9c3c4ae79b5127d243803bade0c8a8f5314691358c2153aaaddffd52df31c64</p><pre class="source-code"><span class="line" id="L1"><a href="#L1">1</a> import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from &quot;node:fs&quot;;</span>
+<span class="line" id="L2"><a href="#L2">2</a> import { tmpdir } from &quot;node:os&quot;;</span>
+<span class="line" id="L3"><a href="#L3">3</a> import { dirname, join, relative, resolve, sep } from &quot;node:path&quot;;</span>
+<span class="line" id="L4"><a href="#L4">4</a> import { fileURLToPath } from &quot;node:url&quot;;</span>
+<span class="line" id="L5"><a href="#L5">5</a> import ts from &quot;typescript&quot;;</span>
+<span class="line" id="L6"><a href="#L6">6</a> import { describe, expect, it } from &quot;vitest&quot;;</span>
+<span class="line" id="L7"><a href="#L7">7</a> </span>
+<span class="line" id="L8"><a href="#L8">8</a> class TypeScriptImportSpecifierExtractor {</span>
+<span class="line" id="L9"><a href="#L9">9</a>   static extract(source: string): readonly string[] {</span>
+<span class="line" id="L10"><a href="#L10">10</a>     const sourceFile = ts.createSourceFile(</span>
+<span class="line" id="L11"><a href="#L11">11</a>       &quot;production.ts&quot;,</span>
+<span class="line" id="L12"><a href="#L12">12</a>       source,</span>
+<span class="line" id="L13"><a href="#L13">13</a>       ts.ScriptTarget.Latest,</span>
+<span class="line" id="L14"><a href="#L14">14</a>       false,</span>
+<span class="line" id="L15"><a href="#L15">15</a>       ts.ScriptKind.TS,</span>
+<span class="line" id="L16"><a href="#L16">16</a>     );</span>
+<span class="line" id="L17"><a href="#L17">17</a>     const specifiers: string[] = [];</span>
+<span class="line" id="L18"><a href="#L18">18</a>     const visit = (node: ts.Node): void =&gt; {</span>
+<span class="line" id="L19"><a href="#L19">19</a>       const specifier = TypeScriptImportSpecifierExtractor.specifierOf(node);</span>
+<span class="line" id="L20"><a href="#L20">20</a>       if (specifier !== undefined) specifiers.push(specifier);</span>
+<span class="line" id="L21"><a href="#L21">21</a>       ts.forEachChild(node, visit);</span>
+<span class="line" id="L22"><a href="#L22">22</a>     };</span>
+<span class="line" id="L23"><a href="#L23">23</a>     visit(sourceFile);</span>
+<span class="line" id="L24"><a href="#L24">24</a>     return specifiers;</span>
+<span class="line" id="L25"><a href="#L25">25</a>   }</span>
+<span class="line" id="L26"><a href="#L26">26</a> </span>
+<span class="line" id="L27"><a href="#L27">27</a>   private static specifierOf(node: ts.Node): string | undefined {</span>
+<span class="line" id="L28"><a href="#L28">28</a>     if (ts.isImportEqualsDeclaration(node) &amp;&amp; ts.isExternalModuleReference(node.moduleReference)) {</span>
+<span class="line" id="L29"><a href="#L29">29</a>       return TypeScriptImportSpecifierExtractor.literalText(node.moduleReference.expression);</span>
+<span class="line" id="L30"><a href="#L30">30</a>     }</span>
+<span class="line" id="L31"><a href="#L31">31</a>     if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {</span>
+<span class="line" id="L32"><a href="#L32">32</a>       return TypeScriptImportSpecifierExtractor.literalText(node.moduleSpecifier);</span>
+<span class="line" id="L33"><a href="#L33">33</a>     }</span>
+<span class="line" id="L34"><a href="#L34">34</a>     if (!ts.isCallExpression(node) || node.expression.kind !== ts.SyntaxKind.ImportKeyword) {</span>
+<span class="line" id="L35"><a href="#L35">35</a>       return undefined;</span>
+<span class="line" id="L36"><a href="#L36">36</a>     }</span>
+<span class="line" id="L37"><a href="#L37">37</a>     return TypeScriptImportSpecifierExtractor.literalText(node.arguments[0]);</span>
+<span class="line" id="L38"><a href="#L38">38</a>   }</span>
+<span class="line" id="L39"><a href="#L39">39</a> </span>
+<span class="line" id="L40"><a href="#L40">40</a>   private static literalText(node: ts.Node | undefined): string | undefined {</span>
+<span class="line" id="L41"><a href="#L41">41</a>     return node !== undefined &amp;&amp; ts.isStringLiteralLike(node) ? node.text : undefined;</span>
+<span class="line" id="L42"><a href="#L42">42</a>   }</span>
+<span class="line" id="L43"><a href="#L43">43</a> }</span>
+<span class="line" id="L44"><a href="#L44">44</a> </span>
+<span class="line" id="L45"><a href="#L45">45</a> class TypeScriptProductionGraph {</span>
+<span class="line" id="L46"><a href="#L46">46</a>   constructor(private readonly repositoryRoot: string) {}</span>
+<span class="line" id="L47"><a href="#L47">47</a> </span>
+<span class="line" id="L48"><a href="#L48">48</a>   reachableFrom(entry: string): readonly string[] {</span>
+<span class="line" id="L49"><a href="#L49">49</a>     const pending = [join(this.repositoryRoot, entry)];</span>
+<span class="line" id="L50"><a href="#L50">50</a>     const visited = new Set&lt;string&gt;();</span>
+<span class="line" id="L51"><a href="#L51">51</a>     while (pending.length &gt; 0) {</span>
+<span class="line" id="L52"><a href="#L52">52</a>       const file = pending.pop()!;</span>
+<span class="line" id="L53"><a href="#L53">53</a>       if (visited.has(file)) continue;</span>
+<span class="line" id="L54"><a href="#L54">54</a>       visited.add(file);</span>
+<span class="line" id="L55"><a href="#L55">55</a>       for (const dependency of this.localDependencies(file)) {</span>
+<span class="line" id="L56"><a href="#L56">56</a>         if (!visited.has(dependency)) pending.push(dependency);</span>
+<span class="line" id="L57"><a href="#L57">57</a>       }</span>
+<span class="line" id="L58"><a href="#L58">58</a>     }</span>
+<span class="line" id="L59"><a href="#L59">59</a>     return [...visited].map((file) =&gt; relative(this.repositoryRoot, file)).sort();</span>
+<span class="line" id="L60"><a href="#L60">60</a>   }</span>
+<span class="line" id="L61"><a href="#L61">61</a> </span>
+<span class="line" id="L62"><a href="#L62">62</a>   private localDependencies(file: string): readonly string[] {</span>
+<span class="line" id="L63"><a href="#L63">63</a>     const source = readFileSync(file, &quot;utf8&quot;);</span>
+<span class="line" id="L64"><a href="#L64">64</a>     return TypeScriptImportSpecifierExtractor.extract(source)</span>
+<span class="line" id="L65"><a href="#L65">65</a>       .filter((specifier) =&gt; specifier.startsWith(&quot;.&quot;))</span>
+<span class="line" id="L66"><a href="#L66">66</a>       .map((specifier) =&gt; this.resolveTypeScriptImport(file, specifier))</span>
+<span class="line" id="L67"><a href="#L67">67</a>       .filter((dependency): dependency is string =&gt; dependency !== undefined);</span>
+<span class="line" id="L68"><a href="#L68">68</a>   }</span>
+<span class="line" id="L69"><a href="#L69">69</a> </span>
+<span class="line" id="L70"><a href="#L70">70</a>   private resolveTypeScriptImport(importer: string, specifier: string): string | undefined {</span>
+<span class="line" id="L71"><a href="#L71">71</a>     const sourcePath = resolve(dirname(importer), specifier.replace(/\.js$/, &quot;.ts&quot;));</span>
+<span class="line" id="L72"><a href="#L72">72</a>     if (existsSync(sourcePath)) return sourcePath;</span>
+<span class="line" id="L73"><a href="#L73">73</a>     const indexPath = join(sourcePath, &quot;index.ts&quot;);</span>
+<span class="line" id="L74"><a href="#L74">74</a>     return existsSync(indexPath) ? indexPath : undefined;</span>
+<span class="line" id="L75"><a href="#L75">75</a>   }</span>
+<span class="line" id="L76"><a href="#L76">76</a> }</span>
+<span class="line" id="L77"><a href="#L77">77</a> </span>
+<span class="line" id="L78"><a href="#L78">78</a> class DaemonPackageImportBoundary {</span>
+<span class="line" id="L79"><a href="#L79">79</a>   static deepImports(source: string): readonly string[] {</span>
+<span class="line" id="L80"><a href="#L80">80</a>     return TypeScriptImportSpecifierExtractor.extract(source).filter((specifier) =&gt;</span>
+<span class="line" id="L81"><a href="#L81">81</a>       specifier.startsWith(&quot;@symnav/daemon/&quot;),</span>
+<span class="line" id="L82"><a href="#L82">82</a>     );</span>
+<span class="line" id="L83"><a href="#L83">83</a>   }</span>
+<span class="line" id="L84"><a href="#L84">84</a> }</span>
+<span class="line" id="L85"><a href="#L85">85</a> </span>
+<span class="line" id="L86"><a href="#L86">86</a> describe(&quot;CLI daemon production reachability&quot;, () =&gt; {</span>
+<span class="line" id="L87"><a href="#L87">87</a>   const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), &quot;../..&quot;);</span>
+<span class="line" id="L88"><a href="#L88">88</a> </span>
+<span class="line" id="L89"><a href="#L89">89</a>   it(&quot;reaches no app-local daemon mechanism from the executable entry&quot;, () =&gt; {</span>
+<span class="line" id="L90"><a href="#L90">90</a>     const reachable = new TypeScriptProductionGraph(repositoryRoot).reachableFrom(</span>
+<span class="line" id="L91"><a href="#L91">91</a>       &quot;apps/cli/src/cli.ts&quot;,</span>
+<span class="line" id="L92"><a href="#L92">92</a>     );</span>
+<span class="line" id="L93"><a href="#L93">93</a> </span>
+<span class="line" id="L94"><a href="#L94">94</a>     const daemonDirectoryPrefix = join(&quot;apps&quot;, &quot;cli&quot;, &quot;src&quot;, &quot;daemon&quot;) + sep;</span>
+<span class="line" id="L95"><a href="#L95">95</a>     expect(reachable.filter((file) =&gt; file.startsWith(daemonDirectoryPrefix))).toEqual([]);</span>
+<span class="line" id="L96"><a href="#L96">96</a>     expect(reachable).toContain(join(&quot;apps&quot;, &quot;cli&quot;, &quot;src&quot;, &quot;cli-invocation-coordinator.ts&quot;));</span>
+<span class="line" id="L97"><a href="#L97">97</a>     expect(reachable).toContain(</span>
+<span class="line" id="L98"><a href="#L98">98</a>       join(&quot;apps&quot;, &quot;cli&quot;, &quot;src&quot;, &quot;commands&quot;, &quot;daemon&quot;, &quot;register-daemon-command.ts&quot;),</span>
+<span class="line" id="L99"><a href="#L99">99</a>     );</span>
+<span class="line" id="L100"><a href="#L100">100</a>   });</span>
+<span class="line" id="L101"><a href="#L101">101</a> </span>
+<span class="line" id="L102"><a href="#L102">102</a>   it(&quot;uses only the daemon package root throughout the reachable CLI graph&quot;, () =&gt; {</span>
+<span class="line" id="L103"><a href="#L103">103</a>     const reachable = new TypeScriptProductionGraph(repositoryRoot).reachableFrom(</span>
+<span class="line" id="L104"><a href="#L104">104</a>       &quot;apps/cli/src/cli.ts&quot;,</span>
+<span class="line" id="L105"><a href="#L105">105</a>     );</span>
+<span class="line" id="L106"><a href="#L106">106</a>     const deepImports = reachable.flatMap((file) =&gt; {</span>
+<span class="line" id="L107"><a href="#L107">107</a>       const source = readFileSync(join(repositoryRoot, file), &quot;utf8&quot;);</span>
+<span class="line" id="L108"><a href="#L108">108</a>       return DaemonPackageImportBoundary.deepImports(source).map(</span>
+<span class="line" id="L109"><a href="#L109">109</a>         (specifier) =&gt; `${file}: ${specifier}`,</span>
+<span class="line" id="L110"><a href="#L110">110</a>       );</span>
+<span class="line" id="L111"><a href="#L111">111</a>     });</span>
+<span class="line" id="L112"><a href="#L112">112</a> </span>
+<span class="line" id="L113"><a href="#L113">113</a>     expect(deepImports).toEqual([]);</span>
+<span class="line" id="L114"><a href="#L114">114</a>   });</span>
+<span class="line" id="L115"><a href="#L115">115</a> </span>
+<span class="line" id="L116"><a href="#L116">116</a>   it(&quot;traverses relative import-equals declarations&quot;, () =&gt; {</span>
+<span class="line" id="L117"><a href="#L117">117</a>     const temporaryRoot = mkdtempSync(join(tmpdir(), &quot;symnav-import-equals-&quot;));</span>
+<span class="line" id="L118"><a href="#L118">118</a>     try {</span>
+<span class="line" id="L119"><a href="#L119">119</a>       writeFileSync(</span>
+<span class="line" id="L120"><a href="#L120">120</a>         join(temporaryRoot, &quot;entry.ts&quot;),</span>
+<span class="line" id="L121"><a href="#L121">121</a>         &#x27;import dependency = require(&quot;./dependency.js&quot;);&#x27;,</span>
+<span class="line" id="L122"><a href="#L122">122</a>       );</span>
+<span class="line" id="L123"><a href="#L123">123</a>       writeFileSync(join(temporaryRoot, &quot;dependency.ts&quot;), &quot;export const reachable = true;&quot;);</span>
+<span class="line" id="L124"><a href="#L124">124</a> </span>
+<span class="line" id="L125"><a href="#L125">125</a>       expect(new TypeScriptProductionGraph(temporaryRoot).reachableFrom(&quot;entry.ts&quot;)).toEqual([</span>
+<span class="line" id="L126"><a href="#L126">126</a>         &quot;dependency.ts&quot;,</span>
+<span class="line" id="L127"><a href="#L127">127</a>         &quot;entry.ts&quot;,</span>
+<span class="line" id="L128"><a href="#L128">128</a>       ]);</span>
+<span class="line" id="L129"><a href="#L129">129</a>     } finally {</span>
+<span class="line" id="L130"><a href="#L130">130</a>       rmSync(temporaryRoot, { force: true, recursive: true });</span>
+<span class="line" id="L131"><a href="#L131">131</a>     }</span>
+<span class="line" id="L132"><a href="#L132">132</a>   });</span>
+<span class="line" id="L133"><a href="#L133">133</a> </span>
+<span class="line" id="L134"><a href="#L134">134</a>   it.each([</span>
+<span class="line" id="L135"><a href="#L135">135</a>     [</span>
+<span class="line" id="L136"><a href="#L136">136</a>       &quot;static import from&quot;,</span>
+<span class="line" id="L137"><a href="#L137">137</a>       &#x27;import { DaemonClient } from &quot;@symnav/daemon/client&quot;;&#x27;,</span>
+<span class="line" id="L138"><a href="#L138">138</a>       &quot;@symnav/daemon/client&quot;,</span>
+<span class="line" id="L139"><a href="#L139">139</a>     ],</span>
+<span class="line" id="L140"><a href="#L140">140</a>     [&quot;side-effect import&quot;, &#x27;import &quot;@symnav/daemon/client&quot;;&#x27;, &quot;@symnav/daemon/client&quot;],</span>
+<span class="line" id="L141"><a href="#L141">141</a>     [</span>
+<span class="line" id="L142"><a href="#L142">142</a>       &quot;export from&quot;,</span>
+<span class="line" id="L143"><a href="#L143">143</a>       &#x27;export { DaemonClient } from &quot;@symnav/daemon/client&quot;;&#x27;,</span>
+<span class="line" id="L144"><a href="#L144">144</a>       &quot;@symnav/daemon/client&quot;,</span>
+<span class="line" id="L145"><a href="#L145">145</a>     ],</span>
+<span class="line" id="L146"><a href="#L146">146</a>     [&quot;dynamic literal import&quot;, &#x27;await import(&quot;@symnav/daemon/client&quot;);&#x27;, &quot;@symnav/daemon/client&quot;],</span>
+<span class="line" id="L147"><a href="#L147">147</a>     [</span>
+<span class="line" id="L148"><a href="#L148">148</a>       &quot;spaced dynamic literal import&quot;,</span>
+<span class="line" id="L149"><a href="#L149">149</a>       &#x27;await import /* load entry */ (&quot;@symnav/daemon/process-entry&quot;);&#x27;,</span>
+<span class="line" id="L150"><a href="#L150">150</a>       &quot;@symnav/daemon/process-entry&quot;,</span>
+<span class="line" id="L151"><a href="#L151">151</a>     ],</span>
+<span class="line" id="L152"><a href="#L152">152</a>     [</span>
+<span class="line" id="L153"><a href="#L153">153</a>       &quot;dynamic literal import with options&quot;,</span>
+<span class="line" id="L154"><a href="#L154">154</a>       &#x27;await import(&quot;@symnav/daemon/process-entry&quot;, { with: { type: &quot;json&quot; } });&#x27;,</span>
+<span class="line" id="L155"><a href="#L155">155</a>       &quot;@symnav/daemon/process-entry&quot;,</span>
+<span class="line" id="L156"><a href="#L156">156</a>     ],</span>
+<span class="line" id="L157"><a href="#L157">157</a>     [</span>
+<span class="line" id="L158"><a href="#L158">158</a>       &quot;import-equals declaration&quot;,</span>
+<span class="line" id="L159"><a href="#L159">159</a>       &#x27;import entry = require(&quot;@symnav/daemon/process-entry&quot;);&#x27;,</span>
+<span class="line" id="L160"><a href="#L160">160</a>       &quot;@symnav/daemon/process-entry&quot;,</span>
+<span class="line" id="L161"><a href="#L161">161</a>     ],</span>
+<span class="line" id="L162"><a href="#L162">162</a>     [</span>
+<span class="line" id="L163"><a href="#L163">163</a>       &quot;exported import-equals declaration&quot;,</span>
+<span class="line" id="L164"><a href="#L164">164</a>       &#x27;export import entry = require(&quot;@symnav/daemon/process-entry&quot;);&#x27;,</span>
+<span class="line" id="L165"><a href="#L165">165</a>       &quot;@symnav/daemon/process-entry&quot;,</span>
+<span class="line" id="L166"><a href="#L166">166</a>     ],</span>
+<span class="line" id="L167"><a href="#L167">167</a>   ] as const)(&quot;rejects a deep daemon %s&quot;, (_form, source, expectedSpecifier) =&gt; {</span>
+<span class="line" id="L168"><a href="#L168">168</a>     expect(DaemonPackageImportBoundary.deepImports(source)).toEqual([expectedSpecifier]);</span>
+<span class="line" id="L169"><a href="#L169">169</a>   });</span>
+<span class="line" id="L170"><a href="#L170">170</a> </span>
+<span class="line" id="L171"><a href="#L171">171</a>   it.each([</span>
+<span class="line" id="L172"><a href="#L172">172</a>     [&quot;static import from&quot;, &#x27;import { DaemonClient } from &quot;@symnav/daemon&quot;;&#x27;],</span>
+<span class="line" id="L173"><a href="#L173">173</a>     [&quot;side-effect import&quot;, &#x27;import &quot;@symnav/daemon&quot;;&#x27;],</span>
+<span class="line" id="L174"><a href="#L174">174</a>     [&quot;export from&quot;, &#x27;export { DaemonClient } from &quot;@symnav/daemon&quot;;&#x27;],</span>
+<span class="line" id="L175"><a href="#L175">175</a>     [&quot;dynamic literal import&quot;, &#x27;await import(&quot;@symnav/daemon&quot;);&#x27;],</span>
+<span class="line" id="L176"><a href="#L176">176</a>     [&quot;spaced dynamic literal import&quot;, &#x27;await import /* load root */ (&quot;@symnav/daemon&quot;);&#x27;],</span>
+<span class="line" id="L177"><a href="#L177">177</a>     [</span>
+<span class="line" id="L178"><a href="#L178">178</a>       &quot;dynamic literal import with options&quot;,</span>
+<span class="line" id="L179"><a href="#L179">179</a>       &#x27;await import(&quot;@symnav/daemon&quot;, { with: { type: &quot;json&quot; } });&#x27;,</span>
+<span class="line" id="L180"><a href="#L180">180</a>     ],</span>
+<span class="line" id="L181"><a href="#L181">181</a>   ] as const)(&quot;allows a daemon package-root %s&quot;, (_form, source) =&gt; {</span>
+<span class="line" id="L182"><a href="#L182">182</a>     expect(DaemonPackageImportBoundary.deepImports(source)).toEqual([]);</span>
+<span class="line" id="L183"><a href="#L183">183</a>   });</span>
+<span class="line" id="L184"><a href="#L184">184</a> });</span>
+</pre><details class="source-disclosure"><summary>Net main → tip change touching this path (copy-aware)</summary><p>This is the net delta, including moves/copies. A historical source snapshot above may precede the final change below.</p><pre class="pr-source">diff --git a/meta-tests/src/cli-daemon-reachability.test.ts b/meta-tests/src/cli-daemon-reachability.test.ts
+new file mode 100644
+index 000000000..2035f442f
+--- /dev/null
++++ b/meta-tests/src/cli-daemon-reachability.test.ts
+@@ -0,0 +1,184 @@
++import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from &quot;node:fs&quot;;
++import { tmpdir } from &quot;node:os&quot;;
++import { dirname, join, relative, resolve, sep } from &quot;node:path&quot;;
++import { fileURLToPath } from &quot;node:url&quot;;
++import ts from &quot;typescript&quot;;
++import { describe, expect, it } from &quot;vitest&quot;;
++
++class TypeScriptImportSpecifierExtractor {
++  static extract(source: string): readonly string[] {
++    const sourceFile = ts.createSourceFile(
++      &quot;production.ts&quot;,
++      source,
++      ts.ScriptTarget.Latest,
++      false,
++      ts.ScriptKind.TS,
++    );
++    const specifiers: string[] = [];
++    const visit = (node: ts.Node): void =&gt; {
++      const specifier = TypeScriptImportSpecifierExtractor.specifierOf(node);
++      if (specifier !== undefined) specifiers.push(specifier);
++      ts.forEachChild(node, visit);
++    };
++    visit(sourceFile);
++    return specifiers;
++  }
++
++  private static specifierOf(node: ts.Node): string | undefined {
++    if (ts.isImportEqualsDeclaration(node) &amp;&amp; ts.isExternalModuleReference(node.moduleReference)) {
++      return TypeScriptImportSpecifierExtractor.literalText(node.moduleReference.expression);
++    }
++    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
++      return TypeScriptImportSpecifierExtractor.literalText(node.moduleSpecifier);
++    }
++    if (!ts.isCallExpression(node) || node.expression.kind !== ts.SyntaxKind.ImportKeyword) {
++      return undefined;
++    }
++    return TypeScriptImportSpecifierExtractor.literalText(node.arguments[0]);
++  }
++
++  private static literalText(node: ts.Node | undefined): string | undefined {
++    return node !== undefined &amp;&amp; ts.isStringLiteralLike(node) ? node.text : undefined;
++  }
++}
++
++class TypeScriptProductionGraph {
++  constructor(private readonly repositoryRoot: string) {}
++
++  reachableFrom(entry: string): readonly string[] {
++    const pending = [join(this.repositoryRoot, entry)];
++    const visited = new Set&lt;string&gt;();
++    while (pending.length &gt; 0) {
++      const file = pending.pop()!;
++      if (visited.has(file)) continue;
++      visited.add(file);
++      for (const dependency of this.localDependencies(file)) {
++        if (!visited.has(dependency)) pending.push(dependency);
++      }
++    }
++    return [...visited].map((file) =&gt; relative(this.repositoryRoot, file)).sort();
++  }
++
++  private localDependencies(file: string): readonly string[] {
++    const source = readFileSync(file, &quot;utf8&quot;);
++    return TypeScriptImportSpecifierExtractor.extract(source)
++      .filter((specifier) =&gt; specifier.startsWith(&quot;.&quot;))
++      .map((specifier) =&gt; this.resolveTypeScriptImport(file, specifier))
++      .filter((dependency): dependency is string =&gt; dependency !== undefined);
++  }
++
++  private resolveTypeScriptImport(importer: string, specifier: string): string | undefined {
++    const sourcePath = resolve(dirname(importer), specifier.replace(/\.js$/, &quot;.ts&quot;));
++    if (existsSync(sourcePath)) return sourcePath;
++    const indexPath = join(sourcePath, &quot;index.ts&quot;);
++    return existsSync(indexPath) ? indexPath : undefined;
++  }
++}
++
++class DaemonPackageImportBoundary {
++  static deepImports(source: string): readonly string[] {
++    return TypeScriptImportSpecifierExtractor.extract(source).filter((specifier) =&gt;
++      specifier.startsWith(&quot;@symnav/daemon/&quot;),
++    );
++  }
++}
++
++describe(&quot;CLI daemon production reachability&quot;, () =&gt; {
++  const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), &quot;../..&quot;);
++
++  it(&quot;reaches no app-local daemon mechanism from the executable entry&quot;, () =&gt; {
++    const reachable = new TypeScriptProductionGraph(repositoryRoot).reachableFrom(
++      &quot;apps/cli/src/cli.ts&quot;,
++    );
++
++    const daemonDirectoryPrefix = join(&quot;apps&quot;, &quot;cli&quot;, &quot;src&quot;, &quot;daemon&quot;) + sep;
++    expect(reachable.filter((file) =&gt; file.startsWith(daemonDirectoryPrefix))).toEqual([]);
++    expect(reachable).toContain(join(&quot;apps&quot;, &quot;cli&quot;, &quot;src&quot;, &quot;cli-invocation-coordinator.ts&quot;));
++    expect(reachable).toContain(
++      join(&quot;apps&quot;, &quot;cli&quot;, &quot;src&quot;, &quot;commands&quot;, &quot;daemon&quot;, &quot;register-daemon-command.ts&quot;),
++    );
++  });
++
++  it(&quot;uses only the daemon package root throughout the reachable CLI graph&quot;, () =&gt; {
++    const reachable = new TypeScriptProductionGraph(repositoryRoot).reachableFrom(
++      &quot;apps/cli/src/cli.ts&quot;,
++    );
++    const deepImports = reachable.flatMap((file) =&gt; {
++      const source = readFileSync(join(repositoryRoot, file), &quot;utf8&quot;);
++      return DaemonPackageImportBoundary.deepImports(source).map(
++        (specifier) =&gt; `${file}: ${specifier}`,
++      );
++    });
++
++    expect(deepImports).toEqual([]);
++  });
++
++  it(&quot;traverses relative import-equals declarations&quot;, () =&gt; {
++    const temporaryRoot = mkdtempSync(join(tmpdir(), &quot;symnav-import-equals-&quot;));
++    try {
++      writeFileSync(
++        join(temporaryRoot, &quot;entry.ts&quot;),
++        &#x27;import dependency = require(&quot;./dependency.js&quot;);&#x27;,
++      );
++      writeFileSync(join(temporaryRoot, &quot;dependency.ts&quot;), &quot;export const reachable = true;&quot;);
++
++      expect(new TypeScriptProductionGraph(temporaryRoot).reachableFrom(&quot;entry.ts&quot;)).toEqual([
++        &quot;dependency.ts&quot;,
++        &quot;entry.ts&quot;,
++      ]);
++    } finally {
++      rmSync(temporaryRoot, { force: true, recursive: true });
++    }
++  });
++
++  it.each([
++    [
++      &quot;static import from&quot;,
++      &#x27;import { DaemonClient } from &quot;@symnav/daemon/client&quot;;&#x27;,
++      &quot;@symnav/daemon/client&quot;,
++    ],
++    [&quot;side-effect import&quot;, &#x27;import &quot;@symnav/daemon/client&quot;;&#x27;, &quot;@symnav/daemon/client&quot;],
++    [
++      &quot;export from&quot;,
++      &#x27;export { DaemonClient } from &quot;@symnav/daemon/client&quot;;&#x27;,
++      &quot;@symnav/daemon/client&quot;,
++    ],
++    [&quot;dynamic literal import&quot;, &#x27;await import(&quot;@symnav/daemon/client&quot;);&#x27;, &quot;@symnav/daemon/client&quot;],
++    [
++      &quot;spaced dynamic literal import&quot;,
++      &#x27;await import /* load entry */ (&quot;@symnav/daemon/process-entry&quot;);&#x27;,
++      &quot;@symnav/daemon/process-entry&quot;,
++    ],
++    [
++      &quot;dynamic literal import with options&quot;,
++      &#x27;await import(&quot;@symnav/daemon/process-entry&quot;, { with: { type: &quot;json&quot; } });&#x27;,
++      &quot;@symnav/daemon/process-entry&quot;,
++    ],
++    [
++      &quot;import-equals declaration&quot;,
++      &#x27;import entry = require(&quot;@symnav/daemon/process-entry&quot;);&#x27;,
++      &quot;@symnav/daemon/process-entry&quot;,
++    ],
++    [
++      &quot;exported import-equals declaration&quot;,
++      &#x27;export import entry = require(&quot;@symnav/daemon/process-entry&quot;);&#x27;,
++      &quot;@symnav/daemon/process-entry&quot;,
++    ],
++  ] as const)(&quot;rejects a deep daemon %s&quot;, (_form, source, expectedSpecifier) =&gt; {
++    expect(DaemonPackageImportBoundary.deepImports(source)).toEqual([expectedSpecifier]);
++  });
++
++  it.each([
++    [&quot;static import from&quot;, &#x27;import { DaemonClient } from &quot;@symnav/daemon&quot;;&#x27;],
++    [&quot;side-effect import&quot;, &#x27;import &quot;@symnav/daemon&quot;;&#x27;],
++    [&quot;export from&quot;, &#x27;export { DaemonClient } from &quot;@symnav/daemon&quot;;&#x27;],
++    [&quot;dynamic literal import&quot;, &#x27;await import(&quot;@symnav/daemon&quot;);&#x27;],
++    [&quot;spaced dynamic literal import&quot;, &#x27;await import /* load root */ (&quot;@symnav/daemon&quot;);&#x27;],
++    [
++      &quot;dynamic literal import with options&quot;,
++      &#x27;await import(&quot;@symnav/daemon&quot;, { with: { type: &quot;json&quot; } });&#x27;,
++    ],
++  ] as const)(&quot;allows a daemon package-root %s&quot;, (_form, source) =&gt; {
++    expect(DaemonPackageImportBoundary.deepImports(source)).toEqual([]);
++  });
++});
+</pre></details></main></body></html>

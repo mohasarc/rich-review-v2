@@ -1,0 +1,439 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>executor · pinned source</title><link rel="stylesheet" href="../style.css"><body class="source-page"><main><a href="../index.html#provenance">← Page provenance</a><h1>executor</h1><p>packages/daemon/src/daemon-executor.ts<br>d07002357d3e9596bfaae910a1ac63b77981620b · tip<br>SHA-256 e6604eff0376a94cf01b11fb57265e99e47fec7165ef84dcc96f0f6d01a17f89</p><pre class="source-code"><span class="line" id="L1"><a href="#L1">1</a> import { DaemonDiagnosticValues, type DaemonDiagnostics } from &quot;./daemon-diagnostics.js&quot;;</span>
+<span class="line" id="L2"><a href="#L2">2</a> </span>
+<span class="line" id="L3"><a href="#L3">3</a> export type DaemonExecutionMode = &quot;cold&quot; | &quot;warm&quot; | &quot;fallback&quot;;</span>
+<span class="line" id="L4"><a href="#L4">4</a> export type DaemonOutputStream = &quot;stdout&quot; | &quot;stderr&quot;;</span>
+<span class="line" id="L5"><a href="#L5">5</a> </span>
+<span class="line" id="L6"><a href="#L6">6</a> export interface DaemonExecutorRequest {</span>
+<span class="line" id="L7"><a href="#L7">7</a>   readonly argv: readonly string[];</span>
+<span class="line" id="L8"><a href="#L8">8</a>   readonly cwd: string;</span>
+<span class="line" id="L9"><a href="#L9">9</a>   readonly telemetryEnabled: boolean;</span>
+<span class="line" id="L10"><a href="#L10">10</a>   readonly executionMode: DaemonExecutionMode;</span>
+<span class="line" id="L11"><a href="#L11">11</a> }</span>
+<span class="line" id="L12"><a href="#L12">12</a> </span>
+<span class="line" id="L13"><a href="#L13">13</a> export interface DaemonOutputRecord {</span>
+<span class="line" id="L14"><a href="#L14">14</a>   readonly stream: DaemonOutputStream;</span>
+<span class="line" id="L15"><a href="#L15">15</a>   readonly bytes: Uint8Array;</span>
+<span class="line" id="L16"><a href="#L16">16</a> }</span>
+<span class="line" id="L17"><a href="#L17">17</a> </span>
+<span class="line" id="L18"><a href="#L18">18</a> export interface DaemonSequencedOutputRecord extends DaemonOutputRecord {</span>
+<span class="line" id="L19"><a href="#L19">19</a>   readonly sequence: number;</span>
+<span class="line" id="L20"><a href="#L20">20</a> }</span>
+<span class="line" id="L21"><a href="#L21">21</a> </span>
+<span class="line" id="L22"><a href="#L22">22</a> export interface DaemonOutputSink {</span>
+<span class="line" id="L23"><a href="#L23">23</a>   append(record: DaemonSequencedOutputRecord): Promise&lt;void&gt;;</span>
+<span class="line" id="L24"><a href="#L24">24</a> }</span>
+<span class="line" id="L25"><a href="#L25">25</a> </span>
+<span class="line" id="L26"><a href="#L26">26</a> export interface DaemonExecutorOutput {</span>
+<span class="line" id="L27"><a href="#L27">27</a>   records(): AsyncIterable&lt;DaemonOutputRecord&gt;;</span>
+<span class="line" id="L28"><a href="#L28">28</a>   dispose(): Promise&lt;void&gt;;</span>
+<span class="line" id="L29"><a href="#L29">29</a> }</span>
+<span class="line" id="L30"><a href="#L30">30</a> </span>
+<span class="line" id="L31"><a href="#L31">31</a> export interface DaemonExecutorInitializationResult {</span>
+<span class="line" id="L32"><a href="#L32">32</a>   readonly fileCount: number;</span>
+<span class="line" id="L33"><a href="#L33">33</a>   readonly diagnostics?: DaemonDiagnostics;</span>
+<span class="line" id="L34"><a href="#L34">34</a> }</span>
+<span class="line" id="L35"><a href="#L35">35</a> </span>
+<span class="line" id="L36"><a href="#L36">36</a> export interface DaemonExecutorExecutionResult {</span>
+<span class="line" id="L37"><a href="#L37">37</a>   readonly exitCode: number;</span>
+<span class="line" id="L38"><a href="#L38">38</a>   readonly output: DaemonExecutorOutput;</span>
+<span class="line" id="L39"><a href="#L39">39</a>   readonly diagnostics?: DaemonDiagnostics;</span>
+<span class="line" id="L40"><a href="#L40">40</a> }</span>
+<span class="line" id="L41"><a href="#L41">41</a> </span>
+<span class="line" id="L42"><a href="#L42">42</a> export interface DaemonExecutor {</span>
+<span class="line" id="L43"><a href="#L43">43</a>   initialize(workspaceRoot: string): Promise&lt;DaemonExecutorInitializationResult&gt;;</span>
+<span class="line" id="L44"><a href="#L44">44</a>   execute(request: DaemonExecutorRequest): Promise&lt;DaemonExecutorExecutionResult&gt;;</span>
+<span class="line" id="L45"><a href="#L45">45</a>   releaseTransientResources(): Promise&lt;void&gt;;</span>
+<span class="line" id="L46"><a href="#L46">46</a> }</span>
+<span class="line" id="L47"><a href="#L47">47</a> </span>
+<span class="line" id="L48"><a href="#L48">48</a> export interface DaemonExecutorFactoryOptions {</span>
+<span class="line" id="L49"><a href="#L49">49</a>   readonly stateDirectory: string;</span>
+<span class="line" id="L50"><a href="#L50">50</a>   readonly productVersion: string;</span>
+<span class="line" id="L51"><a href="#L51">51</a>   readonly sampleResources: () =&gt; void;</span>
+<span class="line" id="L52"><a href="#L52">52</a> }</span>
+<span class="line" id="L53"><a href="#L53">53</a> </span>
+<span class="line" id="L54"><a href="#L54">54</a> export type DaemonExecutorFactory = (</span>
+<span class="line" id="L55"><a href="#L55">55</a>   options: DaemonExecutorFactoryOptions,</span>
+<span class="line" id="L56"><a href="#L56">56</a> ) =&gt; DaemonExecutor | Promise&lt;DaemonExecutor&gt;;</span>
+<span class="line" id="L57"><a href="#L57">57</a> </span>
+<span class="line" id="L58"><a href="#L58">58</a> export interface DaemonExecutorModule {</span>
+<span class="line" id="L59"><a href="#L59">59</a>   readonly createDaemonExecutor: DaemonExecutorFactory;</span>
+<span class="line" id="L60"><a href="#L60">60</a> }</span>
+<span class="line" id="L61"><a href="#L61">61</a> </span>
+<span class="line" id="L62"><a href="#L62">62</a> export type DaemonExecutorModuleUrl = string;</span>
+<span class="line" id="L63"><a href="#L63">63</a> </span>
+<span class="line" id="L64"><a href="#L64">64</a> class ValidatedDaemonExecutorOutput implements DaemonExecutorOutput {</span>
+<span class="line" id="L65"><a href="#L65">65</a>   constructor(private readonly output: DaemonExecutorOutput) {}</span>
+<span class="line" id="L66"><a href="#L66">66</a> </span>
+<span class="line" id="L67"><a href="#L67">67</a>   async *records(): AsyncIterable&lt;DaemonOutputRecord&gt; {</span>
+<span class="line" id="L68"><a href="#L68">68</a>     for await (const value of this.output.records()) {</span>
+<span class="line" id="L69"><a href="#L69">69</a>       if (!DaemonExecutorValidation.isOutputRecord(value)) {</span>
+<span class="line" id="L70"><a href="#L70">70</a>         throw new Error(&quot;Invalid daemon executor output record&quot;);</span>
+<span class="line" id="L71"><a href="#L71">71</a>       }</span>
+<span class="line" id="L72"><a href="#L72">72</a>       yield value;</span>
+<span class="line" id="L73"><a href="#L73">73</a>     }</span>
+<span class="line" id="L74"><a href="#L74">74</a>   }</span>
+<span class="line" id="L75"><a href="#L75">75</a> </span>
+<span class="line" id="L76"><a href="#L76">76</a>   dispose(): Promise&lt;void&gt; {</span>
+<span class="line" id="L77"><a href="#L77">77</a>     return this.output.dispose();</span>
+<span class="line" id="L78"><a href="#L78">78</a>   }</span>
+<span class="line" id="L79"><a href="#L79">79</a> }</span>
+<span class="line" id="L80"><a href="#L80">80</a> </span>
+<span class="line" id="L81"><a href="#L81">81</a> class ValidatedDaemonExecutor implements DaemonExecutor {</span>
+<span class="line" id="L82"><a href="#L82">82</a>   constructor(private readonly executor: DaemonExecutor) {}</span>
+<span class="line" id="L83"><a href="#L83">83</a> </span>
+<span class="line" id="L84"><a href="#L84">84</a>   async initialize(workspaceRoot: string): Promise&lt;DaemonExecutorInitializationResult&gt; {</span>
+<span class="line" id="L85"><a href="#L85">85</a>     const result: unknown = await this.executor.initialize(workspaceRoot);</span>
+<span class="line" id="L86"><a href="#L86">86</a>     if (!DaemonExecutorValidation.isInitializationResult(result)) {</span>
+<span class="line" id="L87"><a href="#L87">87</a>       throw new Error(&quot;Invalid daemon executor initialization result&quot;);</span>
+<span class="line" id="L88"><a href="#L88">88</a>     }</span>
+<span class="line" id="L89"><a href="#L89">89</a>     return result;</span>
+<span class="line" id="L90"><a href="#L90">90</a>   }</span>
+<span class="line" id="L91"><a href="#L91">91</a> </span>
+<span class="line" id="L92"><a href="#L92">92</a>   async execute(request: DaemonExecutorRequest): Promise&lt;DaemonExecutorExecutionResult&gt; {</span>
+<span class="line" id="L93"><a href="#L93">93</a>     const result: unknown = await this.executor.execute(request);</span>
+<span class="line" id="L94"><a href="#L94">94</a>     if (!DaemonExecutorValidation.isExecutionResult(result)) {</span>
+<span class="line" id="L95"><a href="#L95">95</a>       throw new Error(&quot;Invalid daemon executor execution result&quot;);</span>
+<span class="line" id="L96"><a href="#L96">96</a>     }</span>
+<span class="line" id="L97"><a href="#L97">97</a>     return { ...result, output: new ValidatedDaemonExecutorOutput(result.output) };</span>
+<span class="line" id="L98"><a href="#L98">98</a>   }</span>
+<span class="line" id="L99"><a href="#L99">99</a> </span>
+<span class="line" id="L100"><a href="#L100">100</a>   releaseTransientResources(): Promise&lt;void&gt; {</span>
+<span class="line" id="L101"><a href="#L101">101</a>     return this.executor.releaseTransientResources();</span>
+<span class="line" id="L102"><a href="#L102">102</a>   }</span>
+<span class="line" id="L103"><a href="#L103">103</a> }</span>
+<span class="line" id="L104"><a href="#L104">104</a> </span>
+<span class="line" id="L105"><a href="#L105">105</a> class DaemonExecutorModuleImporter {</span>
+<span class="line" id="L106"><a href="#L106">106</a>   private static readonly hostImporterModuleUrl = [</span>
+<span class="line" id="L107"><a href="#L107">107</a>     &quot;data:text/javascript&quot;,</span>
+<span class="line" id="L108"><a href="#L108">108</a>     &quot;export default moduleUrl =&gt; import(moduleUrl)&quot;,</span>
+<span class="line" id="L109"><a href="#L109">109</a>   ].join(&quot;,&quot;);</span>
+<span class="line" id="L110"><a href="#L110">110</a> </span>
+<span class="line" id="L111"><a href="#L111">111</a>   public static async load(moduleUrl: DaemonExecutorModuleUrl): Promise&lt;unknown&gt; {</span>
+<span class="line" id="L112"><a href="#L112">112</a>     const importer = await import(this.hostImporterModuleUrl);</span>
+<span class="line" id="L113"><a href="#L113">113</a>     return importer.default(moduleUrl) as Promise&lt;unknown&gt;;</span>
+<span class="line" id="L114"><a href="#L114">114</a>   }</span>
+<span class="line" id="L115"><a href="#L115">115</a> }</span>
+<span class="line" id="L116"><a href="#L116">116</a> </span>
+<span class="line" id="L117"><a href="#L117">117</a> export class DaemonExecutorModuleLoader {</span>
+<span class="line" id="L118"><a href="#L118">118</a>   static async load(</span>
+<span class="line" id="L119"><a href="#L119">119</a>     moduleUrl: DaemonExecutorModuleUrl,</span>
+<span class="line" id="L120"><a href="#L120">120</a>     options: DaemonExecutorFactoryOptions,</span>
+<span class="line" id="L121"><a href="#L121">121</a>   ): Promise&lt;DaemonExecutor&gt; {</span>
+<span class="line" id="L122"><a href="#L122">122</a>     if (!DaemonExecutorValidation.isFileUrl(moduleUrl)) {</span>
+<span class="line" id="L123"><a href="#L123">123</a>       throw new Error(&quot;Daemon executor module must use a file URL&quot;);</span>
+<span class="line" id="L124"><a href="#L124">124</a>     }</span>
+<span class="line" id="L125"><a href="#L125">125</a>     const loaded = await DaemonExecutorModuleImporter.load(moduleUrl);</span>
+<span class="line" id="L126"><a href="#L126">126</a>     if (</span>
+<span class="line" id="L127"><a href="#L127">127</a>       !DaemonExecutorValidation.isRecord(loaded) ||</span>
+<span class="line" id="L128"><a href="#L128">128</a>       typeof loaded.createDaemonExecutor !== &quot;function&quot;</span>
+<span class="line" id="L129"><a href="#L129">129</a>     ) {</span>
+<span class="line" id="L130"><a href="#L130">130</a>       throw new Error(&quot;Daemon executor module has no createDaemonExecutor factory&quot;);</span>
+<span class="line" id="L131"><a href="#L131">131</a>     }</span>
+<span class="line" id="L132"><a href="#L132">132</a>     const executor: unknown = await loaded.createDaemonExecutor(options);</span>
+<span class="line" id="L133"><a href="#L133">133</a>     if (!DaemonExecutorValidation.isExecutor(executor)) {</span>
+<span class="line" id="L134"><a href="#L134">134</a>       throw new Error(&quot;Daemon executor factory returned an invalid executor&quot;);</span>
+<span class="line" id="L135"><a href="#L135">135</a>     }</span>
+<span class="line" id="L136"><a href="#L136">136</a>     return new ValidatedDaemonExecutor(executor);</span>
+<span class="line" id="L137"><a href="#L137">137</a>   }</span>
+<span class="line" id="L138"><a href="#L138">138</a> }</span>
+<span class="line" id="L139"><a href="#L139">139</a> </span>
+<span class="line" id="L140"><a href="#L140">140</a> class DaemonExecutorValidation {</span>
+<span class="line" id="L141"><a href="#L141">141</a>   static isInitializationResult(value: unknown): value is DaemonExecutorInitializationResult {</span>
+<span class="line" id="L142"><a href="#L142">142</a>     if (!this.isRecord(value)) return false;</span>
+<span class="line" id="L143"><a href="#L143">143</a>     return (</span>
+<span class="line" id="L144"><a href="#L144">144</a>       this.hasExactKeys(value, this.keysWithDiagnostics([&quot;fileCount&quot;], value)) &amp;&amp;</span>
+<span class="line" id="L145"><a href="#L145">145</a>       this.isCount(value.fileCount) &amp;&amp;</span>
+<span class="line" id="L146"><a href="#L146">146</a>       this.isDiagnostics(value.diagnostics)</span>
+<span class="line" id="L147"><a href="#L147">147</a>     );</span>
+<span class="line" id="L148"><a href="#L148">148</a>   }</span>
+<span class="line" id="L149"><a href="#L149">149</a> </span>
+<span class="line" id="L150"><a href="#L150">150</a>   static isExecutionResult(value: unknown): value is DaemonExecutorExecutionResult {</span>
+<span class="line" id="L151"><a href="#L151">151</a>     if (!this.isRecord(value)) return false;</span>
+<span class="line" id="L152"><a href="#L152">152</a>     return (</span>
+<span class="line" id="L153"><a href="#L153">153</a>       this.hasExactKeys(value, this.keysWithDiagnostics([&quot;exitCode&quot;, &quot;output&quot;], value)) &amp;&amp;</span>
+<span class="line" id="L154"><a href="#L154">154</a>       this.isCount(value.exitCode) &amp;&amp;</span>
+<span class="line" id="L155"><a href="#L155">155</a>       this.isOutput(value.output) &amp;&amp;</span>
+<span class="line" id="L156"><a href="#L156">156</a>       this.isDiagnostics(value.diagnostics)</span>
+<span class="line" id="L157"><a href="#L157">157</a>     );</span>
+<span class="line" id="L158"><a href="#L158">158</a>   }</span>
+<span class="line" id="L159"><a href="#L159">159</a> </span>
+<span class="line" id="L160"><a href="#L160">160</a>   static isOutputRecord(value: unknown): value is DaemonOutputRecord {</span>
+<span class="line" id="L161"><a href="#L161">161</a>     return (</span>
+<span class="line" id="L162"><a href="#L162">162</a>       this.isRecord(value) &amp;&amp;</span>
+<span class="line" id="L163"><a href="#L163">163</a>       this.hasExactKeys(value, [&quot;stream&quot;, &quot;bytes&quot;]) &amp;&amp;</span>
+<span class="line" id="L164"><a href="#L164">164</a>       (value.stream === &quot;stdout&quot; || value.stream === &quot;stderr&quot;) &amp;&amp;</span>
+<span class="line" id="L165"><a href="#L165">165</a>       value.bytes instanceof Uint8Array</span>
+<span class="line" id="L166"><a href="#L166">166</a>     );</span>
+<span class="line" id="L167"><a href="#L167">167</a>   }</span>
+<span class="line" id="L168"><a href="#L168">168</a> </span>
+<span class="line" id="L169"><a href="#L169">169</a>   static isFileUrl(value: unknown): value is DaemonExecutorModuleUrl {</span>
+<span class="line" id="L170"><a href="#L170">170</a>     return typeof value === &quot;string&quot; &amp;&amp; value.startsWith(&quot;file://&quot;);</span>
+<span class="line" id="L171"><a href="#L171">171</a>   }</span>
+<span class="line" id="L172"><a href="#L172">172</a> </span>
+<span class="line" id="L173"><a href="#L173">173</a>   static isExecutor(value: unknown): value is DaemonExecutor {</span>
+<span class="line" id="L174"><a href="#L174">174</a>     return (</span>
+<span class="line" id="L175"><a href="#L175">175</a>       this.isRecord(value) &amp;&amp;</span>
+<span class="line" id="L176"><a href="#L176">176</a>       typeof value.initialize === &quot;function&quot; &amp;&amp;</span>
+<span class="line" id="L177"><a href="#L177">177</a>       typeof value.execute === &quot;function&quot; &amp;&amp;</span>
+<span class="line" id="L178"><a href="#L178">178</a>       typeof value.releaseTransientResources === &quot;function&quot;</span>
+<span class="line" id="L179"><a href="#L179">179</a>     );</span>
+<span class="line" id="L180"><a href="#L180">180</a>   }</span>
+<span class="line" id="L181"><a href="#L181">181</a> </span>
+<span class="line" id="L182"><a href="#L182">182</a>   private static isOutput(value: unknown): value is DaemonExecutorOutput {</span>
+<span class="line" id="L183"><a href="#L183">183</a>     return (</span>
+<span class="line" id="L184"><a href="#L184">184</a>       this.isRecord(value) &amp;&amp;</span>
+<span class="line" id="L185"><a href="#L185">185</a>       typeof value.records === &quot;function&quot; &amp;&amp;</span>
+<span class="line" id="L186"><a href="#L186">186</a>       typeof value.dispose === &quot;function&quot;</span>
+<span class="line" id="L187"><a href="#L187">187</a>     );</span>
+<span class="line" id="L188"><a href="#L188">188</a>   }</span>
+<span class="line" id="L189"><a href="#L189">189</a> </span>
+<span class="line" id="L190"><a href="#L190">190</a>   private static isDiagnostics(value: unknown): value is DaemonDiagnostics | undefined {</span>
+<span class="line" id="L191"><a href="#L191">191</a>     return value === undefined || DaemonDiagnosticValues.isDiagnostics(value);</span>
+<span class="line" id="L192"><a href="#L192">192</a>   }</span>
+<span class="line" id="L193"><a href="#L193">193</a> </span>
+<span class="line" id="L194"><a href="#L194">194</a>   private static keysWithDiagnostics(</span>
+<span class="line" id="L195"><a href="#L195">195</a>     keys: readonly string[],</span>
+<span class="line" id="L196"><a href="#L196">196</a>     value: Record&lt;string, unknown&gt;,</span>
+<span class="line" id="L197"><a href="#L197">197</a>   ): readonly string[] {</span>
+<span class="line" id="L198"><a href="#L198">198</a>     return value.diagnostics === undefined ? keys : [...keys, &quot;diagnostics&quot;];</span>
+<span class="line" id="L199"><a href="#L199">199</a>   }</span>
+<span class="line" id="L200"><a href="#L200">200</a> </span>
+<span class="line" id="L201"><a href="#L201">201</a>   private static hasExactKeys(value: Record&lt;string, unknown&gt;, keys: readonly string[]): boolean {</span>
+<span class="line" id="L202"><a href="#L202">202</a>     const actual = Object.keys(value).sort();</span>
+<span class="line" id="L203"><a href="#L203">203</a>     const expected = [...keys].sort();</span>
+<span class="line" id="L204"><a href="#L204">204</a>     return (</span>
+<span class="line" id="L205"><a href="#L205">205</a>       actual.length === expected.length &amp;&amp; actual.every((key, index) =&gt; key === expected[index])</span>
+<span class="line" id="L206"><a href="#L206">206</a>     );</span>
+<span class="line" id="L207"><a href="#L207">207</a>   }</span>
+<span class="line" id="L208"><a href="#L208">208</a> </span>
+<span class="line" id="L209"><a href="#L209">209</a>   private static isCount(value: unknown): value is number {</span>
+<span class="line" id="L210"><a href="#L210">210</a>     return Number.isSafeInteger(value) &amp;&amp; Number(value) &gt;= 0;</span>
+<span class="line" id="L211"><a href="#L211">211</a>   }</span>
+<span class="line" id="L212"><a href="#L212">212</a> </span>
+<span class="line" id="L213"><a href="#L213">213</a>   static isRecord(value: unknown): value is Record&lt;string, unknown&gt; {</span>
+<span class="line" id="L214"><a href="#L214">214</a>     return typeof value === &quot;object&quot; &amp;&amp; value !== null &amp;&amp; !Array.isArray(value);</span>
+<span class="line" id="L215"><a href="#L215">215</a>   }</span>
+<span class="line" id="L216"><a href="#L216">216</a> }</span>
+</pre><details class="source-disclosure"><summary>Net main → tip change touching this path (copy-aware)</summary><p>This is the net delta, including moves/copies. A historical source snapshot above may precede the final change below.</p><pre class="pr-source">diff --git a/packages/daemon/src/daemon-executor.ts b/packages/daemon/src/daemon-executor.ts
+new file mode 100644
+index 000000000..6bf5cc22c
+--- /dev/null
++++ b/packages/daemon/src/daemon-executor.ts
+@@ -0,0 +1,216 @@
++import { DaemonDiagnosticValues, type DaemonDiagnostics } from &quot;./daemon-diagnostics.js&quot;;
++
++export type DaemonExecutionMode = &quot;cold&quot; | &quot;warm&quot; | &quot;fallback&quot;;
++export type DaemonOutputStream = &quot;stdout&quot; | &quot;stderr&quot;;
++
++export interface DaemonExecutorRequest {
++  readonly argv: readonly string[];
++  readonly cwd: string;
++  readonly telemetryEnabled: boolean;
++  readonly executionMode: DaemonExecutionMode;
++}
++
++export interface DaemonOutputRecord {
++  readonly stream: DaemonOutputStream;
++  readonly bytes: Uint8Array;
++}
++
++export interface DaemonSequencedOutputRecord extends DaemonOutputRecord {
++  readonly sequence: number;
++}
++
++export interface DaemonOutputSink {
++  append(record: DaemonSequencedOutputRecord): Promise&lt;void&gt;;
++}
++
++export interface DaemonExecutorOutput {
++  records(): AsyncIterable&lt;DaemonOutputRecord&gt;;
++  dispose(): Promise&lt;void&gt;;
++}
++
++export interface DaemonExecutorInitializationResult {
++  readonly fileCount: number;
++  readonly diagnostics?: DaemonDiagnostics;
++}
++
++export interface DaemonExecutorExecutionResult {
++  readonly exitCode: number;
++  readonly output: DaemonExecutorOutput;
++  readonly diagnostics?: DaemonDiagnostics;
++}
++
++export interface DaemonExecutor {
++  initialize(workspaceRoot: string): Promise&lt;DaemonExecutorInitializationResult&gt;;
++  execute(request: DaemonExecutorRequest): Promise&lt;DaemonExecutorExecutionResult&gt;;
++  releaseTransientResources(): Promise&lt;void&gt;;
++}
++
++export interface DaemonExecutorFactoryOptions {
++  readonly stateDirectory: string;
++  readonly productVersion: string;
++  readonly sampleResources: () =&gt; void;
++}
++
++export type DaemonExecutorFactory = (
++  options: DaemonExecutorFactoryOptions,
++) =&gt; DaemonExecutor | Promise&lt;DaemonExecutor&gt;;
++
++export interface DaemonExecutorModule {
++  readonly createDaemonExecutor: DaemonExecutorFactory;
++}
++
++export type DaemonExecutorModuleUrl = string;
++
++class ValidatedDaemonExecutorOutput implements DaemonExecutorOutput {
++  constructor(private readonly output: DaemonExecutorOutput) {}
++
++  async *records(): AsyncIterable&lt;DaemonOutputRecord&gt; {
++    for await (const value of this.output.records()) {
++      if (!DaemonExecutorValidation.isOutputRecord(value)) {
++        throw new Error(&quot;Invalid daemon executor output record&quot;);
++      }
++      yield value;
++    }
++  }
++
++  dispose(): Promise&lt;void&gt; {
++    return this.output.dispose();
++  }
++}
++
++class ValidatedDaemonExecutor implements DaemonExecutor {
++  constructor(private readonly executor: DaemonExecutor) {}
++
++  async initialize(workspaceRoot: string): Promise&lt;DaemonExecutorInitializationResult&gt; {
++    const result: unknown = await this.executor.initialize(workspaceRoot);
++    if (!DaemonExecutorValidation.isInitializationResult(result)) {
++      throw new Error(&quot;Invalid daemon executor initialization result&quot;);
++    }
++    return result;
++  }
++
++  async execute(request: DaemonExecutorRequest): Promise&lt;DaemonExecutorExecutionResult&gt; {
++    const result: unknown = await this.executor.execute(request);
++    if (!DaemonExecutorValidation.isExecutionResult(result)) {
++      throw new Error(&quot;Invalid daemon executor execution result&quot;);
++    }
++    return { ...result, output: new ValidatedDaemonExecutorOutput(result.output) };
++  }
++
++  releaseTransientResources(): Promise&lt;void&gt; {
++    return this.executor.releaseTransientResources();
++  }
++}
++
++class DaemonExecutorModuleImporter {
++  private static readonly hostImporterModuleUrl = [
++    &quot;data:text/javascript&quot;,
++    &quot;export default moduleUrl =&gt; import(moduleUrl)&quot;,
++  ].join(&quot;,&quot;);
++
++  public static async load(moduleUrl: DaemonExecutorModuleUrl): Promise&lt;unknown&gt; {
++    const importer = await import(this.hostImporterModuleUrl);
++    return importer.default(moduleUrl) as Promise&lt;unknown&gt;;
++  }
++}
++
++export class DaemonExecutorModuleLoader {
++  static async load(
++    moduleUrl: DaemonExecutorModuleUrl,
++    options: DaemonExecutorFactoryOptions,
++  ): Promise&lt;DaemonExecutor&gt; {
++    if (!DaemonExecutorValidation.isFileUrl(moduleUrl)) {
++      throw new Error(&quot;Daemon executor module must use a file URL&quot;);
++    }
++    const loaded = await DaemonExecutorModuleImporter.load(moduleUrl);
++    if (
++      !DaemonExecutorValidation.isRecord(loaded) ||
++      typeof loaded.createDaemonExecutor !== &quot;function&quot;
++    ) {
++      throw new Error(&quot;Daemon executor module has no createDaemonExecutor factory&quot;);
++    }
++    const executor: unknown = await loaded.createDaemonExecutor(options);
++    if (!DaemonExecutorValidation.isExecutor(executor)) {
++      throw new Error(&quot;Daemon executor factory returned an invalid executor&quot;);
++    }
++    return new ValidatedDaemonExecutor(executor);
++  }
++}
++
++class DaemonExecutorValidation {
++  static isInitializationResult(value: unknown): value is DaemonExecutorInitializationResult {
++    if (!this.isRecord(value)) return false;
++    return (
++      this.hasExactKeys(value, this.keysWithDiagnostics([&quot;fileCount&quot;], value)) &amp;&amp;
++      this.isCount(value.fileCount) &amp;&amp;
++      this.isDiagnostics(value.diagnostics)
++    );
++  }
++
++  static isExecutionResult(value: unknown): value is DaemonExecutorExecutionResult {
++    if (!this.isRecord(value)) return false;
++    return (
++      this.hasExactKeys(value, this.keysWithDiagnostics([&quot;exitCode&quot;, &quot;output&quot;], value)) &amp;&amp;
++      this.isCount(value.exitCode) &amp;&amp;
++      this.isOutput(value.output) &amp;&amp;
++      this.isDiagnostics(value.diagnostics)
++    );
++  }
++
++  static isOutputRecord(value: unknown): value is DaemonOutputRecord {
++    return (
++      this.isRecord(value) &amp;&amp;
++      this.hasExactKeys(value, [&quot;stream&quot;, &quot;bytes&quot;]) &amp;&amp;
++      (value.stream === &quot;stdout&quot; || value.stream === &quot;stderr&quot;) &amp;&amp;
++      value.bytes instanceof Uint8Array
++    );
++  }
++
++  static isFileUrl(value: unknown): value is DaemonExecutorModuleUrl {
++    return typeof value === &quot;string&quot; &amp;&amp; value.startsWith(&quot;file://&quot;);
++  }
++
++  static isExecutor(value: unknown): value is DaemonExecutor {
++    return (
++      this.isRecord(value) &amp;&amp;
++      typeof value.initialize === &quot;function&quot; &amp;&amp;
++      typeof value.execute === &quot;function&quot; &amp;&amp;
++      typeof value.releaseTransientResources === &quot;function&quot;
++    );
++  }
++
++  private static isOutput(value: unknown): value is DaemonExecutorOutput {
++    return (
++      this.isRecord(value) &amp;&amp;
++      typeof value.records === &quot;function&quot; &amp;&amp;
++      typeof value.dispose === &quot;function&quot;
++    );
++  }
++
++  private static isDiagnostics(value: unknown): value is DaemonDiagnostics | undefined {
++    return value === undefined || DaemonDiagnosticValues.isDiagnostics(value);
++  }
++
++  private static keysWithDiagnostics(
++    keys: readonly string[],
++    value: Record&lt;string, unknown&gt;,
++  ): readonly string[] {
++    return value.diagnostics === undefined ? keys : [...keys, &quot;diagnostics&quot;];
++  }
++
++  private static hasExactKeys(value: Record&lt;string, unknown&gt;, keys: readonly string[]): boolean {
++    const actual = Object.keys(value).sort();
++    const expected = [...keys].sort();
++    return (
++      actual.length === expected.length &amp;&amp; actual.every((key, index) =&gt; key === expected[index])
++    );
++  }
++
++  private static isCount(value: unknown): value is number {
++    return Number.isSafeInteger(value) &amp;&amp; Number(value) &gt;= 0;
++  }
++
++  static isRecord(value: unknown): value is Record&lt;string, unknown&gt; {
++    return typeof value === &quot;object&quot; &amp;&amp; value !== null &amp;&amp; !Array.isArray(value);
++  }
++}
+</pre></details></main></body></html>
