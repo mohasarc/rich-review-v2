@@ -1,0 +1,73 @@
+Bundle: inputs/pr-148/diff.patch
+Original patch lines: 3282–3351
+
+3282: diff --git a/packages/daemon/src/client/daemon-client.ts b/packages/daemon/src/client/daemon-client.ts
+3283: new file mode 100644
+3284: index 000000000..b0dda5fdd
+3285: --- /dev/null
+3286: +++ b/packages/daemon/src/client/daemon-client.ts
+3287: @@ -0,0 +1,64 @@
+3288: +import type {
+3289: +  DaemonStartResult,
+3290: +  DaemonStopResult,
+3291: +  RunningDaemonStatus,
+3292: +} from "../daemon-lifecycle-report.js";
+3293: +import type {
+3294: +  DaemonClientExecuteRequest,
+3295: +  DaemonClientExecuteResult,
+3296: +  DaemonClientOptions,
+3297: +  DaemonControlRequest,
+3298: +} from "./daemon-client-contracts.js";
+3299: +
+3300: +interface DaemonClientRuntimePort {
+3301: +  execute(request: DaemonClientExecuteRequest): Promise<DaemonClientExecuteResult>;
+3302: +  control(
+3303: +    request: DaemonControlRequest,
+3304: +  ): Promise<DaemonStartResult | readonly RunningDaemonStatus[] | DaemonStopResult>;
+3305: +}
+3306: +
+3307: +class DaemonClientRuntimeLoader {
+3308: +  static async load(options: DaemonClientOptions): Promise<DaemonClientRuntimePort> {
+3309: +    const runtimeModuleUrl: string = "./daemon-client-runtime.js";
+3310: +    const loaded: unknown = await import(runtimeModuleUrl);
+3311: +    if (
+3312: +      typeof loaded !== "object" ||
+3313: +      loaded === null ||
+3314: +      !("DaemonClientRuntime" in loaded) ||
+3315: +      typeof loaded.DaemonClientRuntime !== "function"
+3316: +    ) {
+3317: +      throw new Error("Daemon client runtime is unavailable");
+3318: +    }
+3319: +    const Runtime = loaded.DaemonClientRuntime as new (
+3320: +      options: DaemonClientOptions,
+3321: +    ) => DaemonClientRuntimePort;
+3322: +    return new Runtime(options);
+3323: +  }
+3324: +}
+3325: +
+3326: +export class DaemonClient {
+3327: +  private readonly runtime: Promise<DaemonClientRuntimePort>;
+3328: +
+3329: +  constructor(options: DaemonClientOptions) {
+3330: +    this.runtime = DaemonClientRuntimeLoader.load(options);
+3331: +  }
+3332: +
+3333: +  async execute(request: DaemonClientExecuteRequest): Promise<DaemonClientExecuteResult> {
+3334: +    return (await this.runtime).execute(request);
+3335: +  }
+3336: +
+3337: +  control(
+3338: +    request: Extract<DaemonControlRequest, { readonly action: "start" }>,
+3339: +  ): Promise<DaemonStartResult>;
+3340: +  control(
+3341: +    request: Extract<DaemonControlRequest, { readonly action: "status" }>,
+3342: +  ): Promise<readonly RunningDaemonStatus[]>;
+3343: +  control(
+3344: +    request: Extract<DaemonControlRequest, { readonly action: "stop" }>,
+3345: +  ): Promise<DaemonStopResult>;
+3346: +  async control(
+3347: +    request: DaemonControlRequest,
+3348: +  ): Promise<DaemonStartResult | readonly RunningDaemonStatus[] | DaemonStopResult> {
+3349: +    return (await this.runtime).control(request);
+3350: +  }
+3351: +}

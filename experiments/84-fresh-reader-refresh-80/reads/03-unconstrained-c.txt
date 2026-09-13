@@ -1,0 +1,826 @@
+Skip to the guide
+RICH REVIEW 03 / C
+Map
+24 choices
+Trace a call
+153 files
+SYMNAV · PR 148 · PART 25 OF THE DAEMON REFACTOR
+The package has a client.
+The CLI still uses its copies.
+
+DaemonClient takes over package routing, startup, control and output composition. The shipped CLI remains on a frozen compatibility graph. This change stages a boundary; the consumer switch comes later.
+
+BASE ba53c8e
+HEAD 20838f8
+153 paths · +14,624 / −815
+THE OPENING PICTURE
+One package boundary. Two graphs.
+Source owners
+Process boundaries
+
+At this PR’s head: solid amber follows the shipped CLI; dashed teal marks the staged package path.
+
+Base / part 24
+Head / PR 148
+apps/cli
+SHIPPED PATH
+packages/daemon
+STAGED MECHANISM OWNER
+CLI entry → dispatcher
+argv selection + invocation composition
+38 compatibility source files
+Clocks / ownership revised, then frozen
+Same CLI consumers; no DaemonClient call
+DaemonClient
+execute() + control()
+Executable entries
+process-entry / worker-entry
+Private mechanism owners
+registry · transport · process · worker · execution
+delivery · lifecycle · resources · diagnostics
+Root contracts + policy
+imports
+The old source is retained. The new package boundary is usable but not adopted by cli.ts.
+ CLI compatibility implementation
+ Packaged implementation
+Click a box for its decision and evidence.
+
+Simplified picture: related modules are grouped and incidental imports are omitted. Source ownership is separate from process topology; this is not a runtime trace.
+
+The complete overview is the picture plus all 24 choices below.
+Each choice opens the same fact at greater detail, then exact source. Stated means a reason was found; unexplained means the sources did not explain that choice. Neither is a verdict.
+WHAT THIS CHANGE ASKS THE HUMAN TO UNDERSTAND
+The decisions, including the small ones.
+Read them in order →
+01
+Two implementations coexist
+
+The package owns the new composition. The CLI continues through its existing graph.
+
+CHOICE 01
+STATED
+↗
+Stage the package; leave the CLI connected to its copies
+
+The new client and mechanisms exist alongside 38 frozen CLI production files. This PR does not switch the shipped CLI to DaemonClient.
+
+PR body: ownership relocation and host invocation coordination need separate review boundaries.
+
+CHOICE 02
+STATED
+↗
+Freeze paths and source bytes, normalizing CRLF
+
+A fixed SHA-256 digest and a count of 38 protect the compatibility set. CRLF becomes LF; other source changes still change the digest.
+
+Commit “Specify portable daemon compatibility hashing” records portability; the test explicitly exercises CRLF and a changed source.
+
+CHOICE 03
+STATED
+↗
+Give private mechanisms ten directory owners
+
+Ten owner directories place mechanisms in a daemon package with no other internal production dependency. The completion spool gets a package-local record codec instead of importing the CLI output utility.
+
+Architecture spec: give daemon policy and mechanism one home; daemon must not depend on navigation or CLI implementation.
+
+CHOICE 04
+STATED
+↗
+Make process and worker entries executable package subpaths
+
+The manifest exposes process-entry and worker-entry as side-effect-only entries. Launcher and worker resolve those files relative to package modules.
+
+Architecture spec names real process and worker entries as part of daemon package extraction; commits explicitly require exhaustive entry exports.
+
+02
+A host hands over execution
+
+Syntax and product knowledge stay with the host; daemon decisions sit behind a client.
+
+CHOICE 05
+STATED
+↗
+Pass product knowledge in; return bytes and reports
+
+The host supplies state path, version, enabled flag, executor factory, executor module URL, readiness probe and optional policy. Each execute call supplies workspace, command, argv, cwd and telemetry flag.
+
+Architecture spec: the daemon moves bytes for an injected executor and must not know navigation internals or parse CLI syntax.
+
+CHOICE 06
+STATED
+↗
+Keep Node out of public declarations
+
+The public façade describes a small runtime port and dynamically imports the Node-backed implementation. The façade’s declarations do not pull Node ambient types into hosts.
+
+PR body: host declarations must not acquire Node ambient dependencies.
+
+CHOICE 07
+UNEXPLAINED
+↗
+Begin loading at construction; retain one runtime promise
+
+Constructing DaemonClient starts the dynamic load immediately. Execute and control await the same promise; a rejected load is not retried by these methods.
+
+The declaration-isolation reason is stated. No separate reason was found for starting in the constructor or retaining a rejected promise.
+
+CHOICE 08
+STATED
+↗
+Reuse lifecycle composition and keep action-specific results
+
+Start/status/stop have precise overloads. Status gets a separate response timeout; disabled blocks start and sends execute locally, while status and stop still run. Control errors propagate.
+
+The architecture specifies lifecycle reports; the policy distinguishes status response timing. The client’s lifecycle tests state the disabled and failure behavior.
+
+CHOICE 09
+STATED
+↗
+Let the host name the readiness execution
+
+The client passes a host-supplied command and argv to startup. Readiness still executes with cold mode and telemetry off; the internal coordinator retains a --version default.
+
+The architecture keeps CLI syntax with the host; commits explicitly specify a host-owned readiness probe. Control-plane-only readiness remains a deferred behavior.
+
+03
+A decision ends the search
+
+Short-circuit routing and retry authority determine which side effects happen.
+
+CHOICE 10
+STATED
+↗
+Stop after the first routing decision
+
+Record present → not starting → version compatible → responsive. Read once and observe at most once. A starting record wins even when its version is old.
+
+PR body: the first routing decision must prevent every later side effect. Architecture spec makes the order explicit and independently testable.
+
+CHOICE 11
+STATED
+↗
+Run cold work now; trigger only selected warm-ups
+
+Disabled, starting and recovery execute cold. Absence executes cold plus an independent trigger; dead/incompatible execute fallback plus a trigger. Every local attempt gets a fresh executor with no resource sampler.
+
+The architecture preserves routing and local execution behavior. Existing CLI routing and new client characterization both express independent warm-up.
+
+CHOICE 12
+STATED
+↗
+Let retry-safety authorize local re-execution
+
+Only a DaemonTransportError marked retrySafe permits local fallback. Submitted uncertainty, accepted failures and malformed warm completions return controlled warm failures; they do not replay.
+
+PR body: replay safety belongs to the daemon client. The architecture keeps one owner for the retry-safety decision.
+
+CHOICE 13
+STATED
+↗
+Own result capture, controlled output and cleanup inside the package
+
+The client creates capture from output policy, spilling to the OS temporary directory, and constructs failure output itself. A private capture factory port stays internal; callers consume and dispose the returned output.
+
+PR body: warm transfer cleanup and replay safety belong to the client, rather than host-provided storage or output factories.
+
+CHOICE 14
+STATED
+↗
+Dispose a malformed warm result before replacing it
+
+A non-integer exit code or missing output becomes an incomplete-request result. The package client attempts disposal of available malformed output; the CLI dispatcher’s older check does not.
+
+PR body assigns warm transfer cleanup to the client; the new test explicitly requires disposal before returning the controlled result.
+
+04
+Ownership becomes explicit
+
+Clock, startup credentials, coordinates and request authentication keep their own boundaries.
+
+CHOICE 15
+STATED
+↗
+Use the daemon’s wall and monotonic clock everywhere it was threaded
+
+Wall time drives lifetime, registry leases, controller waits, ledger timestamps and replacement windows. Monotonic time drives queue/worker durations; the queue’s standalone default changes to monotonic.
+
+Architecture spec assigns wall and monotonic clock ownership to the daemon; PR retains existing lifetime behavior.
+
+CHOICE 16
+STATED
+↗
+Keep construction/acceptance-based idle timing; defer two changes
+
+The deadline starts at construction and resets on navigation acceptance. Completion only checks it; readiness does not reset it. Readiness-armed and completion-based timing are added to the follow-up spec.
+
+PR body: changing lifetime behavior is explicitly deferred rather than folded into extraction.
+
+CHOICE 17
+STATED
+↗
+Make registry ownership matching canonical, with narrow and exact expectations
+
+Callers delegate startup equality and cleanup to the registry. Every match checks identity and instance; supplied token, kind, PID, timestamps and revision narrow the match. Full observed owners are compared exactly.
+
+Architecture spec requires one owner for lock-ownership checks; commits separately specify canonical authority and narrow coordinates.
+
+CHOICE 18
+UNEXPLAINED
+↗
+Let the process coordinator adopt and validate launch coordinates
+
+WorkspaceDaemon becomes DaemonProcessCoordinator. It receives the complete coordinate object and required clock, validates identity/endpoint, and uses that endpoint for listening. Callback wiring keeps execution, delivery, worker and resource owners separate.
+
+The spec names the process-coordinator split. No explicit reason was found for moving coordinate validation from entry to constructor or the detailed construction API choices.
+
+CHOICE 19
+UNEXPLAINED
+↗
+Characterize the existing authentication order and its exceptions
+
+Identify/terminate/kill check instance+token. Other messages first check protocol+instance; execute and result operations add token checks. Ping and stop keep only protocol+instance authentication.
+
+New tests explicitly preserve these different envelopes. No reason for the asymmetry or the order was found in the supplied rationale sources.
+
+05
+The evidence changes owners too
+
+Moving a test and preserving everything it observed are separate choices.
+
+CHOICE 20
+STATED
+↗
+Move 37 mechanism test files and give them generic fixtures
+
+Mechanism tests move from CLI to package. Generic executors, canonical-path/output helpers and duplicated policy helpers remove CLI implementation imports. tsx is added as a daemon development dependency.
+
+Architecture spec: tests importing mechanisms move into the package or use its public surface; commit “Keep executor fixture package-independent” states the fixture boundary.
+
+CHOICE 21
+UNEXPLAINED
+↗
+Narrow worker tests’ observation of the real CLI executor
+
+The integrated CLI version-mismatch case disappears; a direct CLI factory rejection test is added. The readiness case uses a generic executor and removes startup/result timing expectations.
+
+Package-independent fixtures have a stated reason. No reason was found for losing these specific timing assertions or changing mismatch coverage from worker classification to factory rejection.
+
+CHOICE 22
+UNEXPLAINED
+↗
+Delete CLI entry tests; add built package entry evidence
+
+Two app entry tests are removed. New package boundary, export and built-process/worker tests exercise package ownership, startup configuration and failure cleanup. Windows and other-platform cleanup expectations differ.
+
+Real package entries are explicitly requested. No equivalence argument was found for removing the app-entry assertions; the Windows branch is specified by a commit, without explanatory body.
+
+CHOICE 23
+UNEXPLAINED
+↗
+Retire policy-testing and redraw source guard coverage
+
+The policy-testing export and its lint restriction/tests disappear; helpers move into both test trees. Exact root/entry export checks remain. A new raw-clock scan examines only lifecycle siblings, not all daemon directories.
+
+The old export was labeled temporary, but no explicit removal rationale or reason for the local scope of the new clock scan was found.
+
+CHOICE 24
+UNEXPLAINED
+↗
+Run daemon package test files serially
+
+A new Vitest configuration sets fileParallelism to false. This changes how this package’s test files are scheduled.
+
+Not named in the PR’s stated intent. No scheduling reason was found in the PR body, commit messages or inspected specifications.
+
+DEEPER INTO ROUTING & DELIVERY · CHOICES 10–14
+Watch a decision stop later work.
+Back to routing choice ↑
+
+Recorded calls to the actual built DaemonClient, runtime and guards, with synthetic registry, observer, transport, warm-up and executor ports. No real socket or daemon is involved. This browser replays the saved events.
+
+Choose the input
+Daemon disabled
+No registry record
+Registry read throws
+Starting record
+Starting record + old version
+Ready record + old version
+Ready and responsive
+Busy and responsive
+Ready record; starting pong
+Ready record; old-version pong
+Observer reports starting
+Observer reports unresponsive
+Observation throws
+Recorded process exited
+Exited; record cleanup throws
+Observer reports incompatible
+Observer reports corrupt
+Absent; warm-up never resolves
+Warm transport cannot submit
+Authenticated not-ready rejection
+Submitted; no confirmation
+Accepted; connection closes
+Authenticated incompatible rejection
+Warm transport throws unknown error
+Completion promise rejects
+Completion: controlled-resource
+Completion: response-capacity
+Completion: worker-exit
+Completion: stopping
+Completion: internal
+Completion: fractional exit code
+Completion: missing output
+state: "starting"
+version: "0.0.9"
+Start over
+Next event →
+Show result
+6 / 6 recorded events · returned
+cold
+exit 0
+[Code receipt deferred]
+cold / starting
+Host process
+packaged client scenario
+01
+Record present
+02
+Not starting
+03
+Version compatible
+04
+Responsive
+Read ×1
+Observe ×0
+Remove ×0
+Trigger ×0
+Local factory ×1
+Warm execute ×0
+Dispose ×0
+guardRecord present
+readregistry record
+guardNot starting
+decisioncold / starting
+factoryfresh local executor
+localcold
+All 32 recorded outcomes and operation counts
+BOTTOM LAYER · AUDITABLE SCOPE
+Every changed path has a place.
+153 / 153 mapped
+
+These are source snapshots, not a correctness report. File-to-choice links are editorial. Copy origins come from Git similarity detection and are a navigation aid, not proof of equivalence.
+
+Find a path or choice
+153 of 153 paths
+Path at head (or deleted path)	Git	Related choices	Source
+apps/cli/src/cli-program-executor.test.ts	M	20 · test-move	BaseHead
+apps/cli/src/cli.test.ts	M	20 · test-move	BaseHead
+apps/cli/src/daemon-executor.test.ts	M	21 · test-narrow	BaseHead
+apps/cli/src/daemon/accepted-request-ledger.ts	M	15 · clock01 · stage	BaseHead
+apps/cli/src/daemon/daemon-controller.ts	M	08 · control15 · clock17 · registry01 · stage	BaseHead
+apps/cli/src/daemon/daemon-entry.test.ts	D	04 · entries22 · entry-tests	Base
+apps/cli/src/daemon/daemon-entry.ts	M	04 · entries18 · coordinates15 · clock01 · stage	BaseHead
+apps/cli/src/daemon/daemon-lifetime.ts	M	15 · clock16 · idle01 · stage	BaseHead
+apps/cli/src/daemon/daemon-navigation-worker-entry.ts	M	04 · entries18 · coordinates15 · clock01 · stage	BaseHead
+apps/cli/src/daemon/daemon-process-coordinator.ts
+Origin: apps/cli/src/daemon/workspace-daemon.ts
+Git similarity 84%
+	R084	18 · coordinates19 · auth16 · idle15 · clock01 · stage	BaseHead
+apps/cli/src/daemon/daemon-process-launcher.ts	M	04 · entries18 · coordinates15 · clock01 · stage	BaseHead
+apps/cli/src/daemon/daemon-record-observer.ts	M	17 · registry15 · clock01 · stage	BaseHead
+apps/cli/src/daemon/daemon-registry.ts	M	17 · registry15 · clock01 · stage	BaseHead
+apps/cli/src/daemon/daemon-resource-monitor.ts	M	15 · clock01 · stage	BaseHead
+apps/cli/src/daemon/daemon-startup-coordinator.ts	M	17 · registry09 · probe08 · control15 · clock01 · stage	BaseHead
+apps/cli/src/daemon/daemon-transport.test.ts	M	20 · test-move	BaseHead
+apps/cli/src/daemon/workspace-request-queue.ts	M	15 · clock01 · stage	BaseHead
+apps/cli/test/e2e/daemon/parity.test.ts	M	20 · test-move	BaseHead
+apps/cli/test/e2e/daemon/persistent-pressure.test.ts	M	20 · test-move	BaseHead
+apps/cli/test/e2e/daemon/status.test.ts	M	20 · test-move	BaseHead
+apps/cli/test/e2e/daemon/stop.test.ts	M	20 · test-move	BaseHead
+apps/cli/test/helpers/daemon-controller.ts	M	08 · control15 · clock17 · registry20 · test-move	BaseHead
+apps/cli/test/helpers/daemon-policy.ts
+Origin: packages/daemon/src/policy-testing.ts
+Git similarity 88%
+	R088	23 · test-surface	BaseHead
+apps/cli/test/helpers/daemon-process-coordinator-persistent-pressure.ts
+Origin: apps/cli/test/helpers/workspace-daemon-persistent-pressure.ts
+Git similarity 97%
+	R097	18 · coordinates19 · auth16 · idle15 · clock20 · test-move	BaseHead
+apps/cli/test/helpers/daemon-process-coordinator-stuck.ts
+Origin: apps/cli/test/helpers/workspace-daemon-stuck.ts
+Git similarity 98%
+	R098	18 · coordinates19 · auth16 · idle15 · clock20 · test-move	BaseHead
+apps/cli/test/helpers/daemon-process-coordinator.ts
+Origin: apps/cli/test/helpers/workspace-daemon.ts
+Git similarity 68%
+	R068	18 · coordinates19 · auth16 · idle15 · clock20 · test-move	BaseHead
+apps/cli/test/helpers/daemon-process-terminator.ts	M	20 · test-move	BaseHead
+apps/cli/test/helpers/daemon-registry.ts	M	17 · registry15 · clock20 · test-move	BaseHead
+apps/cli/test/helpers/daemon-startup-caller-exit.ts	M	20 · test-move	BaseHead
+apps/cli/test/helpers/daemon-startup-coordinator.ts	M	17 · registry09 · probe08 · control15 · clock20 · test-move	BaseHead
+apps/cli/test/helpers/local-daemon-transport.ts	M	20 · test-move	BaseHead
+eslint.config.mjs	M	23 · test-surface	BaseHead
+meta-tests/src/daemon-compatibility-copy.test.ts	A	01 · stage02 · freeze	Head
+meta-tests/src/daemon-package.test.ts	M	05 · contract06 · portable23 · test-surface	BaseHead
+meta-tests/src/lint-rule.test.ts	M	23 · test-surface	BaseHead
+packages/daemon/package.json	M	04 · entries20 · test-move23 · test-surface	BaseHead
+packages/daemon/src/client/daemon-client-contracts.ts	A	05 · contract	Head
+packages/daemon/src/client/daemon-client-control.test.ts	A	08 · control09 · probe	Head
+packages/daemon/src/client/daemon-client-public.test.ts	A	10 · guards11 · cold12 · replay13 · output14 · malformed08 · control09 · probe	Head
+packages/daemon/src/client/daemon-client-runtime.ts	A	10 · guards11 · cold12 · replay13 · output14 · malformed08 · control09 · probe	Head
+packages/daemon/src/client/daemon-client.test.ts	A	10 · guards11 · cold12 · replay13 · output14 · malformed08 · control09 · probe	Head
+packages/daemon/src/client/daemon-client.ts	A	06 · portable07 · load	Head
+packages/daemon/src/client/daemon-routing-policy.test.ts	A	10 · guards11 · cold	Head
+packages/daemon/src/client/daemon-routing-policy.ts	A	10 · guards11 · cold	Head
+packages/daemon/src/daemon-policy.test.ts	M	20 · test-move	BaseHead
+packages/daemon/src/delivery/completion-spool.test.ts
+Origin: apps/cli/src/daemon/completion-spool.test.ts
+Git similarity 99%
+	R099	13 · output20 · test-move	BaseHead
+packages/daemon/src/delivery/completion-spool.ts
+Origin: apps/cli/src/daemon/completion-spool.ts
+Git similarity 82%
+	A	13 · output03 · owners	BaseHead
+packages/daemon/src/delivery/delivery-session.test.ts
+Origin: apps/cli/src/daemon/daemon-delivery-session.test.ts
+Git similarity 98%
+	R098	20 · test-move	BaseHead
+packages/daemon/src/delivery/delivery-session.ts
+Origin: apps/cli/src/daemon/daemon-delivery-session.ts
+Git similarity 97%
+	A	03 · owners	BaseHead
+packages/daemon/src/diagnostics/logger.test.ts
+Origin: apps/cli/src/daemon/daemon-logger.test.ts
+Git similarity 97%
+	R097	20 · test-move	BaseHead
+packages/daemon/src/diagnostics/logger.ts
+Origin: apps/cli/src/daemon/daemon-logger.ts
+Git similarity 97%
+	A	03 · owners	BaseHead
+packages/daemon/src/diagnostics/operation-observer.test.ts
+Origin: apps/cli/src/daemon/daemon-operation-observer.test.ts
+Git similarity 97%
+	R097	20 · test-move	BaseHead
+packages/daemon/src/diagnostics/operation-observer.ts
+Origin: apps/cli/src/daemon/daemon-operation-observer.ts
+Git similarity 96%
+	A	03 · owners	BaseHead
+packages/daemon/src/entry-boundary.test.ts	A	04 · entries22 · entry-tests	Head
+packages/daemon/src/execution/accepted-execution-session-contracts.ts
+Origin: apps/cli/src/daemon/accepted-execution-session-contracts.ts
+Git similarity 78%
+	A	03 · owners	BaseHead
+packages/daemon/src/execution/accepted-execution-session.test.ts
+Origin: apps/cli/src/daemon/accepted-execution-session.test.ts
+Git similarity 94%
+	R094	20 · test-move	BaseHead
+packages/daemon/src/execution/accepted-execution-session.ts
+Origin: apps/cli/src/daemon/accepted-execution-session.ts
+Git similarity 94%
+	A	03 · owners	BaseHead
+packages/daemon/src/execution/accepted-request-ledger.test.ts
+Origin: apps/cli/src/daemon/accepted-request-ledger.test.ts
+Git similarity 88%
+	R088	15 · clock20 · test-move	BaseHead
+packages/daemon/src/execution/accepted-request-ledger.ts
+Origin: apps/cli/src/daemon/accepted-request-ledger.ts
+Git similarity 96%
+	A	15 · clock03 · owners	BaseHead
+packages/daemon/src/execution/request-queue.test.ts
+Origin: apps/cli/src/daemon/workspace-request-queue.test.ts
+Git similarity 99%
+	R099	15 · clock20 · test-move	BaseHead
+packages/daemon/src/execution/request-queue.ts
+Origin: apps/cli/src/daemon/workspace-request-queue.ts
+Git similarity 93%
+	A	15 · clock03 · owners	BaseHead
+packages/daemon/src/host-contract.test.ts	M	05 · contract06 · portable23 · test-surface	BaseHead
+packages/daemon/src/index.ts	M	03 · owners	BaseHead
+packages/daemon/src/lifecycle/daemon-clock.test.ts
+Origin: apps/cli/src/daemon/daemon-clock.test.ts
+Git similarity 61%
+	R061	15 · clock23 · test-surface20 · test-move	BaseHead
+packages/daemon/src/lifecycle/daemon-clock.ts
+Origin: apps/cli/src/daemon/daemon-clock.ts
+Git similarity 100%
+	A	15 · clock23 · test-surface03 · owners	BaseHead
+packages/daemon/src/lifecycle/daemon-lifetime.test.ts
+Origin: apps/cli/src/daemon/daemon-lifetime.test.ts
+Git similarity 65%
+	R065	15 · clock16 · idle20 · test-move	BaseHead
+packages/daemon/src/lifecycle/daemon-lifetime.ts
+Origin: apps/cli/src/daemon/daemon-lifetime.ts
+Git similarity 77%
+	A	15 · clock16 · idle03 · owners	BaseHead
+packages/daemon/src/package-boundary.test.ts	A	04 · entries22 · entry-tests	Head
+packages/daemon/src/process-entry.ts	A	04 · entries18 · coordinates15 · clock03 · owners	Head
+packages/daemon/src/process/activity-projector.test.ts
+Origin: apps/cli/src/daemon/daemon-activity-projector.test.ts
+Git similarity 96%
+	R096	20 · test-move	BaseHead
+packages/daemon/src/process/activity-projector.ts
+Origin: apps/cli/src/daemon/daemon-activity-projector.ts
+Git similarity 93%
+	A	03 · owners	BaseHead
+packages/daemon/src/process/controller.test.ts
+Origin: apps/cli/src/daemon/daemon-controller.test.ts
+Git similarity 98%
+	R098	08 · control15 · clock17 · registry20 · test-move	BaseHead
+packages/daemon/src/process/controller.ts
+Origin: apps/cli/src/daemon/daemon-controller.ts
+Git similarity 80%
+	A	08 · control15 · clock17 · registry03 · owners	BaseHead
+packages/daemon/src/process/process-coordinator-construction.test.ts	A	18 · coordinates19 · auth16 · idle15 · clock20 · test-move	Head
+packages/daemon/src/process/process-coordinator-requests.test.ts
+Origin: apps/cli/src/daemon/workspace-daemon-requests.test.ts
+Git similarity 95%
+	R095	18 · coordinates19 · auth16 · idle15 · clock20 · test-move	BaseHead
+packages/daemon/src/process/process-coordinator.test.ts
+Origin: apps/cli/src/daemon/workspace-daemon.test.ts
+Git similarity 93%
+	R093	18 · coordinates19 · auth16 · idle15 · clock20 · test-move	BaseHead
+packages/daemon/src/process/process-coordinator.ts
+Origin: apps/cli/src/daemon/workspace-daemon.ts
+Git similarity 79%
+	A	18 · coordinates19 · auth16 · idle15 · clock03 · owners	BaseHead
+packages/daemon/src/process/process-launcher.test.ts
+Origin: apps/cli/src/daemon/daemon-process-launcher.test.ts
+Git similarity 95%
+	R095	04 · entries18 · coordinates15 · clock20 · test-move	BaseHead
+packages/daemon/src/process/process-launcher.ts
+Origin: apps/cli/src/daemon/daemon-process-launcher.ts
+Git similarity 93%
+	A	04 · entries18 · coordinates15 · clock03 · owners	BaseHead
+packages/daemon/src/process/process-termination-observer.test.ts
+Origin: apps/cli/src/daemon/daemon-process-termination-observer.test.ts
+Git similarity 94%
+	R094	20 · test-move	BaseHead
+packages/daemon/src/process/process-termination-observer.ts
+Origin: apps/cli/src/daemon/daemon-process-termination-observer.ts
+Git similarity 92%
+	A	03 · owners	BaseHead
+packages/daemon/src/process/runtime-values.ts
+Origin: apps/cli/src/daemon/daemon-runtime-values.ts
+Git similarity 100%
+	A	03 · owners	BaseHead
+packages/daemon/src/registry/record-observer.test.ts
+Origin: apps/cli/src/daemon/daemon-record-observer.test.ts
+Git similarity 97%
+	R097	17 · registry15 · clock20 · test-move	BaseHead
+packages/daemon/src/registry/record-observer.ts
+Origin: apps/cli/src/daemon/daemon-record-observer.ts
+Git similarity 93%
+	A	17 · registry15 · clock03 · owners	BaseHead
+packages/daemon/src/registry/registry.test.ts
+Origin: apps/cli/src/daemon/daemon-registry.test.ts
+Git similarity 77%
+	R077	17 · registry15 · clock20 · test-move	BaseHead
+packages/daemon/src/registry/registry.ts
+Origin: apps/cli/src/daemon/daemon-registry.ts
+Git similarity 74%
+	A	17 · registry15 · clock03 · owners	BaseHead
+packages/daemon/src/registry/startup-coordinator.test.ts
+Origin: apps/cli/src/daemon/daemon-startup-coordinator.test.ts
+Git similarity 98%
+	R098	17 · registry15 · clock09 · probe08 · control20 · test-move	BaseHead
+packages/daemon/src/registry/startup-coordinator.ts
+Origin: apps/cli/src/daemon/daemon-startup-coordinator.ts
+Git similarity 86%
+	A	17 · registry15 · clock09 · probe08 · control03 · owners	BaseHead
+packages/daemon/src/registry/workspace-identity.test.ts
+Origin: apps/cli/src/daemon/daemon-workspace-identity.test.ts
+Git similarity 79%
+	R079	17 · registry15 · clock20 · test-move	BaseHead
+packages/daemon/src/registry/workspace-identity.ts
+Origin: apps/cli/src/daemon/daemon-workspace-identity.ts
+Git similarity 100%
+	A	17 · registry15 · clock03 · owners	BaseHead
+packages/daemon/src/resources/resource-supervisor.test.ts
+Origin: apps/cli/src/daemon/daemon-resource-monitor.test.ts
+Git similarity 97%
+	R097	15 · clock20 · test-move	BaseHead
+packages/daemon/src/resources/resource-supervisor.ts
+Origin: apps/cli/src/daemon/daemon-resource-monitor.ts
+Git similarity 91%
+	A	15 · clock03 · owners	BaseHead
+packages/daemon/src/transport/client-result-capture.test.ts
+Origin: apps/cli/src/daemon/daemon-client-result-capture.test.ts
+Git similarity 99%
+	R099	13 · output20 · test-move	BaseHead
+packages/daemon/src/transport/client-result-capture.ts
+Origin: apps/cli/src/daemon/daemon-client-result-capture.ts
+Git similarity 100%
+	A	13 · output03 · owners	BaseHead
+packages/daemon/src/transport/contracts.ts
+Origin: apps/cli/src/daemon/daemon-transport.ts
+Git similarity 98%
+	A	03 · owners	BaseHead
+packages/daemon/src/transport/daemon-result-chunk-codec.test.ts
+Origin: apps/cli/src/daemon/daemon-result-chunk-codec.test.ts
+Git similarity 94%
+	R094	20 · test-move	BaseHead
+packages/daemon/src/transport/execution-client.test.ts
+Origin: apps/cli/src/daemon/daemon-execution-client.test.ts
+Git similarity 96%
+	R096	20 · test-move	BaseHead
+packages/daemon/src/transport/execution-client.ts
+Origin: apps/cli/src/daemon/daemon-execution-client.ts
+Git similarity 97%
+	A	03 · owners	BaseHead
+packages/daemon/src/transport/lifecycle-client.test.ts
+Origin: apps/cli/src/daemon/daemon-lifecycle-client.test.ts
+Git similarity 97%
+	R097	20 · test-move	BaseHead
+packages/daemon/src/transport/lifecycle-client.ts
+Origin: apps/cli/src/daemon/daemon-lifecycle-client.ts
+Git similarity 97%
+	A	03 · owners	BaseHead
+packages/daemon/src/transport/local-daemon-transport-composition.test.ts
+Origin: apps/cli/src/daemon/local-daemon-transport-composition.test.ts
+Git similarity 93%
+	R093	20 · test-move	BaseHead
+packages/daemon/src/transport/local-daemon-transport-execution.test.ts
+Origin: apps/cli/src/daemon/local-daemon-transport-execution.test.ts
+Git similarity 98%
+	R098	20 · test-move	BaseHead
+packages/daemon/src/transport/local-daemon-transport-socket-client.test.ts
+Origin: apps/cli/src/daemon/local-daemon-transport-socket-client.test.ts
+Git similarity 97%
+	R097	20 · test-move	BaseHead
+packages/daemon/src/transport/local-daemon-transport-validation.test.ts
+Origin: apps/cli/src/daemon/local-daemon-transport-validation.test.ts
+Git similarity 98%
+	R098	20 · test-move	BaseHead
+packages/daemon/src/transport/local-transport.test.ts
+Origin: apps/cli/src/daemon/local-daemon-transport.test.ts
+Git similarity 99%
+	R099	13 · output20 · test-move	BaseHead
+packages/daemon/src/transport/local-transport.ts
+Origin: apps/cli/src/daemon/local-daemon-transport.ts
+Git similarity 81%
+	A	13 · output03 · owners	BaseHead
+packages/daemon/src/transport/protocol-validator.test.ts
+Origin: apps/cli/src/daemon/daemon-protocol-validator.test.ts
+Git similarity 98%
+	R098	20 · test-move	BaseHead
+packages/daemon/src/transport/protocol-validator.ts
+Origin: apps/cli/src/daemon/daemon-protocol-validator.ts
+Git similarity 99%
+	A	03 · owners	BaseHead
+packages/daemon/src/transport/protocol.ts
+Origin: apps/cli/src/daemon/daemon-protocol.ts
+Git similarity 99%
+	A	03 · owners	BaseHead
+packages/daemon/src/transport/result-transfer-receiver.test.ts
+Origin: apps/cli/src/daemon/daemon-result-transfer-receiver.test.ts
+Git similarity 97%
+	R097	20 · test-move	BaseHead
+packages/daemon/src/transport/result-transfer-receiver.ts
+Origin: apps/cli/src/daemon/daemon-result-transfer-receiver.ts
+Git similarity 95%
+	A	03 · owners	BaseHead
+packages/daemon/src/transport/socket-client.test.ts
+Origin: apps/cli/src/daemon/local-daemon-socket-client.test.ts
+Git similarity 99%
+	R099	20 · test-move	BaseHead
+packages/daemon/src/transport/socket-client.ts
+Origin: apps/cli/src/daemon/local-daemon-socket-client.ts
+Git similarity 99%
+	A	03 · owners	BaseHead
+packages/daemon/src/transport/socket-server.test.ts
+Origin: apps/cli/src/daemon/local-daemon-socket-server.test.ts
+Git similarity 97%
+	R097	20 · test-move	BaseHead
+packages/daemon/src/transport/socket-server.ts
+Origin: apps/cli/src/daemon/local-daemon-socket-server.ts
+Git similarity 95%
+	A	03 · owners	BaseHead
+packages/daemon/src/transport/transport-error.ts
+Origin: apps/cli/src/daemon/daemon-transport-error.ts
+Git similarity 100%
+	A	03 · owners	BaseHead
+packages/daemon/src/transport/wire-codec.test.ts
+Origin: apps/cli/src/daemon/daemon-wire-codec.test.ts
+Git similarity 96%
+	R096	20 · test-move	BaseHead
+packages/daemon/src/transport/wire-codec.ts
+Origin: apps/cli/src/daemon/daemon-wire-codec.ts
+Git similarity 99%
+	A	03 · owners	BaseHead
+packages/daemon/src/worker-entry.ts	A	04 · entries18 · coordinates15 · clock03 · owners	Head
+packages/daemon/src/worker/navigation-worker-entry.ts
+Origin: apps/cli/src/daemon/daemon-navigation-worker-entry.ts
+Git similarity 96%
+	A	04 · entries18 · coordinates15 · clock03 · owners	BaseHead
+packages/daemon/src/worker/navigation-worker.test.ts
+Origin: apps/cli/src/daemon/daemon-navigation-worker.test.ts
+Git similarity 91%
+	R091	21 · test-narrow	BaseHead
+packages/daemon/src/worker/navigation-worker.ts
+Origin: apps/cli/src/daemon/daemon-navigation-worker.ts
+Git similarity 94%
+	A	03 · owners	BaseHead
+packages/daemon/src/worker/worker-generation-manager.test.ts
+Origin: apps/cli/src/daemon/daemon-worker-generation-manager.test.ts
+Git similarity 97%
+	R097	20 · test-move	BaseHead
+packages/daemon/src/worker/worker-generation-manager.ts
+Origin: apps/cli/src/daemon/daemon-worker-generation-manager.ts
+Git similarity 97%
+	A	03 · owners	BaseHead
+packages/daemon/src/worker/worker-protocol.test.ts
+Origin: apps/cli/src/daemon/daemon-navigation-worker-protocol.test.ts
+Git similarity 99%
+	R099	20 · test-move	BaseHead
+packages/daemon/src/worker/worker-protocol.ts
+Origin: apps/cli/src/daemon/daemon-navigation-worker-protocol.ts
+Git similarity 98%
+	A	03 · owners	BaseHead
+packages/daemon/test/fixtures/executor-module.mjs	A	20 · test-move	Head
+packages/daemon/test/fixtures/executor-module.test.ts	A	20 · test-move	Head
+packages/daemon/test/fixtures/executor-module.ts	A	20 · test-move	Head
+packages/daemon/test/fixtures/observable-executor-module.mjs	A	20 · test-move	Head
+packages/daemon/test/helpers/canonical-path.ts	A	20 · test-move	Head
+packages/daemon/test/helpers/daemon-controller.ts
+Origin: apps/cli/test/helpers/daemon-controller.ts
+Git similarity 81%
+	A	08 · control15 · clock17 · registry20 · test-move	BaseHead
+packages/daemon/test/helpers/daemon-navigation-worker-fixture.mjs
+Origin: apps/cli/test/helpers/daemon-navigation-worker-fixture.mjs
+Git similarity 100%
+	A	20 · test-move	BaseHead
+packages/daemon/test/helpers/daemon-policy.ts
+Origin: packages/daemon/src/policy-testing.ts
+Git similarity 87%
+	A	23 · test-surface	BaseHead
+packages/daemon/test/helpers/daemon-process-coordinator-stuck.ts	A	18 · coordinates19 · auth16 · idle15 · clock20 · test-move	Head
+packages/daemon/test/helpers/daemon-process-coordinator.ts
+Origin: apps/cli/test/helpers/workspace-daemon.ts
+Git similarity 65%
+	A	18 · coordinates19 · auth16 · idle15 · clock20 · test-move	BaseHead
+packages/daemon/test/helpers/daemon-process-terminator.ts
+Origin: apps/cli/test/helpers/daemon-process-terminator.ts
+Git similarity 86%
+	A	20 · test-move	BaseHead
+packages/daemon/test/helpers/daemon-registry-cleaner.ts
+Origin: apps/cli/test/helpers/daemon-registry-cleaner.ts
+Git similarity 91%
+	R091	17 · registry15 · clock20 · test-move	BaseHead
+packages/daemon/test/helpers/daemon-registry.ts
+Origin: apps/cli/test/helpers/daemon-registry.ts
+Git similarity 73%
+	A	17 · registry15 · clock20 · test-move	BaseHead
+packages/daemon/test/helpers/daemon-resource-policy.ts
+Origin: apps/cli/test/helpers/daemon-resource-policy.ts
+Git similarity 100%
+	A	20 · test-move	BaseHead
+packages/daemon/test/helpers/daemon-startup-coordinator.ts
+Origin: apps/cli/test/helpers/daemon-startup-coordinator.ts
+Git similarity 72%
+	A	17 · registry09 · probe08 · control15 · clock20 · test-move	BaseHead
+packages/daemon/test/helpers/daemon-startup-mutation-owner.ts
+Origin: apps/cli/test/helpers/daemon-startup-mutation-owner.ts
+Git similarity 87%
+	A	20 · test-move	BaseHead
+packages/daemon/test/helpers/executor-output.ts	A	20 · test-move	Head
+packages/daemon/test/helpers/injected-daemon-executor-fixture.mjs
+Origin: apps/cli/test/helpers/injected-daemon-executor-fixture.mjs
+Git similarity 100%
+	R100	20 · test-move	BaseHead
+packages/daemon/test/helpers/local-daemon-transport.ts
+Origin: apps/cli/test/helpers/local-daemon-transport.ts
+Git similarity 95%
+	A	20 · test-move	BaseHead
+packages/daemon/test/helpers/resource-sampling-daemon-executor-fixture.mjs
+Origin: apps/cli/test/helpers/resource-sampling-daemon-executor-fixture.mjs
+Git similarity 100%
+	R100	20 · test-move	BaseHead
+packages/daemon/test/integration/built-entry-artifacts.test.ts	A	04 · entries22 · entry-tests	Head
+packages/daemon/test/integration/built-process-entry.test.ts	A	04 · entries22 · entry-tests	Head
+packages/daemon/test/integration/built-process-launcher.test.ts	A	04 · entries22 · entry-tests	Head
+packages/daemon/test/public-import.test.ts	M	05 · contract06 · portable23 · test-surface	BaseHead
+packages/daemon/vitest.config.ts
+Origin: apps/cli/vitest.config.ts
+Git similarity 59%
+	A	24 · serial	BaseHead
+plans/005/daemon-follow-ups-functional-spec.md	M	16 · idle09 · probe	BaseHead
+pnpm-lock.yaml	M	04 · entries20 · test-move23 · test-surface	BaseHead
+A local, bounded account of PR 148.
+
+Built from the supplied PR body, 45 commit messages, complete diff, rules and both worktrees. Earlier experiments were ignored. The overview bundles contained path headings without symbol output, so the mechanisms were read directly.
+
+Rationale marked “unexplained” means none was found in those inputs and the inspected specs. The 32 client recordings cover chosen scenarios with synthetic ports; package source tests are described, not reported as a full-suite validation.
+
+Original PR body + commits ↗
+Experiment README ↗
+Path-to-choice inventory ↗
+Reduced test delta ↗
+Reduced mechanism delta ↗
+
+Reduced deltas omit import declarations and normalize WorkspaceDaemon naming to help inspection; they are lossy aids. Exact source snapshots are available above. The artifact makes no changes to symnav.
+
+THE SWITCH IS STILL OPEN
+Experiment 03 · Read-only field guide · Opens offline
+Back to the picture ↑

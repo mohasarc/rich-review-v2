@@ -1,0 +1,87 @@
+Git object: 20838f8dbf413e04767543eb2380d0d114da6c60:packages/daemon/src/process/process-coordinator.ts
+Original lines: 350–433
+
+350:     );
+351:   }
+352: 
+353:   private async handle(
+354:     request: DaemonRequest,
+355:     send: DaemonServerSend,
+356:   ): Promise<DaemonResponse | void> {
+357:     if (request.kind === "identify") return this.identify(request);
+358:     if (request.kind === "terminate" || request.kind === "kill") {
+359:       return this.terminate(request);
+360:     }
+361:     if (
+362:       request.protocolVersion !== DAEMON_PROTOCOL_VERSION ||
+363:       request.instanceId !== this.options.coordinates.instanceId
+364:     ) {
+365:       throw new Error("Daemon request does not match protocol or instance");
+366:     }
+367:     if (request.kind === "ping") return this.pong();
+368:     if (request.kind === "execute") return this.acceptExecution(request, send);
+369:     if (
+370:       request.kind === "execution-status" ||
+371:       request.kind === "result-fetch" ||
+372:       request.kind === "result-ack"
+373:     ) {
+374:       if (request.processToken !== this.options.coordinates.processToken) {
+375:         throw new Error("Daemon execution request does not match process instance");
+376:       }
+377:     }
+378:     if (request.kind === "result-fetch") {
+379:       await this.deliverySession.fetch(request, send);
+380:       return;
+381:     }
+382:     if (request.kind === "result-ack") {
+383:       return this.deliverySession.acknowledge(request);
+384:     }
+385:     if (request.kind === "execution-status") {
+386:       return {
+387:         kind: "execution-status",
+388:         instanceId: this.options.coordinates.instanceId,
+389:         processToken: this.options.coordinates.processToken,
+390:         requestId: request.requestId,
+391:         status: this.acceptedExecutionSession.status(request.requestId),
+392:       };
+393:     }
+394:     this.beginGracefulShutdown();
+395:     await this.acceptedExecutionSession.drain();
+396:     await this.deliverySession.waitForCompletionAcknowledgements();
+397:     setTimeout(() => void this.shutdown("graceful"), 0);
+398:     return { kind: "stopped", instanceId: this.options.coordinates.instanceId };
+399:   }
+400: 
+401:   private identify(request: Extract<DaemonRequest, { kind: "identify" }>): DaemonResponse {
+402:     if (
+403:       request.instanceId !== this.options.coordinates.instanceId ||
+404:       request.processToken !== this.options.coordinates.processToken
+405:     ) {
+406:       throw new Error("Daemon identity request does not match process instance");
+407:     }
+408:     return {
+409:       kind: "identity",
+410:       instanceId: this.options.coordinates.instanceId,
+411:       processToken: this.options.coordinates.processToken,
+412:       pid: process.pid,
+413:       startedAt: this.startedAt,
+414:     };
+415:   }
+416: 
+417:   private async terminate(
+418:     request: Extract<DaemonRequest, { kind: "terminate" | "kill" }>,
+419:   ): Promise<DaemonResponse> {
+420:     if (
+421:       request.instanceId !== this.options.coordinates.instanceId ||
+422:       request.processToken !== this.options.coordinates.processToken
+423:     ) {
+424:       throw new Error("Daemon termination does not match process instance");
+425:     }
+426:     this.beginGracefulShutdown();
+427:     if (request.kind === "terminate") {
+428:       await this.acceptedExecutionSession.drain();
+429:       await this.deliverySession.waitForCompletionAcknowledgements();
+430:       setTimeout(() => void this.shutdown("graceful"), 0);
+431:     } else {
+432:       setTimeout(() => void this.shutdown("graceful", true), 0);
+433:     }

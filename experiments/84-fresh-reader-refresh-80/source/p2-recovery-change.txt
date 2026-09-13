@@ -1,0 +1,112 @@
+Bundle: inputs/pr-131/diff.patch
+Original patch lines: 2680–2788
+
+2680:        acceptance: receipt.acceptance,
+2681: -      completion: this.completeWithOneReattachment(endpoint, request, receipt.completion),
+2682: +      completion: this.completeWithReattachments(endpoint, request, receipt.completion),
+2683:      }));
+2684:    }
+2685:  
+2686: -  private async completeWithOneReattachment(
+2687: +  private async completeWithReattachments(
+2688:      endpoint: string,
+2689:      request: DaemonExecuteRequest,
+2690:      completion: DaemonExecutionReceipt["completion"],
+2691:    ): DaemonExecutionReceipt["completion"] {
+2692: -    try {
+2693: -      return await completion;
+2694: -    } catch (firstError) {
+2695: -      if (!LocalDaemonTransport.isAcceptedConnectionClose(firstError, request)) throw firstError;
+2696: +    let currentCompletion = completion;
+2697: +    let reattachmentCount = 0;
+2698: +    while (true) {
+2699:        try {
+2700: -        const reattached = await this.executeOnce(endpoint, request);
+2701: -        return await reattached.completion;
+2702: -      } catch {
+2703: -        throw firstError;
+2704: +        return await currentCompletion;
+2705: +      } catch (firstError) {
+2706: +        if (
+2707: +          !LocalDaemonTransport.isAcceptedConnectionClose(firstError, request) ||
+2708: +          reattachmentCount >= this.deliveryPolicy.postAcceptanceExecutionReattachmentLimit
+2709: +        ) {
+2710: +          throw firstError;
+2711: +        }
+2712: +        try {
+2713: +          const reattached = await this.executeOnce(endpoint, request);
+2714: +          currentCompletion = reattached.completion;
+2715: +          reattachmentCount += 1;
+2716: +        } catch {
+2717: +          throw firstError;
+2718: +        }
+2719:        }
+2720:      }
+2721:    }
+2722: @@ -419,10 +433,13 @@ export class LocalDaemonTransport {
+2723:    ): Promise<DaemonExecutionReceipt> {
+2724:      LocalDaemonTransport.assertRequest(request);
+2725:      return new Promise((resolve, reject) => {
+2726: -      const decoder = new DaemonTransferFrameDecoder(DAEMON_MAXIMUM_CONTROL_FRAME_BYTES);
+2727: +      const decoder = new DaemonTransferFrameDecoder(
+2728: +        this.maximumControlFrameBytes,
+2729: +        this.maximumChunkRawBytes,
+2730: +      );
+2731:        const output = new OrderedCommandOutput({
+2732: +        policy: this.outputPolicy,
+2733:          ...(this.outputDirectory === undefined ? {} : { directory: this.outputDirectory }),
+2734: -        ...(this.outputInlineBytes === undefined ? {} : { inlineBytes: this.outputInlineBytes }),
+2735:        });
+2736:        const transfer = new DaemonResultTransferReceiver(request, output);
+2737:        const socket = createConnection(endpoint);
+2738: @@ -431,7 +448,7 @@ export class LocalDaemonTransport {
+2739:        let terminal = false;
+2740:        let outerSettled = false;
+2741:        let completionSettled = false;
+2742: -      let resumeStarted = false;
+2743: +      let resumeCount = 0;
+2744:        let resolveCompletion!: (value: Awaited<DaemonExecutionReceipt["completion"]>) => void;
+2745:        let rejectCompletion!: (error: DaemonTransportError) => void;
+2746:        const completion = new Promise<Awaited<DaemonExecutionReceipt["completion"]>>(
+2747: @@ -456,7 +473,7 @@ export class LocalDaemonTransport {
+2748:        };
+2749:        const resume = (): boolean => {
+2750:          if (
+2751: -          resumeStarted ||
+2752: +          resumeCount >= this.deliveryPolicy.resultTransferResumeLimitPerExecutionAttempt ||
+2753:            completionSettled ||
+2754:            acceptance === undefined ||
+2755:            transfer.manifest === undefined ||
+2756: @@ -464,7 +481,7 @@ export class LocalDaemonTransport {
+2757:          ) {
+2758:            return false;
+2759:          }
+2760: -        resumeStarted = true;
+2761: +        resumeCount += 1;
+2762:          socket.destroy();
+2763:          transfer.beginConnection();
+2764:          void this.fetchCompletion(endpoint, request, output, transfer)
+2765: @@ -633,7 +650,10 @@ export class LocalDaemonTransport {
+2766:      transfer: DaemonResultTransferReceiver,
+2767:    ): DaemonExecutionReceipt["completion"] {
+2768:      return new Promise((resolve, reject) => {
+2769: -      const decoder = new DaemonTransferFrameDecoder(DAEMON_MAXIMUM_CONTROL_FRAME_BYTES);
+2770: +      const decoder = new DaemonTransferFrameDecoder(
+2771: +        this.maximumControlFrameBytes,
+2772: +        this.maximumChunkRawBytes,
+2773: +      );
+2774:        const socket = createConnection(endpoint);
+2775:        let ended = false;
+2776:        let settled = false;
+2777: @@ -927,7 +947,10 @@ export class LocalDaemonTransport {
+2778:        await this.writeEncodedServerFrame(socket, this.encodeFrame(message));
+2779:        return;
+2780:      }
+2781: -    await this.writeEncodedServerFrame(socket, DaemonResultChunkCodec.encode(message));
+2782: +    await this.writeEncodedServerFrame(
+2783: +      socket,
+2784: +      DaemonResultChunkCodec.encode(message, this.maximumChunkRawBytes),
+2785: +    );
+2786:    }
+2787:  
+2788:    private async writeEncodedServerFrame(socket: Socket, frame: Buffer): Promise<void> {

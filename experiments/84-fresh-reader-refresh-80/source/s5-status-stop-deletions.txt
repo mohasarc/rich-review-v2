@@ -1,0 +1,1035 @@
+Bundle: inputs/stack/diff.patch
+Original patch lines: 8287–9318
+
+8287: diff --git a/apps/cli/test/e2e/daemon/status.test.ts b/apps/cli/test/e2e/daemon/status.test.ts
+8288: index 6c126c6fa..a34208821 100644
+8289: --- a/apps/cli/test/e2e/daemon/status.test.ts
+8290: +++ b/apps/cli/test/e2e/daemon/status.test.ts
+8291: @@ -1,39 +1,19 @@
+8292: -import {
+8293: -  existsSync,
+8294: -  mkdirSync,
+8295: -  mkdtempSync,
+8296: -  readFileSync,
+8297: -  realpathSync,
+8298: -  writeFileSync,
+8299: -} from "node:fs";
+8300: -import { spawn, type ChildProcess } from "node:child_process";
+8301: +import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+8302:  import { tmpdir } from "node:os";
+8303:  import { join } from "node:path";
+8304: -import { fileURLToPath } from "node:url";
+8305:  import { afterEach, describe, expect, it } from "vitest";
+8306:  import { runSymnavBinary } from "@symnav/testing";
+8307: -import { canonicalStateDir } from "@symnav/telemetry";
+8308: -import {
+8309: -  DAEMON_PROTOCOL_VERSION,
+8310: -  DAEMON_RECORD_SCHEMA_VERSION,
+8311: -  type DaemonRecord,
+8312: -} from "../../../src/daemon/daemon-protocol.js";
+8313: -import { DaemonRegistry } from "../../../src/daemon/daemon-registry.js";
+8314: -import { DaemonWorkspaceIdentity } from "../../../src/daemon/daemon-workspace-identity.js";
+8315: -import { LocalDaemonTransport } from "../../../src/daemon/local-daemon-transport.js";
+8316:  import { canonicalWorkspaceRoot } from "../../helpers/canonical-workspace-root.js";
+8317:  import { E2eProcessCleanup } from "../../helpers/e2e-process-cleanup.js";
+8318: -import { DaemonStateFiles } from "../../helpers/daemon-state-files.js";
+8319: +import { CliDaemonTesting } from "../../helpers/daemon-testing.js";
+8320:  
+8321:  describe("symnav daemon status", () => {
+8322:    const stateDirectories: string[] = [];
+8323:    const daemonPids: number[] = [];
+8324: -  const helperProcesses: ChildProcess[] = [];
+8325:  
+8326:    afterEach(async () => {
+8327: -    await E2eProcessCleanup.terminate(daemonPids, helperProcesses);
+8328: +    await E2eProcessCleanup.terminate(daemonPids, []);
+8329:      daemonPids.length = 0;
+8330: -    helperProcesses.length = 0;
+8331:      E2eProcessCleanup.removeDirectories(stateDirectories);
+8332:      stateDirectories.length = 0;
+8333:    });
+8334: @@ -113,429 +93,6 @@ describe("symnav daemon status", () => {
+8335:          .sort((left, right) => left.localeCompare(right)),
+8336:      );
+8337:    });
+8338: -
+8339: -  it("reports starting only while the matching cross-process owner is live", async () => {
+8340: -    const stateDir = temporaryStateDirectory(stateDirectories);
+8341: -    const workspaceRoot = temporaryWorkspace(stateDirectories);
+8342: -    const readyPath = join(stateDir, "publisher-ready");
+8343: -    const barrierPath = join(stateDir, "publisher-go");
+8344: -    const resultPath = join(stateDir, "publisher-result");
+8345: -    const publisher = spawnStartupPublisher(
+8346: -      workspaceRoot,
+8347: -      stateDir,
+8348: -      readyPath,
+8349: -      barrierPath,
+8350: -      resultPath,
+8351: -    );
+8352: -    helperProcesses.push(publisher);
+8353: -    await waitUntil(() => existsSync(readyPath));
+8354: -
+8355: -    const starting = runSymnavBinary(["daemon", "status", "--json"], {
+8356: -      cwd: tmpdir(),
+8357: -      env: { SYMNAV_STATE_DIR: stateDir },
+8358: -    });
+8359: -    expect(JSON.parse(starting.stdout).daemons).toEqual([
+8360: -      expect.objectContaining({ workspaceRoot, state: "starting", pid: 0 }),
+8361: -    ]);
+8362: -
+8363: -    writeFileSync(barrierPath, "go");
+8364: -    await waitForProcess(publisher);
+8365: -    helperProcesses.splice(helperProcesses.indexOf(publisher), 1);
+8366: -    const stopped = runSymnavBinary(["daemon", "status", "--json"], {
+8367: -      cwd: tmpdir(),
+8368: -      env: { SYMNAV_STATE_DIR: stateDir },
+8369: -    });
+8370: -    expect(JSON.parse(stopped.stdout)).toEqual({ schemaVersion: 1, daemons: [] });
+8371: -  });
+8372: -
+8373: -  it("keeps one daemon-owned warm-up when its initiating caller is killed", async () => {
+8374: -    const stateDir = temporaryStateDirectory(stateDirectories);
+8375: -    const workspaceRoot = canonicalWorkspaceRoot(
+8376: -      realpathSync(temporaryWorkspace(stateDirectories)),
+8377: -    );
+8378: -    const instanceId = "caller-exit";
+8379: -    const processToken = "caller-exit-process";
+8380: -    const bootPath = join(stateDir, "caller-exit-boot");
+8381: -    const callerBarrierPath = join(stateDir, "caller-exit-spawned");
+8382: -    const childReleasePath = join(stateDir, "caller-exit-release");
+8383: -    const readyPath = join(stateDir, "caller-exit-ready");
+8384: -    const caller = spawnCallerExitStartup(
+8385: -      workspaceRoot,
+8386: -      stateDir,
+8387: -      instanceId,
+8388: -      processToken,
+8389: -      bootPath,
+8390: -      readyPath,
+8391: -      callerBarrierPath,
+8392: -      childReleasePath,
+8393: -    );
+8394: -    helperProcesses.push(caller);
+8395: -    await waitUntil(() => existsSync(callerBarrierPath));
+8396: -    const childPid = Number(readFileSync(bootPath, "utf8"));
+8397: -    daemonPids.push(childPid);
+8398: -    const identity = DaemonWorkspaceIdentity.from(workspaceRoot, canonicalStateDir(stateDir));
+8399: -    const registry = new DaemonRegistry(identity.registryDirectory);
+8400: -
+8401: -    expect(registry.readStoredInstance(identity, instanceId)).toMatchObject({
+8402: -      instanceId,
+8403: -      processToken,
+8404: -      pid: childPid,
+8405: -      state: "starting",
+8406: -    });
+8407: -    const ownerBeforeCallerExit = registry.startupOwner(identity);
+8408: -    expect(ownerBeforeCallerExit).toMatchObject({
+8409: -      instanceId,
+8410: -      processToken,
+8411: -      ownerKind: "daemon",
+8412: -      ownerPid: childPid,
+8413: -    });
+8414: -    expect(caller.kill("SIGKILL")).toBe(true);
+8415: -    await waitForKilledProcess(caller);
+8416: -    helperProcesses.splice(helperProcesses.indexOf(caller), 1);
+8417: -    await waitUntil(
+8418: -      () => registry.startupOwner(identity)?.revision !== ownerBeforeCallerExit?.revision,
+8419: -    );
+8420: -
+8421: -    const statusStartedAt = Date.now();
+8422: -    const starting = runSymnavBinary(["daemon", "status", "--json"], {
+8423: -      cwd: tmpdir(),
+8424: -      env: { SYMNAV_STATE_DIR: stateDir },
+8425: -    });
+8426: -
+8427: -    expect(starting.status).toBe(0);
+8428: -    expect(Date.now() - statusStartedAt).toBeLessThan(5_000);
+8429: -    expect(JSON.parse(starting.stdout).daemons).toEqual([
+8430: -      expect.objectContaining({
+8431: -        workspaceRoot,
+8432: -        state: "starting",
+8433: -        pid: childPid,
+8434: -        startupElapsedMs: expect.any(Number),
+8435: -        memoryBytes: expect.any(Number),
+8436: -      }),
+8437: -    ]);
+8438: -    expect(registry.startupOwner(identity)).toMatchObject({
+8439: -      instanceId,
+8440: -      processToken,
+8441: -      ownerKind: "daemon",
+8442: -      ownerPid: childPid,
+8443: -    });
+8444: -
+8445: -    const laterStarts = [
+8446: -      spawnDaemonStart(workspaceRoot, stateDir),
+8447: -      spawnDaemonStart(workspaceRoot, stateDir),
+8448: -    ];
+8449: -    helperProcesses.push(...laterStarts);
+8450: -    await new Promise((resolve) => setTimeout(resolve, 200));
+8451: -    expect(laterStarts.map((start) => start.exitCode)).toEqual([null, null]);
+8452: -    expect(daemonRecords(stateDir)).toEqual([
+8453: -      expect.objectContaining({ instanceId, processToken, pid: childPid }),
+8454: -    ]);
+8455: -
+8456: -    writeFileSync(childReleasePath, "go");
+8457: -    await waitUntil(() => existsSync(readyPath));
+8458: -    await Promise.all(laterStarts.map(waitForProcess));
+8459: -    for (const laterStart of laterStarts) {
+8460: -      helperProcesses.splice(helperProcesses.indexOf(laterStart), 1);
+8461: -    }
+8462: -    const navigation = runSymnavBinary(["overview", "input.ts"], {
+8463: -      cwd: workspaceRoot,
+8464: -      env: { SYMNAV_DAEMON: "1", SYMNAV_STATE_DIR: stateDir },
+8465: -    });
+8466: -    const readyRecords = daemonRecords(stateDir);
+8467: -    const readyRecord = readyRecords[0];
+8468: -
+8469: -    expect(navigation.status, navigation.stderr).toBe(0);
+8470: -    expect(navigation.stdout).toContain("value");
+8471: -    expect(readyRecords).toEqual([
+8472: -      expect.objectContaining({ instanceId, processToken, pid: childPid, state: "ready" }),
+8473: -    ]);
+8474: -    expect(readyRecord?.state).toBe("ready");
+8475: -    expect(readyRecord?.pid).toBe(childPid);
+8476: -    expect(readyRecord?.instanceId).toBe(instanceId);
+8477: -    expect(readyRecord?.processToken).toBe(processToken);
+8478: -
+8479: -    const stopped = runSymnavBinary(["daemon", "stop"], {
+8480: -      cwd: workspaceRoot,
+8481: -      env: { SYMNAV_STATE_DIR: stateDir },
+8482: -    });
+8483: -    expect(stopped.status).toBe(0);
+8484: -    expect(isProcessAlive(childPid)).toBe(false);
+8485: -    expect(daemonRecords(stateDir)).toEqual([]);
+8486: -  }, 15_000);
+8487: -
+8488: -  it("cleans a stale current-schema record", async () => {
+8489: -    const stateDir = temporaryStateDirectory(stateDirectories);
+8490: -    const cwd = temporaryWorkspace(stateDirectories);
+8491: -    const started = runSymnavBinary(["daemon", "start"], {
+8492: -      cwd,
+8493: -      env: { SYMNAV_STATE_DIR: stateDir },
+8494: -    });
+8495: -    expect(started.status).toBe(0);
+8496: -    captureDaemonPids(stateDir, daemonPids);
+8497: -    const originalRecord = daemonRecords(stateDir)[0];
+8498: -    expect(originalRecord).toBeDefined();
+8499: -    await E2eProcessCleanup.kill(daemonPids);
+8500: -    await E2eProcessCleanup.waitForEndpointRelease(originalRecord!.endpoint);
+8501: -    daemonPids.length = 0;
+8502: -    const recordPath = DaemonStateFiles.matchingPaths(stateDir, ".json")[0];
+8503: -    expect(recordPath).toBeDefined();
+8504: -    const record = JSON.parse(readFileSync(recordPath!, "utf8")) as Record<string, unknown>;
+8505: -    writeFileSync(recordPath!, JSON.stringify({ ...record, pid: 999_999_999 }));
+8506: -
+8507: -    const status = runSymnavBinary(["daemon", "status"], {
+8508: -      cwd: tmpdir(),
+8509: -      env: { SYMNAV_STATE_DIR: stateDir },
+8510: -    });
+8511: -    expect(status).toEqual({ stdout: "No daemons running.\n", stderr: "", status: 0 });
+8512: -    expect(DaemonStateFiles.matchingPaths(stateDir, ".json")).toEqual([]);
+8513: -    expect(existsSync(String(record.endpoint))).toBe(false);
+8514: -  });
+8515: -
+8516: -  it("reports a stuck live daemon promptly without replacing its process", async () => {
+8517: -    const stateDir = temporaryStateDirectory(stateDirectories);
+8518: -    const workspaceRoot = temporaryWorkspace(stateDirectories);
+8519: -    const instanceId = "stuck-status";
+8520: -    const processToken = "stuck-status-process";
+8521: -    const readyPath = join(stateDir, "stuck-ready");
+8522: -    const requestStartedPath = join(stateDir, "stuck-request");
+8523: -    const identity = DaemonWorkspaceIdentity.from(workspaceRoot, canonicalStateDir(stateDir));
+8524: -    const registry = new DaemonRegistry(identity.registryDirectory);
+8525: -    const lease = registry.acquireStartup(identity, instanceId);
+8526: -    expect(lease).toBeDefined();
+8527: -    const child = spawnStuckDaemon(
+8528: -      workspaceRoot,
+8529: -      stateDir,
+8530: -      instanceId,
+8531: -      processToken,
+8532: -      readyPath,
+8533: -      requestStartedPath,
+8534: -    );
+8535: -    helperProcesses.push(child);
+8536: -    await waitUntil(() => existsSync(`${readyPath}.boot`));
+8537: -    const daemonPid = Number(readFileSync(`${readyPath}.boot`, "utf8"));
+8538: -    expect(
+8539: -      registry.writeStartingIfStartupOwner(identity, {
+8540: -        schemaVersion: DAEMON_RECORD_SCHEMA_VERSION,
+8541: -        protocolVersion: DAEMON_PROTOCOL_VERSION,
+8542: -        symnavVersion: "0.1.0",
+8543: -        workspaceRoot,
+8544: -        workspaceKey: identity.workspaceKey,
+8545: -        stateKey: identity.stateKey,
+8546: -        identityKey: identity.identityKey,
+8547: -        instanceId,
+8548: -        processToken,
+8549: -        endpoint: identity.endpoint(instanceId),
+8550: -        pid: daemonPid,
+8551: -        state: "starting",
+8552: -        startedAt: Date.now(),
+8553: -        memoryCapBytes: Number.MAX_SAFE_INTEGER,
+8554: -      }),
+8555: -    ).toBe(true);
+8556: -    await waitUntil(() => existsSync(readyPath));
+8557: -    lease?.release();
+8558: -    const originalRecord = daemonRecords(stateDir)[0];
+8559: -    expect(originalRecord).toBeDefined();
+8560: -    daemonPids.push(originalRecord!.pid);
+8561: -    const transport = new LocalDaemonTransport({ requestTimeoutMs: 5_000 });
+8562: -    void transport
+8563: -      .execute(originalRecord!.endpoint, {
+8564: -        kind: "execute",
+8565: -        protocolVersion: DAEMON_PROTOCOL_VERSION,
+8566: -        instanceId,
+8567: -        processToken,
+8568: -        requestId: "stuck-navigation",
+8569: -        request: {
+8570: -          argv: ["overview", "input.ts"],
+8571: -          cwd: workspaceRoot,
+8572: -          telemetryEnabled: false,
+8573: -        },
+8574: -      })
+8575: -      .then((receipt) => receipt.completion.catch(() => undefined))
+8576: -      .catch(() => undefined);
+8577: -    await waitUntil(() => existsSync(requestStartedPath));
+8578: -
+8579: -    const statusStartedAt = Date.now();
+8580: -    const status = runSymnavBinary(["daemon", "status", "--json"], {
+8581: -      cwd: tmpdir(),
+8582: -      env: { SYMNAV_STATE_DIR: stateDir },
+8583: -    });
+8584: -    const statusDurationMs = Date.now() - statusStartedAt;
+8585: -    const recordsAfterStatus = daemonRecords(stateDir);
+8586: -
+8587: -    expect(status.status).toBe(0);
+8588: -    expect(statusDurationMs).toBeLessThan(5_000);
+8589: -    expect(JSON.parse(status.stdout).daemons).toEqual([
+8590: -      expect.objectContaining({
+8591: -        workspaceRoot,
+8592: -        state: "busy",
+8593: -        pid: originalRecord!.pid,
+8594: -        command: "overview",
+8595: -        queued: 0,
+8596: -      }),
+8597: -    ]);
+8598: -    expect(recordsAfterStatus).toHaveLength(1);
+8599: -    expect(recordsAfterStatus[0]?.pid).toBe(originalRecord!.pid);
+8600: -    expect(recordsAfterStatus[0]?.instanceId).toBe(instanceId);
+8601: -  });
+8602: -
+8603: -  it("retains authenticated ownership when a live daemon stops answering ping", async () => {
+8604: -    const stateDir = temporaryStateDirectory(stateDirectories);
+8605: -    const workspaceRoot = temporaryWorkspace(stateDirectories);
+8606: -    const instanceId = "live-silent";
+8607: -    const processToken = "live-silent-process";
+8608: -    const startedAt = Date.now();
+8609: -    const readyPath = join(stateDir, "live-silent-ready");
+8610: -    const identity = DaemonWorkspaceIdentity.from(workspaceRoot, canonicalStateDir(stateDir));
+8611: -    const child = spawnLiveSilentDaemon(
+8612: -      identity.endpoint(instanceId),
+8613: -      instanceId,
+8614: -      processToken,
+8615: -      startedAt,
+8616: -      readyPath,
+8617: -    );
+8618: -    helperProcesses.push(child);
+8619: -    await waitUntil(() => existsSync(readyPath));
+8620: -    const pid = Number(readFileSync(readyPath, "utf8"));
+8621: -    daemonPids.push(pid);
+8622: -    const registry = new DaemonRegistry(identity.registryDirectory);
+8623: -    registry.write({
+8624: -      schemaVersion: DAEMON_RECORD_SCHEMA_VERSION,
+8625: -      protocolVersion: DAEMON_PROTOCOL_VERSION,
+8626: -      symnavVersion: "0.1.0",
+8627: -      workspaceRoot,
+8628: -      workspaceKey: identity.workspaceKey,
+8629: -      stateKey: identity.stateKey,
+8630: -      identityKey: identity.identityKey,
+8631: -      instanceId,
+8632: -      processToken,
+8633: -      endpoint: identity.endpoint(instanceId),
+8634: -      pid,
+8635: -      state: "ready",
+8636: -      startedAt,
+8637: -      readyAt: startedAt,
+8638: -      fileCount: 1,
+8639: -      memoryCapBytes: Number.MAX_SAFE_INTEGER,
+8640: -    });
+8641: -
+8642: -    const statusStartedAt = Date.now();
+8643: -    const status = runSymnavBinary(["daemon", "status", "--json"], {
+8644: -      cwd: tmpdir(),
+8645: -      env: { SYMNAV_STATE_DIR: stateDir },
+8646: -    });
+8647: -
+8648: -    expect(Date.now() - statusStartedAt).toBeLessThan(5_000);
+8649: -    expect(JSON.parse(status.stdout)).toEqual({
+8650: -      schemaVersion: 1,
+8651: -      daemons: [expect.objectContaining({ state: "unresponsive", workspaceRoot, pid })],
+8652: -    });
+8653: -    expect(registry.read(identity)).toMatchObject({ instanceId, processToken, pid });
+8654: -  });
+8655: -
+8656: -  it("reports malformed authenticated activity without leaking or replacing ownership", async () => {
+8657: -    const stateDir = temporaryStateDirectory(stateDirectories);
+8658: -    const workspaceRoot = temporaryWorkspace(stateDirectories);
+8659: -    const instanceId = "malformed-activity";
+8660: -    const processToken = "malformed-activity-process";
+8661: -    const startedAt = Date.now();
+8662: -    const readyPath = join(stateDir, "malformed-activity-ready");
+8663: -    const secret = "/private/source/PaymentProcessor::charge?token=secret";
+8664: -    const identity = DaemonWorkspaceIdentity.from(workspaceRoot, canonicalStateDir(stateDir));
+8665: -    const child = spawnMalformedActivityDaemon(
+8666: -      identity.endpoint(instanceId),
+8667: -      instanceId,
+8668: -      processToken,
+8669: -      startedAt,
+8670: -      readyPath,
+8671: -      secret,
+8672: -    );
+8673: -    helperProcesses.push(child);
+8674: -    await waitUntil(() => existsSync(readyPath));
+8675: -    const pid = Number(readFileSync(readyPath, "utf8"));
+8676: -    daemonPids.push(pid);
+8677: -    const registry = new DaemonRegistry(identity.registryDirectory);
+8678: -    registry.write({
+8679: -      schemaVersion: DAEMON_RECORD_SCHEMA_VERSION,
+8680: -      protocolVersion: DAEMON_PROTOCOL_VERSION,
+8681: -      symnavVersion: "0.1.0",
+8682: -      workspaceRoot,
+8683: -      workspaceKey: identity.workspaceKey,
+8684: -      stateKey: identity.stateKey,
+8685: -      identityKey: identity.identityKey,
+8686: -      instanceId,
+8687: -      processToken,
+8688: -      endpoint: identity.endpoint(instanceId),
+8689: -      pid,
+8690: -      state: "ready",
+8691: -      startedAt,
+8692: -      readyAt: startedAt,
+8693: -      fileCount: 1,
+8694: -      memoryCapBytes: Number.MAX_SAFE_INTEGER,
+8695: -    });
+8696: -
+8697: -    const statusStartedAt = Date.now();
+8698: -    const status = runSymnavBinary(["daemon", "status", "--json"], {
+8699: -      cwd: tmpdir(),
+8700: -      env: { SYMNAV_STATE_DIR: stateDir },
+8701: -    });
+8702: -
+8703: -    expect(Date.now() - statusStartedAt).toBeLessThan(5_000);
+8704: -    expect(status.stdout).not.toContain(secret);
+8705: -    expect(JSON.parse(status.stdout)).toEqual({
+8706: -      schemaVersion: 1,
+8707: -      daemons: [expect.objectContaining({ state: "unresponsive", workspaceRoot, pid })],
+8708: -    });
+8709: -    expect(registry.read(identity)).toMatchObject({ instanceId, processToken, pid });
+8710: -  });
+8711: -
+8712: -  it("returns the cold workspace error and exits after workspace deletion", async () => {
+8713: -    const stateDir = temporaryStateDirectory(stateDirectories);
+8714: -    const workspaceRoot = mkdtempSync(join(tmpdir(), "symnav-deleted-workspace-"));
+8715: -    stateDirectories.push(workspaceRoot);
+8716: -    mkdirSync(join(workspaceRoot, ".git"));
+8717: -    writeFileSync(join(workspaceRoot, "input.ts"), "export const value = 1;\n");
+8718: -    const started = runSymnavBinary(["daemon", "start"], {
+8719: -      cwd: workspaceRoot,
+8720: -      env: { SYMNAV_STATE_DIR: stateDir },
+8721: -    });
+8722: -    expect(started.status).toBe(0);
+8723: -    const record = daemonRecords(stateDir)[0];
+8724: -    expect(record).toBeDefined();
+8725: -    daemonPids.push(record!.pid);
+8726: -    E2eProcessCleanup.removeDirectories([workspaceRoot]);
+8727: -
+8728: -    const cold = runSymnavBinary(["--cwd", workspaceRoot, "overview", "input.ts"], {
+8729: -      cwd: tmpdir(),
+8730: -      env: { SYMNAV_DAEMON: "0" },
+8731: -    });
+8732: -    const response = await (
+8733: -      await new LocalDaemonTransport().execute(record!.endpoint, {
+8734: -        kind: "execute",
+8735: -        protocolVersion: DAEMON_PROTOCOL_VERSION,
+8736: -        instanceId: record!.instanceId,
+8737: -        processToken: record!.processToken,
+8738: -        requestId: "deleted-workspace",
+8739: -        request: {
+8740: -          argv: ["overview", "input.ts"],
+8741: -          cwd: workspaceRoot,
+8742: -          telemetryEnabled: false,
+8743: -        },
+8744: -      })
+8745: -    ).completion;
+8746: -
+8747: -    expect(response.status).toBe("completed");
+8748: -    if (response.status !== "completed") throw new Error("Expected command result");
+8749: -    expect(await replay(response.result.output, "stdout")).toBe(cold.stdout);
+8750: -    expect(await replay(response.result.output, "stderr")).toBe(cold.stderr);
+8751: -    expect(response.result.exitCode).toBe(cold.status);
+8752: -    await response.result.output.dispose();
+8753: -    await waitUntil(() => {
+8754: -      runSymnavBinary(["daemon", "status", "--json"], {
+8755: -        cwd: tmpdir(),
+8756: -        env: { SYMNAV_STATE_DIR: stateDir },
+8757: -      });
+8758: -      return daemonRecords(stateDir).length === 0;
+8759: -    }, 90_000);
+8760: -  }, 120_000);
+8761:  });
+8762:  
+8763:  function temporaryStateDirectory(directories: string[]): string {
+8764: @@ -544,223 +101,15 @@ function temporaryStateDirectory(directories: string[]): string {
+8765:    return directory;
+8766:  }
+8767:  
+8768: -function temporaryWorkspace(directories: string[], label = "workspace"): string {
+8769: -  const directory = mkdtempSync(join(tmpdir(), `symnav-daemon-status-${label}-`));
+8770: -  directories.push(directory);
+8771: -  mkdirSync(join(directory, ".git"));
+8772: -  writeFileSync(join(directory, "input.ts"), "export const value = 1;\n");
+8773: -  return directory;
+8774: -}
+8775: -
+8776: -function spawnStartupPublisher(
+8777: -  workspaceRoot: string,
+8778: -  stateDirectory: string,
+8779: -  readyPath: string,
+8780: -  barrierPath: string,
+8781: -  resultPath: string,
+8782: -): ChildProcess {
+8783: -  return spawn(
+8784: -    process.execPath,
+8785: -    [
+8786: -      fileURLToPath(new URL("../../../node_modules/tsx/dist/cli.mjs", import.meta.url)),
+8787: -      fileURLToPath(new URL("../../helpers/daemon-startup-publisher.ts", import.meta.url)),
+8788: -      workspaceRoot,
+8789: -      stateDirectory,
+8790: -      readyPath,
+8791: -      barrierPath,
+8792: -      resultPath,
+8793: -    ],
+8794: -    { stdio: "ignore" },
+8795: -  );
+8796: -}
+8797: -
+8798: -function spawnStuckDaemon(
+8799: -  workspaceRoot: string,
+8800: -  stateDirectory: string,
+8801: -  instanceId: string,
+8802: -  processToken: string,
+8803: -  readyPath: string,
+8804: -  requestStartedPath: string,
+8805: -): ChildProcess {
+8806: -  return spawn(
+8807: -    process.execPath,
+8808: -    [
+8809: -      fileURLToPath(new URL("../../../node_modules/tsx/dist/cli.mjs", import.meta.url)),
+8810: -      fileURLToPath(new URL("../../helpers/workspace-daemon-stuck.ts", import.meta.url)),
+8811: -      workspaceRoot,
+8812: -      stateDirectory,
+8813: -      instanceId,
+8814: -      processToken,
+8815: -      readyPath,
+8816: -      requestStartedPath,
+8817: -      "--no-release",
+8818: -      "0.1.0",
+8819: -    ],
+8820: -    { stdio: "ignore" },
+8821: -  );
+8822: -}
+8823: -
+8824: -function spawnLiveSilentDaemon(
+8825: -  endpoint: string,
+8826: -  instanceId: string,
+8827: -  processToken: string,
+8828: -  startedAt: number,
+8829: -  readyPath: string,
+8830: -): ChildProcess {
+8831: -  return spawn(
+8832: -    process.execPath,
+8833: -    [
+8834: -      fileURLToPath(new URL("../../../node_modules/tsx/dist/cli.mjs", import.meta.url)),
+8835: -      fileURLToPath(new URL("../../helpers/daemon-live-silent.ts", import.meta.url)),
+8836: -      endpoint,
+8837: -      instanceId,
+8838: -      processToken,
+8839: -      String(startedAt),
+8840: -      readyPath,
+8841: -    ],
+8842: -    { stdio: "ignore" },
+8843: -  );
+8844: -}
+8845: -
+8846: -function spawnMalformedActivityDaemon(
+8847: -  endpoint: string,
+8848: -  instanceId: string,
+8849: -  processToken: string,
+8850: -  startedAt: number,
+8851: -  readyPath: string,
+8852: -  secret: string,
+8853: -): ChildProcess {
+8854: -  return spawn(
+8855: -    process.execPath,
+8856: -    [
+8857: -      fileURLToPath(new URL("../../../node_modules/tsx/dist/cli.mjs", import.meta.url)),
+8858: -      fileURLToPath(new URL("../../helpers/daemon-malformed-activity.ts", import.meta.url)),
+8859: -      endpoint,
+8860: -      instanceId,
+8861: -      processToken,
+8862: -      String(startedAt),
+8863: -      readyPath,
+8864: -      secret,
+8865: -    ],
+8866: -    { stdio: "ignore" },
+8867: -  );
+8868: -}
+8869: -
+8870: -function spawnCallerExitStartup(
+8871: -  workspaceRoot: string,
+8872: -  stateDirectory: string,
+8873: -  instanceId: string,
+8874: -  processToken: string,
+8875: -  bootPath: string,
+8876: -  readyPath: string,
+8877: -  callerBarrierPath: string,
+8878: -  childReleasePath: string,
+8879: -): ChildProcess {
+8880: -  return spawn(
+8881: -    process.execPath,
+8882: -    [
+8883: -      fileURLToPath(new URL("../../../node_modules/tsx/dist/cli.mjs", import.meta.url)),
+8884: -      fileURLToPath(new URL("../../helpers/daemon-startup-caller-exit.ts", import.meta.url)),
+8885: -      workspaceRoot,
+8886: -      stateDirectory,
+8887: -      instanceId,
+8888: -      processToken,
+8889: -      bootPath,
+8890: -      readyPath,
+8891: -      callerBarrierPath,
+8892: -      childReleasePath,
+8893: -    ],
+8894: -    { stdio: "ignore" },
+8895: -  );
+8896: -}
+8897: -
+8898: -function spawnDaemonStart(workspaceRoot: string, stateDirectory: string): ChildProcess {
+8899: -  return spawn(
+8900: -    process.execPath,
+8901: -    [fileURLToPath(new URL("../../../dist/cli.js", import.meta.url)), "daemon", "start"],
+8902: -    {
+8903: -      cwd: workspaceRoot,
+8904: -      env: {
+8905: -        ...process.env,
+8906: -        SYMNAV_STATE_DIR: stateDirectory,
+8907: -        SYMNAV_TELEMETRY: "0",
+8908: -      },
+8909: -      stdio: "ignore",
+8910: -    },
+8911: -  );
+8912: -}
+8913: -
+8914: -function waitForProcess(child: ChildProcess): Promise<void> {
+8915: -  if (child.exitCode !== null) {
+8916: -    return child.exitCode === 0
+8917: -      ? Promise.resolve()
+8918: -      : Promise.reject(new Error(`Startup publisher exited with code ${String(child.exitCode)}`));
+8919: -  }
+8920: -  if (child.signalCode !== null) {
+8921: -    return Promise.reject(
+8922: -      new Error(`Startup publisher exited with signal ${String(child.signalCode)}`),
+8923: -    );
+8924: -  }
+8925: -  return new Promise((resolve, reject) => {
+8926: -    child.once("error", reject);
+8927: -    child.once("exit", (code) => {
+8928: -      if (code === 0) resolve();
+8929: -      else reject(new Error(`Startup publisher exited with code ${String(code)}`));
+8930: -    });
+8931: -  });
+8932: -}
+8933: -
+8934: -function waitForKilledProcess(child: ChildProcess): Promise<void> {
+8935: -  if (child.signalCode !== null || (child.exitCode !== null && child.exitCode !== 0)) {
+8936: -    return Promise.resolve();
+8937: -  }
+8938: -  if (child.exitCode === 0) {
+8939: -    return Promise.reject(new Error("Startup caller did not exit abruptly"));
+8940: -  }
+8941: -  return new Promise((resolve, reject) => {
+8942: -    child.once("error", reject);
+8943: -    child.once("exit", (code, signal) => {
+8944: -      if (signal !== null || (code !== null && code !== 0)) resolve();
+8945: -      else reject(new Error("Startup caller did not exit abruptly"));
+8946: -    });
+8947: -  });
+8948: -}
+8949: -
+8950: -function isProcessAlive(pid: number): boolean {
+8951: -  try {
+8952: -    process.kill(pid, 0);
+8953: -    return true;
+8954: -  } catch {
+8955: -    return false;
+8956: -  }
+8957: +function temporaryWorkspace(directories: string[], name = "workspace"): string {
+8958: +  const parent = mkdtempSync(join(tmpdir(), `symnav-daemon-status-${name}-`));
+8959: +  directories.push(parent);
+8960: +  const workspace = join(parent, name);
+8961: +  mkdirSync(join(workspace, ".git"), { recursive: true });
+8962: +  writeFileSync(join(workspace, "input.ts"), "export const value = 1;\n");
+8963: +  return workspace;
+8964:  }
+8965:  
+8966:  function captureDaemonPids(stateDir: string, pids: number[]): void {
+8967: -  pids.push(...daemonRecords(stateDir).map((record) => record.pid));
+8968: -}
+8969: -
+8970: -function daemonRecords(stateDir: string): readonly DaemonRecord[] {
+8971: -  return DaemonStateFiles.matchingPaths(stateDir, ".json").map(
+8972: -    (path) => JSON.parse(readFileSync(path, "utf8")) as DaemonRecord,
+8973: -  );
+8974: -}
+8975: -
+8976: -async function replay(
+8977: -  output: import("../../../src/command-execution-result.js").CommandOutput,
+8978: -  stream: "stdout" | "stderr",
+8979: -): Promise<string> {
+8980: -  const chunks = [];
+8981: -  for await (const record of output.records()) {
+8982: -    if (record.stream === stream) chunks.push(Buffer.from(record.bytes));
+8983: -  }
+8984: -  return Buffer.concat(chunks).toString("utf8");
+8985: -}
+8986: -
+8987: -async function waitUntil(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
+8988: -  const deadline = Date.now() + timeoutMs;
+8989: -  while (Date.now() <= deadline) {
+8990: -    if (predicate()) return;
+8991: -    await new Promise((resolve) => setTimeout(resolve, 10));
+8992: -  }
+8993: -  throw new Error("Timed out waiting for daemon shutdown");
+8994: +  pids.push(...new CliDaemonTesting(stateDir).processIds());
+8995:  }
+8996: diff --git a/apps/cli/test/e2e/daemon/stop.test.ts b/apps/cli/test/e2e/daemon/stop.test.ts
+8997: index 922530d1b..f205d7f10 100644
+8998: --- a/apps/cli/test/e2e/daemon/stop.test.ts
+8999: +++ b/apps/cli/test/e2e/daemon/stop.test.ts
+9000: @@ -1,29 +1,12 @@
+9001: -import { spawn, type ChildProcess } from "node:child_process";
+9002: -import {
+9003: -  existsSync,
+9004: -  mkdirSync,
+9005: -  mkdtempSync,
+9006: -  readFileSync,
+9007: -  realpathSync,
+9008: -  writeFileSync,
+9009: -} from "node:fs";
+9010: +import type { ChildProcess } from "node:child_process";
+9011: +import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+9012:  import { tmpdir } from "node:os";
+9013:  import { join } from "node:path";
+9014: -import { fileURLToPath } from "node:url";
+9015:  import { afterEach, describe, expect, it } from "vitest";
+9016:  import { runSymnavBinary } from "@symnav/testing";
+9017: -import { canonicalStateDir } from "@symnav/telemetry";
+9018: -import {
+9019: -  DAEMON_PROTOCOL_VERSION,
+9020: -  DAEMON_RECORD_SCHEMA_VERSION,
+9021: -  type DaemonRecord,
+9022: -} from "../../../src/daemon/daemon-protocol.js";
+9023: -import { DaemonRegistry } from "../../../src/daemon/daemon-registry.js";
+9024: -import { DaemonWorkspaceIdentity } from "../../../src/daemon/daemon-workspace-identity.js";
+9025: -import { LocalDaemonTransport } from "../../../src/daemon/local-daemon-transport.js";
+9026:  import { canonicalWorkspaceRoot } from "../../helpers/canonical-workspace-root.js";
+9027:  import { E2eProcessCleanup } from "../../helpers/e2e-process-cleanup.js";
+9028: -import { DaemonStateFiles } from "../../helpers/daemon-state-files.js";
+9029: +import { CliDaemonTesting } from "../../helpers/daemon-testing.js";
+9030:  
+9031:  describe("symnav daemon stop", () => {
+9032:    const stateDirectories: string[] = [];
+9033: @@ -60,7 +43,7 @@ describe("symnav daemon stop", () => {
+9034:      expect(stopped.status).toBe(0);
+9035:      expect(stopped.stderr).toBe("");
+9036:      expect(stopped.stdout).toMatch(/^Stopped daemon for .+ \(pid \d+\)\n$/);
+9037: -    const events = daemonLogEvents(stateDir);
+9038: +    const events = daemonLogEvents(stateDir, cwd);
+9039:      expect(events).toEqual(
+9040:        expect.arrayContaining([
+9041:          expect.objectContaining({ kind: "start" }),
+9042: @@ -96,249 +79,8 @@ describe("symnav daemon stop", () => {
+9043:        expect.objectContaining({ status: "stopped", pid: expect.any(Number) }),
+9044:      );
+9045:    });
+9046: -
+9047: -  it("waits for a launched starting process to exit before reporting stopped", async () => {
+9048: -    const stateDir = temporaryStateDirectory(stateDirectories);
+9049: -    const cwd = temporaryWorkspace(stateDirectories);
+9050: -    const identity = DaemonWorkspaceIdentity.from(
+9051: -      canonicalWorkspaceRoot(realpathSync(cwd)),
+9052: -      canonicalStateDir(stateDir),
+9053: -    );
+9054: -    const registry = new DaemonRegistry(identity.registryDirectory);
+9055: -    const instanceId = "starting-stop";
+9056: -    const processToken = "starting-stop-process";
+9057: -    const child = spawn(process.execPath, ["-e", "setInterval(() => undefined, 1000)"], {
+9058: -      stdio: "ignore",
+9059: -    });
+9060: -    helperProcesses.push(child);
+9061: -    if (child.pid === undefined) throw new Error("Starting process did not receive a PID");
+9062: -    expect(registry.acquireStartup(identity, instanceId)).toBeDefined();
+9063: -    const record: DaemonRecord = {
+9064: -      schemaVersion: DAEMON_RECORD_SCHEMA_VERSION,
+9065: -      protocolVersion: DAEMON_PROTOCOL_VERSION,
+9066: -      symnavVersion: "test",
+9067: -      workspaceRoot: identity.workspaceRoot,
+9068: -      workspaceKey: identity.workspaceKey,
+9069: -      stateKey: identity.stateKey,
+9070: -      identityKey: identity.identityKey,
+9071: -      instanceId,
+9072: -      processToken,
+9073: -      endpoint: identity.endpoint(instanceId),
+9074: -      pid: child.pid,
+9075: -      state: "starting",
+9076: -      startedAt: Date.now(),
+9077: -      memoryCapBytes: Number.MAX_SAFE_INTEGER,
+9078: -    };
+9079: -    expect(registry.writeStartingIfStartupOwner(identity, record)).toBe(true);
+9080: -
+9081: -    const stopped = await runBuiltStop(cwd, stateDir);
+9082: -
+9083: -    expect(stopped).toEqual({
+9084: -      status: 0,
+9085: -      stdout: expect.stringMatching(/^\{"status":"stopped"/),
+9086: -      stderr: "",
+9087: -    });
+9088: -    expect(processIsAlive(record.pid)).toBe(false);
+9089: -    expect(registry.readStoredInstance(identity, instanceId)).toBeUndefined();
+9090: -    expect(registry.startupOwner(identity)).toBeUndefined();
+9091: -    helperProcesses.splice(helperProcesses.indexOf(child), 1);
+9092: -  }, 15_000);
+9093: -
+9094: -  it("drains an in-flight request before the built stop command returns", async () => {
+9095: -    const stateDir = temporaryStateDirectory(stateDirectories);
+9096: -    const cwd = temporaryWorkspace(stateDirectories);
+9097: -    const releasePath = join(stateDir, "release-request");
+9098: -    const runtime = await startControlledDaemon(
+9099: -      stateDir,
+9100: -      canonicalWorkspaceRoot(realpathSync(cwd)),
+9101: -      releasePath,
+9102: -    );
+9103: -    helperProcesses.push(runtime.child);
+9104: -    const transport = new LocalDaemonTransport({ requestTimeoutMs: 10_000 });
+9105: -    const execution = transport.execute(runtime.record.endpoint, {
+9106: -      kind: "execute",
+9107: -      protocolVersion: DAEMON_PROTOCOL_VERSION,
+9108: -      instanceId: runtime.record.instanceId,
+9109: -      processToken: runtime.record.processToken,
+9110: -      requestId: "built-drain",
+9111: -      request: { argv: ["--version"], cwd, telemetryEnabled: false },
+9112: -    });
+9113: -    await waitUntil(() => existsSync(runtime.requestStartedPath));
+9114: -    const stopping = runBuiltStop(cwd, stateDir);
+9115: -    await new Promise((resolve) => setTimeout(resolve, 100));
+9116: -    writeFileSync(releasePath, "release");
+9117: -
+9118: -    const response = await (await execution).completion;
+9119: -    const stopped = await stopping;
+9120: -
+9121: -    expect(response).toMatchObject({ status: "completed", result: { exitCode: 0 } });
+9122: -    expect(stopped).toEqual({
+9123: -      status: 0,
+9124: -      stdout: expect.stringMatching(/^\{"status":"stopped"/),
+9125: -      stderr: "",
+9126: -    });
+9127: -    await waitForProcess(runtime.child);
+9128: -    helperProcesses.splice(helperProcesses.indexOf(runtime.child), 1);
+9129: -  }, 15_000);
+9130: -
+9131: -  it("force-kills stuck work before the built stop command renders success", async () => {
+9132: -    const stateDir = temporaryStateDirectory(stateDirectories);
+9133: -    const cwd = temporaryWorkspace(stateDirectories);
+9134: -    const runtime = await startControlledDaemon(
+9135: -      stateDir,
+9136: -      canonicalWorkspaceRoot(realpathSync(cwd)),
+9137: -    );
+9138: -    helperProcesses.push(runtime.child);
+9139: -    const transport = new LocalDaemonTransport({ requestTimeoutMs: 10_000 });
+9140: -    const execution = transport.execute(runtime.record.endpoint, {
+9141: -      kind: "execute",
+9142: -      protocolVersion: DAEMON_PROTOCOL_VERSION,
+9143: -      instanceId: runtime.record.instanceId,
+9144: -      processToken: runtime.record.processToken,
+9145: -      requestId: "built-force",
+9146: -      request: { argv: ["--version"], cwd, telemetryEnabled: false },
+9147: -    });
+9148: -    await waitUntil(() => existsSync(runtime.requestStartedPath));
+9149: -
+9150: -    const stopped = await runBuiltStop(cwd, stateDir);
+9151: -
+9152: -    expect(stopped).toEqual({
+9153: -      status: 0,
+9154: -      stdout: expect.stringMatching(/^\{"status":"killed"/),
+9155: -      stderr: "",
+9156: -    });
+9157: -    expect(() => process.kill(runtime.record.pid, 0)).toThrow();
+9158: -    await expect(execution.then((receipt) => receipt.completion)).resolves.toMatchObject({
+9159: -      status: "failed",
+9160: -      code: "stopping",
+9161: -    });
+9162: -    await waitForProcess(runtime.child);
+9163: -    helperProcesses.splice(helperProcesses.indexOf(runtime.child), 1);
+9164: -  }, 15_000);
+9165:  });
+9166:  
+9167: -interface ControlledDaemon {
+9168: -  readonly child: ChildProcess;
+9169: -  readonly record: DaemonRecord;
+9170: -  readonly requestStartedPath: string;
+9171: -}
+9172: -
+9173: -async function startControlledDaemon(
+9174: -  stateDirectory: string,
+9175: -  workspaceRoot: string,
+9176: -  releasePath?: string,
+9177: -): Promise<ControlledDaemon> {
+9178: -  const identity = DaemonWorkspaceIdentity.from(workspaceRoot, canonicalStateDir(stateDirectory));
+9179: -  const registry = new DaemonRegistry(identity.registryDirectory);
+9180: -  const instanceId = `controlled-${releasePath === undefined ? "forced" : "draining"}`;
+9181: -  const processToken = `${instanceId}-token`;
+9182: -  const readyPath = join(stateDirectory, `${instanceId}-ready`);
+9183: -  const requestStartedPath = join(stateDirectory, `${instanceId}-request`);
+9184: -  const lease = registry.acquireStartup(identity, instanceId);
+9185: -  if (lease === undefined) throw new Error("Expected controlled daemon startup ownership");
+9186: -  const child = spawn(
+9187: -    process.execPath,
+9188: -    [
+9189: -      fileURLToPath(new URL("../../../node_modules/tsx/dist/cli.mjs", import.meta.url)),
+9190: -      fileURLToPath(new URL("../../helpers/workspace-daemon-stuck.ts", import.meta.url)),
+9191: -      workspaceRoot,
+9192: -      stateDirectory,
+9193: -      instanceId,
+9194: -      processToken,
+9195: -      readyPath,
+9196: -      requestStartedPath,
+9197: -      ...(releasePath === undefined ? [] : [releasePath]),
+9198: -    ],
+9199: -    { stdio: "ignore" },
+9200: -  );
+9201: -  await waitUntil(() => existsSync(`${readyPath}.boot`));
+9202: -  const daemonPid = Number(readFileSync(`${readyPath}.boot`, "utf8"));
+9203: -  const record: DaemonRecord = {
+9204: -    schemaVersion: DAEMON_RECORD_SCHEMA_VERSION,
+9205: -    protocolVersion: DAEMON_PROTOCOL_VERSION,
+9206: -    symnavVersion: "test",
+9207: -    workspaceRoot,
+9208: -    workspaceKey: identity.workspaceKey,
+9209: -    stateKey: identity.stateKey,
+9210: -    identityKey: identity.identityKey,
+9211: -    instanceId,
+9212: -    processToken,
+9213: -    endpoint: identity.endpoint(instanceId),
+9214: -    pid: daemonPid,
+9215: -    state: "starting",
+9216: -    startedAt: Date.now(),
+9217: -    memoryCapBytes: Number.MAX_SAFE_INTEGER,
+9218: -  };
+9219: -  if (!registry.writeStartingIfStartupOwner(identity, record)) {
+9220: -    throw new Error("Controlled daemon lost startup ownership");
+9221: -  }
+9222: -  await waitUntil(() => existsSync(readyPath));
+9223: -  lease.release();
+9224: -  const readyRecord = registry.read(identity);
+9225: -  if (readyRecord?.state !== "ready") throw new Error("Controlled daemon did not become ready");
+9226: -  return { child, record: readyRecord, requestStartedPath };
+9227: -}
+9228: -
+9229: -function runBuiltStop(
+9230: -  cwd: string,
+9231: -  stateDirectory: string,
+9232: -): Promise<{ readonly status: number | null; readonly stdout: string; readonly stderr: string }> {
+9233: -  const child = spawn(
+9234: -    process.execPath,
+9235: -    [fileURLToPath(new URL("../../../dist/cli.js", import.meta.url)), "daemon", "stop", "--json"],
+9236: -    {
+9237: -      cwd,
+9238: -      env: { ...process.env, SYMNAV_STATE_DIR: stateDirectory, SYMNAV_TELEMETRY: "0" },
+9239: -      stdio: ["ignore", "pipe", "pipe"],
+9240: -    },
+9241: -  );
+9242: -  let stdout = "";
+9243: -  let stderr = "";
+9244: -  child.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
+9245: -    stdout += chunk;
+9246: -  });
+9247: -  child.stderr?.setEncoding("utf8").on("data", (chunk: string) => {
+9248: -    stderr += chunk;
+9249: -  });
+9250: -  return new Promise((resolve, reject) => {
+9251: -    child.once("error", reject);
+9252: -    child.once("exit", (status) => resolve({ status, stdout, stderr }));
+9253: -  });
+9254: -}
+9255: -
+9256: -function waitForProcess(child: ChildProcess): Promise<void> {
+9257: -  if (child.exitCode !== null) {
+9258: -    return child.exitCode === 0
+9259: -      ? Promise.resolve()
+9260: -      : Promise.reject(new Error(`Controlled daemon exited with code ${String(child.exitCode)}`));
+9261: -  }
+9262: -  return new Promise((resolve, reject) => {
+9263: -    child.once("error", reject);
+9264: -    child.once("exit", (code) => {
+9265: -      if (code === 0) resolve();
+9266: -      else reject(new Error(`Controlled daemon exited with code ${String(code)}`));
+9267: -    });
+9268: -  });
+9269: -}
+9270: -
+9271: -async function waitUntil(predicate: () => boolean): Promise<void> {
+9272: -  const deadline = Date.now() + 5_000;
+9273: -  while (Date.now() <= deadline) {
+9274: -    if (predicate()) return;
+9275: -    await new Promise((resolve) => setTimeout(resolve, 10));
+9276: -  }
+9277: -  throw new Error("Timed out waiting for controlled daemon state");
+9278: -}
+9279: -
+9280: -function processIsAlive(pid: number): boolean {
+9281: -  try {
+9282: -    process.kill(pid, 0);
+9283: -    return true;
+9284: -  } catch {
+9285: -    return false;
+9286: -  }
+9287: -}
+9288: -
+9289:  function temporaryStateDirectory(directories: string[]): string {
+9290:    const directory = mkdtempSync(join(tmpdir(), "symnav-daemon-stop-e2e-"));
+9291:    directories.push(directory);
+9292: @@ -354,18 +96,14 @@ function temporaryWorkspace(directories: string[]): string {
+9293:  }
+9294:  
+9295:  function captureDaemonPids(stateDir: string, pids: number[]): void {
+9296: -  for (const recordPath of DaemonStateFiles.matchingPaths(stateDir, ".json")) {
+9297: -    const record = JSON.parse(readFileSync(recordPath, "utf8")) as { pid: number };
+9298: -    pids.push(record.pid);
+9299: -  }
+9300: +  pids.push(...new CliDaemonTesting(stateDir).processIds());
+9301:  }
+9302:  
+9303: -function daemonLogEvents(stateDir: string): readonly Record<string, unknown>[] {
+9304: -  const logPath = DaemonStateFiles.matchingPaths(stateDir, ".log")[0];
+9305: -  if (logPath === undefined) return [];
+9306: -  return readFileSync(logPath, "utf8")
+9307: -    .trim()
+9308: -    .split("\n")
+9309: -    .filter((line) => line.startsWith("{"))
+9310: -    .map((line) => JSON.parse(line) as Record<string, unknown>);
+9311: +function daemonLogEvents(
+9312: +  stateDir: string,
+9313: +  workspaceRoot: string,
+9314: +): readonly Record<string, unknown>[] {
+9315: +  return new CliDaemonTesting(stateDir).inspector.readDiagnostics(
+9316: +    canonicalWorkspaceRoot(realpathSync(workspaceRoot)),
+9317: +  ).events;
+9318:  }

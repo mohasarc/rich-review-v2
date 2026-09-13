@@ -1,0 +1,64 @@
+Git object: b100221db48754656328391b878299c5a0bab443:apps/cli/src/daemon/local-daemon-transport.ts
+Original lines: 445–505
+
+445:       const socket = createConnection(endpoint);
+446:       let delivery: DaemonDeliveryState = "not-submitted";
+447:       let acceptance: DaemonExecutionAcceptance | undefined;
+448:       let terminal = false;
+449:       let outerSettled = false;
+450:       let completionSettled = false;
+451:       let resumeCount = 0;
+452:       let resolveCompletion!: (value: Awaited<DaemonExecutionReceipt["completion"]>) => void;
+453:       let rejectCompletion!: (error: DaemonTransportError) => void;
+454:       const completion = new Promise<Awaited<DaemonExecutionReceipt["completion"]>>(
+455:         (completionResolve, completionReject) => {
+456:           resolveCompletion = completionResolve;
+457:           rejectCompletion = completionReject;
+458:         },
+459:       );
+460:       let consumption = Promise.resolve();
+461:       const fail = (error: unknown): void => {
+462:         const transportError = LocalDaemonTransport.transportError(error, delivery);
+463:         socket.destroy();
+464:         if (!outerSettled) {
+465:           outerSettled = true;
+466:           void output.dispose().finally(() => reject(transportError));
+467:           return;
+468:         }
+469:         if (!completionSettled) {
+470:           completionSettled = true;
+471:           void output.dispose().finally(() => rejectCompletion(transportError));
+472:         }
+473:       };
+474:       const resume = (): boolean => {
+475:         if (
+476:           resumeCount >= this.deliveryPolicy.resultTransferResumeLimitPerExecutionAttempt ||
+477:           completionSettled ||
+478:           acceptance === undefined ||
+479:           transfer.manifest === undefined ||
+480:           terminal
+481:         ) {
+482:           return false;
+483:         }
+484:         resumeCount += 1;
+485:         socket.destroy();
+486:         transfer.beginConnection();
+487:         void this.fetchCompletion(endpoint, request, output, transfer)
+488:           .then((completionValue) => {
+489:             if (completionSettled) return;
+490:             completionSettled = true;
+491:             resolveCompletion(completionValue);
+492:           })
+493:           .catch(fail);
+494:         return true;
+495:       };
+496:       socket.setTimeout(this.executionRequestTimeoutMs, () =>
+497:         fail(new DaemonTransportError("timeout", delivery, "Daemon request timed out")),
+498:       );
+499:       socket.once("error", (error) => {
+500:         void consumption
+501:           .then(() => {
+502:             if (resume()) return;
+503:             fail(
+504:               new DaemonTransportError(
+505:                 delivery === "not-submitted" ? "unreachable" : "closed",

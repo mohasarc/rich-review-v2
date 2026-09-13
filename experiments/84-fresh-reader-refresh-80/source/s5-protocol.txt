@@ -1,0 +1,126 @@
+Bundle: inputs/stack/diff.patch
+Original patch lines: 36086–36208
+
+36086: diff --git a/apps/cli/src/daemon/daemon-protocol.ts b/packages/daemon/src/transport/protocol.ts
+36087: similarity index 92%
+36088: rename from apps/cli/src/daemon/daemon-protocol.ts
+36089: rename to packages/daemon/src/transport/protocol.ts
+36090: index 575f4498c..f22239216 100644
+36091: --- a/apps/cli/src/daemon/daemon-protocol.ts
+36092: +++ b/packages/daemon/src/transport/protocol.ts
+36093: @@ -1,24 +1,12 @@
+36094: -import type { CliExecutionRequest } from "../command-execution-result.js";
+36095: -import type { CompletionSpoolManifest } from "./completion-spool.js";
+36096: -import type { CommandOutputStream } from "../command-execution-result.js";
+36097: -import type { BackendRefreshSummary } from "@symnav/core";
+36098: +import type { DaemonCommandName, DaemonExecutorRequest, DaemonOutputStream } from "@symnav/daemon";
+36099: +import type { DaemonRejectedExecutionFrame } from "../daemon-admission.js";
+36100: +import type { DaemonExecutionFailureCode } from "../daemon-execution-failure.js";
+36101: +import type { CompletionSpoolManifest } from "../delivery/completion-spool.js";
+36102:  
+36103: -export const DAEMON_PROTOCOL_VERSION = 4;
+36104: +export const DAEMON_PROTOCOL_VERSION = 5;
+36105:  export const DAEMON_RECORD_SCHEMA_VERSION = 2;
+36106:  export const DAEMON_DIAGNOSTIC_SCHEMA_VERSION = 1;
+36107:  
+36108: -export type DaemonCommandName =
+36109: -  | "overview"
+36110: -  | "resolve"
+36111: -  | "def"
+36112: -  | "refs"
+36113: -  | "context"
+36114: -  | "graph"
+36115: -  | "stats"
+36116: -  | "help"
+36117: -  | "version"
+36118: -  | "unknown";
+36119: -
+36120:  export interface DaemonIdentityCoordinates {
+36121:    readonly workspaceRoot: string;
+36122:    readonly workspaceKey: string;
+36123: @@ -43,8 +31,6 @@ export interface DaemonRecord extends DaemonIdentityCoordinates {
+36124:    readonly memoryCapBytes: number;
+36125:  }
+36126:  
+36127: -export type WorkspaceRequestQueueState = "accepting" | "draining" | "closed";
+36128: -
+36129:  export interface DaemonActivitySnapshot {
+36130:    readonly lifecycle: "starting" | "ready" | "busy" | "recovering" | "draining";
+36131:    readonly recoveryDetail?: "resource-pressure" | "worker-replacement";
+36132: @@ -123,26 +109,14 @@ export type DaemonStopResult =
+36133:  
+36134:  export type DaemonStopReason = "graceful" | "idle" | "resource" | "workspace-deleted";
+36135:  
+36136: -export type DaemonExecutionFailureCode =
+36137: -  | "worker-exit"
+36138: -  | "controlled-resource"
+36139: -  | "response-capacity"
+36140: -  | "stopping"
+36141: -  | "internal";
+36142: -
+36143: -export type DaemonExecuteRejectionCode =
+36144: -  | "not-ready"
+36145: -  | "draining"
+36146: -  | "resource-pressure"
+36147: -  | "incompatible";
+36148: -
+36149:  export interface DaemonExecuteRequest {
+36150:    readonly kind: "execute";
+36151:    readonly protocolVersion: number;
+36152:    readonly instanceId: string;
+36153:    readonly processToken: string;
+36154:    readonly requestId: string;
+36155: -  readonly request: CliExecutionRequest;
+36156: +  readonly commandName: DaemonCommandName;
+36157: +  readonly request: DaemonExecutorRequest;
+36158:  }
+36159:  
+36160:  export type DaemonExecutionServerFrame =
+36161: @@ -154,14 +128,7 @@ export type DaemonExecutionServerFrame =
+36162:        readonly acceptedAt: number;
+36163:        readonly queuePosition: number;
+36164:      }
+36165: -  | {
+36166: -      readonly kind: "rejected";
+36167: -      readonly instanceId: string;
+36168: -      readonly processToken: string;
+36169: -      readonly requestId: string;
+36170: -      readonly code: DaemonExecuteRejectionCode;
+36171: -      readonly retrySafe: boolean;
+36172: -    }
+36173: +  | DaemonRejectedExecutionFrame
+36174:    | {
+36175:        readonly kind: "result-manifest";
+36176:        readonly instanceId: string;
+36177: @@ -215,7 +182,7 @@ export interface DaemonResultChunk {
+36178:    readonly requestId: string;
+36179:    readonly offset: number;
+36180:    readonly sequence: number;
+36181: -  readonly stream: CommandOutputStream;
+36182: +  readonly stream: DaemonOutputStream;
+36183:    readonly bytes: Uint8Array;
+36184:  }
+36185:  
+36186: @@ -244,6 +211,13 @@ export interface DaemonWorkerPhaseDurations {
+36187:    readonly workerOutputMs: number;
+36188:  }
+36189:  
+36190: +export interface DaemonRefreshSummary {
+36191: +  readonly added: number;
+36192: +  readonly changed: number;
+36193: +  readonly removed: number;
+36194: +  readonly unchanged: number;
+36195: +}
+36196: +
+36197:  export type DaemonExecutionOutcome = "completed" | "failed";
+36198:  export type DaemonDeliveryOutcome = "delivered" | "disconnected" | "failed";
+36199:  export type DaemonWorkerReplacementCause =
+36200: @@ -303,7 +277,7 @@ export type DaemonOperationDiagnostic =
+36201:        readonly kind: "worker-completed";
+36202:        readonly requestId: string;
+36203:      } & DaemonWorkerPhaseDurations &
+36204: -      BackendRefreshSummary)
+36205: +      DaemonRefreshSummary)
+36206:    | {
+36207:        readonly kind: "response-spooled";
+36208:        readonly requestId: string;

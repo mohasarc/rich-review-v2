@@ -1,0 +1,108 @@
+Bundle: inputs/pr-131/diff.patch
+Original patch lines: 3680–3784
+
+3680: diff --git a/apps/cli/test/helpers/workspace-daemon.ts b/apps/cli/test/helpers/workspace-daemon.ts
+3681: new file mode 100644
+3682: index 000000000..c112561c8
+3683: --- /dev/null
+3684: +++ b/apps/cli/test/helpers/workspace-daemon.ts
+3685: @@ -0,0 +1,99 @@
+3686: +import { DaemonPolicy } from "@symnav/daemon";
+3687: +import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
+3688: +import type { TestDaemonResourcePolicy as DaemonResourcePolicy } from "./daemon-resource-policy.js";
+3689: +import {
+3690: +  WorkspaceDaemon as RuntimeWorkspaceDaemon,
+3691: +  type WorkspaceDaemonOptions,
+3692: +} from "../../src/daemon/workspace-daemon.js";
+3693: +
+3694: +interface TestWorkspaceDaemonPolicyOptions {
+3695: +  readonly policy?: DaemonPolicy;
+3696: +  readonly memoryCapBytes?: number;
+3697: +  readonly resourcePolicy?: DaemonResourcePolicy;
+3698: +  readonly idleTimeoutMs?: number;
+3699: +  readonly resourceCheckIntervalMs?: number;
+3700: +  readonly startupHeartbeatIntervalMs?: number;
+3701: +  readonly completionSpoolLimits?: {
+3702: +    readonly inlineBytes?: number;
+3703: +    readonly maximumResultBytes?: number;
+3704: +    readonly maximumAggregateBytes?: number;
+3705: +  };
+3706: +  readonly operationTraceRetentionMs?: number;
+3707: +  readonly maximumRetainedOperationTraces?: number;
+3708: +}
+3709: +
+3710: +export type TestWorkspaceDaemonOptions = Omit<WorkspaceDaemonOptions, "policy"> &
+3711: +  TestWorkspaceDaemonPolicyOptions;
+3712: +
+3713: +export class TestWorkspaceDaemon extends RuntimeWorkspaceDaemon {
+3714: +  constructor(options: TestWorkspaceDaemonOptions) {
+3715: +    const base = options.policy ?? options.dependencies.daemonPolicy;
+3716: +    const resourceRecord = options.resourcePolicy?.record;
+3717: +    const hardProcessRssBytes = resourceRecord?.hardProcessRssBytes;
+3718: +    const softProcessRssBytes = resourceRecord?.softProcessRssBytes;
+3719: +    const resumeProcessRssBytes = resourceRecord?.resumeProcessRssBytes;
+3720: +    const aggregateBytes = options.completionSpoolLimits?.maximumAggregateBytes;
+3721: +    const resultBytes =
+3722: +      options.completionSpoolLimits?.maximumResultBytes ??
+3723: +      (aggregateBytes === undefined
+3724: +        ? undefined
+3725: +        : Math.min(base.values.output.maximumResultRawBytes, aggregateBytes));
+3726: +    const requestedInlineBytes = options.completionSpoolLimits?.inlineBytes;
+3727: +    const inlineBytes =
+3728: +      requestedInlineBytes === 0 && resultBytes !== undefined
+3729: +        ? Math.max(1, Math.floor(resultBytes / 2))
+3730: +        : requestedInlineBytes;
+3731: +    const chunkBytes = Math.min(
+3732: +      base.values.output.maximumChunkRawBytes,
+3733: +      inlineBytes ?? base.values.output.inlineRawBytes,
+3734: +      resultBytes ?? base.values.output.maximumResultRawBytes,
+3735: +    );
+3736: +    const policy = DaemonPolicyTestFactory.withOverrides(base, {
+3737: +      startup: {
+3738: +        ...(options.startupHeartbeatIntervalMs === undefined
+3739: +          ? {}
+3740: +          : { heartbeatIntervalMs: options.startupHeartbeatIntervalMs }),
+3741: +      },
+3742: +      shutdown: {
+3743: +        ...(options.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: options.idleTimeoutMs }),
+3744: +      },
+3745: +      output: {
+3746: +        maximumChunkRawBytes: chunkBytes,
+3747: +        ...(inlineBytes === undefined ? {} : { inlineRawBytes: inlineBytes }),
+3748: +        ...(resultBytes === undefined ? {} : { maximumResultRawBytes: resultBytes }),
+3749: +        ...(aggregateBytes === undefined ? {} : { maximumAggregateSpoolRawBytes: aggregateBytes }),
+3750: +      },
+3751: +      resources: {
+3752: +        ...(resourceRecord === undefined
+3753: +          ? {}
+3754: +          : {
+3755: +              effectiveMemoryBytes: resourceRecord.effectiveMemoryBytes,
+3756: +              hardProcessRssBytes: resourceRecord.hardProcessRssBytes,
+3757: +              softProcessRssBytes: resourceRecord.softProcessRssBytes,
+3758: +              resumeProcessRssBytes: resourceRecord.resumeProcessRssBytes,
+3759: +              workerMaxOldGenerationSizeMiB: resourceRecord.workerMaxOldGenerationSizeMb,
+3760: +              replacementWindowMs: resourceRecord.replacementWindowMs,
+3761: +              replacementLimit: resourceRecord.replacementLimit,
+3762: +            }),
+3763: +        ...(hardProcessRssBytes === undefined ? {} : { hardProcessRssBytes }),
+3764: +        ...(softProcessRssBytes === undefined ? {} : { softProcessRssBytes }),
+3765: +        ...(resumeProcessRssBytes === undefined ? {} : { resumeProcessRssBytes }),
+3766: +        ...(options.resourceCheckIntervalMs === undefined
+3767: +          ? {}
+3768: +          : { supervisionIntervalMs: options.resourceCheckIntervalMs }),
+3769: +      },
+3770: +      diagnostics: {
+3771: +        ...(options.operationTraceRetentionMs === undefined
+3772: +          ? {}
+3773: +          : { disconnectedTraceRetentionMs: options.operationTraceRetentionMs }),
+3774: +        ...(options.maximumRetainedOperationTraces === undefined
+3775: +          ? {}
+3776: +          : { maximumDisconnectedTraces: options.maximumRetainedOperationTraces }),
+3777: +      },
+3778: +    });
+3779: +    super({
+3780: +      ...options,
+3781: +      policy,
+3782: +    });
+3783: +  }
+3784: +}

@@ -1,0 +1,612 @@
+Bundle: inputs/pr-127/diff.patch
+Original patch lines: 1–609
+
+1: diff --git a/packages/backend-typescript/src/typescript-backend/typescript-backend.ts b/packages/backend-typescript/src/typescript-backend/typescript-backend.ts
+2: index 2e236cd73..f762afbc8 100644
+3: --- a/packages/backend-typescript/src/typescript-backend/typescript-backend.ts
+4: +++ b/packages/backend-typescript/src/typescript-backend/typescript-backend.ts
+5: @@ -80,12 +80,12 @@ export class TypeScriptBackend implements LanguageBackend {
+6:      this.sourceCache?.refresh(request.snapshot);
+7:      if (request.coverage === "workspace") await this.projectGraph?.refresh(request.snapshot);
+8:      const summary = await this.state.refresh(request.snapshot.files, request.coverage);
+9: -    this.semanticQueries.beginTurn(request.snapshot);
+10: +    this.semanticQueries.beginTurn(request.snapshot.files);
+11:      return summary;
+12:    }
+13:  
+14:    async releaseTransientResources(): Promise<void> {
+15: -    this.semanticQueries.releaseTransientResources();
+16: +    await this.semanticQueries.releaseTransientResources();
+17:    }
+18:  
+19:    async fileEntries(file: ResolvedPath): Promise<OverviewFileEntries> {
+20: diff --git a/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts b/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts
+21: index 3c9844217..1efc8d126 100644
+22: --- a/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts
+23: +++ b/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts
+24: @@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+25:  import { tmpdir } from "node:os";
+26:  import { join, relative } from "node:path";
+27:  
+28: -import { afterEach, describe, expect, it } from "vitest";
+29: +import { afterEach, describe, expect, it, vi } from "vitest";
+30: +import { SyntaxKind } from "ts-morph";
+31:  
+32:  import {
+33:    GraphTraverser,
+34: @@ -14,6 +15,9 @@ import {
+35:  } from "@symnav/core";
+36:  
+37:  import { TypeScriptBackend } from "./typescript-backend.js";
+38: +import type { TypeScriptProjectGraph } from "./typescript-project-graph.js";
+39: +import { TypeScriptSemanticQueryService } from "./typescript-semantic-query-service.js";
+40: +import { TypeScriptWorkspaceState } from "./typescript-workspace-state.js";
+41:  
+42:  const mutableFixtures: MutableSemanticFixture[] = [];
+43:  
+44: @@ -22,6 +26,196 @@ afterEach(() => {
+45:  });
+46:  
+47:  describe("TypeScriptSemanticQueryService", () => {
+48: +  it("shares each identity query promise independently within one turn", async () => {
+49: +    const fileSystem = new InMemoryFileSystem({
+50: +      "/repo/src/app.ts": [
+51: +        "export function target(): void {}",
+52: +        "export function caller(): void { target(); }",
+53: +        "",
+54: +      ].join("\n"),
+55: +    });
+56: +    const files = workspaceFiles(fileSystem, "src/app.ts");
+57: +    const snapshot: WorkspaceSnapshot = { root: "/repo", files };
+58: +    const state = new TypeScriptWorkspaceState(fileSystem);
+59: +    await state.refresh(files);
+60: +    const queries = new TypeScriptSemanticQueryService(undefined, state);
+61: +    const target = identity("src/app.ts", "target");
+62: +    const caller = identity("src/app.ts", "caller");
+63: +    queries.beginTurn(snapshot.files);
+64: +
+65: +    const definitions = queries.findDefinitions(target);
+66: +    const callTarget = queries.findCallTarget(target);
+67: +    const callers = queries.findCallers(target);
+68: +    const callees = queries.findCallees(caller);
+69: +
+70: +    expect(queries.findDefinitions(target)).toBe(definitions);
+71: +    expect(queries.findCallTarget(target)).toBe(callTarget);
+72: +    expect(queries.findCallers(target)).toBe(callers);
+73: +    expect(queries.findCallees(caller)).toBe(callees);
+74: +    await expect(definitions).resolves.toHaveLength(1);
+75: +    await expect(callTarget).resolves.toMatchObject({ outcome: "resolved" });
+76: +    await expect(callers).resolves.toHaveLength(1);
+77: +    await expect(callees).resolves.toHaveLength(1);
+78: +  });
+79: +
+80: +  it("caches empty position results while rehydrating nodes for every access", async () => {
+81: +    const fileSystem = new InMemoryFileSystem({
+82: +      "/repo/src/app.ts": [
+83: +        "export function target(): void {}",
+84: +        "export function caller(): void { target(); missing(); }",
+85: +        "",
+86: +      ].join("\n"),
+87: +    });
+88: +    const files = workspaceFiles(fileSystem, "src/app.ts");
+89: +    const state = new TypeScriptWorkspaceState(fileSystem);
+90: +    await state.refresh(files);
+91: +    const resolvedPositions: number[] = [];
+92: +    const queries = new TypeScriptSemanticQueryService(undefined, state, {
+93: +      callTargetResolution: (_relativePath, start) => resolvedPositions.push(start),
+94: +    });
+95: +    queries.beginTurn(files);
+96: +    const sourceFile = state.sourceFile("src/app.ts");
+97: +    const identifiers = sourceFile?.getDescendantsOfKind(SyntaxKind.Identifier) ?? [];
+98: +    const targetCall = [...identifiers].reverse().find((node) => node.getText() === "target");
+99: +    const missingCall = [...identifiers].reverse().find((node) => node.getText() === "missing");
+100: +    if (!targetCall || !missingCall) throw new Error("expected call identifiers");
+101: +
+102: +    const firstDefinitions = queries.definitionNodesOf(targetCall);
+103: +    const secondDefinitions = queries.definitionNodesOf(targetCall);
+104: +    const firstMissing = queries.definitionNodesOf(missingCall);
+105: +    const secondMissing = queries.definitionNodesOf(missingCall);
+106: +
+107: +    expect(firstDefinitions).not.toBe(secondDefinitions);
+108: +    expect(firstDefinitions[0]).toBe(secondDefinitions[0]);
+109: +    expect(firstMissing).toEqual([]);
+110: +    expect(secondMissing).toEqual([]);
+111: +    expect(resolvedPositions).toEqual([targetCall.getStart(), missingCall.getStart()]);
+112: +  });
+113: +
+114: +  it("retains asynchronous definition and callee failures for the turn", async () => {
+115: +    const failure = new Error("semantic failure");
+116: +    const ensureFiles = vi.fn(() => Promise.reject(failure));
+117: +    const state = { ensureFiles } as unknown as TypeScriptWorkspaceState;
+118: +    const queries = new TypeScriptSemanticQueryService(undefined, state);
+119: +    const target = identity("src/app.ts", "target");
+120: +    queries.beginTurn([]);
+121: +
+122: +    const definitions = queries.findDefinitions(target);
+123: +    const callees = queries.findCallees(target);
+124: +
+125: +    expect(queries.findDefinitions(target)).toBe(definitions);
+126: +    expect(queries.findCallees(target)).toBe(callees);
+127: +    await expect(definitions).rejects.toBe(failure);
+128: +    await expect(callees).rejects.toBe(failure);
+129: +    expect(ensureFiles).toHaveBeenCalledTimes(2);
+130: +  });
+131: +
+132: +  it("retries synchronous reference discovery failures", async () => {
+133: +    const failure = new Error("reference failure");
+134: +    const locateSemanticCopies = vi.fn(() => {
+135: +      throw failure;
+136: +    });
+137: +    const state = { locateSemanticCopies } as unknown as TypeScriptWorkspaceState;
+138: +    let referenceSearches = 0;
+139: +    const queries = new TypeScriptSemanticQueryService(undefined, state, {
+140: +      referenceSearch: () => {
+141: +        referenceSearches += 1;
+142: +      },
+143: +    });
+144: +    const target = identity("src/app.ts", "target");
+145: +    queries.beginTurn([]);
+146: +
+147: +    await expect(queries.findReferences(target)).rejects.toBe(failure);
+148: +    await expect(queries.findReferences(target)).rejects.toBe(failure);
+149: +
+150: +    expect(locateSemanticCopies).toHaveBeenCalledTimes(2);
+151: +    expect(referenceSearches).toBe(2);
+152: +  });
+153: +
+154: +  it("preserves the current turn when backend refresh fails", async () => {
+155: +    const failure = new Error("refresh failure");
+156: +    let refreshFails = false;
+157: +    const state = {
+158: +      refresh: vi.fn(() => {
+159: +        if (refreshFails) return Promise.reject(failure);
+160: +        return Promise.resolve({ added: 0, changed: 0, removed: 0, unchanged: 0 });
+161: +      }),
+162: +      ensureFiles: vi.fn(() => Promise.resolve()),
+163: +      locate: vi.fn(() => []),
+164: +    } as unknown as TypeScriptWorkspaceState;
+165: +    let definitionSearches = 0;
+166: +    const backend = new TypeScriptBackend(new InMemoryFileSystem({}), state, undefined, {
+167: +      definitionSearch: () => {
+168: +        definitionSearches += 1;
+169: +      },
+170: +    });
+171: +    const snapshot: WorkspaceSnapshot = { root: "/repo", files: [] };
+172: +    const target = identity("src/app.ts", "target");
+173: +    await backend.refresh({ snapshot, coverage: "workspace" });
+174: +    const definitions = await backend.findDefinitions([], target);
+175: +    refreshFails = true;
+176: +
+177: +    await expect(backend.refresh({ snapshot, coverage: "workspace" })).rejects.toBe(failure);
+178: +
+179: +    await expect(backend.findDefinitions([], target)).resolves.toBe(definitions);
+180: +    expect(definitionSearches).toBe(1);
+181: +  });
+182: +
+183: +  it("clears caches before awaiting project release and rejects at the backend boundary", async () => {
+184: +    const releaseFailure = new Error("project release failed");
+185: +    let rejectProjectRelease: ((reason: unknown) => void) | undefined;
+186: +    const projectRelease = new Promise<void>((_resolve, reject) => {
+187: +      rejectProjectRelease = reject;
+188: +    });
+189: +    void projectRelease.catch(() => undefined);
+190: +    const firstProjectRelease = vi.fn(() => projectRelease);
+191: +    const laterProjectRelease = vi.fn();
+192: +    const projectGraph = {
+193: +      releaseTransientResources: vi.fn(async () => {
+194: +        await firstProjectRelease();
+195: +        laterProjectRelease();
+196: +      }),
+197: +    } as unknown as TypeScriptProjectGraph;
+198: +    const state = {
+199: +      refresh: vi.fn(() => Promise.resolve({ added: 0, changed: 0, removed: 0, unchanged: 0 })),
+200: +      ensureFiles: vi.fn(() => Promise.resolve()),
+201: +      locate: vi.fn(() => []),
+202: +    } as unknown as TypeScriptWorkspaceState;
+203: +    let definitionSearches = 0;
+204: +    const backend = new TypeScriptBackend(new InMemoryFileSystem({}), state, projectGraph, {
+205: +      definitionSearch: () => {
+206: +        definitionSearches += 1;
+207: +      },
+208: +    });
+209: +    const snapshot: WorkspaceSnapshot = { root: "/repo", files: [] };
+210: +    const target = identity("src/app.ts", "target");
+211: +    await backend.refresh({ snapshot, coverage: "selection" });
+212: +    const beforeRelease = await backend.findDefinitions([], target);
+213: +
+214: +    const release = backend.releaseTransientResources();
+215: +    let releaseSettled = false;
+216: +    void release.then(
+217: +      () => {
+218: +        releaseSettled = true;
+219: +      },
+220: +      () => {
+221: +        releaseSettled = true;
+222: +      },
+223: +    );
+224: +    const afterRelease = await backend.findDefinitions([], target);
+225: +
+226: +    expect(afterRelease).not.toBe(beforeRelease);
+227: +    expect(definitionSearches).toBe(2);
+228: +    expect(projectGraph.releaseTransientResources).toHaveBeenCalledOnce();
+229: +    await Promise.resolve();
+230: +    expect(releaseSettled).toBe(false);
+231: +
+232: +    rejectProjectRelease?.(releaseFailure);
+233: +    await expect(release).rejects.toBe(releaseFailure);
+234: +    expect(firstProjectRelease).toHaveBeenCalledOnce();
+235: +    expect(laterProjectRelease).not.toHaveBeenCalled();
+236: +  });
+237: +
+238:    it("shares one reference search across caller and reference projections", async () => {
+239:      const fileSystem = new InMemoryFileSystem({
+240:        "/repo/src/lib.ts": "export function target(): void {}\n",
+241: diff --git a/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts b/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts
+242: index 35925e9e2..e0715933a 100644
+243: --- a/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts
+244: +++ b/packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts
+245: @@ -1,12 +1,13 @@
+246:  import {
+247:    SymbolNotFoundError,
+248: +  TurnScopedCacheScope,
+249:    formatSymbolIdentity,
+250:    type CallEdge,
+251:    type CallTargetResolution,
+252:    type SymbolIdentity,
+253:    type SymbolOverviewNode,
+254:    type SymbolReference,
+255: -  type WorkspaceSnapshot,
+256: +  type WorkspaceFile,
+257:  } from "@symnav/core";
+258:  import { Node, type ReferencedSymbolEntry, type SourceFile } from "ts-morph";
+259:  
+260: @@ -26,19 +27,32 @@ export interface SemanticReferenceLocation {
+261:  }
+262:  
+263:  export class TypeScriptSemanticQueryService implements PositionDefinitionResolver {
+264: -  private files: WorkspaceSnapshot["files"] = [];
+265: -  private readonly definitionsByIdentity = new Map<
+266: +  private files: readonly WorkspaceFile[] = [];
+267: +  private readonly cacheScope = new TurnScopedCacheScope();
+268: +  private readonly definitionsByIdentity = this.cacheScope.createCache<
+269:      string,
+270:      Promise<readonly SymbolOverviewNode[]>
+271:    >();
+272: -  private readonly referencesByIdentity = new Map<
+273: +  private readonly referencesByIdentity = this.cacheScope.createCache<
+274:      string,
+275:      Promise<readonly SemanticReferenceLocation[]>
+276:    >();
+277: -  private readonly callTargetsByIdentity = new Map<string, Promise<CallTargetResolution>>();
+278: -  private readonly callersByIdentity = new Map<string, Promise<readonly CallEdge[]>>();
+279: -  private readonly calleesByIdentity = new Map<string, Promise<readonly CallEdge[]>>();
+280: -  private readonly definitionsByPosition = new Map<string, readonly SemanticNodeLocation[]>();
+281: +  private readonly callTargetsByIdentity = this.cacheScope.createCache<
+282: +    string,
+283: +    Promise<CallTargetResolution>
+284: +  >();
+285: +  private readonly callersByIdentity = this.cacheScope.createCache<
+286: +    string,
+287: +    Promise<readonly CallEdge[]>
+288: +  >();
+289: +  private readonly calleesByIdentity = this.cacheScope.createCache<
+290: +    string,
+291: +    Promise<readonly CallEdge[]>
+292: +  >();
+293: +  private readonly definitionsByPosition = this.cacheScope.createCache<
+294: +    string,
+295: +    readonly SemanticNodeLocation[]
+296: +  >();
+297:  
+298:    constructor(
+299:      private readonly projects: TypeScriptProjectGraph | undefined,
+300: @@ -46,23 +60,21 @@ export class TypeScriptSemanticQueryService implements PositionDefinitionResolve
+301:      private readonly observer?: TypeScriptSemanticQueryObserver,
+302:    ) {}
+303:  
+304: -  beginTurn(snapshot: WorkspaceSnapshot): void {
+305: -    this.files = snapshot.files;
+306: -    this.clearQueryCaches();
+307: +  beginTurn(files: readonly WorkspaceFile[]): void {
+308: +    this.files = files;
+309: +    this.cacheScope.beginTurn();
+310:    }
+311:  
+312:    findDefinitions(identity: SymbolIdentity): Promise<readonly SymbolOverviewNode[]> {
+313:      const key = formatSymbolIdentity(identity);
+314: -    const existing = this.definitionsByIdentity.get(key);
+315: -    if (existing) return existing;
+316: -    this.observer?.definitionSearch?.(identity);
+317: -    const definitions = findDefinitions({
+318: -      workspaceState: this.workspaceState,
+319: -      files: this.files,
+320: -      identity,
+321: +    return this.definitionsByIdentity.getOrCreate(key, () => {
+322: +      this.observer?.definitionSearch?.(identity);
+323: +      return findDefinitions({
+324: +        workspaceState: this.workspaceState,
+325: +        files: this.files,
+326: +        identity,
+327: +      });
+328:      });
+329: -    this.definitionsByIdentity.set(key, definitions);
+330: -    return definitions;
+331:    }
+332:  
+333:    async findReferences(identity: SymbolIdentity): Promise<readonly SymbolReference[]> {
+334: @@ -90,41 +102,33 @@ export class TypeScriptSemanticQueryService implements PositionDefinitionResolve
+335:  
+336:    findCallTarget(identity: SymbolIdentity): Promise<CallTargetResolution> {
+337:      const key = formatSymbolIdentity(identity);
+338: -    const existing = this.callTargetsByIdentity.get(key);
+339: -    if (existing) return existing;
+340: -    const resolution = this.resolveCallTarget(identity);
+341: -    this.callTargetsByIdentity.set(key, resolution);
+342: -    return resolution;
+343: +    return this.callTargetsByIdentity.getOrCreate(key, () => this.resolveCallTarget(identity));
+344:    }
+345:  
+346:    findCallers(identity: SymbolIdentity): Promise<readonly CallEdge[]> {
+347:      const key = formatSymbolIdentity(identity);
+348: -    const existing = this.callersByIdentity.get(key);
+349: -    if (existing) return existing;
+350: -    const callers = this.referenceLocations(identity).then((locations) =>
+351: -      new CallerFinder(this.workspaceState).find(locations),
+352: +    return this.callersByIdentity.getOrCreate(key, () =>
+353: +      this.referenceLocations(identity).then((locations) =>
+354: +        new CallerFinder(this.workspaceState).find(locations),
+355: +      ),
+356:      );
+357: -    this.callersByIdentity.set(key, callers);
+358: -    return callers;
+359:    }
+360:  
+361:    findCallees(identity: SymbolIdentity): Promise<readonly CallEdge[]> {
+362:      const key = formatSymbolIdentity(identity);
+363: -    const existing = this.calleesByIdentity.get(key);
+364: -    if (existing) return existing;
+365: -    const callees = findCallees({
+366: -      workspaceState: this.workspaceState,
+367: -      files: this.files,
+368: -      identity,
+369: -      definitionResolver: this,
+370: -    });
+371: -    this.calleesByIdentity.set(key, callees);
+372: -    return callees;
+373: +    return this.calleesByIdentity.getOrCreate(key, () =>
+374: +      findCallees({
+375: +        workspaceState: this.workspaceState,
+376: +        files: this.files,
+377: +        identity,
+378: +        definitionResolver: this,
+379: +      }),
+380: +    );
+381:    }
+382:  
+383: -  releaseTransientResources(): void {
+384: -    this.clearQueryCaches();
+385: -    this.projects?.releaseTransientResources();
+386: +  async releaseTransientResources(): Promise<void> {
+387: +    this.cacheScope.releaseTransientResources();
+388: +    await this.projects?.releaseTransientResources();
+389:    }
+390:  
+391:    definitionNodesOf(node: Node): readonly Node[] {
+392: @@ -132,10 +136,9 @@ export class TypeScriptSemanticQueryService implements PositionDefinitionResolve
+393:      const relativePath = this.workspaceState.relativePathOf(node.getSourceFile());
+394:      if (!relativePath) return [];
+395:      const key = `${relativePath}:${node.getStart()}`;
+396: -    let locations = this.definitionsByPosition.get(key);
+397: -    if (!locations) {
+398: +    const locations = this.definitionsByPosition.getOrCreate(key, () => {
+399:        this.observer?.callTargetResolution?.(relativePath, node.getStart());
+400: -      locations = node.getDefinitionNodes().flatMap((definition) => {
+401: +      return node.getDefinitionNodes().flatMap((definition) => {
+402:          const definitionRelativePath = this.workspaceState.relativePathOf(
+403:            definition.getSourceFile(),
+404:          );
+405: @@ -149,8 +152,7 @@ export class TypeScriptSemanticQueryService implements PositionDefinitionResolve
+406:              ]
+407:            : [];
+408:        });
+409: -      this.definitionsByPosition.set(key, locations);
+410: -    }
+411: +    });
+412:      return locations.flatMap((location) => {
+413:        const sourceFile = this.projects?.sourceFileFor(location.relativePath);
+414:        const definition = this.nodeAtSemanticLocation(location, sourceFile);
+415: @@ -162,12 +164,10 @@ export class TypeScriptSemanticQueryService implements PositionDefinitionResolve
+416:      identity: SymbolIdentity,
+417:    ): Promise<readonly SemanticReferenceLocation[]> {
+418:      const key = formatSymbolIdentity(identity);
+419: -    const existing = this.referencesByIdentity.get(key);
+420: -    if (existing) return existing;
+421: -    this.observer?.referenceSearch?.(identity);
+422: -    const locations = Promise.resolve(this.findReferenceLocations(identity));
+423: -    this.referencesByIdentity.set(key, locations);
+424: -    return locations;
+425: +    return this.referencesByIdentity.getOrCreate(key, () => {
+426: +      this.observer?.referenceSearch?.(identity);
+427: +      return Promise.resolve(this.findReferenceLocations(identity));
+428: +    });
+429:    }
+430:  
+431:    private findReferenceLocations(identity: SymbolIdentity): readonly SemanticReferenceLocation[] {
+432: @@ -216,15 +216,6 @@ export class TypeScriptSemanticQueryService implements PositionDefinitionResolve
+433:      return { outcome: "resolved", target: definitions[0]! };
+434:    }
+435:  
+436: -  private clearQueryCaches(): void {
+437: -    this.definitionsByIdentity.clear();
+438: -    this.referencesByIdentity.clear();
+439: -    this.callTargetsByIdentity.clear();
+440: -    this.callersByIdentity.clear();
+441: -    this.calleesByIdentity.clear();
+442: -    this.definitionsByPosition.clear();
+443: -  }
+444: -
+445:    private nodeAtSemanticLocation(
+446:      location: SemanticNodeLocation,
+447:      sourceFile: SourceFile | undefined,
+448: diff --git a/packages/core/src/backend/turn-scoped-cache-scope.test.ts b/packages/core/src/backend/turn-scoped-cache-scope.test.ts
+449: new file mode 100644
+450: index 000000000..c77244cf3
+451: --- /dev/null
+452: +++ b/packages/core/src/backend/turn-scoped-cache-scope.test.ts
+453: @@ -0,0 +1,92 @@
+454: +import { describe, expect, it, vi } from "vitest";
+455: +
+456: +import { TurnScopedCacheScope } from "./turn-scoped-cache-scope.js";
+457: +
+458: +describe("TurnScopedCacheScope", () => {
+459: +  it("returns each exact factory value once per key and handle", () => {
+460: +    const scope = new TurnScopedCacheScope();
+461: +    const first = scope.createCache<string, readonly string[] | undefined>();
+462: +    const second = scope.createCache<string, readonly string[] | undefined>();
+463: +    const firstValue: readonly string[] = [];
+464: +    const secondValue: readonly string[] = [];
+465: +    const firstFactory = vi.fn(() => firstValue);
+466: +    const undefinedFactory = vi.fn(() => undefined);
+467: +    const secondFactory = vi.fn(() => secondValue);
+468: +
+469: +    expect(first.getOrCreate("value", firstFactory)).toBe(firstValue);
+470: +    expect(first.getOrCreate("value", firstFactory)).toBe(firstValue);
+471: +    expect(first.getOrCreate("undefined", undefinedFactory)).toBeUndefined();
+472: +    expect(first.getOrCreate("undefined", undefinedFactory)).toBeUndefined();
+473: +    expect(second.getOrCreate("value", secondFactory)).toBe(secondValue);
+474: +
+475: +    expect(firstFactory).toHaveBeenCalledOnce();
+476: +    expect(undefinedFactory).toHaveBeenCalledOnce();
+477: +    expect(secondFactory).toHaveBeenCalledOnce();
+478: +  });
+479: +
+480: +  it("clears every handle at turn and release boundaries", () => {
+481: +    const scope = new TurnScopedCacheScope();
+482: +    const first = scope.createCache<string, object>();
+483: +    const second = scope.createCache<string, object>();
+484: +    const firstFactory = vi.fn(() => ({}));
+485: +    const secondFactory = vi.fn(() => ({}));
+486: +    const initialFirst = first.getOrCreate("shared", firstFactory);
+487: +    const initialSecond = second.getOrCreate("shared", secondFactory);
+488: +
+489: +    scope.beginTurn();
+490: +
+491: +    expect(first.getOrCreate("shared", firstFactory)).not.toBe(initialFirst);
+492: +    expect(second.getOrCreate("shared", secondFactory)).not.toBe(initialSecond);
+493: +
+494: +    const nextFirst = first.getOrCreate("shared", firstFactory);
+495: +    const nextSecond = second.getOrCreate("shared", secondFactory);
+496: +    scope.releaseTransientResources();
+497: +    scope.releaseTransientResources();
+498: +
+499: +    expect(first.getOrCreate("shared", firstFactory)).not.toBe(nextFirst);
+500: +    expect(second.getOrCreate("shared", secondFactory)).not.toBe(nextSecond);
+501: +    expect(firstFactory).toHaveBeenCalledTimes(3);
+502: +    expect(secondFactory).toHaveBeenCalledTimes(3);
+503: +  });
+504: +
+505: +  it("retains promise settlement and retries synchronous factory failures", async () => {
+506: +    const scope = new TurnScopedCacheScope();
+507: +    const promises = scope.createCache<string, Promise<string>>();
+508: +    const values = scope.createCache<string, string>();
+509: +    const rejection = new Error("rejected");
+510: +    const rejected = Promise.reject(rejection);
+511: +    const rejectedFactory = vi.fn(() => rejected);
+512: +    const throwingFactory = vi.fn(() => {
+513: +      throw new Error("synchronous failure");
+514: +    });
+515: +
+516: +    const first = promises.getOrCreate("key", rejectedFactory);
+517: +    const second = promises.getOrCreate("key", rejectedFactory);
+518: +
+519: +    expect(second).toBe(first);
+520: +    await expect(first).rejects.toBe(rejection);
+521: +    expect(promises.getOrCreate("key", rejectedFactory)).toBe(first);
+522: +    expect(rejectedFactory).toHaveBeenCalledOnce();
+523: +    expect(() => values.getOrCreate("key", throwingFactory)).toThrow("synchronous failure");
+524: +    expect(() => values.getOrCreate("key", throwingFactory)).toThrow("synchronous failure");
+525: +    expect(throwingFactory).toHaveBeenCalledTimes(2);
+526: +  });
+527: +
+528: +  it("does not let an old promise settlement replace a new turn entry", async () => {
+529: +    const scope = new TurnScopedCacheScope();
+530: +    const cache = scope.createCache<string, Promise<string>>();
+531: +    let settleOld: ((value: string) => void) | undefined;
+532: +    const oldPromise = new Promise<string>((resolve) => {
+533: +      settleOld = resolve;
+534: +    });
+535: +    const newPromise = Promise.resolve("new");
+536: +    expect(cache.getOrCreate("key", () => oldPromise)).toBe(oldPromise);
+537: +
+538: +    scope.beginTurn();
+539: +    expect(cache.getOrCreate("key", () => newPromise)).toBe(newPromise);
+540: +    settleOld?.("old");
+541: +
+542: +    await expect(oldPromise).resolves.toBe("old");
+543: +    await expect(cache.getOrCreate("key", () => Promise.resolve("other"))).resolves.toBe("new");
+544: +  });
+545: +});
+546: diff --git a/packages/core/src/backend/turn-scoped-cache-scope.ts b/packages/core/src/backend/turn-scoped-cache-scope.ts
+547: new file mode 100644
+548: index 000000000..54cf7022b
+549: --- /dev/null
+550: +++ b/packages/core/src/backend/turn-scoped-cache-scope.ts
+551: @@ -0,0 +1,46 @@
+552: +export interface TurnScopedCache<Key, Value> {
+553: +  getOrCreate(key: Key, createValue: () => Value): Value;
+554: +}
+555: +
+556: +interface ClearableTurnScopedCache {
+557: +  clear(): void;
+558: +}
+559: +
+560: +class TurnScopedCacheHandle<Key, Value>
+561: +  implements TurnScopedCache<Key, Value>, ClearableTurnScopedCache
+562: +{
+563: +  private readonly values = new Map<Key, Value>();
+564: +
+565: +  getOrCreate(key: Key, createValue: () => Value): Value {
+566: +    if (this.values.has(key)) return this.values.get(key) as Value;
+567: +    const value = createValue();
+568: +    this.values.set(key, value);
+569: +    return value;
+570: +  }
+571: +
+572: +  clear(): void {
+573: +    this.values.clear();
+574: +  }
+575: +}
+576: +
+577: +export class TurnScopedCacheScope {
+578: +  private readonly caches: ClearableTurnScopedCache[] = [];
+579: +
+580: +  createCache<Key, Value>(): TurnScopedCache<Key, Value> {
+581: +    const cache = new TurnScopedCacheHandle<Key, Value>();
+582: +    this.caches.push(cache);
+583: +    return cache;
+584: +  }
+585: +
+586: +  beginTurn(): void {
+587: +    this.clear();
+588: +  }
+589: +
+590: +  releaseTransientResources(): void {
+591: +    this.clear();
+592: +  }
+593: +
+594: +  private clear(): void {
+595: +    for (const cache of this.caches) cache.clear();
+596: +  }
+597: +}
+598: diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+599: index d5bda30e6..c5389574b 100644
+600: --- a/packages/core/src/index.ts
+601: +++ b/packages/core/src/index.ts
+602: @@ -149,6 +149,7 @@ export {
+603:    RevisionedBackendPreparation,
+604:    RevisionedBackendState,
+605:  } from "./backend/revisioned-backend-state.js";
+606: +export { TurnScopedCacheScope, type TurnScopedCache } from "./backend/turn-scoped-cache-scope.js";
+607:  export { BackendRouter } from "./backend/backend-router.js";
+608:  export { UserFacingError } from "./errors.js";
+609:  export {

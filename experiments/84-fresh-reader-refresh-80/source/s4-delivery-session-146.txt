@@ -1,0 +1,519 @@
+Git object: f79ba36278c77c41ca887aa4efc24fd0781e4cec:apps/cli/src/daemon/daemon-delivery-session.ts
+Original lines: 1–516
+
+1: import type {
+2:   DaemonCommandName,
+3:   DaemonExecutionFailureCode,
+4:   DaemonPolicyValues,
+5:   DaemonSequencedOutputRecord,
+6: } from "@symnav/daemon";
+7: import type { AcceptedRequestEntry, AcceptedRequestSubscriber } from "./accepted-request-ledger.js";
+8: import type { DaemonClock } from "./daemon-clock.js";
+9: import type { DaemonOperationObserver, DaemonOperationTrace } from "./daemon-operation-observer.js";
+10: import type {
+11:   DaemonDiagnosticEvent,
+12:   DaemonDeliveryOutcome,
+13:   DaemonExecutionOutcome,
+14:   DaemonExecutionServerFrame,
+15:   DaemonIdentityCoordinates,
+16:   DaemonResponse,
+17:   DaemonResultAcknowledgement,
+18:   DaemonResultFetchRequest,
+19:   DaemonRefreshSummary,
+20:   DaemonServerMessage,
+21:   DaemonWorkerPhaseDurations,
+22: } from "./daemon-protocol.js";
+23: import {
+24:   CompletionSpoolReadError,
+25:   type CompletionSpool,
+26:   type CompletionSpoolManifest,
+27:   type DaemonCompletionSpoolStore,
+28: } from "./completion-spool.js";
+29: import { DaemonLogger } from "./daemon-logger.js";
+30: import type { DaemonServerSend } from "./daemon-transport.js";
+31: 
+32: export interface DaemonDiagnosticRecorder {
+33:   record(event: DaemonDiagnosticEvent): void;
+34: }
+35: 
+36: export interface DaemonCompletionWriter {
+37:   append(record: DaemonSequencedOutputRecord): Promise<void>;
+38:   finish(exitCode: number): Promise<CompletionSpoolManifest>;
+39:   dispose(): Promise<void>;
+40: }
+41: 
+42: export interface DaemonDeliverySnapshot {
+43:   readonly spoolBytes: number;
+44:   readonly hasUnacknowledgedCompletions: boolean;
+45: }
+46: 
+47: export interface DaemonDeliveryAttachment {
+48:   readonly requestId: string;
+49:   readonly acceptedAt: number;
+50:   readonly queuePosition: number;
+51: }
+52: 
+53: export interface AcceptedExecutionJournal {
+54:   readonly hasUnacknowledgedCompletions: boolean;
+55:   entryFor(requestId: string): AcceptedRequestEntry | undefined;
+56:   subscribe(requestId: string, subscriber: AcceptedRequestSubscriber): () => void;
+57:   invalidateCompletion(
+58:     requestId: string,
+59:     code: DaemonExecutionFailureCode,
+60:     completedAt: number,
+61:   ): void;
+62:   acknowledge(requestId: string): void;
+63:   terminateDelivery(requestId: string): boolean;
+64:   isDeliveryTerminated(requestId: string): boolean;
+65: }
+66: 
+67: export type AuthenticatedDaemonResultFetchRequest = DaemonResultFetchRequest;
+68: export type AuthenticatedDaemonResultAcknowledgement = DaemonResultAcknowledgement;
+69: export type DaemonResultAcknowledged = Extract<
+70:   DaemonResponse,
+71:   { readonly kind: "result-acknowledged" }
+72: >;
+73: 
+74: export interface DaemonDeliverySessionOptions {
+75:   readonly coordinates: Pick<DaemonIdentityCoordinates, "instanceId" | "processToken">;
+76:   readonly journal: AcceptedExecutionJournal;
+77:   readonly spoolStore: DaemonCompletionSpoolStore;
+78:   readonly observer: DaemonOperationObserver;
+79:   readonly diagnostics: DaemonDiagnosticRecorder;
+80:   readonly clock: DaemonClock;
+81:   readonly policy: Pick<DaemonPolicyValues, "delivery" | "diagnostics" | "shutdown">;
+82: }
+83: 
+84: export class DaemonDeliverySession {
+85:   private readonly completionDeliveries = new Map<string, Promise<void>>();
+86:   private readonly operationTraces = new Map<string, DaemonOperationTrace>();
+87:   private readonly operationTraceExpirations = new Map<string, NodeJS.Timeout>();
+88:   private readonly operationTraceConnections = new Map<string, number>();
+89: 
+90:   constructor(private readonly options: DaemonDeliverySessionOptions) {}
+91: 
+92:   get snapshot(): DaemonDeliverySnapshot {
+93:     return {
+94:       spoolBytes: this.options.spoolStore.usage().rawBytes,
+95:       hasUnacknowledgedCompletions: this.options.journal.hasUnacknowledgedCompletions,
+96:     };
+97:   }
+98: 
+99:   beginAcceptedTrace(
+100:     requestId: string,
+101:     command: DaemonCommandName,
+102:     queuePosition: number,
+103:     workerGeneration: number,
+104:   ): DaemonOperationTrace {
+105:     const trace = this.options.observer.start(requestId, command);
+106:     this.operationTraces.set(requestId, trace);
+107:     trace.accepted(queuePosition, workerGeneration);
+108:     return new RetainedDaemonOperationTrace(
+109:       trace,
+110:       () => this.operationTraces.get(requestId) === trace,
+111:     );
+112:   }
+113: 
+114:   async createCompletion(requestId: string): Promise<DaemonCompletionWriter> {
+115:     const spool = await this.options.spoolStore.create(requestId);
+116:     return new ObservedDaemonCompletionWriter(
+117:       spool,
+118:       this.retainedOperationTrace(requestId),
+119:       this.options.clock,
+120:     );
+121:   }
+122: 
+123:   async attach(attachment: DaemonDeliveryAttachment, send: DaemonServerSend): Promise<void> {
+124:     const entry = this.options.journal.entryFor(attachment.requestId);
+125:     if (entry === undefined) throw new Error("Accepted request result is missing");
+126:     const traceWasDisconnected = this.traceWasDisconnected(attachment.requestId);
+127:     const disconnectTraceConnection = this.attachOperationTraceConnection(
+128:       attachment.requestId,
+129:       send,
+130:     );
+131:     if (traceWasDisconnected) this.reattachOperationTrace(attachment.requestId);
+132:     try {
+133:       await this.deliver(send, {
+134:         kind: "accepted",
+135:         ...this.options.coordinates,
+136:         ...attachment,
+137:       });
+138:       if (entry.state.state === "completed") {
+139:         await this.deliverStoredCompletion(attachment.requestId, send);
+140:         return;
+141:       }
+142:       if (entry.state.state === "failed") {
+143:         await this.deliver(send, this.failedFrame(attachment.requestId, entry.state.code));
+144:         this.completeOperationTrace(attachment.requestId, "delivered");
+145:         return;
+146:       }
+147:     } catch (error) {
+148:       disconnectTraceConnection();
+149:       throw error;
+150:     }
+151:     let unsubscribe: (() => void) | undefined;
+152:     unsubscribe = this.options.journal.subscribe(attachment.requestId, (updated) => {
+153:       if (updated.state.state === "completed") {
+154:         this.trackCompletionDelivery(attachment.requestId, send, disconnectTraceConnection);
+155:         unsubscribe?.();
+156:       } else if (updated.state.state === "failed") {
+157:         void this.deliver(send, this.failedFrame(attachment.requestId, updated.state.code))
+158:           .then(() => this.completeOperationTrace(attachment.requestId, "delivered"))
+159:           .catch((error) =>
+160:             this.recordDeliveryFailure(attachment.requestId, error, disconnectTraceConnection),
+161:           );
+162:         unsubscribe?.();
+163:       }
+164:     });
+165:   }
+166: 
+167:   trackedCompletion(requestId: string): Promise<void> | undefined {
+168:     return this.completionDeliveries.get(requestId);
+169:   }
+170: 
+171:   async fetch(
+172:     request: AuthenticatedDaemonResultFetchRequest,
+173:     send: DaemonServerSend,
+174:   ): Promise<void> {
+175:     let disconnectTraceConnection: (() => void) | undefined;
+176:     if (this.options.journal.entryFor(request.requestId)?.state.state === "completed") {
+177:       const traceWasDisconnected = this.traceWasDisconnected(request.requestId);
+178:       disconnectTraceConnection = this.attachOperationTraceConnection(request.requestId, send);
+179:       if (traceWasDisconnected) this.reattachOperationTrace(request.requestId);
+180:     }
+181:     try {
+182:       await this.deliverStoredCompletion(request.requestId, send, request.offset);
+183:     } catch (error) {
+184:       disconnectTraceConnection?.();
+185:       throw error;
+186:     }
+187:   }
+188: 
+189:   async acknowledge(
+190:     request: AuthenticatedDaemonResultAcknowledgement,
+191:   ): Promise<DaemonResultAcknowledged> {
+192:     const spool = await this.options.spoolStore.open(request.requestId);
+193:     if (spool === undefined) throw new Error("Accepted request completion is unavailable");
+194:     if (spool.completedManifest?.transferId !== request.transferId) {
+195:       throw new Error("Result acknowledgement does not match completion transfer");
+196:     }
+197:     await spool.acknowledge().catch((error) => {
+198:       this.recordFailure("completion-cleanup", error);
+199:     });
+200:     this.options.journal.acknowledge(request.requestId);
+201:     this.completeOperationTrace(request.requestId, "delivered");
+202:     return {
+203:       kind: "result-acknowledged",
+204:       ...this.options.coordinates,
+205:       requestId: request.requestId,
+206:       transferId: request.transferId,
+207:     };
+208:   }
+209: 
+210:   completeRetainedTraces(): void {
+211:     for (const requestId of this.operationTraces.keys()) {
+212:       this.completeOperationTrace(requestId, "disconnected");
+213:     }
+214:   }
+215: 
+216:   async waitForCompletionAcknowledgements(): Promise<void> {
+217:     const acknowledgementDeadline =
+218:       this.options.clock.wallNowMs() +
+219:       this.options.policy.shutdown.resourceDrainAcknowledgementGraceMs;
+220:     while (
+221:       this.options.journal.hasUnacknowledgedCompletions &&
+222:       this.options.clock.wallNowMs() < acknowledgementDeadline
+223:     ) {
+224:       await new Promise((resolve) =>
+225:         setTimeout(
+226:           resolve,
+227:           this.options.policy.shutdown.resourceDrainAcknowledgementPollIntervalMs,
+228:         ),
+229:       );
+230:     }
+231:   }
+232: 
+233:   async cleanupInstance(): Promise<void> {
+234:     await this.options.spoolStore
+235:       .cleanupInstance(this.options.coordinates.instanceId)
+236:       .catch((error) => {
+237:         this.recordFailure("completion-cleanup", error);
+238:       });
+239:   }
+240: 
+241:   private deliver(send: DaemonServerSend, frame: DaemonServerMessage): Promise<void> {
+242:     return send(frame);
+243:   }
+244: 
+245:   private retainedOperationTrace(
+246:     requestId: string,
+247:     trace = this.operationTraces.get(requestId),
+248:   ): DaemonOperationTrace | undefined {
+249:     if (trace === undefined) return undefined;
+250:     return new RetainedDaemonOperationTrace(
+251:       trace,
+252:       () => this.operationTraces.get(requestId) === trace,
+253:     );
+254:   }
+255: 
+256:   private async deliverStoredCompletion(
+257:     requestId: string,
+258:     send: DaemonServerSend,
+259:     offset = 0,
+260:   ): Promise<void> {
+261:     const spool = await this.options.spoolStore.open(requestId);
+262:     if (spool === undefined) throw new Error("Accepted request result is missing");
+263:     try {
+264:       await this.deliverCompletion(requestId, spool, offset, send);
+265:     } catch (error) {
+266:       if (!(error instanceof CompletionSpoolReadError)) throw error;
+267:       this.recordFailure("completion-delivery", error);
+268:       await spool.dispose().catch((cleanupError) => {
+269:         this.recordFailure("completion-cleanup", cleanupError);
+270:       });
+271:       this.options.journal.invalidateCompletion(
+272:         requestId,
+273:         "internal",
+274:         this.options.clock.wallNowMs(),
+275:       );
+276:       await this.deliver(send, this.failedFrame(requestId, "internal"));
+277:       this.completeOperationTrace(requestId, "failed");
+278:     }
+279:   }
+280: 
+281:   private trackCompletionDelivery(
+282:     requestId: string,
+283:     send: DaemonServerSend,
+284:     disconnectTraceConnection: () => void,
+285:   ): void {
+286:     const delivery = this.deliverStoredCompletion(requestId, send).catch((error) =>
+287:       this.recordDeliveryFailure(requestId, error, disconnectTraceConnection),
+288:     );
+289:     this.completionDeliveries.set(requestId, delivery);
+290:     void delivery.finally(() => {
+291:       if (this.completionDeliveries.get(requestId) === delivery) {
+292:         this.completionDeliveries.delete(requestId);
+293:       }
+294:     });
+295:   }
+296: 
+297:   private async deliverCompletion(
+298:     requestId: string,
+299:     spool: CompletionSpool,
+300:     offset: number,
+301:     send: DaemonServerSend,
+302:   ): Promise<void> {
+303:     const completedManifest = spool.completedManifest;
+304:     if (completedManifest === undefined) throw new Error("Completion manifest is missing");
+305:     await this.deliver(send, {
+306:       kind: "result-manifest",
+307:       ...this.options.coordinates,
+308:       requestId,
+309:       manifest: completedManifest,
+310:     });
+311:     for await (const record of spool.read(offset)) {
+312:       await this.deliver(send, {
+313:         transferId: completedManifest.transferId,
+314:         requestId,
+315:         offset: record.sequence,
+316:         sequence: record.sequence,
+317:         stream: record.stream,
+318:         bytes: record.bytes,
+319:       });
+320:     }
+321:     await this.deliver(send, {
+322:       kind: "result-end",
+323:       ...this.options.coordinates,
+324:       requestId,
+325:       transferId: completedManifest.transferId,
+326:       rawBytes: completedManifest.rawBytes,
+327:       recordCount: completedManifest.recordCount,
+328:       sha256: completedManifest.sha256,
+329:     });
+330:     this.terminateOperationDelivery(requestId, "delivered");
+331:   }
+332: 
+333:   private failedFrame(
+334:     requestId: string,
+335:     code: DaemonExecutionFailureCode,
+336:   ): DaemonExecutionServerFrame {
+337:     return {
+338:       kind: "execution-failed",
+339:       ...this.options.coordinates,
+340:       requestId,
+341:       code,
+342:     };
+343:   }
+344: 
+345:   private recordDeliveryFailure(
+346:     requestId: string,
+347:     error: unknown,
+348:     disconnectTraceConnection: () => void,
+349:   ): void {
+350:     disconnectTraceConnection();
+351:     this.recordFailure("completion-delivery", error);
+352:   }
+353: 
+354:   private recordFailure(
+355:     operation: "completion-delivery" | "completion-cleanup",
+356:     error: unknown,
+357:   ): void {
+358:     this.options.diagnostics.record({
+359:       kind: "failure",
+360:       operation,
+361:       failureCode: "internal",
+362:       errorName: DaemonLogger.errorName(error),
+363:     });
+364:   }
+365: 
+366:   private completeOperationTrace(requestId: string, outcome: DaemonDeliveryOutcome): void {
+367:     const expiration = this.operationTraceExpirations.get(requestId);
+368:     if (expiration !== undefined) clearTimeout(expiration);
+369:     this.operationTraceExpirations.delete(requestId);
+370:     this.operationTraceConnections.delete(requestId);
+371:     this.terminateOperationDelivery(requestId, outcome);
+372:     this.operationTraces.delete(requestId);
+373:   }
+374: 
+375:   private terminateOperationDelivery(requestId: string, outcome: DaemonDeliveryOutcome): void {
+376:     if (!this.options.journal.terminateDelivery(requestId)) return;
+377:     const trace = this.operationTraces.get(requestId);
+378:     if (trace === undefined) this.options.observer.deliveryTerminated(requestId, outcome, 0);
+379:     else trace.deliveryTerminated(outcome);
+380:   }
+381: 
+382:   private disconnectOperationTrace(requestId: string): void {
+383:     if (this.operationTraceExpirations.has(requestId)) return;
+384:     const trace = this.operationTraces.get(requestId);
+385:     if (trace === undefined) return;
+386:     trace.clientDisconnected();
+387:     const expiration = setTimeout(
+388:       () => this.expireOperationTrace(requestId),
+389:       this.options.policy.diagnostics.disconnectedTraceRetentionMs,
+390:     );
+391:     expiration.unref();
+392:     this.operationTraceExpirations.set(requestId, expiration);
+393:     this.enforceOperationTraceCapacity();
+394:   }
+395: 
+396:   private attachOperationTraceConnection(requestId: string, send: DaemonServerSend): () => void {
+397:     const connectionCount = this.operationTraceConnections.get(requestId) ?? 0;
+398:     if (connectionCount === 0) {
+399:       const expiration = this.operationTraceExpirations.get(requestId);
+400:       if (expiration !== undefined) clearTimeout(expiration);
+401:       this.operationTraceExpirations.delete(requestId);
+402:     }
+403:     this.operationTraceConnections.set(requestId, connectionCount + 1);
+404:     let connectionClosed = false;
+405:     const disconnect = (): void => {
+406:       if (connectionClosed) return;
+407:       connectionClosed = true;
+408:       const remainingConnections = (this.operationTraceConnections.get(requestId) ?? 1) - 1;
+409:       if (remainingConnections > 0) {
+410:         this.operationTraceConnections.set(requestId, remainingConnections);
+411:         return;
+412:       }
+413:       this.operationTraceConnections.delete(requestId);
+414:       this.disconnectOperationTrace(requestId);
+415:     };
+416:     send.onClose(disconnect);
+417:     return disconnect;
+418:   }
+419: 
+420:   private traceWasDisconnected(requestId: string): boolean {
+421:     if (this.operationTraceExpirations.has(requestId)) return true;
+422:     return (
+423:       !this.operationTraces.has(requestId) && !this.options.journal.isDeliveryTerminated(requestId)
+424:     );
+425:   }
+426: 
+427:   private reattachOperationTrace(requestId: string): void {
+428:     if (this.options.journal.isDeliveryTerminated(requestId)) return;
+429:     const trace = this.operationTraces.get(requestId);
+430:     if (trace === undefined) this.options.observer.reattached(requestId);
+431:     else trace.reattached();
+432:   }
+433: 
+434:   private expireOperationTrace(requestId: string): void {
+435:     this.operationTraceExpirations.delete(requestId);
+436:     this.operationTraceConnections.delete(requestId);
+437:     if (!this.operationTraces.delete(requestId)) return;
+438:     this.options.observer.traceExpired(requestId);
+439:   }
+440: 
+441:   private enforceOperationTraceCapacity(): void {
+442:     const capacity = Math.max(1, this.options.policy.diagnostics.maximumDisconnectedTraces);
+443:     while (this.operationTraceExpirations.size > capacity) {
+444:       const oldestRequestId = this.operationTraceExpirations.keys().next().value as
+445:         | string
+446:         | undefined;
+447:       if (oldestRequestId === undefined) return;
+448:       const expiration = this.operationTraceExpirations.get(oldestRequestId);
+449:       if (expiration !== undefined) clearTimeout(expiration);
+450:       this.expireOperationTrace(oldestRequestId);
+451:     }
+452:   }
+453: }
+454: 
+455: class RetainedDaemonOperationTrace implements DaemonOperationTrace {
+456:   constructor(
+457:     private readonly trace: DaemonOperationTrace,
+458:     private readonly retained: () => boolean,
+459:   ) {}
+460: 
+461:   accepted(queueDepth: number, generation: number): void {
+462:     if (this.retained()) this.trace.accepted(queueDepth, generation);
+463:   }
+464: 
+465:   turnStarted(generation: number): void {
+466:     if (this.retained()) this.trace.turnStarted(generation);
+467:   }
+468: 
+469:   workerCompleted(durations: DaemonWorkerPhaseDurations, refresh: DaemonRefreshSummary): void {
+470:     if (this.retained()) this.trace.workerCompleted(durations, refresh);
+471:   }
+472: 
+473:   spooled(manifest: CompletionSpoolManifest, durationMs: number): void {
+474:     if (this.retained()) this.trace.spooled(manifest, durationMs);
+475:   }
+476: 
+477:   executionTerminated(outcome: DaemonExecutionOutcome): void {
+478:     if (this.retained()) this.trace.executionTerminated(outcome);
+479:   }
+480: 
+481:   clientDisconnected(): void {
+482:     if (this.retained()) this.trace.clientDisconnected();
+483:   }
+484: 
+485:   reattached(): void {
+486:     if (this.retained()) this.trace.reattached();
+487:   }
+488: 
+489:   deliveryTerminated(outcome: DaemonDeliveryOutcome): void {
+490:     if (this.retained()) this.trace.deliveryTerminated(outcome);
+491:   }
+492: }
+493: 
+494: class ObservedDaemonCompletionWriter implements DaemonCompletionWriter {
+495:   constructor(
+496:     private readonly spool: CompletionSpool,
+497:     private readonly trace: DaemonOperationTrace | undefined,
+498:     private readonly clock: Pick<DaemonClock, "monotonicNowMs">,
+499:   ) {}
+500: 
+501:   append(record: DaemonSequencedOutputRecord): Promise<void> {
+502:     return this.spool.append(record);
+503:   }
+504: 
+505:   async finish(exitCode: number): Promise<CompletionSpoolManifest> {
+506:     const startedAt = this.clock.monotonicNowMs();
+507:     const manifest = await this.spool.finish(exitCode);
+508:     const durationMs = Math.max(0, this.clock.monotonicNowMs() - startedAt);
+509:     this.trace?.spooled(manifest, durationMs);
+510:     return manifest;
+511:   }
+512: 
+513:   dispose(): Promise<void> {
+514:     return this.spool.dispose();
+515:   }
+516: }

@@ -1,0 +1,69 @@
+Bundle: inputs/stack/diff.patch
+Original patch lines: 1803–1868
+
+1803: diff --git a/apps/cli/src/daemon/daemon-command-dispatcher.integration.test.ts b/apps/cli/src/daemon/daemon-command-dispatcher.integration.test.ts
+1804: deleted file mode 100644
+1805: index 3edab986b..000000000
+1806: --- a/apps/cli/src/daemon/daemon-command-dispatcher.integration.test.ts
+1807: +++ /dev/null
+1808: @@ -1,246 +0,0 @@
+1809: -import { mkdtempSync, rmSync } from "node:fs";
+1810: -import { tmpdir } from "node:os";
+1811: -import { join, resolve } from "node:path";
+1812: -import { describe, expect, it, vi } from "vitest";
+1813: -import {
+1814: -  CommandOutputSnapshot,
+1815: -  type CliExecutionRequest,
+1816: -  type CommandExecutionResult,
+1817: -} from "../command-execution-result.js";
+1818: -import type { ProgramDependencies } from "../program-dependencies.js";
+1819: -import {
+1820: -  DaemonCommandDispatcher,
+1821: -  type DaemonDispatchRuntime,
+1822: -} from "./daemon-command-dispatcher.js";
+1823: -import type {
+1824: -  DaemonLifecycleRequest,
+1825: -  DaemonLifecycleResponse,
+1826: -  DaemonRecord,
+1827: -} from "./daemon-protocol.js";
+1828: -import type {
+1829: -  DaemonProcess,
+1830: -  DaemonProcessLauncher,
+1831: -  DaemonProcessTerminator,
+1832: -} from "./daemon-process-launcher.js";
+1833: -import { DaemonRegistry } from "./daemon-registry.js";
+1834: -import { DaemonStartupCoordinator } from "./daemon-startup-coordinator.js";
+1835: -import { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
+1836: -import type { DaemonExecutionReceipt, LocalDaemonTransport } from "./local-daemon-transport.js";
+1837: -
+1838: -const workspaceRoot = resolve("reference-workspace");
+1839: -const REFERENCE_WORKSPACE_FILE_COUNT = 4_000;
+1840: -
+1841: -describe("DaemonCommandDispatcher startup routing", () => {
+1842: -  it("finishes concurrent reference-workspace calls cold behind one independent startup barrier", async () => {
+1843: -    const stateDirectory = mkdtempSync(join(tmpdir(), "symnav-routing-barrier-"));
+1844: -    try {
+1845: -      const barrier = new StartupBarrier();
+1846: -      const identity = DaemonWorkspaceIdentity.from(workspaceRoot, stateDirectory);
+1847: -      const registry = new DaemonRegistry(identity.registryDirectory);
+1848: -      const processTerminator = new LiveTestProcessTerminator();
+1849: -      const launcher = new BarrierDaemonLauncher(registry, identity, processTerminator, barrier);
+1850: -      const coordinator = new DaemonStartupCoordinator(
+1851: -        registry,
+1852: -        launcher,
+1853: -        new RegistryDaemonTransport(registry, identity) as unknown as LocalDaemonTransport,
+1854: -        { pollIntervalMs: 1, processTerminator },
+1855: -      );
+1856: -      const coldExecute = vi.fn(async (request: CliExecutionRequest) =>
+1857: -        result(`cold:${request.argv[1] ?? "unknown"}`),
+1858: -      );
+1859: -      const runtime: DaemonDispatchRuntime = {
+1860: -        coordinator,
+1861: -        registry,
+1862: -        observer: {
+1863: -          observe: async (record) => ({
+1864: -            kind: "responsive",
+1865: -            record,
+1866: -            pong: {
+1867: -              kind: "pong",
+1868: -              protocolVersion: record.protocolVersion,

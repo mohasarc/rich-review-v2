@@ -1,0 +1,156 @@
+Git object: d07002357d3e9596bfaae910a1ac63b77981620b:packages/daemon/src/transport/result-transfer-receiver.ts
+Original lines: 1–153
+
+1: import type { DaemonExecutorExecutionResult } from "@symnav/daemon";
+2: import type { CompletionSpoolManifest } from "../delivery/completion-spool.js";
+3: import type { DaemonExecutionServerFrame, DaemonResultChunk } from "./protocol.js";
+4: import type { DaemonCapturedOutputSummary, DaemonOutputCapture } from "./client-result-capture.js";
+5: 
+6: type ResultManifestFrame = Extract<
+7:   DaemonExecutionServerFrame,
+8:   { readonly kind: "result-manifest" }
+9: >;
+10: 
+11: type ResultEndFrame = Extract<DaemonExecutionServerFrame, { readonly kind: "result-end" }>;
+12: 
+13: export class DaemonResultTransferReceiver {
+14:   private expectedManifest: CompletionSpoolManifest | undefined;
+15:   private nextRecordOffset = 0;
+16:   private manifestReceived = false;
+17:   private terminalReceived = false;
+18:   private completed = false;
+19:   private disposal: Promise<void> | undefined;
+20: 
+21:   constructor(
+22:     private readonly requestId: string,
+23:     private readonly output: DaemonOutputCapture,
+24:   ) {}
+25: 
+26:   get manifest(): CompletionSpoolManifest | undefined {
+27:     return this.expectedManifest;
+28:   }
+29: 
+30:   get nextOffset(): number {
+31:     return this.nextRecordOffset;
+32:   }
+33: 
+34:   get terminal(): boolean {
+35:     return this.terminalReceived;
+36:   }
+37: 
+38:   beginConnection(): void {
+39:     this.manifestReceived = false;
+40:     this.terminalReceived = false;
+41:   }
+42: 
+43:   acceptManifest(frame: ResultManifestFrame): void {
+44:     if (this.manifestReceived || this.terminalReceived) {
+45:       throw new Error("Duplicate result manifest");
+46:     }
+47:     if (
+48:       this.expectedManifest !== undefined &&
+49:       !DaemonResultTransferReceiver.manifestsMatch(this.expectedManifest, frame.manifest)
+50:     ) {
+51:       throw new Error("Daemon resumed with a different result manifest");
+52:     }
+53:     if (
+54:       frame.requestId !== this.requestId ||
+55:       frame.manifest.requestId !== this.requestId ||
+56:       frame.manifest.instanceId !== frame.instanceId
+57:     ) {
+58:       throw new Error("Daemon result manifest has invalid coordinates");
+59:     }
+60:     this.expectedManifest ??= frame.manifest;
+61:     this.manifestReceived = true;
+62:   }
+63: 
+64:   async acceptChunk(chunk: DaemonResultChunk): Promise<void> {
+65:     const manifest = this.expectedManifest;
+66:     if (
+67:       !this.manifestReceived ||
+68:       this.terminalReceived ||
+69:       manifest === undefined ||
+70:       chunk.requestId !== this.requestId ||
+71:       chunk.transferId !== manifest.transferId ||
+72:       chunk.offset !== this.nextRecordOffset ||
+73:       chunk.sequence !== this.nextRecordOffset
+74:     ) {
+75:       throw new Error("Daemon returned an invalid result chunk");
+76:     }
+77:     await this.output.append({
+78:       sequence: chunk.sequence,
+79:       stream: chunk.stream,
+80:       bytes: chunk.bytes,
+81:     });
+82:     this.nextRecordOffset += 1;
+83:   }
+84: 
+85:   acceptEnd(frame: ResultEndFrame): void {
+86:     const manifest = this.expectedManifest;
+87:     if (
+88:       !this.manifestReceived ||
+89:       this.terminalReceived ||
+90:       manifest === undefined ||
+91:       frame.instanceId !== manifest.instanceId ||
+92:       frame.requestId !== this.requestId ||
+93:       frame.transferId !== manifest.transferId ||
+94:       frame.rawBytes !== manifest.rawBytes ||
+95:       frame.recordCount !== manifest.recordCount ||
+96:       frame.sha256 !== manifest.sha256 ||
+97:       this.nextRecordOffset !== manifest.recordCount
+98:     ) {
+99:       throw new Error("Daemon result transfer did not match its manifest");
+100:     }
+101:     this.terminalReceived = true;
+102:   }
+103: 
+104:   async finish(): Promise<DaemonExecutorExecutionResult> {
+105:     const manifest = this.expectedManifest;
+106:     if (!this.terminalReceived || manifest === undefined) {
+107:       throw new Error("Daemon result transfer is incomplete");
+108:     }
+109:     try {
+110:       const captured = await this.output.finish(manifest.exitCode);
+111:       if (!DaemonResultTransferReceiver.summariesMatch(captured.summary, manifest)) {
+112:         this.disposal = captured.result.output.dispose();
+113:         await this.disposal;
+114:         throw new Error("Daemon result transfer failed digest validation");
+115:       }
+116:       this.completed = true;
+117:       return captured.result;
+118:     } catch (error) {
+119:       await this.dispose();
+120:       throw error;
+121:     }
+122:   }
+123: 
+124:   dispose(): Promise<void> {
+125:     if (this.completed) return Promise.resolve();
+126:     this.disposal ??= this.output.dispose();
+127:     return this.disposal;
+128:   }
+129: 
+130:   private static manifestsMatch(
+131:     expected: CompletionSpoolManifest,
+132:     actual: CompletionSpoolManifest,
+133:   ): boolean {
+134:     return (
+135:       actual.transferId === expected.transferId &&
+136:       actual.requestId === expected.requestId &&
+137:       actual.instanceId === expected.instanceId &&
+138:       actual.exitCode === expected.exitCode &&
+139:       DaemonResultTransferReceiver.summariesMatch(actual, expected)
+140:     );
+141:   }
+142: 
+143:   private static summariesMatch(
+144:     actual: CompletionSpoolManifest | DaemonCapturedOutputSummary,
+145:     expected: CompletionSpoolManifest,
+146:   ): boolean {
+147:     return (
+148:       actual.rawBytes === expected.rawBytes &&
+149:       actual.recordCount === expected.recordCount &&
+150:       actual.sha256 === expected.sha256
+151:     );
+152:   }
+153: }

@@ -1,0 +1,196 @@
+Git object: ba53c8e1662fd86d198b95321c90d9c9bef10184:apps/cli/src/daemon/accepted-execution-session.ts
+Original lines: 1–193
+
+1: import { DaemonExecutionFailures, type AcceptedRequestCompatibility } from "@symnav/daemon";
+2: import type {
+3:   AcceptedExecutionAdmission,
+4:   AcceptedExecutionSessionOptions,
+5:   AcceptedExecutionSnapshot,
+6:   AuthenticatedDaemonExecuteRequest,
+7: } from "./accepted-execution-session-contracts.js";
+8: import { CompletionSpoolCapacityError } from "./completion-spool.js";
+9: import type { DaemonCompletionWriter } from "./daemon-delivery-session.js";
+10: import { DaemonLogger } from "./daemon-logger.js";
+11: import { DaemonNavigationWorkerExitedError } from "./daemon-navigation-worker.js";
+12: import type { DaemonOperationTrace } from "./daemon-operation-observer.js";
+13: import type {
+14:   DaemonExecuteRequest,
+15:   DaemonExecutionStatus,
+16:   DaemonWorkerReplacementCause,
+17: } from "./daemon-protocol.js";
+18: 
+19: export class AcceptedExecutionSession {
+20:   private lastNavigationAt: number | undefined;
+21:   private lastCompletedMonotonicAt: number | undefined;
+22:   private readonly resourceInterruptedRequests = new Set<string>();
+23: 
+24:   constructor(private readonly options: AcceptedExecutionSessionOptions) {}
+25: 
+26:   get snapshot(): AcceptedExecutionSnapshot {
+27:     return Object.freeze({
+28:       queue: this.options.queue.snapshot,
+29:       ...(this.lastNavigationAt === undefined ? {} : { lastNavigationAt: this.lastNavigationAt }),
+30:       ...(this.lastCompletedMonotonicAt === undefined
+31:         ? {}
+32:         : { lastCompletedMonotonicAt: this.lastCompletedMonotonicAt }),
+33:     });
+34:   }
+35: 
+36:   compatibilityFor(request: DaemonExecuteRequest): AcceptedRequestCompatibility {
+37:     return this.options.ledger.compatibilityFor(
+38:       request.requestId,
+39:       request.commandName,
+40:       request.request,
+41:     );
+42:   }
+43: 
+44:   accept(request: AuthenticatedDaemonExecuteRequest): AcceptedExecutionAdmission {
+45:     const existing = this.options.ledger.entryFor(request.requestId);
+46:     const entry = this.options.ledger.accept(
+47:       request.requestId,
+48:       request.commandName,
+49:       request.request,
+50:     );
+51:     const acceptance = Object.freeze({
+52:       requestId: request.requestId,
+53:       acceptedAt: entry.acceptedAt,
+54:       queuePosition: entry.queuePosition,
+55:     });
+56:     if (existing !== undefined) {
+57:       return Object.freeze({ newlyAccepted: false, entry, acceptance });
+58:     }
+59:     this.lastNavigationAt = this.options.clock.wallNowMs();
+60:     this.options.lifetime.navigationAccepted();
+61:     const trace = this.options.delivery.beginAcceptedTrace(
+62:       request.requestId,
+63:       request.commandName,
+64:       entry.queuePosition,
+65:       this.options.resourceSupervisor.snapshot.generation,
+66:     );
+67:     void this.executeAccepted(request, trace);
+68:     return Object.freeze({ newlyAccepted: true, entry, acceptance });
+69:   }
+70: 
+71:   status(requestId: string): DaemonExecutionStatus {
+72:     return this.options.ledger.status(requestId);
+73:   }
+74: 
+75:   markActiveResourceInterrupted(cause: DaemonWorkerReplacementCause): void {
+76:     if (cause === "worker-exit") return;
+77:     const activeRequest = this.options.queue.snapshot.active;
+78:     if (activeRequest !== undefined) this.resourceInterruptedRequests.add(activeRequest.requestId);
+79:   }
+80: 
+81:   scheduleAtTurnBoundary(operation: () => Promise<void>): Promise<void> {
+82:     return this.options.queue.scheduleAtTurnBoundary(operation);
+83:   }
+84: 
+85:   drain(): Promise<void> {
+86:     return this.options.queue.drain();
+87:   }
+88: 
+89:   close(): void {
+90:     this.options.queue.close();
+91:   }
+92: 
+93:   private async executeAccepted(
+94:     request: AuthenticatedDaemonExecuteRequest,
+95:     trace: DaemonOperationTrace,
+96:   ): Promise<void> {
+97:     let completion: DaemonCompletionWriter | undefined;
+98:     try {
+99:       await this.options.queue.enqueue(
+100:         {
+101:           requestId: request.requestId,
+102:           command: request.commandName,
+103:           acceptedAt: this.options.clock.monotonicNowMs(),
+104:         },
+105:         async () => {
+106:           trace.turnStarted(this.options.resourceSupervisor.snapshot.generation);
+107:           try {
+108:             completion = await this.options.delivery.createCompletion(request.requestId);
+109:             this.options.ledger.markRunning(request.requestId, this.options.clock.wallNowMs());
+110:             const response = await this.options.worker.execute(
+111:               request.requestId,
+112:               { commandName: request.commandName, request: request.request },
+113:               completion,
+114:             );
+115:             this.options.resourceSupervisor.workerHeapReported(
+116:               response.generation,
+117:               response.resources.workerHeapUsedBytes,
+118:               response.resources.workerHeapLimitBytes,
+119:               response.resources.peakWorkerHeapUsedBytes,
+120:             );
+121:             trace.workerCompleted(
+122:               {
+123:                 freshnessMs: response.durations.freshnessMs,
+124:                 navigationMs: response.durations.navigationMs,
+125:                 renderMs: response.durations.renderMs,
+126:                 workerOutputMs: response.durations.outputMs,
+127:               },
+128:               response.refresh,
+129:             );
+130:             await completion.finish(response.result.exitCode);
+131:             this.lastCompletedMonotonicAt = this.options.clock.monotonicNowMs();
+132:             const workspaceExists = await this.options.processLifecycle.workspaceExists();
+133:             trace.executionTerminated("completed");
+134:             this.options.ledger.complete(
+135:               request.requestId,
+136:               request.requestId,
+137:               this.options.clock.wallNowMs(),
+138:             );
+139:             await this.options.delivery.trackedCompletion(request.requestId);
+140:             if (!workspaceExists) {
+141:               await this.options.processLifecycle.workspaceDeletedAfterDelivery();
+142:             }
+143:           } finally {
+144:             this.scheduleTurnCompleteResourceSample();
+145:           }
+146:         },
+147:       );
+148:     } catch (error) {
+149:       trace.executionTerminated("failed");
+150:       this.recordFailure("request", "internal", error);
+151:       const shutdown = this.options.processLifecycle.shutdownSnapshot();
+152:       const code = DaemonExecutionFailures.classify({
+153:         resourceInterrupted: this.resourceInterruptedRequests.delete(request.requestId),
+154:         responseCapacityExceeded: error instanceof CompletionSpoolCapacityError,
+155:         workerExited: error instanceof DaemonNavigationWorkerExitedError,
+156:         ...(shutdown.failureCode === undefined
+157:           ? {}
+158:           : { shutdownFailureCode: shutdown.failureCode }),
+159:         shutdownStarted: shutdown.started,
+160:       });
+161:       await completion?.dispose().catch((cleanupError) => {
+162:         this.recordFailure("completion-cleanup", "internal", cleanupError);
+163:       });
+164:       this.options.ledger.fail(request.requestId, code, this.options.clock.wallNowMs());
+165:     } finally {
+166:       if (this.options.queue.isIdle) this.options.lifetime.queueBecameIdle();
+167:     }
+168:   }
+169: 
+170:   private scheduleTurnCompleteResourceSample(): void {
+171:     void this.options.queue
+172:       .scheduleAtTurnBoundary(() => this.options.resourceSupervisor.sampleAtTurnBoundary())
+173:       .catch((error) => {
+174:         this.recordFailure("resource-sample", "operation-failed", error);
+175:       })
+176:       .finally(() => {
+177:         if (this.options.queue.isIdle) this.options.lifetime.queueBecameIdle();
+178:       });
+179:   }
+180: 
+181:   private recordFailure(
+182:     operation: "request" | "completion-cleanup" | "resource-sample",
+183:     failureCode: "internal" | "operation-failed",
+184:     error: unknown,
+185:   ): void {
+186:     this.options.diagnostics.record({
+187:       kind: "failure",
+188:       operation,
+189:       failureCode,
+190:       errorName: DaemonLogger.errorName(error),
+191:     });
+192:   }
+193: }

@@ -1,0 +1,102 @@
+Bundle: inputs/pr-148/diff.patch
+Original patch lines: 15686–15784
+
+15686: index e0abcc010..7004577e4 100644
+15687: --- a/apps/cli/src/daemon/daemon-navigation-worker.test.ts
+15688: +++ b/packages/daemon/src/worker/navigation-worker.test.ts
+15689: @@ -5,9 +5,9 @@ import { runInNewContext } from "node:vm";
+15690:  import { setFlagsFromString } from "node:v8";
+15691:  import { describe, expect, it } from "vitest";
+15692:  import { DaemonPolicy, type DaemonExecutorRequest } from "@symnav/daemon";
+15693: -import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
+15694: +import { DaemonPolicyTestFactory } from "../../test/helpers/daemon-policy.js";
+15695:  import { fixturePath } from "@symnav/testing";
+15696: -import { NodeDaemonNavigationWorker } from "./daemon-navigation-worker.js";
+15697: +import { NodeDaemonNavigationWorker } from "./navigation-worker.js";
+15698:  
+15699:  const request: DaemonExecutorRequest = {
+15700:    argv: ["overview", "input.ts"],
+15701: @@ -366,40 +366,17 @@ describe("NodeDaemonNavigationWorker", () => {
+15702:      }
+15703:    });
+15704:  
+15705: -  it("classifies a CLI executor version mismatch as an initialization failure", async () => {
+15706: -    const directory = mkdtempSync(join(tmpdir(), "symnav-injected-worker-version-"));
+15707: -    const worker = createInjectedWorker(
+15708: -      new URL("../../dist/daemon-executor.js", import.meta.url).href,
+15709: -      directory,
+15710: -      "definitely-not-the-product-version",
+15711: -    );
+15712: -    try {
+15713: -      await expect(worker.start(fixturePath("overview-cases"))).rejects.toThrow(
+15714: -        /initialization failure/i,
+15715: -      );
+15716: -    } finally {
+15717: -      await worker.terminate();
+15718: -      rmSync(directory, { recursive: true, force: true });
+15719: -    }
+15720: -  });
+15721: -
+15722: -  it("proves readiness through the injected CLI version command with legacy cold input", async () => {
+15723: +  it("proves readiness through the generic executor module", async () => {
+15724:      const directory = mkdtempSync(join(tmpdir(), "symnav-injected-worker-readiness-"));
+15725: -    const workspaceRoot = fixturePath("overview-cases");
+15726:      const worker = createInjectedWorker(
+15727: -      new URL("../../dist/daemon-executor.js", import.meta.url).href,
+15728: +      new URL("../../test/fixtures/executor-module.mjs", import.meta.url).href,
+15729:        directory,
+15730: -      "0.1.0",
+15731: +      "test",
+15732:      );
+15733:      try {
+15734: -      await expect(worker.start(workspaceRoot)).resolves.toMatchObject({
+15735: +      await expect(worker.start("files:17")).resolves.toMatchObject({
+15736:          kind: "ready",
+15737:          fileCount: 17,
+15738: -        startupDurations: {
+15739: -          discoveryMs: 0,
+15740: -          indexingMs: expect.any(Number),
+15741: -          totalMs: expect.any(Number),
+15742: -        },
+15743:        });
+15744:        const records: Uint8Array[] = [];
+15745:        await expect(
+15746: @@ -407,8 +384,8 @@ describe("NodeDaemonNavigationWorker", () => {
+15747:            "readiness-probe",
+15748:            "version",
+15749:            {
+15750: -            argv: ["--version"],
+15751: -            cwd: workspaceRoot,
+15752: +            argv: ["stdout:0.1.0\n"],
+15753: +            cwd: directory,
+15754:              telemetryEnabled: false,
+15755:              executionMode: "cold",
+15756:            },
+15757: @@ -421,12 +398,6 @@ describe("NodeDaemonNavigationWorker", () => {
+15758:        ).resolves.toMatchObject({
+15759:          kind: "result",
+15760:          result: { exitCode: 0 },
+15761: -        durations: {
+15762: -          freshnessMs: 0,
+15763: -          navigationMs: 0,
+15764: -          renderMs: 0,
+15765: -          outputMs: expect.any(Number),
+15766: -        },
+15767:        });
+15768:        expect(Buffer.concat(records).toString("utf8")).toBe("0.1.0\n");
+15769:        await worker.drainAndClose();
+15770: @@ -452,7 +423,7 @@ function createInjectedWorker(
+15771:        policy: policy.toSerialized(),
+15772:      },
+15773:      resourceLimits: { maxOldGenerationSizeMb: 128 },
+15774: -    entryUrl: new URL("../../dist/daemon/daemon-navigation-worker-entry.js", import.meta.url),
+15775: +    entryUrl: new URL("../../dist/worker-entry.js", import.meta.url),
+15776:    });
+15777:  }
+15778:  
+15779: diff --git a/packages/daemon/src/worker/navigation-worker.ts b/packages/daemon/src/worker/navigation-worker.ts
+15780: new file mode 100644
+15781: index 000000000..8994a50c4
+15782: --- /dev/null
+15783: +++ b/packages/daemon/src/worker/navigation-worker.ts
+15784: @@ -0,0 +1,306 @@

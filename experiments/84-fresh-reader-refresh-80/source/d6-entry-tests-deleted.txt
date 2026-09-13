@@ -1,0 +1,131 @@
+Bundle: inputs/pr-148/diff.patch
+Original patch lines: 299–426
+
+299: diff --git a/apps/cli/src/daemon/daemon-entry.test.ts b/apps/cli/src/daemon/daemon-entry.test.ts
+300: deleted file mode 100644
+301: index 565978588..000000000
+302: --- a/apps/cli/src/daemon/daemon-entry.test.ts
+303: +++ /dev/null
+304: @@ -1,122 +0,0 @@
+305: -import { readFileSync } from "node:fs";
+306: -import { afterEach, expect, it, vi } from "vitest";
+307: -import { DaemonPolicy } from "@symnav/daemon";
+308: -import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
+309: -import { DAEMON_PROTOCOL_VERSION, type DaemonIdentityCoordinates } from "./daemon-protocol.js";
+310: -import { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
+311: -
+312: -interface DaemonProcessConfiguration extends DaemonIdentityCoordinates {
+313: -  readonly protocolVersion: number;
+314: -  readonly stateDirectory: string;
+315: -  readonly symnavVersion: string;
+316: -  readonly executorModuleUrl: string;
+317: -  readonly policy: ReturnType<DaemonPolicy["toSerialized"]>;
+318: -}
+319: -
+320: -afterEach(() => {
+321: -  vi.resetModules();
+322: -  vi.restoreAllMocks();
+323: -  vi.doUnmock("./daemon-process-launcher.js");
+324: -  vi.doUnmock("./daemon-registry.js");
+325: -  vi.doUnmock("./local-daemon-transport.js");
+326: -  vi.doUnmock("./workspace-daemon.js");
+327: -  vi.doUnmock("./daemon-clock.js");
+328: -  vi.doUnmock("./daemon-logger.js");
+329: -  vi.doUnmock("./daemon-process-termination-observer.js");
+330: -});
+331: -
+332: -it("starts the detached daemon with only daemon-owned process configuration", async () => {
+333: -  const configuredStateDirectory = "/canonical/state-a";
+334: -  const retargetedStateDirectory = "/canonical/state-b";
+335: -  const identity = DaemonWorkspaceIdentity.from("/workspace", configuredStateDirectory);
+336: -  const policy = DaemonPolicyTestFactory.withOverrides(
+337: -    DaemonPolicy.fromSystemMemory({ totalBytes: 1024 * 1024 * 1024 }),
+338: -    {
+339: -      resources: {
+340: -        hardProcessRssBytes: 512 * 1024 * 1024,
+341: -        softProcessRssBytes: 409 * 1024 * 1024,
+342: -        resumeProcessRssBytes: 358 * 1024 * 1024,
+343: -        workerMaxOldGenerationSizeMiB: 257,
+344: -        workerHeapSampleIntervalMs: 26,
+345: -      },
+346: -    },
+347: -  );
+348: -  const configuration: DaemonProcessConfiguration = {
+349: -    protocolVersion: DAEMON_PROTOCOL_VERSION,
+350: -    symnavVersion: "0.1.0",
+351: -    executorModuleUrl: "file:///absolute/daemon-executor.js",
+352: -    workspaceRoot: identity.workspaceRoot,
+353: -    stateDirectory: identity.stateDirectory,
+354: -    workspaceKey: identity.workspaceKey,
+355: -    stateKey: identity.stateKey,
+356: -    identityKey: identity.identityKey,
+357: -    instanceId: "instance",
+358: -    processToken: "token",
+359: -    endpoint: identity.endpoint("instance"),
+360: -    policy: policy.toSerialized(),
+361: -  };
+362: -  let daemonStateDirectory = "";
+363: -  let daemonExecutorModuleUrl = "";
+364: -  let daemonWorkerLimit = 0;
+365: -  let daemonLogger: unknown;
+366: -  let terminationRecorder: unknown;
+367: -  let terminationObserverInstalled = false;
+368: -  vi.doMock("./daemon-process-launcher.js", () => ({
+369: -    DaemonProcessConfigurationParser: { parse: () => configuration },
+370: -  }));
+371: -  vi.doMock("./daemon-registry.js", () => ({ DaemonRegistry: class {} }));
+372: -  vi.doMock("./local-daemon-transport.js", () => ({ LocalDaemonTransport: class {} }));
+373: -  vi.doMock("./daemon-clock.js", () => ({ NodeDaemonClock: class {} }));
+374: -  vi.doMock("./daemon-logger.js", () => ({ DaemonLogger: class {} }));
+375: -  vi.doMock("./daemon-process-termination-observer.js", () => ({
+376: -    DaemonProcessTerminationObserver: class {
+377: -      constructor(recorder: unknown) {
+378: -        terminationRecorder = recorder;
+379: -      }
+380: -
+381: -      install(): void {
+382: -        terminationObserverInstalled = true;
+383: -      }
+384: -    },
+385: -  }));
+386: -  vi.doMock("./workspace-daemon.js", () => ({
+387: -    WorkspaceDaemon: class {
+388: -      constructor(options: {
+389: -        readonly identity: { readonly stateDirectory: string };
+390: -        readonly executorModuleUrl: string;
+391: -        readonly policy: DaemonPolicy;
+392: -        readonly logger: unknown;
+393: -      }) {
+394: -        daemonStateDirectory = options.identity.stateDirectory;
+395: -        daemonExecutorModuleUrl = options.executorModuleUrl;
+396: -        daemonWorkerLimit = options.policy.values.resources.workerMaxOldGenerationSizeMiB;
+397: -        daemonLogger = options.logger;
+398: -      }
+399: -
+400: -      async start(): Promise<void> {}
+401: -    },
+402: -  }));
+403: -
+404: -  await import("./daemon-entry.js");
+405: -
+406: -  expect(daemonStateDirectory).toBe(configuredStateDirectory);
+407: -  expect(daemonExecutorModuleUrl).toBe(configuration.executorModuleUrl);
+408: -  expect(daemonWorkerLimit).toBe(257);
+409: -  expect(terminationObserverInstalled).toBe(true);
+410: -  expect(terminationRecorder).toBe(daemonLogger);
+411: -});
+412: -
+413: -it("keeps the process and worker entries independent from CLI and core modules", () => {
+414: -  for (const file of [
+415: -    "daemon-entry.ts",
+416: -    "daemon-navigation-worker-entry.ts",
+417: -    "daemon-navigation-worker-protocol.ts",
+418: -    "local-daemon-transport.ts",
+419: -    "workspace-daemon.ts",
+420: -  ]) {
+421: -    const source = readFileSync(new URL(file, import.meta.url), "utf8");
+422: -    expect(source).not.toMatch(
+423: -      /@symnav\/core|\.\.\/(program|program-dependencies|command-execution-result)/,
+424: -    );
+425: -  }
+426: -});

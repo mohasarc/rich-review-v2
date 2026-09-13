@@ -1,0 +1,123 @@
+Git object: d07002357d3e9596bfaae910a1ac63b77981620b:packages/daemon/src/transport/execution-client.ts
+Original lines: 38–157
+
+38:   constructor(private readonly options: DaemonExecutionClientOptions) {}
+39: 
+40:   execute(endpoint: string, request: DaemonExecuteRequest): Promise<DaemonExecutionReceipt> {
+41:     return this.executeOnce(endpoint, request).then((receipt) => ({
+42:       acceptance: receipt.acceptance,
+43:       completion: this.completeWithReattachments(endpoint, request, receipt.completion),
+44:     }));
+45:   }
+46: 
+47:   private async completeWithReattachments(
+48:     endpoint: string,
+49:     request: DaemonExecuteRequest,
+50:     completion: DaemonExecutionReceipt["completion"],
+51:   ): DaemonExecutionReceipt["completion"] {
+52:     let currentCompletion = completion;
+53:     let originalAcceptedClose: DaemonTransportError | undefined;
+54:     let reattachmentCount = 0;
+55:     while (true) {
+56:       try {
+57:         return await currentCompletion;
+58:       } catch (error) {
+59:         if (!DaemonExecutionClient.isAcceptedConnectionClose(error, request)) throw error;
+60:         originalAcceptedClose ??= error;
+61:         if (
+62:           reattachmentCount >= this.options.deliveryPolicy.postAcceptanceExecutionReattachmentLimit
+63:         )
+64:           throw originalAcceptedClose;
+65:         try {
+66:           const reattached = await this.executeOnce(endpoint, request);
+67:           currentCompletion = reattached.completion;
+68:           reattachmentCount += 1;
+69:         } catch {
+70:           throw originalAcceptedClose;
+71:         }
+72:       }
+73:     }
+74:   }
+75: 
+76:   private executeOnce(
+77:     endpoint: string,
+78:     request: DaemonExecuteRequest,
+79:   ): Promise<DaemonExecutionReceipt> {
+80:     this.options.validator.request(request);
+81:     return new Promise((resolve, reject) => {
+82:       const decoder = this.options.codec.transferDecoder();
+83:       const transfer = new DaemonResultTransferReceiver(
+84:         request.requestId,
+85:         this.options.createOutput(),
+86:       );
+87:       let connection: Awaited<ReturnType<DaemonSocketClient["connect"]>> | undefined;
+88:       let delivery: DaemonDeliveryState = "not-submitted";
+89:       let acceptance: DaemonExecutionAcceptance | undefined;
+90:       let terminal = false;
+91:       let outerSettled = false;
+92:       let completionSettled = false;
+93:       let resumeCount = 0;
+94:       let resolveCompletion!: (value: Awaited<DaemonExecutionReceipt["completion"]>) => void;
+95:       let rejectCompletion!: (error: DaemonTransportError) => void;
+96:       const completion = new Promise<Awaited<DaemonExecutionReceipt["completion"]>>(
+97:         (completionResolve, completionReject) => {
+98:           resolveCompletion = completionResolve;
+99:           rejectCompletion = completionReject;
+100:         },
+101:       );
+102:       const fail = (error: unknown): void => {
+103:         const transportError = DaemonExecutionClient.transportError(error, delivery);
+104:         connection?.destroy();
+105:         if (!outerSettled) {
+106:           outerSettled = true;
+107:           void transfer.dispose().finally(() => reject(transportError));
+108:           return;
+109:         }
+110:         if (!completionSettled) {
+111:           completionSettled = true;
+112:           void transfer.dispose().finally(() => rejectCompletion(transportError));
+113:         }
+114:       };
+115:       const resume = (): boolean => {
+116:         if (
+117:           resumeCount >= this.options.deliveryPolicy.resultTransferResumeLimitPerExecutionAttempt ||
+118:           completionSettled ||
+119:           acceptance === undefined ||
+120:           transfer.manifest === undefined ||
+121:           terminal
+122:         ) {
+123:           return false;
+124:         }
+125:         resumeCount += 1;
+126:         connection?.destroy();
+127:         transfer.beginConnection();
+128:         void this.fetchCompletion(endpoint, request, transfer)
+129:           .then((completionValue) => {
+130:             if (completionSettled) return;
+131:             completionSettled = true;
+132:             resolveCompletion(completionValue);
+133:           })
+134:           .catch((error: unknown) => {
+135:             if (DaemonExecutionClient.isAcceptedConnectionClose(error, request) && resume()) {
+136:               return;
+137:             }
+138:             fail(
+139:               error instanceof DaemonResultFetchEndedError
+140:                 ? new DaemonTransportError("corrupt", "accepted", error.message)
+141:                 : error,
+142:             );
+143:           });
+144:         return true;
+145:       };
+146:       const publishAcceptance = (): void => {
+147:         if (acceptance === undefined || outerSettled) return;
+148:         outerSettled = true;
+149:         connection?.disableTimeout();
+150:         resolve({ acceptance, completion });
+151:       };
+152:       const consume = async (bytes: Uint8Array): Promise<void> => {
+153:         const values = decoder.append(bytes);
+154:         let completedResult = false;
+155:         let failedCode: DaemonExecutionFailureCode | undefined;
+156:         for (const value of values) {
+157:           if (DaemonExecutionClient.isResultChunk(value)) {

@@ -1,0 +1,132 @@
+Git object: d07002357d3e9596bfaae910a1ac63b77981620b:packages/daemon/src/daemon-admission.ts
+Original lines: 1–129
+
+1: export type DaemonExecuteRejectionCode =
+2:   | "not-ready"
+3:   | "draining"
+4:   | "resource-pressure"
+5:   | "incompatible";
+6: 
+7: export type AcceptedRequestCompatibility = "unseen" | "matching" | "conflicting";
+8: 
+9: export type WorkspaceRequestQueueState = "accepting" | "draining" | "closed";
+10: 
+11: export type DaemonExecutionCoordinates = {
+12:   readonly instanceId: string;
+13:   readonly processToken: string;
+14:   readonly requestId: string;
+15: };
+16: 
+17: export type DaemonRejectedExecutionFrame = {
+18:   readonly kind: "rejected";
+19:   readonly instanceId: string;
+20:   readonly processToken: string;
+21:   readonly requestId: string;
+22:   readonly code: DaemonExecuteRejectionCode;
+23:   readonly retrySafe: boolean;
+24: };
+25: 
+26: export interface DaemonAdmissionContext {
+27:   readonly request: unknown;
+28:   readonly authenticated: boolean;
+29:   readonly workerReady: boolean;
+30:   readonly resourceAdmissionPaused: boolean;
+31:   readonly queueState: WorkspaceRequestQueueState;
+32:   readonly compatibility: AcceptedRequestCompatibility;
+33: }
+34: 
+35: export interface DaemonAdmissionGuard {
+36:   rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined;
+37: }
+38: 
+39: export type DaemonAdmissionRejectionCode = "authentication" | DaemonExecuteRejectionCode;
+40: 
+41: export type DaemonAdmissionDecision =
+42:   | { readonly kind: "accept" }
+43:   | { readonly kind: "disconnect"; readonly code: "authentication" }
+44:   | { readonly kind: "reject"; readonly code: DaemonExecuteRejectionCode };
+45: 
+46: class AuthenticationAdmissionGuard implements DaemonAdmissionGuard {
+47:   rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {
+48:     return context.authenticated ? undefined : "authentication";
+49:   }
+50: }
+51: 
+52: class WorkerReadinessAdmissionGuard implements DaemonAdmissionGuard {
+53:   rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {
+54:     return context.workerReady ? undefined : "not-ready";
+55:   }
+56: }
+57: 
+58: class ResourceAdmissionGuard implements DaemonAdmissionGuard {
+59:   rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {
+60:     return context.resourceAdmissionPaused ? "resource-pressure" : undefined;
+61:   }
+62: }
+63: 
+64: class QueueAdmissionGuard implements DaemonAdmissionGuard {
+65:   rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {
+66:     return context.queueState === "accepting" ? undefined : "draining";
+67:   }
+68: }
+69: 
+70: class CompatibilityAdmissionGuard implements DaemonAdmissionGuard {
+71:   rejectionFor(context: DaemonAdmissionContext): DaemonAdmissionRejectionCode | undefined {
+72:     return context.compatibility === "conflicting" ? "incompatible" : undefined;
+73:   }
+74: }
+75: 
+76: export class DaemonAdmissionPolicy {
+77:   private readonly guards: readonly DaemonAdmissionGuard[] = [
+78:     new AuthenticationAdmissionGuard(),
+79:     new WorkerReadinessAdmissionGuard(),
+80:     new ResourceAdmissionGuard(),
+81:     new QueueAdmissionGuard(),
+82:     new CompatibilityAdmissionGuard(),
+83:   ];
+84: 
+85:   decide(context: DaemonAdmissionContext): DaemonAdmissionDecision {
+86:     for (const guard of this.guards) {
+87:       const rejection = guard.rejectionFor(context);
+88:       if (rejection === undefined) continue;
+89:       if (rejection === "authentication") return { kind: "disconnect", code: rejection };
+90:       return { kind: "reject", code: rejection };
+91:     }
+92:     return { kind: "accept" };
+93:   }
+94: }
+95: 
+96: export class DaemonAdmissionRejections {
+97:   private static readonly retrySafety: Readonly<Record<DaemonExecuteRejectionCode, boolean>> =
+98:     Object.freeze({
+99:       "not-ready": true,
+100:       draining: true,
+101:       "resource-pressure": true,
+102:       incompatible: false,
+103:     });
+104: 
+105:   static retrySafe(code: DaemonExecuteRejectionCode): boolean {
+106:     return DaemonAdmissionRejections.retrySafety[code];
+107:   }
+108: 
+109:   static frame(
+110:     code: DaemonExecuteRejectionCode,
+111:     coordinates: DaemonExecutionCoordinates,
+112:   ): DaemonRejectedExecutionFrame {
+113:     return {
+114:       kind: "rejected",
+115:       ...coordinates,
+116:       code,
+117:       retrySafe: DaemonAdmissionRejections.retrySafe(code),
+118:     };
+119:   }
+120: 
+121:   static assertConsistent(frame: DaemonRejectedExecutionFrame): void {
+122:     if (
+123:       !Object.hasOwn(DaemonAdmissionRejections.retrySafety, frame.code) ||
+124:       frame.retrySafe !== DaemonAdmissionRejections.retrySafety[frame.code]
+125:     ) {
+126:       throw new Error("Inconsistent daemon execution rejection");
+127:     }
+128:   }
+129: }

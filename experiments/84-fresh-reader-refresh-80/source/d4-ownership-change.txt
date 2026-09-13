@@ -1,0 +1,132 @@
+Bundle: inputs/pr-148/diff.patch
+Original patch lines: 1379–1507
+
+1379: +    if (!this.removeStartupLockIfOwner(identity, owner)) return false;
+1380: +    if (record !== undefined)
+1381: +      this.removeIfProcess(identity, record.instanceId, record.processToken);
+1382: +    return true;
+1383: +  }
+1384: +
+1385:    isStartupOwner(identity: DaemonWorkspaceIdentity, instanceId: string): boolean {
+1386: -    return this.startupOwner(identity)?.instanceId === instanceId;
+1387: +    return (
+1388: +      this.startupOwnershipMatches(identity, {
+1389: +        identityKey: identity.identityKey,
+1390: +        instanceId,
+1391: +      }) !== undefined
+1392: +    );
+1393:    }
+1394:  
+1395:    startupOwnerMatchesProcess(identity: DaemonWorkspaceIdentity, record: DaemonRecord): boolean {
+1396:      if (record.pid <= 0) return false;
+1397: -    const owner = this.startupOwner(identity);
+1398: +    const owner = this.startupOwnershipMatches(identity, {
+1399: +      identityKey: identity.identityKey,
+1400: +      instanceId: record.instanceId,
+1401: +      processToken: record.processToken,
+1402: +      ownerKind: "daemon",
+1403: +      ownerPid: record.pid,
+1404: +    });
+1405:      const stored = this.readStoredInstance(identity, record.instanceId);
+1406:      return (
+1407: -      owner?.instanceId === record.instanceId &&
+1408: -      owner.identityKey === identity.identityKey &&
+1409: -      owner.ownerKind === "daemon" &&
+1410: -      owner.ownerPid === record.pid &&
+1411: -      owner.processToken === record.processToken &&
+1412: +      owner !== undefined &&
+1413:        stored?.pid === record.pid &&
+1414:        stored.processToken === record.processToken &&
+1415:        stored.startedAt === record.startedAt
+1416: @@ -425,15 +541,24 @@ export class DaemonRegistry {
+1417:    }
+1418:  
+1419:    removeStartupLockIfProcess(identity: DaemonWorkspaceIdentity, record: DaemonRecord): boolean {
+1420: -    const owner = this.startupOwner(identity);
+1421: +    const owner = this.startupOwnershipMatches(identity, {
+1422: +      identityKey: identity.identityKey,
+1423: +      instanceId: record.instanceId,
+1424: +      processToken: record.processToken,
+1425: +      ownerKind: "daemon",
+1426: +      ownerPid: record.pid,
+1427: +    });
+1428:      if (owner === undefined || !this.startupOwnerMatchesProcess(identity, record)) return false;
+1429:      return this.removeStartupLockIfOwner(identity, owner);
+1430:    }
+1431:  
+1432:    removeStartupLockIfInstance(identity: DaemonWorkspaceIdentity, instanceId: string): boolean {
+1433:      const releasedPath = identity.releasedStartupLockPath(instanceId);
+1434: -    const owner = this.startupOwner(identity);
+1435: -    if (owner?.instanceId !== instanceId) {
+1436: +    const owner = this.startupOwnershipMatches(identity, {
+1437: +      identityKey: identity.identityKey,
+1438: +      instanceId,
+1439: +    });
+1440: +    if (owner === undefined) {
+1441:        return DaemonRegistry.readStartupOwner(identity, releasedPath)?.instanceId === instanceId;
+1442:      }
+1443:      try {
+1444: @@ -456,7 +581,7 @@ export class DaemonRegistry {
+1445:      try {
+1446:        if (
+1447:          !mutation.isOwned() ||
+1448: -        !DaemonRegistry.sameStartupOwner(this.startupOwner(identity), observedOwner)
+1449: +        this.startupOwnershipMatches(identity, observedOwner) === undefined
+1450:        ) {
+1451:          return false;
+1452:        }
+1453: @@ -544,7 +669,7 @@ export class DaemonRegistry {
+1454:      if (
+1455:        observedOwner !== undefined &&
+1456:        DaemonRegistry.processIsAlive(observedOwner.ownerPid) &&
+1457: -      Date.now() - observedOwner.acquiredAt <= this.startupPolicy.coordinationGraceMs
+1458: +      this.clock.wallNowMs() - observedOwner.acquiredAt <= this.startupPolicy.coordinationGraceMs
+1459:      ) {
+1460:        return undefined;
+1461:      }
+1462: @@ -559,7 +684,7 @@ export class DaemonRegistry {
+1463:      const token = randomUUID();
+1464:      const owner: StartupMutationOwner = {
+1465:        ownerPid: process.pid,
+1466: -      acquiredAt: Date.now(),
+1467: +      acquiredAt: this.clock.wallNowMs(),
+1468:        token,
+1469:      };
+1470:      const claimPath = identity.startupMutationClaimPath(token);
+1471: @@ -714,20 +839,24 @@ export class DaemonRegistry {
+1472:      );
+1473:    }
+1474:  
+1475: -  private static sameStartupOwner(
+1476: -    current: StartupOwner | undefined,
+1477: -    observed: StartupOwner,
+1478: -  ): boolean {
+1479: -    return (
+1480: -      current?.instanceId === observed.instanceId &&
+1481: -      current.identityKey === observed.identityKey &&
+1482: -      current.ownerPid === observed.ownerPid &&
+1483: -      current.processToken === observed.processToken &&
+1484: -      current.ownerKind === observed.ownerKind &&
+1485: -      current.acquiredAt === observed.acquiredAt &&
+1486: -      current.heartbeatAt === observed.heartbeatAt &&
+1487: -      current.revision === observed.revision
+1488: -    );
+1489: +  private startupOwnershipMatches(
+1490: +    identity: DaemonWorkspaceIdentity,
+1491: +    expectation: StartupOwnershipExpectation,
+1492: +  ): StartupOwner | undefined {
+1493: +    const owner = this.startupOwner(identity);
+1494: +    if (
+1495: +      owner?.identityKey !== expectation.identityKey ||
+1496: +      owner.instanceId !== expectation.instanceId ||
+1497: +      (expectation.processToken !== undefined && owner.processToken !== expectation.processToken) ||
+1498: +      (expectation.ownerKind !== undefined && owner.ownerKind !== expectation.ownerKind) ||
+1499: +      (expectation.ownerPid !== undefined && owner.ownerPid !== expectation.ownerPid) ||
+1500: +      (expectation.acquiredAt !== undefined && owner.acquiredAt !== expectation.acquiredAt) ||
+1501: +      (expectation.heartbeatAt !== undefined && owner.heartbeatAt !== expectation.heartbeatAt) ||
+1502: +      (expectation.revision !== undefined && owner.revision !== expectation.revision)
+1503: +    ) {
+1504: +      return undefined;
+1505: +    }
+1506: +    return owner;
+1507:    }

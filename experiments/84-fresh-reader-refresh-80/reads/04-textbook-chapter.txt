@@ -1,0 +1,958 @@
+Chapter 4
+TOP · ENOUGH TO STOP
+4.0
+At a glance
+BUILD INTUITION
+4.1
+What is a turn?
+4.2
+A metaphor
+4.3
+Worked example
+MECHANISM
+4.4
+Boxes that moved
+4.5
+Six handles, one key
+4.6
+Life of a cache entry
+4.7
+When a turn begins
+4.8
+Release: the changed path
+JUDGE IT
+4.9
+Decisions in depth
+4.10
+What the tests pin
+EVIDENCE
+4.11
+Code
+CHECK YOURSELF
+4.12
+Exercises
+·
+How this was made
+symnav · daemon architecture refactor stack · PR #127 · part 4 of 26
+Chapter 4
+Scope semantic caches to one turn
+base #126 a1e325a → head #127 64919bc · 6 files · +391 −67 · 6 commits
+123
+124
+126
+127
+this chapter · base #126
+128
+129
+130
+131
+132
+133
+134
+135
+136
+137
+138
+139
+140
+141
+142
+143
+144
+145
+146
+147
+148
+149
+4.0 At a glance2 min · complete on its own
+4.1–4.3 Intuition & worked example+10 min
+4.4–4.8 Mechanism+15 min
+4.9–4.10 Decisions & testsjudge
+4.11 Codecheck
+4.12 Exercises
+After this chapter you can
+name the six answers that live for one turn, and who empties them;
+predict whether asking again in the same turn runs the search again;
+explain the one failure path this PR changes, on main, #126 and #127;
+weigh 12 decisions, 6 of which carry no stated reason.
+4.0 At a glance
+TOP LAYER · COMPLETE
+#126 · before
+#127 · after
+@symnav/core
+@symnav/backend-typescript
+ProjectGraph
+release(): Promise · async since #126
+TypeScriptBackend
+TypeScriptSemanticQueryService
+def
+Map
+ref
+Map
+tgt
+Map
+clr
+Map
+cle
+Map
+pos
+Map
+clearQueryCaches() {
+definitionsByIdentity.clear()
+referencesByIdentity.clear()
+… 4 more .clear() lines
+}
+TypeScript owns the clear list
+TypeScriptProjectGraph
+extends
+beginTurn(snapshot)
+release() · returns void
+release()
+returned promise dropped
+failure → unhandled rejection
+backend release still resolves
+daemon worker thread dies
+@symnav/core
+@symnav/backend-typescript
+TurnScopedCacheScope
+NEW
+createCache · beginTurn · release
+handle API: getOrCreate(key, create)
+ProjectGraph
+release(): Promise · unchanged
+TypeScriptBackend
+TypeScriptSemanticQueryService
+cacheScope (instance)
+def
+handle
+ref
+handle
+tgt
+handle
+clr
+handle
+cle
+handle
+pos
+handle
+one clear() empties all six
+keys, algorithms, file list: unchanged
+when to clear: still decided here
+by beginTurn and release
+imports the new class
+(package already used core)
+TypeScriptProjectGraph
+extends
+beginTurn(files)
+await release()
+await release()
+failure travels back
+backend release rejects
+worker: "resource failure", alive
+Figure 4.0 The change in one frame. Green: added. Orange: changed. Red: failure path. ≈ simplified: omits workspace state, source cache, observer
+1
+Six caches, one switch, in core
+The service's six per-query caches become six handles of one core TurnScopedCacheScope. One call empties all six.
+TypeScript still decides when: after a successful refresh (daemon: once per command) and on release (daemon: memory pressure or close).
+Emptying every turn keeps edits from getting stale answers. Not new.
+4.4 Boxes · 4.5 Handles · 4.1 Turn
+2
+Answers unchanged: checked by running
+18-call session on main, #126, #127: 17 of 18 steps identical in answers, searches run and cache occupancy.
+The 5 tests added first pass on the old code (10/10). The release test fails on the old code, as intended.
+4.3 Worked example · 4.10 Tests
+3
+One failure path changed; PR body silent
+Project release fails → backend releaseTransientResources() now rejects.
+#126: resolved, then the daemon worker thread died 2 ms later. Main: rejected, only because its project release was synchronous.
+#127 adds await, so async project release is now waited for too. Only the daemon calls release.
+4.8 Release · Decision 1
+Decisions this change embodies
+
+Ranked: changes behavior → no stated reason → crosses a package or public surface → kept and newly pinned. Reasons searched in: PR body, 6 commit messages (subjects only; bodies empty), plans/005 specs, CLAUDE.md.
+
+#	DECISION	REASON GIVEN?	VS #126	NOTE
+1	Backend release waits for project release and carries its failure	unexplained	behavior outside spec ask	Restores main's result for today's sync projects. Spec: no behavior change while restructuring; not in follow-ups spec.
+2	Failure asymmetry becomes core's generic contract	stated as preservation	kept	Rejected or empty promise stays for the turn; a synchronous throw stores nothing and re-runs; an old turn's promise never refills a new turn.
+3	One scope with six handles, not one shared map	stated	new	Five handles store under the identical key src/lib.ts::target.
+4	Scope exported from @symnav/core	stated by spec	new	No new package dependency. One consumer; still one at #149.
+5	Empty caches synchronously, before awaiting project release	stated	order kept	Guards a pending window that needs async project release. Today TS projects release synchronously and the daemon worker runs one message at a time; core's interface and the spec's future hosts allow async.
+6	Next turn begins only after refresh succeeds	stated	kept	Same call position on main and #126; newly pinned by a test.
+7	Map.has before get, not truthiness	stated	new	No TS cache stores a falsy value; reason bites only in the generic contract.
+8	beginTurn(files) replaces beginTurn(snapshot)	unexplained	new outside spec ask	Exported class; old body read only snapshot.files; one caller.
+9	Scope created inside the service, not injected	unexplained	new	Backend reaches caches only through the service.
+10	Handles expose only getOrCreate	unexplained	new	No per-handle or per-key invalidation: all six or nothing.
+11	Scope's beginTurn() and releaseTransientResources() share one body	unexplained	new	Two names, one operation; a core test pins both.
+12	File lives in core/src/backend/	unexplained	new	Next to backend-router, language-backend, revisioned-backend-state.
+BOUNDARIES MOVED
++ core/src/backend/turn-scoped-cache-scope.ts, exported from @symnav/core
+No package dependency added: the service already imported @symnav/core; now also TurnScopedCacheScope
+What crossed the package line is a job: emptying the caches moved TypeScript → core. Deciding when stays in TypeScript
+Exported TypeScriptSemanticQueryService: beginTurn(files), releaseTransientResources(): Promise<void>; only caller TypeScriptBackend
+4.4 Boxes
+NOT TOUCHED
+LanguageBackend interface; apps/cli and the daemon: 0 files
+Six query algorithms and key formats; the turn's file list stays in the service
+ProjectGraph.releaseTransientResources (from #126)
+Tests: none removed or weakened; release test strengthened in the final commit
+Not pinned: daemon-level effect of a release failure; emptying of 4 of the 6 TS handles (core pins the generic clear)
+Scope and service files unchanged from #127 through #149
+4.10 Tests
+4.1 Before you begin: what is a turn?
+PREREQUISITE · NOT CHANGED BY #127
+
+A daemon worker thread keeps one TypeScriptBackend alive across commands. Each command refreshes it, then asks questions. The six caches hold answers for exactly that stretch.
+
+worker thread
+one message at a time
+execute symnav refs …
+execute symnav callers …
+release-transient
+execute symnav refs …
+inside a command
+refresh
+beginTurn
+queries …
+refresh
+beginTurn
+queries …
+empty caches
+refresh
+beginTurn
+…
+six caches hold
+answers of
+empty
+turn 1
+turn 2
+empty (released)
+turn 3
+who triggers
+command program → router.refresh → TypeScriptBackend.refresh → service beginTurn
+resource supervisor, under memory pressure, at a turn boundary → worker release-transient → every backend's releaseTransientResources
+cold CLI run: fresh backends per process; release is never called
+Figure 4.1 Turns inside one retained daemon worker. ≈ simplified: omits admission, output streaming, heap reports; command names illustrative
+turn
+One successful backend.refresh plus every query until the next one. In the daemon: one command execution.
+transient resources
+Memory that can be rebuilt on demand: the six caches, and TypeScript programs held by the project graph.
+release
+releaseTransientResources(): drop transient resources between commands.
+handle
+One cache created by the scope. getOrCreate(key, create) is its entire API.
+Why answers must die with the turn real run · #127 build
+
+Turn 1 asks for references to target. Then app.ts gains a third line calling target, the backend refreshes, and the same question is asked again.
+
+Normal build: caches emptied at turn 2
+src/app.ts:1
+src/app.ts:2
+src/app.ts:3
+reference searches this step: 1
+Same build, emptying disabled in memory
+src/app.ts:1
+src/app.ts:2
+src/app.ts:3 ← missing
+reference searches this step: 0 · answer from turn 1
+
+Not new in #127: main and #126 empty the caches at the same point (Worked example steps 7–8 match on all three builds). This PR changes who empties them.
+
+Receipts:
+worker handles one message at a time: apps/cli/src/daemon/daemon-navigation-worker-entry.ts:60 this.tail = this.tail.then(() => this.handle(value))
+command refresh: apps/cli/src/workspace-request-scope.ts:52 → packages/core/src/backend/backend-router.ts:33 → typescript-backend.ts:79–83
+release at a turn boundary: apps/cli/src/daemon/daemon-resource-monitor.ts:248–258, workspace-request-queue.ts:87; worker side daemon-navigation-worker-entry.ts:150–165
+stale run: probe/semantics.mjs … clearing-disabled replaces cacheScope.beginTurn with a no-op; output probe/out/semantics-head-clearing-disabled.json
+4.2 A metaphor that mostly holds ≈ lossy
+INTUITION
+Classroom, one lesson = one turn
+definitions
+target → 1
+references
+target → 2
+call targets
+pending…
+callers
+target → 1
+callees
+ghost → none
+positions
+app:68 → lib
+⏻
+#127: school-issued boards on one bell switch
+#126: teacher wiped six boards by hand from a checklist
+Janitor visit = release
+1. boards wiped (all builds)
+2. janitor cleans the store room
+(TypeScript programs)
+#126: teacher leaves before janitor is done;
+an accident goes unreported
+#127: teacher waits and reports it
+Figure 4.2 Whiteboards for one lesson. ≈ lossy metaphor
+CLASSROOM	CODE
+Question already on the board: point at it	getOrCreate finds the key; no search runs
+Writing "pending…", filling in later	A Promise is stored at once; it settles later, in place
+Answer "can't be done" stays written	A rejected Promise stays for the rest of the turn
+Teacher interrupted before writing: board stays blank	Factory throws synchronously: nothing stored, next ask retries
+Bell rings but the lesson plan didn't load: boards kept	Refresh fails: no beginTurn, previous turn's answers remain
+
+Where it breaks: one question can read two boards (callers read the references board); boards are keyed by exact strings, not meaning; a real lesson has no "pending" answer that settles after the bell and gets ignored.
+
+4.3 Worked example: one session, three builds real run, replayed
+WORKED EXAMPLE
+Worked Example 4.1
+
+The same 18 calls run on main (b6801eb, before the stack), #126 (a1e325a, this PR's base) and #127 (64919bc). Searches are counted through the backend's observer hooks; the rack shows live cache sizes read from each build's objects after every step. Output recorded to probe/out/semantics-*.json and replayed here.
+
+Workspace (in-memory)
+[Code receipt deferred]
+Reading the rack
+def
+ref
+tgt
+clr
+cle
+pos
+1
+2
+0
+0
+0
+0
+
+One cell per handle: definitions, references, call targets, callers, callees, positions. Number = stored entries. Orange outline = changed by this step. Hatched = all empty.
+
+Reveal all predictions
+Rows marked predict hide the result until you commit to a guess.
+#	CALL	CACHE RACK AFTER	WORK DONE	RESULT	BUILDS
+TURN 1
+1	backend.refresh(snapshot)	
+0
+0
+0
+0
+0
+0
+	none	
+turn 1 begins · 2 files added
+	= all 3
+2	findDefinitions(target) twice	
+1
+0
+0
+0
+0
+0
+	TS program load ×1definition search ×1	
+same Promise object both times · 1 definition
+Second ask returns the stored Promise; no second search.
+	= all 3
+3	findReferences(target), then findCallers(target)
+predict: findCallers needs reference locations. How many reference searches for both calls together? Reveal
+	
+1
+1
+0
+1
+0
+0
+	reference search ×1	
+references app.ts:1, app.ts:2 · 1 caller
+Callers read the references handle (ref) and store their own entry (clr).
+	= all 3
+4	findCallees(caller) twice	
+1
+1
+0
+1
+1
+1
+	position lookup ×1	
+1 callee · same answer
+Callee search fills the position handle (pos), not the call-target handle.
+	= all 3
+5	findReferences(ghost) twice
+predict: Both calls throw SymbolNotFoundError. How many reference searches run? Reveal
+	
+1
+1
+0
+1
+1
+1
+	reference search ×2	
+rejected SymbolNotFoundError · rejected SymbolNotFoundError
+Thrown synchronously inside the factory: nothing stored, so it runs again.
+	= all 3
+6	findCallees(ghost) twice
+predict: The answer is empty. Is it stored? Is the second call the same Promise? Reveal
+	
+1
+1
+0
+1
+2
+1
+	none	
+same Promise · 0 callees (empty result)
+Empty result stored: cle goes 1 → 2.
+	= all 3
+TURN 2
+7	edit app.ts (add secondCaller), backend.refresh(snapshot)	
+0
+0
+0
+0
+0
+0
+	none	
+turn 2 begins · 1 changed, 1 unchanged
+All six handles empty at the turn boundary.
+	= all 3
+8	findReferences(target)	
+0
+1
+0
+0
+0
+0
+	TS program load ×1reference search ×1	
+references app.ts:1, app.ts:2, app.ts:3
+Line 3 appears. With emptying disabled it does not (4.1).
+	= all 3
+9	findDefinitions(target)	
+1
+1
+0
+0
+0
+0
+	definition search ×1	
+1 definition
+	= all 3
+10	backend.refresh(snapshot that lists missing src/ghost.ts)	
+1
+1
+0
+0
+0
+0
+	none	
+rejects: ENOENT: no such file: /repo/src/ghost.ts · no new turn
+No beginTurn: turn 2's entries survive.
+	= all 3
+11	findDefinitions(target)
+predict: Refresh just failed. Does this ask run a new definition search? Reveal
+	
+1
+1
+0
+0
+0
+0
+	none	
+1 definition · same Promise as step 9
+	= all 3
+TURN 3
+12	backend.refresh(snapshot)	
+0
+0
+0
+0
+0
+0
+	none	
+turn 3 begins · 2 unchanged
+	= all 3
+13	findReferences(target)	
+0
+1
+0
+0
+0
+0
+	TS program load ×1reference search ×1	
+references app.ts:1, app.ts:2, app.ts:3
+	= all 3
+RELEASE
+14	backend.releaseTransientResources()	
+0
+0
+0
+0
+0
+0
+	TS program release ×1	
+release resolves
+Caches emptied first; TypeScript programs dropped.
+	= all 3
+15	findDefinitions(target)	
+1
+0
+0
+0
+0
+0
+	TS program load ×1definition search ×1	
+1 definition
+Program reloads; fresh search.
+	= all 3
+16	findReferences(target)	
+1
+1
+0
+0
+0
+0
+	reference search ×1	
+references app.ts:1, app.ts:2, app.ts:3
+	= all 3
+RELEASE WITH INJECTED FAILURE
+17	backend.releaseTransientResources(), project release throws (injected)
+predict: Project release throws. What does backend release do on main, #126 and #127? Reveal
+	
+0
+0
+0
+0
+0
+0
+	TS program release ×1	
+main
+rejects with the injected error
+#126
+resolves + unhandled rejection
+#127
+rejects with the injected error
+The only step where builds differ.
+	differ
+18	findDefinitions(target)	
+1
+0
+0
+0
+0
+0
+	definition search ×1	
+1 definition
+Caches were already empty before the failure, on every build.
+	= all 3
+4.4 Boxes that moved
+MECHANISM · STATIC STRUCTURE + OWNERSHIP
+
+Lens 1: packages and modules, import and call edges. Lens 2: who owns each job. No package dependency changed; what crossed the package line is a job.
+
+packages/core · may import: nothing
+packages/backend-typescript · may import: core
+apps/cli (daemon) · 0 files changed
+backend/
+turn-scoped-cache-scope.ts
+NEW · 46 lines · 4 tests
+index.ts
++1 export line
+backend/
+language-backend.ts
+unchanged interface
+workspace/
+project-graph.ts
+unchanged · async release since #126
+typescript-semantic-
+query-service.ts
+6 Maps → 6 handles; clear list deleted
+2 signatures changed; +6 tests
+typescript-backend.ts
+2 lines: files arg, await
+typescript-project-
+graph.ts
+unchanged; each project
+releases synchronously (line 78)
+daemon-navigation-
+worker-entry.ts
+imports TurnScopedCacheScope (new symbol; this module already imported core)
+re-export
+beginTurn(files)
+await release()
+await projects.release()
+extends
+release-transient, close → releaseTransientResources()
+Figure 4.4 Modules touched and their neighbors. Green: new. Orange: changed. Gray: unchanged. No package-level dependency changes; backend-typescript → core already existed and is allowed by the locked table in CLAUDE.md.
+Who decides what
+JOB	#126	#127
+Store the six caches	TS service: 6 Map fields	core handles, instances inside the TS service
+Empty all six together	TS service: clearQueryCaches()	core: TurnScopedCacheScope.clear()
+Keys and query algorithms	TS service	TS service (unchanged)
+The turn's file list	TS service files	TS service files (unchanged)
+Decide when a turn begins	TS backend refresh	TS backend refresh (unchanged)
+Decide when to release	daemon worker	daemon worker (unchanged)
+Wait for project release; report its failure	nobody	TS service and TS backend (await)
+Receipts: typescript-semantic-query-service.ts:31–55 (scope + six handles), :63–66 (beginTurn), :129–132 (release); base :49–52, :125–128, :219–226; typescript-backend.ts:83,88; packages/core/src/index.ts:152.
+4.5 Six handles, one key
+MECHANISM
+
+Real keys and stored values after one turn of queries on the #127 build real dump.
+
+HANDLE	REAL KEY	STORES	FILLED BY	ALSO READ BY
+definitionsByIdentity	src/lib.ts::target Promise	Promise of definitions	findDefinitions	findCallTarget (via resolveCallTarget)
+referencesByIdentity	src/lib.ts::target Promise	Promise of reference locations	referenceLocations	findReferences, findCallers
+callTargetsByIdentity	src/lib.ts::target Promise	Promise of call-target resolution	findCallTarget	none
+callersByIdentity	src/lib.ts::target Promise	Promise of call edges	findCallers	none
+calleesByIdentity	src/app.ts::caller Promise
+src/lib.ts::target Promise	Promise of call edges	findCallees	none
+definitionsByPosition	src/app.ts:68 Array	plain array of definition locations	definitionNodesOf	findCallees (definition resolver)
+WHY SIX HANDLES, NOT ONE MAP (DECISION 3)
+
+Five rows share the string src/lib.ts::target, each with a different value type. One shared map would need a query prefix in every key. PR's reason: "independent key and value spaces".
+
+WHY MAP.HAS CHANGES NOTHING HERE (DECISION 7)
+
+Every stored value is a Promise or an array, so never falsy. #126's if (existing) and if (!locations) behaved exactly like has. The difference appears only for a future cache storing undefined, as the core test does.
+
+Receipts: probe/cache-keys.mjs → probe/out/cache-keys-head.json; key format packages/core/src/intermediate-representation/canonical-identity.ts:29–34; callers read references via typescript-semantic-query-service.ts:110–114; positions read by findCallees through definitionNodesOf :134–160.
+4.6 Life of one cache entry
+MECHANISM · EXACT TO CODE
+no entry
+key absent
+holds a plain value
+e.g. position array, even []
+hit: returns it; factory not called
+holds a Promise
+pending → resolved or rejected, in place
+hit: same Promise object, even if rejected
+miss: factory returns a value
+miss: factory returns a Promise
+miss: factory throws
+exception reaches the caller;
+nothing stored; next ask retries
+beginTurn()
+or release
+every handle,
+all keys, at once
+A Promise from an old turn that
+settles later writes nothing;
+the new turn's entry stays.
+Figure 4.6 One entry in one handle. Exact to turn-scoped-cache-scope.ts:14–19; same behavior on #126 (verified by steps 5–6 and by the characterization tests passing on #126 code).
+[Code receipt deferred]
+
+The comment above is this chapter's annotation, not in the source.
+
+PATH	REAL OBSERVATION	PINNED BY
+throw → retried	Step 5: findReferences(ghost) twice → 2 reference searches, rack unchanged	"retries synchronous reference discovery failures"; core "retains promise settlement and retries synchronous factory failures"
+empty result kept	Step 6: findCallees(ghost) twice → same Promise, cle 1→2	"caches empty position results while rehydrating nodes for every access" (position handle only; an empty callee result has no test of its own)
+rejection kept	not reached with real files: unknown symbols resolve empty (definitions, call target, callees) or throw inside the factory (references, callers); probe/out/failure-shapes-head.json	"retains asynchronous definition and callee failures for the turn" (fake state whose ensureFiles rejects)
+old settlement ignored	not exercised by the session	core "does not let an old promise settlement replace a new turn entry"
+4.7 When a turn begins: refresh
+MECHANISM · LIFECYCLE
+TypeScriptBackend.refresh(request)
+typescript-backend.ts:79–84 · identical order on main, #126, #127
+sourceCache.refresh
+line 80
+await projectGraph.refresh
+line 81 · workspace coverage only
+await state.refresh
+line 82
+queries.beginTurn(files)
+line 83 · empties six handles
+return
+Any step before line 83 throws
+refresh rejects; line 83 never runs
+previous turn's answers keep serving
+skipped
+Real, steps 9–11 of Worked Example 4.1
+9 findDefinitions(target) → 1 search
+10 refresh with missing src/ghost.ts → ENOENT
+11 findDefinitions(target) → 0 searches, same Promise
+identical on main, #126, #127
+Figure 4.7 A turn begins only after every refresh step succeeds (decision 6: kept, newly pinned). ≈ omits the BackendRouter that calls each backend in order
+4.8 Release: the failure path that changed
+MECHANISM · THE ONLY BEHAVIOR CHANGE
+
+Every build empties the caches first. They differ in what happens to the project graph's release, which drops TypeScript programs.
+
+main
+project release synchronous
+backend.release() async
+service.release(): void
+1. empty six caches
+graph.release(): void
+2. throws
+throw propagates
+backend release rejects
+worker: "resource failure", stays up
+#126
+project release became async; call not awaited
+backend.release() async
+service.release(): void
+1. empty six caches
+graph.release(): Promise
+2. rejects; Promise dropped
+backend release resolves
+then: unhandled rejection
+worker: "heap" (success), then dies
+#127
+two awaits added
+backend.release() async
+await
+service.release(): Promise
+1. empty six caches (sync)
+await
+graph.release(): Promise
+2. rejects
+backend release rejects
+worker: "resource failure", stays up
+Queries asked after step 1 run fresh searches on every build; caches are never refilled by the failing release.
+The only production caller is the daemon worker (release-transient, close), which runs one message at a time.
+Figure 4.8 releaseTransientResources call chain when the project graph's release fails. ≈ method names shortened; project graph loop over projects omitted
+Table 4.1 · Three builds, three probes real runs
+BUILD	IN-PROCESS, REAL TS PROJECT, RELEASE THROWS	FAKE ASYNC PROJECT RELEASE, STILL PENDING	REAL DAEMON WORKER THREAD, PROJECT RELEASE FAILS
+main	rejects with the project's error	while pending: backend release resolved; after project rejects: resolved + unhandled rejection; definition asked meanwhile ran search #2	rejected: Daemon navigation worker resource failure; worker alive 1.5 s later; answered a second release
+#126	resolves; unhandled rejection: injected: semantic cache release failed	while pending: backend release resolved; after project rejects: resolved + unhandled rejection; definition asked meanwhile ran search #2	response "heap" (success); worker exited 2 ms later, cause error
+#127	rejects with the project's error	while pending: backend release pending; after project rejects: rejected; definition asked meanwhile ran search #2	rejected: Daemon navigation worker resource failure; worker alive 1.5 s later; answered a second release
+#126 control	n/a	n/a	no failure injected: 2 releases answered "heap"; worker alive until terminated
+
+Column 1: step 17, failure injected through the observer hook called inside the real project release. Column 2: probe/release-window.mjs, same setup as the PR's own test. Column 3: probe/worker-release.mjs starts the real daemon-navigation-worker-entry.js through NodeDaemonNavigationWorker; project release patched to fail inside the worker. Control: the #126 worker with no injected failure answers two releases and stays up.
+
+What the daemon then does traced in code, not run
+memory pressure
+supervisor shed()
+worker release
+monitor.ts:254
+main, #127: rejects → replace("shed-failure") (monitor.ts:257)
+replacement logged with cause shed-failure
+#126: resolves "heap" → shed marked complete (monitor.ts:255)
+then worker exits with error → workerExited → replace("worker-exit")
+(workspace-daemon.ts:1041–1053, monitor.ts:194–196)
+Figure 4.9 Different diagnostic trail per build. read from code at #127 (no daemon file differs on #126); the full daemon was not run
+CONTEXT FOR DECISIONS 1 AND 5
+Spec plans/005/daemon-architecture-functional-spec.md:17–28: "Behavior is unchanged … failure path behaves as it does today"; "no 'it was obviously a bug' override. Behavior defects found during restructuring are recorded in daemon-follow-ups-functional-spec.md". That file has no entry on transient release (checked at #127 and at #149).
+#126 made ProjectGraph.releaseTransientResources async (commit d01ab95 "Release project resources sequentially"); the service's un-awaited call dates from #117 (97e2cfb). #126's body says it keeps "refresh or semantic lookup behavior"; release is not mentioned.
+The pending window of decision 5 needs an async project release. TypeScript projects release synchronously (typescript-project-graph.ts:78). The core interface allows async (ProjectWithTransientResources: void | Promise<void>, project-graph.ts:64), and the spec expects future hosts (:7–11).
+4.9 Decisions in depth
+JUDGE · SAME 12 AS 4.0
+
+Each card: what was chosen, the reason if one exists (verbatim), what is new versus kept, and the facts that bear on it. No card says whether a choice is right.
+
+1 · Backend release waits for project release and carries its failure unexplained behavior
+CHOSEN
+await this.semanticQueries.releaseTransientResources() (backend:88) and await this.projects?.releaseTransientResources() (service:131).
+REASON
+None found. The PR body shows it (After diagram: "awaited release boundary"; public surface: releaseTransientResources(): Promise<void>) and commit 5 is titled "Specify awaited semantic resource release", with no body.
+VS BUILDS
+Real: main rejects · #126 resolves, unhandled rejection, worker dies · #127 rejects. With async project release: main and #126 resolve before it settles; #127 waits. Table 4.1
+ASKED FOR?
+Spec asks core to own the turn-scoped cache lifecycle and keeps every failure path unchanged; behavior fixes go to the follow-ups spec, which has no entry for this.
+WEIGH
+For today's synchronous TS projects this restores main. For async projects it is a new contract. Both readings are supported by the runs.
+2 · Failure asymmetry becomes core's generic contract stated as preservation
+CHOSEN
+getOrCreate stores whatever the factory returns, including a Promise that later rejects or an empty result; a synchronous throw stores nothing; clearing never waits for or listens to old Promises.
+REASON
+"this layer moves only cache lifetime out of TypeScript while preserving all six algorithms, key spaces, promise/value identities, and failure behavior."
+KEPT?
+Yes. Steps 5–6 match on all builds; the 5 characterization tests pass on #126 code (10/10).
+WEIGH
+Every future TurnScopedCacheScope consumer inherits sticky rejections for a whole turn. The PR does not discuss other consumers; at #149 there are none.
+3 · One scope with six handles, not one shared map stated
+CHOSEN
+createCache<Key, Value>() called six times on one scope (service:32–55).
+REASON
+"Chose one scope with six handles over one shared map, because the existing queries have independent key and value spaces."
+FACTS
+Five handles hold the identical key src/lib.ts::target with five value types (4.5, real dump). The PR names the shared map as the alternative; no other alternative is discussed.
+4 · Scope exported from @symnav/core stated by spec
+CHOSEN
+export { TurnScopedCacheScope, type TurnScopedCache } (core index.ts:152).
+REASON
+Spec: "Shared in core: … turn-scoped query cache lifecycle." (plans/005/daemon-architecture-functional-spec.md:58–60)
+FACTS
+No new package dependency: the service already imported @symnav/core. Consumers: 1 (TS semantic query service) at #127; still 1 at #149, where scope and service files are byte-identical to #127.
+5 · Empty caches synchronously, before awaiting project release stated
+CHOSEN
+service:130 this.cacheScope.releaseTransientResources() then :131 await this.projects?.releaseTransientResources().
+REASON
+"Chose synchronous cache clearing before project release over clearing after the await, because released semantics must be unavailable while release is pending or rejecting."
+KEPT?
+Order kept: #126 and main also cleared first (base service:126–127). The await is decision 1.
+WEIGH
+The pending window exists only with async project release. TS projects release synchronously; the daemon worker, the only production caller, runs release and commands one at a time. The PR's test opens the window with a fake async graph. The core interface and the spec's future hosts allow async.
+6 · Next turn begins only after refresh succeeds stated
+CHOSEN
+beginTurn stays the last statement before return in refresh (backend:83).
+REASON
+"Chose to begin the next turn only after refresh succeeds over clearing at refresh entry, because failed refresh must preserve the current successful turn."
+KEPT?
+Same position on main and #126. New test "preserves the current turn when backend refresh fails" passes on #126 code. Real: steps 10–11.
+7 · Map.has before Map.get, not truthiness stated
+CHOSEN
+if (this.values.has(key)) return this.values.get(key) as Value; (scope:15).
+REASON
+"Chose Map.has before Map.get over truthiness checks, because undefined is a valid cached value."
+FACTS
+All six TS handles store Promises or arrays; none can be falsy, so the old truthiness checks behaved identically. Core test "returns each exact factory value once per key and handle" caches undefined.
+8 · beginTurn(files) replaces beginTurn(snapshot) unexplained
+CHOSEN
+beginTurn(files: readonly WorkspaceFile[]) on the exported TypeScriptSemanticQueryService (service:63).
+REASON
+None found; listed under "Public surface" without a reason.
+FACTS
+Old body used only snapshot.files (base service:50). Only caller: TypeScriptBackend.refresh. The final commit edits four test call sites to match.
+9 · Scope created inside the service, not injected unexplained
+CHOSEN
+private readonly cacheScope = new TurnScopedCacheScope(); (service:31).
+REASON
+None found. PR diagram: "Service owns Scope".
+FACTS
+Backend, router and daemon reach the caches only through the service's beginTurn and releaseTransientResources. Other shape (this chapter's example, not discussed in the PR): the backend creates the scope and passes it in.
+10 · Handles expose only getOrCreate unexplained
+CHOSEN
+Exported interface TurnScopedCache has one method (scope:1–3). clear() lives on the internal TurnScopedCacheHandle.
+REASON
+None found.
+FACTS
+No way to invalidate one handle or one key. Invalidation is all six at once.
+11 · Scope's beginTurn() and releaseTransientResources() share one body unexplained
+CHOSEN
+Both call this.clear() (scope:35–41).
+REASON
+None found.
+FACTS
+Core test "clears every handle at turn and release boundaries" pins both names, including a double release.
+12 · File lives in core/src/backend/ unexplained
+CHOSEN
+packages/core/src/backend/turn-scoped-cache-scope.ts.
+REASON
+None found.
+FACTS
+Neighbors: backend-router.ts, language-backend.ts, revisioned-backend-state.ts, errors.ts.
+4.10 What the tests pin
+JUDGE · TEST HONESTY
+1 · 44de06c
+Characterize TypeScript
+semantic cache
+identities
++5 TS tests
+service 10/10 pass
+ran on #126 implementation
+2 · 67df027
+Define turn-scoped cache
+handles
+interface only
+3 · f515f73
+Specify turn-scoped
+cache lifecycle
++4 core tests
+4 · 471a466
+Implement turn-scoped
+cache lifecycle
+scope class
+5 · 9e65651
+Specify awaited semantic
+resource release
++1 TS test
+service 10/11 · 1 red
+scope 4/4 pass
+ran on #126 implementation
+red = new release test, as intended
+6 · 64919bc
+Adopt turn-scoped
+TypeScript query caches
+service + backend
+service 11/11 pass
+scope 4/4 pass
+head
+Figure 4.10 Six commits. Chips show test runs this chapter performed on extracted snapshots of commits 1, 5 and 6 real runs.
+CLAIM IN PR BODY	PINNED BY	CHECKS
+Six handles stay independent	"shares each identity query promise independently within one turn"	4 identity handles each return their own stored Promise. References: existing "shares one reference search…". Positions: "caches empty position results…"
+undefined is cacheable	core "returns each exact factory value once per key and handle"	factory called once for an undefined value
+Clear before awaiting project release; reject at backend	"clears caches before awaiting project release and rejects at the backend boundary"	definitions handle only; backend release still pending after one microtask; rejects with the project's error; later projects not released (added in final commit)
+Failed refresh keeps the turn	"preserves the current turn when backend refresh fails"	definitions handle only
+Failure behavior preserved	"retains asynchronous definition and callee failures for the turn", "retries synchronous reference discovery failures", core "retains promise settlement and retries synchronous factory failures"	fake workspace state
+Old settlement cannot overwrite a new turn	core "does not let an old promise settlement replace a new turn entry"	one handle
+CHANGED OR REMOVED TESTS
+None removed; none weakened.
+Final commit: 4 call sites beginTurn(snapshot) → beginTurn(files); formatting; release test gains 2 assertions (firstProjectRelease once, laterProjectRelease never).
+NOT PINNED
+Daemon-level effect of a release failure (worker response, worker survival): no test in this PR.
+That all six TS handles empty at refresh and release: TS tests check definitions and references; the generic clear is tested in core.
+4.11 Evidence: the code
+BOTTOM LAYER
+New: packages/core/src/backend/turn-scoped-cache-scope.ts (complete)
+[Code receipt deferred]
+Changed: TypeScriptSemanticQueryService (excerpts)
+[Code receipt deferred]
+
+Red = #126 line numbers, green = #127. ≈ object arguments compressed onto one line The other four query methods follow the same get/set → getOrCreate pattern; their bodies move into factories unchanged.
+
+Changed: TypeScriptBackend (complete diff)
+[Code receipt deferred]
+Unchanged, relied on
+[Code receipt deferred]
+Full diff: inputs/pr-127/diff.patch. Head 64919bcbcf7fcc8202779b78c5f069b24662bb18, base a1e325a5ff979bdfa25babc5554621c8c0f20497.
+4.12 Exercises
+CHECK YOURSELF · NOTHING IS STORED
+
+Answer first, then reveal. Each answer links to where the chapter shows it.
+
+1 · CHOOSE
+Which job moved into @symnav/core?
+Choosing when a turn begins
+Emptying all six caches together
+The key formats
+The turn's file list
+2 · PREDICT A NUMBER
+Same turn: findReferences(target), then findCallers(target). How many reference searches run?
+0
+1
+2
+3 · PREDICT A NUMBER
+Same turn: findReferences(ghost) twice. Both throw SymbolNotFoundError synchronously inside the factory. How many searches run?
+1
+2
+4 · YES / NO
+A definition search's Promise rejects. Same turn, same key, asked again: does a new search run?
+Yes
+No
+5 · YES / NO
+backend.refresh rejects halfway. Does the next findDefinitions(target) run a new search?
+Yes
+No
+6 · ORDER
+On #127, in what order do these happen during release? (a) await project release (b) empty six caches (c) backend release settles
+a → b → c
+b → a → c
+b → c → a
+7 · CHOOSE
+Project release throws. What does TypeScriptBackend.releaseTransientResources() do on main / #126 / #127?
+resolves / resolves / rejects
+rejects / resolves, then unhandled rejection / rejects
+rejects / rejects / rejects
+8 · CHOOSE
+Main never had the await, yet rejected. Why?
+Main awaited in the daemon worker
+Main's project release was synchronous, so the throw propagated directly
+Main had no project graph
+9 · CHOOSE
+On #126, a daemon worker gets release-transient and project release fails. What does the parent see?
+"resource failure"
+"heap" (success), then the worker exits with cause error
+No response; the worker hangs
+10 · SHORT ANSWER
+Which of the six TypeScript handles can hold a falsy value today, and what does that mean for decision 7 (Map.has)?
+Reveal model answer
+11 · SHORT ANSWER
+Using the real keys, why would one shared Map for all queries break?
+Reveal model answer
+12 · TEACH BACK
+In two sentences, tell a teammate what #127 changes that a daemon user could ever notice.
+Reveal model answer
+How this chapter was made
+PROVENANCE
+ELEMENT	KIND	SOURCE
+Worked Example 4.1, rack, step 17	real run	node probe/semantics.mjs <worktree> <label> on built worktrees main, pr-127-base, pr-127-head; failure injected via observer hook
+Stale answer (4.1)	real run, emptying disabled in memory	probe/semantics.mjs … clearing-disabled
+Table 4.1 columns 2–3	real run, fake async graph / patched project release	probe/release-window.mjs, probe/worker-release.mjs
+Keys table (4.5)	real dump	probe/cache-keys.mjs
+Failure shapes (4.6)	real run	probe/failure-shapes.mjs
+Test chips (4.10)	real runs	git archive of commits 1, 5, 6 into /tmp, pnpm install --frozen-lockfile && pnpm build, vitest on the two test files; logs in probe/out/tests-*.log
+Figure 4.9 daemon consequence	traced in code	read at #127; not executed
+Figures 4.0, 4.1, 4.2, 4.8	≈ simplified where marked	hand-drawn SVG from code at #126/#127
+
+Nothing was written inside symnav worktrees or the symnav clone. Recorded outputs are embedded in this page at build time (node build.mjs).

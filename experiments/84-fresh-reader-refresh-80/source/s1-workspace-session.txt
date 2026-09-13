@@ -1,0 +1,84 @@
+Git object: d07002357d3e9596bfaae910a1ac63b77981620b:packages/core/src/workspace/workspace-session.ts
+Original lines: 1–81
+
+1: import { BackendRouter } from "../backend/backend-router.js";
+2: import type {
+3:   BackendRefreshCoverage,
+4:   BackendRefreshSummary,
+5:   LanguageBackend,
+6: } from "../backend/language-backend.js";
+7: import type { FileSystem } from "./file-system.js";
+8: import { WorkspaceCatalog } from "./workspace-catalog.js";
+9: import { createWorkspace, type Workspace, type WorkspaceSnapshot } from "./workspace.js";
+10: 
+11: export type WorkspaceDiscoveryRetention = "request" | "session";
+12: 
+13: export type WorkspaceSnapshotSelector = (
+14:   workspace: Workspace,
+15:   router: BackendRouter,
+16: ) => Promise<WorkspaceSnapshot>;
+17: 
+18: export type WorkspacePreparation =
+19:   | { readonly coverage: "workspace" }
+20:   | {
+21:       readonly coverage: "selection";
+22:       readonly selectSnapshot: WorkspaceSnapshotSelector;
+23:     };
+24: 
+25: export interface PreparedWorkspaceScope {
+26:   readonly workspace: Workspace;
+27:   readonly snapshot: WorkspaceSnapshot;
+28:   readonly router: BackendRouter;
+29:   readonly refresh: BackendRefreshSummary;
+30: }
+31: 
+32: export class WorkspaceSession {
+33:   readonly #fileSystem: FileSystem;
+34:   readonly #backends: readonly LanguageBackend[];
+35:   readonly #catalog: WorkspaceCatalog | undefined;
+36: 
+37:   constructor(options: {
+38:     readonly fileSystem: FileSystem;
+39:     readonly backends: readonly LanguageBackend[];
+40:     readonly discoveryRetention: WorkspaceDiscoveryRetention;
+41:   }) {
+42:     this.#fileSystem = options.fileSystem;
+43:     this.#backends = Object.freeze([...options.backends]);
+44:     this.#catalog =
+45:       options.discoveryRetention === "session"
+46:         ? new WorkspaceCatalog(options.fileSystem)
+47:         : undefined;
+48:   }
+49: 
+50:   async prepare(
+51:     startDirectory: string,
+52:     preparation: WorkspacePreparation = { coverage: "workspace" },
+53:   ): Promise<PreparedWorkspaceScope> {
+54:     const workspace = await this.openWorkspace(startDirectory, preparation.coverage);
+55:     return this.prepareWorkspace(workspace, preparation);
+56:   }
+57: 
+58:   openWorkspace(startDirectory: string, coverage: BackendRefreshCoverage): Promise<Workspace> {
+59:     if (coverage === "selection" || this.#catalog === undefined) {
+60:       return createWorkspace({ startDir: startDirectory, fs: this.#fileSystem });
+61:     }
+62:     return this.#catalog.refresh(startDirectory);
+63:   }
+64: 
+65:   async prepareWorkspace(
+66:     workspace: Workspace,
+67:     preparation: WorkspacePreparation,
+68:   ): Promise<PreparedWorkspaceScope> {
+69:     const router = new BackendRouter(this.#backends);
+70:     const snapshot =
+71:       preparation.coverage === "selection"
+72:         ? await preparation.selectSnapshot(workspace, router)
+73:         : await workspace.snapshot();
+74:     const refresh = await router.refresh(snapshot, preparation.coverage);
+75:     return { workspace, snapshot, router, refresh };
+76:   }
+77: 
+78:   async releaseTransientResources(): Promise<void> {
+79:     await Promise.all(this.#backends.map((backend) => backend.releaseTransientResources()));
+80:   }
+81: }
