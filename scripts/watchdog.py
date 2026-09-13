@@ -99,7 +99,9 @@ def large_files() -> list[str]:
     return sorted(
         str(path.relative_to(ROOT))
         for path in (ROOT / "experiments").rglob("*")
-        if path.is_file() and path.stat().st_size > threshold
+        if path.is_file()
+        and not path.name.startswith("worker-attempt-")
+        and path.stat().st_size > threshold
     )
 
 
