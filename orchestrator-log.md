@@ -123,3 +123,7 @@ BUILD OK stack-head
 - 2026-09-13 03:29:11 +03: START 16-drag-the-box attempt 3 via codex, pid 73047
 - 2026-09-13 03:29:15 +03: MONITOR OK supervisor=1153, finished=11, running=5, queued=26, dirty-worktrees=0, missing-readmes=0, free-disk=32.7GiB
 - 2026-09-13 03:44:12 +03: FINISH 13-owner-persona via codex, exit 0, README present
+- 2026-09-13 03:44:12 +03: COMMIT OK 13-owner-persona: [main 4ae3379] Add experiment 13 owner-persona
+- 2026-09-13 03:44:12 +03: START 17-executable-before-after attempt 1 via codex, pid 76213
+- 2026-09-13 03:44:22 +03: MONITOR OK supervisor=1153, finished=12, running=5, queued=25, dirty-worktrees=0, missing-readmes=0, free-disk=33.0GiB
+- 2026-09-13 03:54:42 +03: FINISH 12-detective via codex, exit 0, README present
