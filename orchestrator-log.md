@@ -1031,3 +1031,17 @@ no changes added to commit (use "git add" and/or "git commit -a")
 - Decision: queue 20 authored briefs before restarting. Each teaches one narrow aspect and compounds at least three factual concepts through color, shape, position, texture, motion, sound, scale, or interaction.
 - Decision: briefs require agents to evaluate mature visualization, layout, animation, game, audio, and rendering libraries. Hand-built geometry is allowed only when it produces the stronger result.
 - Decision: future queue generation stays weird-first. Mark the 60-experiment critique interval handled by the human so restart does not inject stale critique briefs ahead of this campaign.
+- 2026-09-13 12:08:28 +03: SUPERVISOR START pid 47081; stop with: kill $(cat /Users/moyaseen/projects/rich-review-v2/supervisor.pid)
+- 2026-09-13 12:08:28 +03: START 61-pixel-causality-grid attempt 1 via codex, pid 47103
+- 2026-09-13 12:08:28 +03: START 62-policy-stained-glass attempt 1 via claude-opus, pid 47104
+- 2026-09-13 12:08:28 +03: START 63-daemon-constellation attempt 1 via codex, pid 47105
+- 2026-09-13 12:08:28 +03: START 64-lifecycle-music-box attempt 1 via claude-opus, pid 47106
+- 2026-09-13 12:08:28 +03: START 65-decision-tetris attempt 1 via codex, pid 47107
+- 2026-09-13 12:08:47 +03: MONITOR START pid 51108, five-minute audits enabled
+- 2026-09-13 12:08:48 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log, experiments/43-critique-refresh-20/worker-attempt-1.log, experiments/44-fresh-reader-refresh-20/worker-attempt-3.log, experiments/45-critique-refresh-30/worker-attempt-1.log, experiments/48-fresh-reader-refresh-40/worker-attempt-3.log, experiments/50-recombine-angles-50/worker-attempt-3.log
+- 2026-09-13 12:08:48 +03: MONITOR OK supervisor=47081, finished=60, running=5, queued=15, dirty-worktrees=0, missing-readmes=0, free-disk=24.1GiB
+- 2026-09-13 12:09:37 +03: MONITOR STOPPED
+- 2026-09-13 12:09:44 +03: MONITOR START pid 55813, five-minute audits enabled
+- 2026-09-13 12:09:45 +03: MONITOR OK supervisor=47081, finished=60, running=5, queued=15, dirty-worktrees=0, missing-readmes=0, free-disk=24.1GiB
+- 2026-09-13 12:24:51 +03: MONITOR OK supervisor=47081, finished=60, running=5, queued=15, dirty-worktrees=0, missing-readmes=0, free-disk=24.0GiB
+- 2026-09-13 12:37:29 +03: FINISH 61-pixel-causality-grid via codex, exit 0, README present

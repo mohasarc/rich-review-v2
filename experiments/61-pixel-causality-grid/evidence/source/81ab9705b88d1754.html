@@ -1,0 +1,776 @@
+<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>apps/cli/src/daemon/workspace-daemon.ts</title><style>body{background:#11171c;color:#d6dedb;font:13px/1.6 monospace;margin:24px}h1{font:18px system-ui;overflow-wrap:anywhere}a{color:#9bbcb0}pre{tab-size:2}pre span{display:block;scroll-margin-top:20px}pre span:target{background:#3b493d}pre a{text-decoration:none;color:#738c82}</style><p><a href="../../index.html">← Return to field</a></p><h1>apps/cli/src/daemon/workspace-daemon.ts</h1><p>f79ba36278c77c41ca887aa4efc24fd0781e4cec · SHA-256 34f1c35e89003c14fecdd03defcc8637860a8e415b4bf81b5be3010012992038</p><pre><span id="L1"><a href="#L1">   1</a> import { access } from &quot;node:fs/promises&quot;;</span>
+<span id="L2"><a href="#L2">   2</a> import {</span>
+<span id="L3"><a href="#L3">   3</a>   DaemonAdmissionPolicy,</span>
+<span id="L4"><a href="#L4">   4</a>   DaemonAdmissionRejections,</span>
+<span id="L5"><a href="#L5">   5</a>   DaemonExecutionFailures,</span>
+<span id="L6"><a href="#L6">   6</a>   type DaemonAdmissionDecision,</span>
+<span id="L7"><a href="#L7">   7</a>   type DaemonExecuteRejectionCode,</span>
+<span id="L8"><a href="#L8">   8</a>   type DaemonExecutorModuleUrl,</span>
+<span id="L9"><a href="#L9">   9</a>   type DaemonPolicy,</span>
+<span id="L10"><a href="#L10">  10</a>   type DaemonPolicyValues,</span>
+<span id="L11"><a href="#L11">  11</a> } from &quot;@symnav/daemon&quot;;</span>
+<span id="L12"><a href="#L12">  12</a> import { AcceptedRequestLedger } from &quot;./accepted-request-ledger.js&quot;;</span>
+<span id="L13"><a href="#L13">  13</a> import { DaemonActivityProjector } from &quot;./daemon-activity-projector.js&quot;;</span>
+<span id="L14"><a href="#L14">  14</a> import type {</span>
+<span id="L15"><a href="#L15">  15</a>   DaemonExecutionServerFrame,</span>
+<span id="L16"><a href="#L16">  16</a>   DaemonRecord,</span>
+<span id="L17"><a href="#L17">  17</a>   DaemonRequest,</span>
+<span id="L18"><a href="#L18">  18</a>   DaemonResponse,</span>
+<span id="L19"><a href="#L19">  19</a>   DaemonServer,</span>
+<span id="L20"><a href="#L20">  20</a> } from &quot;./daemon-protocol.js&quot;;</span>
+<span id="L21"><a href="#L21">  21</a> import {</span>
+<span id="L22"><a href="#L22">  22</a>   CompletionSpoolCapacityError,</span>
+<span id="L23"><a href="#L23">  23</a>   DaemonCompletionSpoolStore,</span>
+<span id="L24"><a href="#L24">  24</a>   type CompletionSpoolStorage,</span>
+<span id="L25"><a href="#L25">  25</a> } from &quot;./completion-spool.js&quot;;</span>
+<span id="L26"><a href="#L26">  26</a> import { DAEMON_PROTOCOL_VERSION, DAEMON_RECORD_SCHEMA_VERSION } from &quot;./daemon-protocol.js&quot;;</span>
+<span id="L27"><a href="#L27">  27</a> import { DaemonLifetime } from &quot;./daemon-lifetime.js&quot;;</span>
+<span id="L28"><a href="#L28">  28</a> import { DaemonLogger } from &quot;./daemon-logger.js&quot;;</span>
+<span id="L29"><a href="#L29">  29</a> import { NodeDaemonClock, type DaemonClock } from &quot;./daemon-clock.js&quot;;</span>
+<span id="L30"><a href="#L30">  30</a> import { DaemonOperationObserver, type DaemonOperationTrace } from &quot;./daemon-operation-observer.js&quot;;</span>
+<span id="L31"><a href="#L31">  31</a> import { DaemonDeliverySession, type DaemonCompletionWriter } from &quot;./daemon-delivery-session.js&quot;;</span>
+<span id="L32"><a href="#L32">  32</a> import {</span>
+<span id="L33"><a href="#L33">  33</a>   DaemonNavigationWorkerExitedError,</span>
+<span id="L34"><a href="#L34">  34</a>   type DaemonNavigationWorker,</span>
+<span id="L35"><a href="#L35">  35</a>   NodeDaemonNavigationWorker,</span>
+<span id="L36"><a href="#L36">  36</a> } from &quot;./daemon-navigation-worker.js&quot;;</span>
+<span id="L37"><a href="#L37">  37</a> import { DaemonWorkerGenerationManager } from &quot;./daemon-worker-generation-manager.js&quot;;</span>
+<span id="L38"><a href="#L38">  38</a> import {</span>
+<span id="L39"><a href="#L39">  39</a>   DaemonResourceSupervisor,</span>
+<span id="L40"><a href="#L40">  40</a>   type DaemonWorkerReplacementCause,</span>
+<span id="L41"><a href="#L41">  41</a> } from &quot;./daemon-resource-monitor.js&quot;;</span>
+<span id="L42"><a href="#L42">  42</a> import type { DaemonRegistry, DaemonStartupLease } from &quot;./daemon-registry.js&quot;;</span>
+<span id="L43"><a href="#L43">  43</a> import type { DaemonWorkspaceIdentity } from &quot;./daemon-workspace-identity.js&quot;;</span>
+<span id="L44"><a href="#L44">  44</a> import type { DaemonRequestServer, DaemonServerSend } from &quot;./daemon-transport.js&quot;;</span>
+<span id="L45"><a href="#L45">  45</a> import { WorkspaceRequestQueue } from &quot;./workspace-request-queue.js&quot;;</span>
+<span id="L46"><a href="#L46">  46</a> </span>
+<span id="L47"><a href="#L47">  47</a> export interface WorkspaceDaemonOptions {</span>
+<span id="L48"><a href="#L48">  48</a>   readonly identity: DaemonWorkspaceIdentity;</span>
+<span id="L49"><a href="#L49">  49</a>   readonly instanceId: string;</span>
+<span id="L50"><a href="#L50">  50</a>   readonly processToken: string;</span>
+<span id="L51"><a href="#L51">  51</a>   readonly symnavVersion: string;</span>
+<span id="L52"><a href="#L52">  52</a>   readonly executorModuleUrl?: DaemonExecutorModuleUrl;</span>
+<span id="L53"><a href="#L53">  53</a>   readonly policy: DaemonPolicy;</span>
+<span id="L54"><a href="#L54">  54</a>   readonly dependencies?: {</span>
+<span id="L55"><a href="#L55">  55</a>     readonly fs: { exists(path: string): Promise&lt;boolean&gt; };</span>
+<span id="L56"><a href="#L56">  56</a>   };</span>
+<span id="L57"><a href="#L57">  57</a>   readonly registry: DaemonRegistry;</span>
+<span id="L58"><a href="#L58">  58</a>   readonly transport: DaemonRequestServer;</span>
+<span id="L59"><a href="#L59">  59</a>   readonly navigationWorker?: DaemonNavigationWorker;</span>
+<span id="L60"><a href="#L60">  60</a>   readonly navigationWorkerFactory?: (generation: number) =&gt; DaemonNavigationWorker;</span>
+<span id="L61"><a href="#L61">  61</a>   readonly now?: () =&gt; number;</span>
+<span id="L62"><a href="#L62">  62</a>   readonly clock?: DaemonClock;</span>
+<span id="L63"><a href="#L63">  63</a>   readonly exit?: (code: number) =&gt; void;</span>
+<span id="L64"><a href="#L64">  64</a>   readonly residentMemoryBytes?: () =&gt; number;</span>
+<span id="L65"><a href="#L65">  65</a>   readonly completionSpoolStorage?: CompletionSpoolStorage;</span>
+<span id="L66"><a href="#L66">  66</a>   readonly logger?: DaemonLogger;</span>
+<span id="L67"><a href="#L67">  67</a> }</span>
+<span id="L68"><a href="#L68">  68</a> </span>
+<span id="L69"><a href="#L69">  69</a> export class WorkspaceDaemon {</span>
+<span id="L70"><a href="#L70">  70</a>   private readonly now: () =&gt; number;</span>
+<span id="L71"><a href="#L71">  71</a>   private readonly clock: DaemonClock;</span>
+<span id="L72"><a href="#L72">  72</a>   private readonly exit: (code: number) =&gt; void;</span>
+<span id="L73"><a href="#L73">  73</a>   private readonly workerManager: DaemonWorkerGenerationManager;</span>
+<span id="L74"><a href="#L74">  74</a>   private readonly requestQueue: WorkspaceRequestQueue;</span>
+<span id="L75"><a href="#L75">  75</a>   private readonly logger: DaemonLogger;</span>
+<span id="L76"><a href="#L76">  76</a>   private readonly lifetime: DaemonLifetime;</span>
+<span id="L77"><a href="#L77">  77</a>   private readonly resourceSupervisor: DaemonResourceSupervisor;</span>
+<span id="L78"><a href="#L78">  78</a>   private readonly resourcePolicy: DaemonPolicyValues[&quot;resources&quot;];</span>
+<span id="L79"><a href="#L79">  79</a>   private readonly policy: DaemonPolicy;</span>
+<span id="L80"><a href="#L80">  80</a>   private readonly operationObserver: DaemonOperationObserver;</span>
+<span id="L81"><a href="#L81">  81</a>   private readonly acceptedRequests: AcceptedRequestLedger;</span>
+<span id="L82"><a href="#L82">  82</a>   private readonly deliverySession: DaemonDeliverySession;</span>
+<span id="L83"><a href="#L83">  83</a>   private readonly admissionPolicy = new DaemonAdmissionPolicy();</span>
+<span id="L84"><a href="#L84">  84</a>   private readonly acceptances = new Map&lt;</span>
+<span id="L85"><a href="#L85">  85</a>     string,</span>
+<span id="L86"><a href="#L86">  86</a>     { readonly acceptedAt: number; readonly queuePosition: number }</span>
+<span id="L87"><a href="#L87">  87</a>   &gt;();</span>
+<span id="L88"><a href="#L88">  88</a>   private server: DaemonServer | undefined;</span>
+<span id="L89"><a href="#L89">  89</a>   private startedAt = 0;</span>
+<span id="L90"><a href="#L90">  90</a>   private readonly startedMonotonicAt: number;</span>
+<span id="L91"><a href="#L91">  91</a>   private lastNavigationAt: number | undefined;</span>
+<span id="L92"><a href="#L92">  92</a>   private lastCompletedMonotonicAt: number | undefined;</span>
+<span id="L93"><a href="#L93">  93</a>   private shutdownStarted = false;</span>
+<span id="L94"><a href="#L94">  94</a>   private shutdownFailureCode: &quot;stopping&quot; | &quot;controlled-resource&quot; | undefined;</span>
+<span id="L95"><a href="#L95">  95</a>   private shutdownOperation: Promise&lt;void&gt; | undefined;</span>
+<span id="L96"><a href="#L96">  96</a>   private forcedWorkerShutdown: Promise&lt;void&gt; | undefined;</span>
+<span id="L97"><a href="#L97">  97</a>   private readonly forceEscalated: Promise&lt;void&gt;;</span>
+<span id="L98"><a href="#L98">  98</a>   private resolveForceEscalated!: () =&gt; void;</span>
+<span id="L99"><a href="#L99">  99</a>   private readonly resourceInterruptedRequests = new Set&lt;string&gt;();</span>
+<span id="L100"><a href="#L100"> 100</a> </span>
+<span id="L101"><a href="#L101"> 101</a>   constructor(private readonly options: WorkspaceDaemonOptions) {</span>
+<span id="L102"><a href="#L102"> 102</a>     const policy = options.policy;</span>
+<span id="L103"><a href="#L103"> 103</a>     this.policy = policy;</span>
+<span id="L104"><a href="#L104"> 104</a>     this.forceEscalated = new Promise((resolve) =&gt; {</span>
+<span id="L105"><a href="#L105"> 105</a>       this.resolveForceEscalated = resolve;</span>
+<span id="L106"><a href="#L106"> 106</a>     });</span>
+<span id="L107"><a href="#L107"> 107</a>     this.now = options.now ?? Date.now;</span>
+<span id="L108"><a href="#L108"> 108</a>     this.clock = options.clock ?? new NodeDaemonClock();</span>
+<span id="L109"><a href="#L109"> 109</a>     this.startedMonotonicAt = this.clock.monotonicNowMs();</span>
+<span id="L110"><a href="#L110"> 110</a>     this.requestQueue = new WorkspaceRequestQueue(() =&gt; this.clock.monotonicNowMs());</span>
+<span id="L111"><a href="#L111"> 111</a>     this.acceptedRequests = new AcceptedRequestLedger(this.now);</span>
+<span id="L112"><a href="#L112"> 112</a>     const completionSpools = new DaemonCompletionSpoolStore({</span>
+<span id="L113"><a href="#L113"> 113</a>       directory: options.identity.spoolDirectory,</span>
+<span id="L114"><a href="#L114"> 114</a>       workspaceKey: options.identity.workspaceKey,</span>
+<span id="L115"><a href="#L115"> 115</a>       instanceId: options.instanceId,</span>
+<span id="L116"><a href="#L116"> 116</a>       policy: policy.values.output,</span>
+<span id="L117"><a href="#L117"> 117</a>       ...(options.completionSpoolStorage === undefined</span>
+<span id="L118"><a href="#L118"> 118</a>         ? {}</span>
+<span id="L119"><a href="#L119"> 119</a>         : { storage: options.completionSpoolStorage }),</span>
+<span id="L120"><a href="#L120"> 120</a>     });</span>
+<span id="L121"><a href="#L121"> 121</a>     this.logger =</span>
+<span id="L122"><a href="#L122"> 122</a>       options.logger ??</span>
+<span id="L123"><a href="#L123"> 123</a>       new DaemonLogger(options.identity, options.instanceId, this.clock, {</span>
+<span id="L124"><a href="#L124"> 124</a>         policy: policy.values.diagnostics,</span>
+<span id="L125"><a href="#L125"> 125</a>       });</span>
+<span id="L126"><a href="#L126"> 126</a>     const resourcePolicy = policy.values.resources;</span>
+<span id="L127"><a href="#L127"> 127</a>     this.resourcePolicy = resourcePolicy;</span>
+<span id="L128"><a href="#L128"> 128</a>     const navigationWorkerFactory =</span>
+<span id="L129"><a href="#L129"> 129</a>       options.navigationWorkerFactory ??</span>
+<span id="L130"><a href="#L130"> 130</a>       (options.navigationWorker === undefined</span>
+<span id="L131"><a href="#L131"> 131</a>         ? (generation) =&gt;</span>
+<span id="L132"><a href="#L132"> 132</a>             new NodeDaemonNavigationWorker({</span>
+<span id="L133"><a href="#L133"> 133</a>               generation,</span>
+<span id="L134"><a href="#L134"> 134</a>               configuration: {</span>
+<span id="L135"><a href="#L135"> 135</a>                 stateDirectory: options.identity.stateDirectory,</span>
+<span id="L136"><a href="#L136"> 136</a>                 productVersion: options.symnavVersion,</span>
+<span id="L137"><a href="#L137"> 137</a>                 executorModuleUrl:</span>
+<span id="L138"><a href="#L138"> 138</a>                   options.executorModuleUrl ?? &quot;file:///missing/symnav-daemon-executor.js&quot;,</span>
+<span id="L139"><a href="#L139"> 139</a>                 policy: policy.toSerialized(),</span>
+<span id="L140"><a href="#L140"> 140</a>               },</span>
+<span id="L141"><a href="#L141"> 141</a>               resourceLimits: {</span>
+<span id="L142"><a href="#L142"> 142</a>                 maxOldGenerationSizeMb: resourcePolicy.workerMaxOldGenerationSizeMiB,</span>
+<span id="L143"><a href="#L143"> 143</a>               },</span>
+<span id="L144"><a href="#L144"> 144</a>             })</span>
+<span id="L145"><a href="#L145"> 145</a>         : undefined);</span>
+<span id="L146"><a href="#L146"> 146</a>     const createNavigationWorker = (generation: number): DaemonNavigationWorker =&gt; {</span>
+<span id="L147"><a href="#L147"> 147</a>       const worker = navigationWorkerFactory?.(generation);</span>
+<span id="L148"><a href="#L148"> 148</a>       if (worker === undefined) throw new Error(&quot;Navigation worker replacement is unavailable&quot;);</span>
+<span id="L149"><a href="#L149"> 149</a>       if (worker.generation !== generation) {</span>
+<span id="L150"><a href="#L150"> 150</a>         throw new Error(&quot;Navigation worker factory returned the wrong generation&quot;);</span>
+<span id="L151"><a href="#L151"> 151</a>       }</span>
+<span id="L152"><a href="#L152"> 152</a>       return worker;</span>
+<span id="L153"><a href="#L153"> 153</a>     };</span>
+<span id="L154"><a href="#L154"> 154</a>     const initialNavigationWorker = options.navigationWorker ?? createNavigationWorker(1);</span>
+<span id="L155"><a href="#L155"> 155</a>     this.exit = options.exit ?? ((code) =&gt; process.exit(code));</span>
+<span id="L156"><a href="#L156"> 156</a>     this.lifetime = new DaemonLifetime({ now: this.now }, policy.values.shutdown, () =&gt;</span>
+<span id="L157"><a href="#L157"> 157</a>       this.drainAndShutdown(&quot;idle&quot;),</span>
+<span id="L158"><a href="#L158"> 158</a>     );</span>
+<span id="L159"><a href="#L159"> 159</a>     this.workerManager = new DaemonWorkerGenerationManager({</span>
+<span id="L160"><a href="#L160"> 160</a>       workspaceRoot: options.identity.workspaceRoot,</span>
+<span id="L161"><a href="#L161"> 161</a>       initialWorker: initialNavigationWorker,</span>
+<span id="L162"><a href="#L162"> 162</a>       createWorker: createNavigationWorker,</span>
+<span id="L163"><a href="#L163"> 163</a>       exitRecovery: { recover: (workerExit) =&gt; this.recoverWorkerExit(workerExit) },</span>
+<span id="L164"><a href="#L164"> 164</a>       onActiveResourceInterruption: (cause) =&gt; this.markActiveResourceInterruption(cause),</span>
+<span id="L165"><a href="#L165"> 165</a>       onDiagnostic: (diagnostic) =&gt; this.operationObserver.worker(diagnostic),</span>
+<span id="L166"><a href="#L166"> 166</a>     });</span>
+<span id="L167"><a href="#L167"> 167</a>     this.resourceSupervisor = new DaemonResourceSupervisor({</span>
+<span id="L168"><a href="#L168"> 168</a>       policy: resourcePolicy,</span>
+<span id="L169"><a href="#L169"> 169</a>       generation: this.workerManager.snapshot.generation,</span>
+<span id="L170"><a href="#L170"> 170</a>       ...(options.residentMemoryBytes === undefined</span>
+<span id="L171"><a href="#L171"> 171</a>         ? {}</span>
+<span id="L172"><a href="#L172"> 172</a>         : { residentMemoryBytes: options.residentMemoryBytes }),</span>
+<span id="L173"><a href="#L173"> 173</a>       spoolBytes: () =&gt; this.deliverySession.snapshot.spoolBytes,</span>
+<span id="L174"><a href="#L174"> 174</a>       scheduleAtTurnBoundary: (operation) =&gt; this.requestQueue.scheduleAtTurnBoundary(operation),</span>
+<span id="L175"><a href="#L175"> 175</a>       releaseTransientResources: async () =&gt; {</span>
+<span id="L176"><a href="#L176"> 176</a>         const response = await this.workerManager.releaseTransientResources();</span>
+<span id="L177"><a href="#L177"> 177</a>         this.resourceSupervisor.workerHeapReported(</span>
+<span id="L178"><a href="#L178"> 178</a>           response.generation,</span>
+<span id="L179"><a href="#L179"> 179</a>           response.usedHeapBytes,</span>
+<span id="L180"><a href="#L180"> 180</a>           response.heapLimitBytes,</span>
+<span id="L181"><a href="#L181"> 181</a>         );</span>
+<span id="L182"><a href="#L182"> 182</a>       },</span>
+<span id="L183"><a href="#L183"> 183</a>       replaceWorker: async (cause) =&gt; {</span>
+<span id="L184"><a href="#L184"> 184</a>         const response = await this.workerManager.replace(cause);</span>
+<span id="L185"><a href="#L185"> 185</a>         this.logger.record({ kind: &quot;freshness&quot;, ...response.refresh });</span>
+<span id="L186"><a href="#L186"> 186</a>         return response.generation;</span>
+<span id="L187"><a href="#L187"> 187</a>       },</span>
+<span id="L188"><a href="#L188"> 188</a>       drain: () =&gt; this.initiateResourceDrain(),</span>
+<span id="L189"><a href="#L189"> 189</a>     });</span>
+<span id="L190"><a href="#L190"> 190</a>     this.operationObserver = new DaemonOperationObserver(</span>
+<span id="L191"><a href="#L191"> 191</a>       this.logger,</span>
+<span id="L192"><a href="#L192"> 192</a>       this.clock,</span>
+<span id="L193"><a href="#L193"> 193</a>       this.resourceSupervisor,</span>
+<span id="L194"><a href="#L194"> 194</a>     );</span>
+<span id="L195"><a href="#L195"> 195</a>     this.deliverySession = new DaemonDeliverySession({</span>
+<span id="L196"><a href="#L196"> 196</a>       coordinates: {</span>
+<span id="L197"><a href="#L197"> 197</a>         instanceId: options.instanceId,</span>
+<span id="L198"><a href="#L198"> 198</a>         processToken: options.processToken,</span>
+<span id="L199"><a href="#L199"> 199</a>       },</span>
+<span id="L200"><a href="#L200"> 200</a>       journal: this.acceptedRequests,</span>
+<span id="L201"><a href="#L201"> 201</a>       spoolStore: completionSpools,</span>
+<span id="L202"><a href="#L202"> 202</a>       observer: this.operationObserver,</span>
+<span id="L203"><a href="#L203"> 203</a>       diagnostics: this.logger,</span>
+<span id="L204"><a href="#L204"> 204</a>       clock: this.clock,</span>
+<span id="L205"><a href="#L205"> 205</a>       policy: policy.values,</span>
+<span id="L206"><a href="#L206"> 206</a>     });</span>
+<span id="L207"><a href="#L207"> 207</a>   }</span>
+<span id="L208"><a href="#L208"> 208</a> </span>
+<span id="L209"><a href="#L209"> 209</a>   async start(): Promise&lt;void&gt; {</span>
+<span id="L210"><a href="#L210"> 210</a>     this.logger.record({ kind: &quot;start&quot; });</span>
+<span id="L211"><a href="#L211"> 211</a>     let startupLease: DaemonStartupLease | undefined;</span>
+<span id="L212"><a href="#L212"> 212</a>     let startupHeartbeat: NodeJS.Timeout | undefined;</span>
+<span id="L213"><a href="#L213"> 213</a>     try {</span>
+<span id="L214"><a href="#L214"> 214</a>       const authorization = await this.waitForStartupAuthorization();</span>
+<span id="L215"><a href="#L215"> 215</a>       startupLease = authorization.lease;</span>
+<span id="L216"><a href="#L216"> 216</a>       const startingRecord = authorization.record;</span>
+<span id="L217"><a href="#L217"> 217</a>       startupHeartbeat = setInterval(</span>
+<span id="L218"><a href="#L218"> 218</a>         () =&gt; startupLease?.heartbeat(),</span>
+<span id="L219"><a href="#L219"> 219</a>         this.policy.values.startup.heartbeatIntervalMs,</span>
+<span id="L220"><a href="#L220"> 220</a>       );</span>
+<span id="L221"><a href="#L221"> 221</a>       startupHeartbeat.unref();</span>
+<span id="L222"><a href="#L222"> 222</a>       this.startedAt = startingRecord.startedAt;</span>
+<span id="L223"><a href="#L223"> 223</a>       this.server = await this.options.transport.listen(</span>
+<span id="L224"><a href="#L224"> 224</a>         this.options.identity.endpoint(this.options.instanceId),</span>
+<span id="L225"><a href="#L225"> 225</a>         (request, send) =&gt; this.handle(request, send),</span>
+<span id="L226"><a href="#L226"> 226</a>       );</span>
+<span id="L227"><a href="#L227"> 227</a>       const response = await this.workerManager.start();</span>
+<span id="L228"><a href="#L228"> 228</a>       this.operationObserver.startup({</span>
+<span id="L229"><a href="#L229"> 229</a>         kind: &quot;startup-completed&quot;,</span>
+<span id="L230"><a href="#L230"> 230</a>         workerGeneration: response.generation,</span>
+<span id="L231"><a href="#L231"> 231</a>         fileCount: response.fileCount,</span>
+<span id="L232"><a href="#L232"> 232</a>         ...response.startupDurations,</span>
+<span id="L233"><a href="#L233"> 233</a>       });</span>
+<span id="L234"><a href="#L234"> 234</a>       this.logger.record({ kind: &quot;freshness&quot;, ...response.refresh });</span>
+<span id="L235"><a href="#L235"> 235</a>       await this.resourceSupervisor.sample(&quot;warmup&quot;);</span>
+<span id="L236"><a href="#L236"> 236</a>       this.workerManager.activateReadiness();</span>
+<span id="L237"><a href="#L237"> 237</a>       const readyRecord: DaemonRecord = {</span>
+<span id="L238"><a href="#L238"> 238</a>         schemaVersion: DAEMON_RECORD_SCHEMA_VERSION,</span>
+<span id="L239"><a href="#L239"> 239</a>         protocolVersion: DAEMON_PROTOCOL_VERSION,</span>
+<span id="L240"><a href="#L240"> 240</a>         symnavVersion: this.options.symnavVersion,</span>
+<span id="L241"><a href="#L241"> 241</a>         workspaceRoot: this.options.identity.workspaceRoot,</span>
+<span id="L242"><a href="#L242"> 242</a>         workspaceKey: this.options.identity.workspaceKey,</span>
+<span id="L243"><a href="#L243"> 243</a>         stateKey: this.options.identity.stateKey,</span>
+<span id="L244"><a href="#L244"> 244</a>         identityKey: this.options.identity.identityKey,</span>
+<span id="L245"><a href="#L245"> 245</a>         instanceId: this.options.instanceId,</span>
+<span id="L246"><a href="#L246"> 246</a>         processToken: this.options.processToken,</span>
+<span id="L247"><a href="#L247"> 247</a>         endpoint: this.options.identity.endpoint(this.options.instanceId),</span>
+<span id="L248"><a href="#L248"> 248</a>         pid: process.pid,</span>
+<span id="L249"><a href="#L249"> 249</a>         state: &quot;ready&quot;,</span>
+<span id="L250"><a href="#L250"> 250</a>         startedAt: startingRecord.startedAt,</span>
+<span id="L251"><a href="#L251"> 251</a>         readyAt: this.now(),</span>
+<span id="L252"><a href="#L252"> 252</a>         fileCount: response.fileCount,</span>
+<span id="L253"><a href="#L253"> 253</a>         memoryCapBytes: this.resourcePolicy.hardProcessRssBytes,</span>
+<span id="L254"><a href="#L254"> 254</a>       };</span>
+<span id="L255"><a href="#L255"> 255</a>       if (!this.options.registry.writeIfStartupOwner(this.options.identity, readyRecord)) {</span>
+<span id="L256"><a href="#L256"> 256</a>         throw new Error(&quot;Daemon startup ownership changed before readiness publication&quot;);</span>
+<span id="L257"><a href="#L257"> 257</a>       }</span>
+<span id="L258"><a href="#L258"> 258</a>       if (startupHeartbeat !== undefined) clearInterval(startupHeartbeat);</span>
+<span id="L259"><a href="#L259"> 259</a>       startupHeartbeat = undefined;</span>
+<span id="L260"><a href="#L260"> 260</a>       startupLease.release();</span>
+<span id="L261"><a href="#L261"> 261</a>       this.logger.record({ kind: &quot;ready&quot;, fileCount: response.fileCount });</span>
+<span id="L262"><a href="#L262"> 262</a>       this.resourceSupervisor.start();</span>
+<span id="L263"><a href="#L263"> 263</a>       await this.logger.flush();</span>
+<span id="L264"><a href="#L264"> 264</a>     } catch (error) {</span>
+<span id="L265"><a href="#L265"> 265</a>       if (startupHeartbeat !== undefined) clearInterval(startupHeartbeat);</span>
+<span id="L266"><a href="#L266"> 266</a>       await this.cleanupFailedStartup(startupLease);</span>
+<span id="L267"><a href="#L267"> 267</a>       this.logger.record({</span>
+<span id="L268"><a href="#L268"> 268</a>         kind: &quot;failure&quot;,</span>
+<span id="L269"><a href="#L269"> 269</a>         operation: &quot;start&quot;,</span>
+<span id="L270"><a href="#L270"> 270</a>         failureCode: &quot;operation-failed&quot;,</span>
+<span id="L271"><a href="#L271"> 271</a>         errorName: DaemonLogger.errorName(error),</span>
+<span id="L272"><a href="#L272"> 272</a>       });</span>
+<span id="L273"><a href="#L273"> 273</a>       await this.logger.flush();</span>
+<span id="L274"><a href="#L274"> 274</a>       throw error;</span>
+<span id="L275"><a href="#L275"> 275</a>     }</span>
+<span id="L276"><a href="#L276"> 276</a>   }</span>
+<span id="L277"><a href="#L277"> 277</a> </span>
+<span id="L278"><a href="#L278"> 278</a>   private async waitForStartupAuthorization(): Promise&lt;{</span>
+<span id="L279"><a href="#L279"> 279</a>     readonly lease: DaemonStartupLease;</span>
+<span id="L280"><a href="#L280"> 280</a>     readonly record: DaemonRecord;</span>
+<span id="L281"><a href="#L281"> 281</a>   }&gt; {</span>
+<span id="L282"><a href="#L282"> 282</a>     const deadline = this.now() + this.policy.values.startup.coordinationGraceMs;</span>
+<span id="L283"><a href="#L283"> 283</a>     while (this.now() &lt;= deadline) {</span>
+<span id="L284"><a href="#L284"> 284</a>       const record = this.options.registry.readInstance(</span>
+<span id="L285"><a href="#L285"> 285</a>         this.options.identity,</span>
+<span id="L286"><a href="#L286"> 286</a>         this.options.instanceId,</span>
+<span id="L287"><a href="#L287"> 287</a>       );</span>
+<span id="L288"><a href="#L288"> 288</a>       if (</span>
+<span id="L289"><a href="#L289"> 289</a>         record?.state === &quot;starting&quot; &amp;&amp;</span>
+<span id="L290"><a href="#L290"> 290</a>         (record.pid === 0 || record.pid === process.pid) &amp;&amp;</span>
+<span id="L291"><a href="#L291"> 291</a>         record.processToken === this.options.processToken</span>
+<span id="L292"><a href="#L292"> 292</a>       ) {</span>
+<span id="L293"><a href="#L293"> 293</a>         const lease = this.options.registry.claimStartupForDaemon(</span>
+<span id="L294"><a href="#L294"> 294</a>           this.options.identity,</span>
+<span id="L295"><a href="#L295"> 295</a>           this.options.instanceId,</span>
+<span id="L296"><a href="#L296"> 296</a>           this.options.processToken,</span>
+<span id="L297"><a href="#L297"> 297</a>           process.pid,</span>
+<span id="L298"><a href="#L298"> 298</a>         );</span>
+<span id="L299"><a href="#L299"> 299</a>         if (lease === undefined) {</span>
+<span id="L300"><a href="#L300"> 300</a>           await this.pause();</span>
+<span id="L301"><a href="#L301"> 301</a>           continue;</span>
+<span id="L302"><a href="#L302"> 302</a>         }</span>
+<span id="L303"><a href="#L303"> 303</a>         this.options.registry.writeStartingIfStartupOwner(this.options.identity, {</span>
+<span id="L304"><a href="#L304"> 304</a>           ...record,</span>
+<span id="L305"><a href="#L305"> 305</a>           pid: process.pid,</span>
+<span id="L306"><a href="#L306"> 306</a>         });</span>
+<span id="L307"><a href="#L307"> 307</a>         const adoptedRecord = this.options.registry.readInstance(</span>
+<span id="L308"><a href="#L308"> 308</a>           this.options.identity,</span>
+<span id="L309"><a href="#L309"> 309</a>           this.options.instanceId,</span>
+<span id="L310"><a href="#L310"> 310</a>         );</span>
+<span id="L311"><a href="#L311"> 311</a>         if (adoptedRecord?.pid !== process.pid) {</span>
+<span id="L312"><a href="#L312"> 312</a>           lease.release();</span>
+<span id="L313"><a href="#L313"> 313</a>           await this.pause();</span>
+<span id="L314"><a href="#L314"> 314</a>           continue;</span>
+<span id="L315"><a href="#L315"> 315</a>         }</span>
+<span id="L316"><a href="#L316"> 316</a>         if (</span>
+<span id="L317"><a href="#L317"> 317</a>           this.options.registry.startupOwnerMatchesProcess(this.options.identity, adoptedRecord)</span>
+<span id="L318"><a href="#L318"> 318</a>         ) {</span>
+<span id="L319"><a href="#L319"> 319</a>           return { lease, record: adoptedRecord };</span>
+<span id="L320"><a href="#L320"> 320</a>         }</span>
+<span id="L321"><a href="#L321"> 321</a>         lease.release();</span>
+<span id="L322"><a href="#L322"> 322</a>       }</span>
+<span id="L323"><a href="#L323"> 323</a>       await this.pause();</span>
+<span id="L324"><a href="#L324"> 324</a>     }</span>
+<span id="L325"><a href="#L325"> 325</a>     throw new Error(&quot;Daemon process did not receive startup authorization&quot;);</span>
+<span id="L326"><a href="#L326"> 326</a>   }</span>
+<span id="L327"><a href="#L327"> 327</a> </span>
+<span id="L328"><a href="#L328"> 328</a>   private async cleanupFailedStartup(startupLease: DaemonStartupLease | undefined): Promise&lt;void&gt; {</span>
+<span id="L329"><a href="#L329"> 329</a>     this.shutdownStarted = true;</span>
+<span id="L330"><a href="#L330"> 330</a>     try {</span>
+<span id="L331"><a href="#L331"> 331</a>       await this.workerManager.terminate();</span>
+<span id="L332"><a href="#L332"> 332</a>     } catch {}</span>
+<span id="L333"><a href="#L333"> 333</a>     try {</span>
+<span id="L334"><a href="#L334"> 334</a>       await this.server?.close();</span>
+<span id="L335"><a href="#L335"> 335</a>     } catch {}</span>
+<span id="L336"><a href="#L336"> 336</a>     startupLease?.release();</span>
+<span id="L337"><a href="#L337"> 337</a>     this.options.registry.removeIfProcess(</span>
+<span id="L338"><a href="#L338"> 338</a>       this.options.identity,</span>
+<span id="L339"><a href="#L339"> 339</a>       this.options.instanceId,</span>
+<span id="L340"><a href="#L340"> 340</a>       this.options.processToken,</span>
+<span id="L341"><a href="#L341"> 341</a>     );</span>
+<span id="L342"><a href="#L342"> 342</a>   }</span>
+<span id="L343"><a href="#L343"> 343</a> </span>
+<span id="L344"><a href="#L344"> 344</a>   private async handle(</span>
+<span id="L345"><a href="#L345"> 345</a>     request: DaemonRequest,</span>
+<span id="L346"><a href="#L346"> 346</a>     send: DaemonServerSend,</span>
+<span id="L347"><a href="#L347"> 347</a>   ): Promise&lt;DaemonResponse | void&gt; {</span>
+<span id="L348"><a href="#L348"> 348</a>     if (request.kind === &quot;identify&quot;) return this.identify(request);</span>
+<span id="L349"><a href="#L349"> 349</a>     if (request.kind === &quot;terminate&quot; || request.kind === &quot;kill&quot;) {</span>
+<span id="L350"><a href="#L350"> 350</a>       return this.terminate(request);</span>
+<span id="L351"><a href="#L351"> 351</a>     }</span>
+<span id="L352"><a href="#L352"> 352</a>     if (</span>
+<span id="L353"><a href="#L353"> 353</a>       request.protocolVersion !== DAEMON_PROTOCOL_VERSION ||</span>
+<span id="L354"><a href="#L354"> 354</a>       request.instanceId !== this.options.instanceId</span>
+<span id="L355"><a href="#L355"> 355</a>     ) {</span>
+<span id="L356"><a href="#L356"> 356</a>       throw new Error(&quot;Daemon request does not match protocol or instance&quot;);</span>
+<span id="L357"><a href="#L357"> 357</a>     }</span>
+<span id="L358"><a href="#L358"> 358</a>     if (request.kind === &quot;ping&quot;) return this.pong();</span>
+<span id="L359"><a href="#L359"> 359</a>     if (request.kind === &quot;execute&quot;) return this.acceptExecution(request, send);</span>
+<span id="L360"><a href="#L360"> 360</a>     if (</span>
+<span id="L361"><a href="#L361"> 361</a>       request.kind === &quot;execution-status&quot; ||</span>
+<span id="L362"><a href="#L362"> 362</a>       request.kind === &quot;result-fetch&quot; ||</span>
+<span id="L363"><a href="#L363"> 363</a>       request.kind === &quot;result-ack&quot;</span>
+<span id="L364"><a href="#L364"> 364</a>     ) {</span>
+<span id="L365"><a href="#L365"> 365</a>       if (request.processToken !== this.options.processToken) {</span>
+<span id="L366"><a href="#L366"> 366</a>         throw new Error(&quot;Daemon execution request does not match process instance&quot;);</span>
+<span id="L367"><a href="#L367"> 367</a>       }</span>
+<span id="L368"><a href="#L368"> 368</a>     }</span>
+<span id="L369"><a href="#L369"> 369</a>     if (request.kind === &quot;result-fetch&quot;) {</span>
+<span id="L370"><a href="#L370"> 370</a>       await this.deliverySession.fetch(request, send);</span>
+<span id="L371"><a href="#L371"> 371</a>       return;</span>
+<span id="L372"><a href="#L372"> 372</a>     }</span>
+<span id="L373"><a href="#L373"> 373</a>     if (request.kind === &quot;result-ack&quot;) {</span>
+<span id="L374"><a href="#L374"> 374</a>       return this.deliverySession.acknowledge(request);</span>
+<span id="L375"><a href="#L375"> 375</a>     }</span>
+<span id="L376"><a href="#L376"> 376</a>     if (request.kind === &quot;execution-status&quot;) {</span>
+<span id="L377"><a href="#L377"> 377</a>       return {</span>
+<span id="L378"><a href="#L378"> 378</a>         kind: &quot;execution-status&quot;,</span>
+<span id="L379"><a href="#L379"> 379</a>         instanceId: this.options.instanceId,</span>
+<span id="L380"><a href="#L380"> 380</a>         processToken: this.options.processToken,</span>
+<span id="L381"><a href="#L381"> 381</a>         requestId: request.requestId,</span>
+<span id="L382"><a href="#L382"> 382</a>         status: this.acceptedRequests.status(request.requestId),</span>
+<span id="L383"><a href="#L383"> 383</a>       };</span>
+<span id="L384"><a href="#L384"> 384</a>     }</span>
+<span id="L385"><a href="#L385"> 385</a>     this.beginGracefulShutdown();</span>
+<span id="L386"><a href="#L386"> 386</a>     await this.requestQueue.drain();</span>
+<span id="L387"><a href="#L387"> 387</a>     await this.deliverySession.waitForCompletionAcknowledgements();</span>
+<span id="L388"><a href="#L388"> 388</a>     setTimeout(() =&gt; void this.shutdown(&quot;graceful&quot;), 0);</span>
+<span id="L389"><a href="#L389"> 389</a>     return { kind: &quot;stopped&quot;, instanceId: this.options.instanceId };</span>
+<span id="L390"><a href="#L390"> 390</a>   }</span>
+<span id="L391"><a href="#L391"> 391</a> </span>
+<span id="L392"><a href="#L392"> 392</a>   private identify(request: Extract&lt;DaemonRequest, { kind: &quot;identify&quot; }&gt;): DaemonResponse {</span>
+<span id="L393"><a href="#L393"> 393</a>     if (</span>
+<span id="L394"><a href="#L394"> 394</a>       request.instanceId !== this.options.instanceId ||</span>
+<span id="L395"><a href="#L395"> 395</a>       request.processToken !== this.options.processToken</span>
+<span id="L396"><a href="#L396"> 396</a>     ) {</span>
+<span id="L397"><a href="#L397"> 397</a>       throw new Error(&quot;Daemon identity request does not match process instance&quot;);</span>
+<span id="L398"><a href="#L398"> 398</a>     }</span>
+<span id="L399"><a href="#L399"> 399</a>     return {</span>
+<span id="L400"><a href="#L400"> 400</a>       kind: &quot;identity&quot;,</span>
+<span id="L401"><a href="#L401"> 401</a>       instanceId: this.options.instanceId,</span>
+<span id="L402"><a href="#L402"> 402</a>       processToken: this.options.processToken,</span>
+<span id="L403"><a href="#L403"> 403</a>       pid: process.pid,</span>
+<span id="L404"><a href="#L404"> 404</a>       startedAt: this.startedAt,</span>
+<span id="L405"><a href="#L405"> 405</a>     };</span>
+<span id="L406"><a href="#L406"> 406</a>   }</span>
+<span id="L407"><a href="#L407"> 407</a> </span>
+<span id="L408"><a href="#L408"> 408</a>   private async terminate(</span>
+<span id="L409"><a href="#L409"> 409</a>     request: Extract&lt;DaemonRequest, { kind: &quot;terminate&quot; | &quot;kill&quot; }&gt;,</span>
+<span id="L410"><a href="#L410"> 410</a>   ): Promise&lt;DaemonResponse&gt; {</span>
+<span id="L411"><a href="#L411"> 411</a>     if (</span>
+<span id="L412"><a href="#L412"> 412</a>       request.instanceId !== this.options.instanceId ||</span>
+<span id="L413"><a href="#L413"> 413</a>       request.processToken !== this.options.processToken</span>
+<span id="L414"><a href="#L414"> 414</a>     ) {</span>
+<span id="L415"><a href="#L415"> 415</a>       throw new Error(&quot;Daemon termination does not match process instance&quot;);</span>
+<span id="L416"><a href="#L416"> 416</a>     }</span>
+<span id="L417"><a href="#L417"> 417</a>     this.beginGracefulShutdown();</span>
+<span id="L418"><a href="#L418"> 418</a>     if (request.kind === &quot;terminate&quot;) {</span>
+<span id="L419"><a href="#L419"> 419</a>       await this.requestQueue.drain();</span>
+<span id="L420"><a href="#L420"> 420</a>       await this.deliverySession.waitForCompletionAcknowledgements();</span>
+<span id="L421"><a href="#L421"> 421</a>       setTimeout(() =&gt; void this.shutdown(&quot;graceful&quot;), 0);</span>
+<span id="L422"><a href="#L422"> 422</a>     } else {</span>
+<span id="L423"><a href="#L423"> 423</a>       setTimeout(() =&gt; void this.shutdown(&quot;graceful&quot;, true), 0);</span>
+<span id="L424"><a href="#L424"> 424</a>     }</span>
+<span id="L425"><a href="#L425"> 425</a>     return {</span>
+<span id="L426"><a href="#L426"> 426</a>       kind: request.kind === &quot;terminate&quot; ? &quot;terminating&quot; : &quot;killing&quot;,</span>
+<span id="L427"><a href="#L427"> 427</a>       instanceId: this.options.instanceId,</span>
+<span id="L428"><a href="#L428"> 428</a>       processToken: this.options.processToken,</span>
+<span id="L429"><a href="#L429"> 429</a>     };</span>
+<span id="L430"><a href="#L430"> 430</a>   }</span>
+<span id="L431"><a href="#L431"> 431</a> </span>
+<span id="L432"><a href="#L432"> 432</a>   private pong(): DaemonResponse {</span>
+<span id="L433"><a href="#L433"> 433</a>     const queue = this.requestQueue.snapshot;</span>
+<span id="L434"><a href="#L434"> 434</a>     const resources = this.resourceSupervisor.snapshot;</span>
+<span id="L435"><a href="#L435"> 435</a>     const worker = this.workerManager.snapshot;</span>
+<span id="L436"><a href="#L436"> 436</a>     return DaemonActivityProjector.project({</span>
+<span id="L437"><a href="#L437"> 437</a>       nowMonotonicMs: this.clock.monotonicNowMs(),</span>
+<span id="L438"><a href="#L438"> 438</a>       pid: process.pid,</span>
+<span id="L439"><a href="#L439"> 439</a>       processRssBytes: process.memoryUsage().rss,</span>
+<span id="L440"><a href="#L440"> 440</a>       startedAt: this.startedAt,</span>
+<span id="L441"><a href="#L441"> 441</a>       startedMonotonicAt: this.startedMonotonicAt,</span>
+<span id="L442"><a href="#L442"> 442</a>       ...(this.lastNavigationAt === undefined ? {} : { lastNavigationAt: this.lastNavigationAt }),</span>
+<span id="L443"><a href="#L443"> 443</a>       ...(this.lastCompletedMonotonicAt === undefined</span>
+<span id="L444"><a href="#L444"> 444</a>         ? {}</span>
+<span id="L445"><a href="#L445"> 445</a>         : { lastCompletedMonotonicAt: this.lastCompletedMonotonicAt }),</span>
+<span id="L446"><a href="#L446"> 446</a>       productVersion: this.options.symnavVersion,</span>
+<span id="L447"><a href="#L447"> 447</a>       instanceId: this.options.instanceId,</span>
+<span id="L448"><a href="#L448"> 448</a>       hardProcessRssBytes: this.resourcePolicy.hardProcessRssBytes,</span>
+<span id="L449"><a href="#L449"> 449</a>       queue,</span>
+<span id="L450"><a href="#L450"> 450</a>       resources,</span>
+<span id="L451"><a href="#L451"> 451</a>       worker: {</span>
+<span id="L452"><a href="#L452"> 452</a>         generation: worker.generation,</span>
+<span id="L453"><a href="#L453"> 453</a>         ready: worker.ready,</span>
+<span id="L454"><a href="#L454"> 454</a>         fileCount: worker.fileCount ?? 0,</span>
+<span id="L455"><a href="#L455"> 455</a>       },</span>
+<span id="L456"><a href="#L456"> 456</a>     }).pong;</span>
+<span id="L457"><a href="#L457"> 457</a>   }</span>
+<span id="L458"><a href="#L458"> 458</a> </span>
+<span id="L459"><a href="#L459"> 459</a>   private async acceptExecution(</span>
+<span id="L460"><a href="#L460"> 460</a>     request: Extract&lt;DaemonRequest, { kind: &quot;execute&quot; }&gt;,</span>
+<span id="L461"><a href="#L461"> 461</a>     send: DaemonServerSend,</span>
+<span id="L462"><a href="#L462"> 462</a>   ): Promise&lt;DaemonResponse | void&gt; {</span>
+<span id="L463"><a href="#L463"> 463</a>     const decision = this.decideAdmission(request);</span>
+<span id="L464"><a href="#L464"> 464</a>     if (decision.kind === &quot;disconnect&quot;) {</span>
+<span id="L465"><a href="#L465"> 465</a>       throw new Error(&quot;Daemon execution request does not match process instance&quot;);</span>
+<span id="L466"><a href="#L466"> 466</a>     }</span>
+<span id="L467"><a href="#L467"> 467</a>     if (decision.kind === &quot;reject&quot;) return this.rejection(request, decision.code);</span>
+<span id="L468"><a href="#L468"> 468</a>     const existing = this.acceptedRequests.entryFor(request.requestId);</span>
+<span id="L469"><a href="#L469"> 469</a>     const entry = this.acceptedRequests.accept(</span>
+<span id="L470"><a href="#L470"> 470</a>       request.requestId,</span>
+<span id="L471"><a href="#L471"> 471</a>       request.commandName,</span>
+<span id="L472"><a href="#L472"> 472</a>       request.request,</span>
+<span id="L473"><a href="#L473"> 473</a>     );</span>
+<span id="L474"><a href="#L474"> 474</a>     if (entry.state.state === &quot;queued&quot;) {</span>
+<span id="L475"><a href="#L475"> 475</a>       this.acceptances.set(request.requestId, {</span>
+<span id="L476"><a href="#L476"> 476</a>         acceptedAt: entry.state.acceptedAt,</span>
+<span id="L477"><a href="#L477"> 477</a>         queuePosition: entry.state.queuePosition,</span>
+<span id="L478"><a href="#L478"> 478</a>       });</span>
+<span id="L479"><a href="#L479"> 479</a>     }</span>
+<span id="L480"><a href="#L480"> 480</a>     const acceptance = this.acceptances.get(request.requestId);</span>
+<span id="L481"><a href="#L481"> 481</a>     if (acceptance === undefined) throw new Error(&quot;Accepted request is missing admission metadata&quot;);</span>
+<span id="L482"><a href="#L482"> 482</a>     if (existing === undefined) {</span>
+<span id="L483"><a href="#L483"> 483</a>       this.lastNavigationAt = this.now();</span>
+<span id="L484"><a href="#L484"> 484</a>       this.lifetime.navigationAccepted();</span>
+<span id="L485"><a href="#L485"> 485</a>       const trace = this.deliverySession.beginAcceptedTrace(</span>
+<span id="L486"><a href="#L486"> 486</a>         request.requestId,</span>
+<span id="L487"><a href="#L487"> 487</a>         request.commandName,</span>
+<span id="L488"><a href="#L488"> 488</a>         entry.state.state === &quot;queued&quot; ? entry.state.queuePosition : acceptance.queuePosition,</span>
+<span id="L489"><a href="#L489"> 489</a>         this.resourceSupervisor.snapshot.generation,</span>
+<span id="L490"><a href="#L490"> 490</a>       );</span>
+<span id="L491"><a href="#L491"> 491</a>       void this.executeAccepted(request, trace);</span>
+<span id="L492"><a href="#L492"> 492</a>     }</span>
+<span id="L493"><a href="#L493"> 493</a>     await this.deliverySession.attach(</span>
+<span id="L494"><a href="#L494"> 494</a>       {</span>
+<span id="L495"><a href="#L495"> 495</a>         requestId: request.requestId,</span>
+<span id="L496"><a href="#L496"> 496</a>         ...acceptance,</span>
+<span id="L497"><a href="#L497"> 497</a>       },</span>
+<span id="L498"><a href="#L498"> 498</a>       send,</span>
+<span id="L499"><a href="#L499"> 499</a>     );</span>
+<span id="L500"><a href="#L500"> 500</a>   }</span>
+<span id="L501"><a href="#L501"> 501</a> </span>
+<span id="L502"><a href="#L502"> 502</a>   private decideAdmission(</span>
+<span id="L503"><a href="#L503"> 503</a>     request: Extract&lt;DaemonRequest, { kind: &quot;execute&quot; }&gt;,</span>
+<span id="L504"><a href="#L504"> 504</a>   ): DaemonAdmissionDecision {</span>
+<span id="L505"><a href="#L505"> 505</a>     const authenticated = request.processToken === this.options.processToken;</span>
+<span id="L506"><a href="#L506"> 506</a>     if (!authenticated) {</span>
+<span id="L507"><a href="#L507"> 507</a>       return this.admissionPolicy.decide({</span>
+<span id="L508"><a href="#L508"> 508</a>         request,</span>
+<span id="L509"><a href="#L509"> 509</a>         authenticated,</span>
+<span id="L510"><a href="#L510"> 510</a>         workerReady: true,</span>
+<span id="L511"><a href="#L511"> 511</a>         resourceAdmissionPaused: false,</span>
+<span id="L512"><a href="#L512"> 512</a>         queueState: &quot;accepting&quot;,</span>
+<span id="L513"><a href="#L513"> 513</a>         compatibility: &quot;unseen&quot;,</span>
+<span id="L514"><a href="#L514"> 514</a>       });</span>
+<span id="L515"><a href="#L515"> 515</a>     }</span>
+<span id="L516"><a href="#L516"> 516</a>     void this.resourceSupervisor.sample(&quot;admission&quot;).catch((error) =&gt; {</span>
+<span id="L517"><a href="#L517"> 517</a>       this.logger.record({</span>
+<span id="L518"><a href="#L518"> 518</a>         kind: &quot;failure&quot;,</span>
+<span id="L519"><a href="#L519"> 519</a>         operation: &quot;resource-sample&quot;,</span>
+<span id="L520"><a href="#L520"> 520</a>         failureCode: &quot;operation-failed&quot;,</span>
+<span id="L521"><a href="#L521"> 521</a>         errorName: DaemonLogger.errorName(error),</span>
+<span id="L522"><a href="#L522"> 522</a>       });</span>
+<span id="L523"><a href="#L523"> 523</a>     });</span>
+<span id="L524"><a href="#L524"> 524</a>     return this.admissionPolicy.decide({</span>
+<span id="L525"><a href="#L525"> 525</a>       request,</span>
+<span id="L526"><a href="#L526"> 526</a>       authenticated,</span>
+<span id="L527"><a href="#L527"> 527</a>       workerReady: this.workerManager.snapshot.ready,</span>
+<span id="L528"><a href="#L528"> 528</a>       resourceAdmissionPaused: this.resourceSupervisor.snapshot.admissionPaused,</span>
+<span id="L529"><a href="#L529"> 529</a>       queueState: this.requestQueue.state,</span>
+<span id="L530"><a href="#L530"> 530</a>       compatibility: this.acceptedRequests.compatibilityFor(</span>
+<span id="L531"><a href="#L531"> 531</a>         request.requestId,</span>
+<span id="L532"><a href="#L532"> 532</a>         request.commandName,</span>
+<span id="L533"><a href="#L533"> 533</a>         request.request,</span>
+<span id="L534"><a href="#L534"> 534</a>       ),</span>
+<span id="L535"><a href="#L535"> 535</a>     });</span>
+<span id="L536"><a href="#L536"> 536</a>   }</span>
+<span id="L537"><a href="#L537"> 537</a> </span>
+<span id="L538"><a href="#L538"> 538</a>   private async executeAccepted(</span>
+<span id="L539"><a href="#L539"> 539</a>     request: Extract&lt;DaemonRequest, { kind: &quot;execute&quot; }&gt;,</span>
+<span id="L540"><a href="#L540"> 540</a>     trace: DaemonOperationTrace,</span>
+<span id="L541"><a href="#L541"> 541</a>   ): Promise&lt;void&gt; {</span>
+<span id="L542"><a href="#L542"> 542</a>     let completion: DaemonCompletionWriter | undefined;</span>
+<span id="L543"><a href="#L543"> 543</a>     try {</span>
+<span id="L544"><a href="#L544"> 544</a>       await this.requestQueue.enqueue(</span>
+<span id="L545"><a href="#L545"> 545</a>         {</span>
+<span id="L546"><a href="#L546"> 546</a>           requestId: request.requestId,</span>
+<span id="L547"><a href="#L547"> 547</a>           command: request.commandName,</span>
+<span id="L548"><a href="#L548"> 548</a>           acceptedAt: this.clock.monotonicNowMs(),</span>
+<span id="L549"><a href="#L549"> 549</a>         },</span>
+<span id="L550"><a href="#L550"> 550</a>         async () =&gt; {</span>
+<span id="L551"><a href="#L551"> 551</a>           trace.turnStarted(this.resourceSupervisor.snapshot.generation);</span>
+<span id="L552"><a href="#L552"> 552</a>           try {</span>
+<span id="L553"><a href="#L553"> 553</a>             completion = await this.deliverySession.createCompletion(request.requestId);</span>
+<span id="L554"><a href="#L554"> 554</a>             this.acceptedRequests.markRunning(request.requestId, this.now());</span>
+<span id="L555"><a href="#L555"> 555</a>             const response = await this.workerManager.execute(</span>
+<span id="L556"><a href="#L556"> 556</a>               request.requestId,</span>
+<span id="L557"><a href="#L557"> 557</a>               { commandName: request.commandName, request: request.request },</span>
+<span id="L558"><a href="#L558"> 558</a>               completion,</span>
+<span id="L559"><a href="#L559"> 559</a>             );</span>
+<span id="L560"><a href="#L560"> 560</a>             this.resourceSupervisor.workerHeapReported(</span>
+<span id="L561"><a href="#L561"> 561</a>               response.generation,</span>
+<span id="L562"><a href="#L562"> 562</a>               response.resources.workerHeapUsedBytes,</span>
+<span id="L563"><a href="#L563"> 563</a>               response.resources.workerHeapLimitBytes,</span>
+<span id="L564"><a href="#L564"> 564</a>               response.resources.peakWorkerHeapUsedBytes,</span>
+<span id="L565"><a href="#L565"> 565</a>             );</span>
+<span id="L566"><a href="#L566"> 566</a>             trace.workerCompleted(</span>
+<span id="L567"><a href="#L567"> 567</a>               {</span>
+<span id="L568"><a href="#L568"> 568</a>                 freshnessMs: response.durations.freshnessMs,</span>
+<span id="L569"><a href="#L569"> 569</a>                 navigationMs: response.durations.navigationMs,</span>
+<span id="L570"><a href="#L570"> 570</a>                 renderMs: response.durations.renderMs,</span>
+<span id="L571"><a href="#L571"> 571</a>                 workerOutputMs: response.durations.outputMs,</span>
+<span id="L572"><a href="#L572"> 572</a>               },</span>
+<span id="L573"><a href="#L573"> 573</a>               response.refresh,</span>
+<span id="L574"><a href="#L574"> 574</a>             );</span>
+<span id="L575"><a href="#L575"> 575</a>             await completion.finish(response.result.exitCode);</span>
+<span id="L576"><a href="#L576"> 576</a>             const workspaceDeleted = await this.recordCompletion();</span>
+<span id="L577"><a href="#L577"> 577</a>             trace.executionTerminated(&quot;completed&quot;);</span>
+<span id="L578"><a href="#L578"> 578</a>             this.acceptedRequests.complete(request.requestId, request.requestId, this.now());</span>
+<span id="L579"><a href="#L579"> 579</a>             await this.deliverySession.trackedCompletion(request.requestId);</span>
+<span id="L580"><a href="#L580"> 580</a>             if (workspaceDeleted) {</span>
+<span id="L581"><a href="#L581"> 581</a>               await this.deliverySession.waitForCompletionAcknowledgements();</span>
+<span id="L582"><a href="#L582"> 582</a>               setTimeout(() =&gt; void this.shutdown(&quot;workspace-deleted&quot;, true), 0);</span>
+<span id="L583"><a href="#L583"> 583</a>             }</span>
+<span id="L584"><a href="#L584"> 584</a>           } finally {</span>
+<span id="L585"><a href="#L585"> 585</a>             this.scheduleTurnCompleteResourceSample();</span>
+<span id="L586"><a href="#L586"> 586</a>           }</span>
+<span id="L587"><a href="#L587"> 587</a>         },</span>
+<span id="L588"><a href="#L588"> 588</a>       );</span>
+<span id="L589"><a href="#L589"> 589</a>     } catch (error) {</span>
+<span id="L590"><a href="#L590"> 590</a>       trace.executionTerminated(&quot;failed&quot;);</span>
+<span id="L591"><a href="#L591"> 591</a>       this.logger.record({</span>
+<span id="L592"><a href="#L592"> 592</a>         kind: &quot;failure&quot;,</span>
+<span id="L593"><a href="#L593"> 593</a>         operation: &quot;request&quot;,</span>
+<span id="L594"><a href="#L594"> 594</a>         failureCode: &quot;internal&quot;,</span>
+<span id="L595"><a href="#L595"> 595</a>         errorName: DaemonLogger.errorName(error),</span>
+<span id="L596"><a href="#L596"> 596</a>       });</span>
+<span id="L597"><a href="#L597"> 597</a>       const code = DaemonExecutionFailures.classify({</span>
+<span id="L598"><a href="#L598"> 598</a>         resourceInterrupted: this.resourceInterruptedRequests.delete(request.requestId),</span>
+<span id="L599"><a href="#L599"> 599</a>         responseCapacityExceeded: error instanceof CompletionSpoolCapacityError,</span>
+<span id="L600"><a href="#L600"> 600</a>         workerExited: error instanceof DaemonNavigationWorkerExitedError,</span>
+<span id="L601"><a href="#L601"> 601</a>         ...(this.shutdownFailureCode === undefined</span>
+<span id="L602"><a href="#L602"> 602</a>           ? {}</span>
+<span id="L603"><a href="#L603"> 603</a>           : { shutdownFailureCode: this.shutdownFailureCode }),</span>
+<span id="L604"><a href="#L604"> 604</a>         shutdownStarted: this.shutdownStarted,</span>
+<span id="L605"><a href="#L605"> 605</a>       });</span>
+<span id="L606"><a href="#L606"> 606</a>       await completion?.dispose().catch((cleanupError) =&gt; {</span>
+<span id="L607"><a href="#L607"> 607</a>         this.logger.record({</span>
+<span id="L608"><a href="#L608"> 608</a>           kind: &quot;failure&quot;,</span>
+<span id="L609"><a href="#L609"> 609</a>           operation: &quot;completion-cleanup&quot;,</span>
+<span id="L610"><a href="#L610"> 610</a>           failureCode: &quot;internal&quot;,</span>
+<span id="L611"><a href="#L611"> 611</a>           errorName: DaemonLogger.errorName(cleanupError),</span>
+<span id="L612"><a href="#L612"> 612</a>         });</span>
+<span id="L613"><a href="#L613"> 613</a>       });</span>
+<span id="L614"><a href="#L614"> 614</a>       this.acceptedRequests.fail(request.requestId, code, this.now());</span>
+<span id="L615"><a href="#L615"> 615</a>     } finally {</span>
+<span id="L616"><a href="#L616"> 616</a>       if (this.requestQueue.isIdle) this.lifetime.queueBecameIdle();</span>
+<span id="L617"><a href="#L617"> 617</a>     }</span>
+<span id="L618"><a href="#L618"> 618</a>   }</span>
+<span id="L619"><a href="#L619"> 619</a> </span>
+<span id="L620"><a href="#L620"> 620</a>   private scheduleTurnCompleteResourceSample(): void {</span>
+<span id="L621"><a href="#L621"> 621</a>     void this.requestQueue</span>
+<span id="L622"><a href="#L622"> 622</a>       .scheduleAtTurnBoundary(() =&gt; this.resourceSupervisor.sampleAtTurnBoundary())</span>
+<span id="L623"><a href="#L623"> 623</a>       .catch((error) =&gt; {</span>
+<span id="L624"><a href="#L624"> 624</a>         this.logger.record({</span>
+<span id="L625"><a href="#L625"> 625</a>           kind: &quot;failure&quot;,</span>
+<span id="L626"><a href="#L626"> 626</a>           operation: &quot;resource-sample&quot;,</span>
+<span id="L627"><a href="#L627"> 627</a>           failureCode: &quot;operation-failed&quot;,</span>
+<span id="L628"><a href="#L628"> 628</a>           errorName: DaemonLogger.errorName(error),</span>
+<span id="L629"><a href="#L629"> 629</a>         });</span>
+<span id="L630"><a href="#L630"> 630</a>       })</span>
+<span id="L631"><a href="#L631"> 631</a>       .finally(() =&gt; {</span>
+<span id="L632"><a href="#L632"> 632</a>         if (this.requestQueue.isIdle) this.lifetime.queueBecameIdle();</span>
+<span id="L633"><a href="#L633"> 633</a>       });</span>
+<span id="L634"><a href="#L634"> 634</a>   }</span>
+<span id="L635"><a href="#L635"> 635</a> </span>
+<span id="L636"><a href="#L636"> 636</a>   private async recordCompletion(): Promise&lt;boolean&gt; {</span>
+<span id="L637"><a href="#L637"> 637</a>     this.lastCompletedMonotonicAt = this.clock.monotonicNowMs();</span>
+<span id="L638"><a href="#L638"> 638</a>     const exists = this.options.dependencies</span>
+<span id="L639"><a href="#L639"> 639</a>       ? await this.options.dependencies.fs.exists(this.options.identity.workspaceRoot)</span>
+<span id="L640"><a href="#L640"> 640</a>       : await WorkspaceDaemon.pathExists(this.options.identity.workspaceRoot);</span>
+<span id="L641"><a href="#L641"> 641</a>     return !exists;</span>
+<span id="L642"><a href="#L642"> 642</a>   }</span>
+<span id="L643"><a href="#L643"> 643</a> </span>
+<span id="L644"><a href="#L644"> 644</a>   private static async pathExists(path: string): Promise&lt;boolean&gt; {</span>
+<span id="L645"><a href="#L645"> 645</a>     try {</span>
+<span id="L646"><a href="#L646"> 646</a>       await access(path);</span>
+<span id="L647"><a href="#L647"> 647</a>       return true;</span>
+<span id="L648"><a href="#L648"> 648</a>     } catch {</span>
+<span id="L649"><a href="#L649"> 649</a>       return false;</span>
+<span id="L650"><a href="#L650"> 650</a>     }</span>
+<span id="L651"><a href="#L651"> 651</a>   }</span>
+<span id="L652"><a href="#L652"> 652</a> </span>
+<span id="L653"><a href="#L653"> 653</a>   private rejection(</span>
+<span id="L654"><a href="#L654"> 654</a>     request: Extract&lt;DaemonRequest, { kind: &quot;execute&quot; }&gt;,</span>
+<span id="L655"><a href="#L655"> 655</a>     code: DaemonExecuteRejectionCode,</span>
+<span id="L656"><a href="#L656"> 656</a>   ): DaemonExecutionServerFrame {</span>
+<span id="L657"><a href="#L657"> 657</a>     return DaemonAdmissionRejections.frame(code, {</span>
+<span id="L658"><a href="#L658"> 658</a>       instanceId: this.options.instanceId,</span>
+<span id="L659"><a href="#L659"> 659</a>       processToken: this.options.processToken,</span>
+<span id="L660"><a href="#L660"> 660</a>       requestId: request.requestId,</span>
+<span id="L661"><a href="#L661"> 661</a>     });</span>
+<span id="L662"><a href="#L662"> 662</a>   }</span>
+<span id="L663"><a href="#L663"> 663</a> </span>
+<span id="L664"><a href="#L664"> 664</a>   private async drainAndShutdown(reason: &quot;idle&quot;): Promise&lt;void&gt; {</span>
+<span id="L665"><a href="#L665"> 665</a>     await this.requestQueue.drain();</span>
+<span id="L666"><a href="#L666"> 666</a>     await this.shutdown(reason);</span>
+<span id="L667"><a href="#L667"> 667</a>   }</span>
+<span id="L668"><a href="#L668"> 668</a> </span>
+<span id="L669"><a href="#L669"> 669</a>   private beginGracefulShutdown(): void {</span>
+<span id="L670"><a href="#L670"> 670</a>     this.shutdownFailureCode ??= &quot;stopping&quot;;</span>
+<span id="L671"><a href="#L671"> 671</a>     this.resourceSupervisor.stop();</span>
+<span id="L672"><a href="#L672"> 672</a>   }</span>
+<span id="L673"><a href="#L673"> 673</a> </span>
+<span id="L674"><a href="#L674"> 674</a>   private async initiateResourceDrain(): Promise&lt;void&gt; {</span>
+<span id="L675"><a href="#L675"> 675</a>     await this.deliverySession.waitForCompletionAcknowledgements();</span>
+<span id="L676"><a href="#L676"> 676</a>     void this.shutdown(&quot;resource&quot;, true).catch((error) =&gt; {</span>
+<span id="L677"><a href="#L677"> 677</a>       this.logger.record({</span>
+<span id="L678"><a href="#L678"> 678</a>         kind: &quot;failure&quot;,</span>
+<span id="L679"><a href="#L679"> 679</a>         operation: &quot;resource-drain&quot;,</span>
+<span id="L680"><a href="#L680"> 680</a>         failureCode: &quot;controlled-resource&quot;,</span>
+<span id="L681"><a href="#L681"> 681</a>         errorName: DaemonLogger.errorName(error),</span>
+<span id="L682"><a href="#L682"> 682</a>       });</span>
+<span id="L683"><a href="#L683"> 683</a>     });</span>
+<span id="L684"><a href="#L684"> 684</a>   }</span>
+<span id="L685"><a href="#L685"> 685</a> </span>
+<span id="L686"><a href="#L686"> 686</a>   private async shutdown(</span>
+<span id="L687"><a href="#L687"> 687</a>     reason: &quot;graceful&quot; | &quot;idle&quot; | &quot;resource&quot; | &quot;workspace-deleted&quot;,</span>
+<span id="L688"><a href="#L688"> 688</a>     force = false,</span>
+<span id="L689"><a href="#L689"> 689</a>   ): Promise&lt;void&gt; {</span>
+<span id="L690"><a href="#L690"> 690</a>     this.shutdownFailureCode ??= reason === &quot;resource&quot; ? &quot;controlled-resource&quot; : &quot;stopping&quot;;</span>
+<span id="L691"><a href="#L691"> 691</a>     if (force) this.forceWorkerShutdown();</span>
+<span id="L692"><a href="#L692"> 692</a>     if (this.shutdownOperation !== undefined) return this.shutdownOperation;</span>
+<span id="L693"><a href="#L693"> 693</a>     this.shutdownStarted = true;</span>
+<span id="L694"><a href="#L694"> 694</a>     this.shutdownOperation = this.completeShutdown(reason, force);</span>
+<span id="L695"><a href="#L695"> 695</a>     return this.shutdownOperation;</span>
+<span id="L696"><a href="#L696"> 696</a>   }</span>
+<span id="L697"><a href="#L697"> 697</a> </span>
+<span id="L698"><a href="#L698"> 698</a>   private async completeShutdown(</span>
+<span id="L699"><a href="#L699"> 699</a>     reason: &quot;graceful&quot; | &quot;idle&quot; | &quot;resource&quot; | &quot;workspace-deleted&quot;,</span>
+<span id="L700"><a href="#L700"> 700</a>     force: boolean,</span>
+<span id="L701"><a href="#L701"> 701</a>   ): Promise&lt;void&gt; {</span>
+<span id="L702"><a href="#L702"> 702</a>     this.lifetime.stop();</span>
+<span id="L703"><a href="#L703"> 703</a>     this.resourceSupervisor.stop();</span>
+<span id="L704"><a href="#L704"> 704</a>     if (force) await this.forceWorkerShutdown();</span>
+<span id="L705"><a href="#L705"> 705</a>     else await this.gracefullyShutdownWorker();</span>
+<span id="L706"><a href="#L706"> 706</a>     this.operationObserver.shutdown({ kind: &quot;shutdown&quot;, reason, force });</span>
+<span id="L707"><a href="#L707"> 707</a>     this.logger.record({ kind: &quot;stop&quot;, reason });</span>
+<span id="L708"><a href="#L708"> 708</a>     try {</span>
+<span id="L709"><a href="#L709"> 709</a>       await this.server?.close();</span>
+<span id="L710"><a href="#L710"> 710</a>     } catch (error) {</span>
+<span id="L711"><a href="#L711"> 711</a>       this.logger.record({</span>
+<span id="L712"><a href="#L712"> 712</a>         kind: &quot;failure&quot;,</span>
+<span id="L713"><a href="#L713"> 713</a>         operation: &quot;transport-close&quot;,</span>
+<span id="L714"><a href="#L714"> 714</a>         failureCode: &quot;operation-failed&quot;,</span>
+<span id="L715"><a href="#L715"> 715</a>         errorName: DaemonLogger.errorName(error),</span>
+<span id="L716"><a href="#L716"> 716</a>       });</span>
+<span id="L717"><a href="#L717"> 717</a>     }</span>
+<span id="L718"><a href="#L718"> 718</a>     await this.deliverySession.cleanupInstance();</span>
+<span id="L719"><a href="#L719"> 719</a>     this.deliverySession.completeRetainedTraces();</span>
+<span id="L720"><a href="#L720"> 720</a>     await this.logger.close();</span>
+<span id="L721"><a href="#L721"> 721</a>     this.exit(0);</span>
+<span id="L722"><a href="#L722"> 722</a>   }</span>
+<span id="L723"><a href="#L723"> 723</a> </span>
+<span id="L724"><a href="#L724"> 724</a>   private async gracefullyShutdownWorker(): Promise&lt;void&gt; {</span>
+<span id="L725"><a href="#L725"> 725</a>     await this.requestQueue.drain();</span>
+<span id="L726"><a href="#L726"> 726</a>     const gracefulClose = this.workerManager.close();</span>
+<span id="L727"><a href="#L727"> 727</a>     await Promise.race([gracefulClose, this.forceEscalated.then(() =&gt; this.forceWorkerShutdown())]);</span>
+<span id="L728"><a href="#L728"> 728</a>   }</span>
+<span id="L729"><a href="#L729"> 729</a> </span>
+<span id="L730"><a href="#L730"> 730</a>   private forceWorkerShutdown(): Promise&lt;void&gt; {</span>
+<span id="L731"><a href="#L731"> 731</a>     if (this.forcedWorkerShutdown !== undefined) return this.forcedWorkerShutdown;</span>
+<span id="L732"><a href="#L732"> 732</a>     this.requestQueue.close();</span>
+<span id="L733"><a href="#L733"> 733</a>     this.forcedWorkerShutdown = this.workerManager</span>
+<span id="L734"><a href="#L734"> 734</a>       .terminate()</span>
+<span id="L735"><a href="#L735"> 735</a>       .then(() =&gt; this.requestQueue.drain());</span>
+<span id="L736"><a href="#L736"> 736</a>     this.resolveForceEscalated();</span>
+<span id="L737"><a href="#L737"> 737</a>     return this.forcedWorkerShutdown;</span>
+<span id="L738"><a href="#L738"> 738</a>   }</span>
+<span id="L739"><a href="#L739"> 739</a> </span>
+<span id="L740"><a href="#L740"> 740</a>   private pause(): Promise&lt;void&gt; {</span>
+<span id="L741"><a href="#L741"> 741</a>     return new Promise((resolve) =&gt;</span>
+<span id="L742"><a href="#L742"> 742</a>       setTimeout(resolve, this.policy.values.startup.authorizationPollIntervalMs),</span>
+<span id="L743"><a href="#L743"> 743</a>     );</span>
+<span id="L744"><a href="#L744"> 744</a>   }</span>
+<span id="L745"><a href="#L745"> 745</a> </span>
+<span id="L746"><a href="#L746"> 746</a>   private markActiveResourceInterruption(cause: DaemonWorkerReplacementCause): void {</span>
+<span id="L747"><a href="#L747"> 747</a>     if (cause === &quot;worker-exit&quot;) return;</span>
+<span id="L748"><a href="#L748"> 748</a>     const activeRequest = this.requestQueue.snapshot.active;</span>
+<span id="L749"><a href="#L749"> 749</a>     if (activeRequest !== undefined) this.resourceInterruptedRequests.add(activeRequest.requestId);</span>
+<span id="L750"><a href="#L750"> 750</a>   }</span>
+<span id="L751"><a href="#L751"> 751</a> </span>
+<span id="L752"><a href="#L752"> 752</a>   private async recoverWorkerExit(</span>
+<span id="L753"><a href="#L753"> 753</a>     workerExit: import(&quot;./daemon-navigation-worker.js&quot;).DaemonNavigationWorkerExit,</span>
+<span id="L754"><a href="#L754"> 754</a>   ): Promise&lt;void&gt; {</span>
+<span id="L755"><a href="#L755"> 755</a>     if (this.shutdownStarted) return;</span>
+<span id="L756"><a href="#L756"> 756</a>     this.logger.record({</span>
+<span id="L757"><a href="#L757"> 757</a>       kind: &quot;failure&quot;,</span>
+<span id="L758"><a href="#L758"> 758</a>       operation: &quot;worker-exit&quot;,</span>
+<span id="L759"><a href="#L759"> 759</a>       failureCode: &quot;worker-exit&quot;,</span>
+<span id="L760"><a href="#L760"> 760</a>       errorName: DaemonLogger.errorName(</span>
+<span id="L761"><a href="#L761"> 761</a>         workerExit.errorName === undefined ? undefined : { name: workerExit.errorName },</span>
+<span id="L762"><a href="#L762"> 762</a>       ),</span>
+<span id="L763"><a href="#L763"> 763</a>     });</span>
+<span id="L764"><a href="#L764"> 764</a>     try {</span>
+<span id="L765"><a href="#L765"> 765</a>       await this.resourceSupervisor.recover(workerExit);</span>
+<span id="L766"><a href="#L766"> 766</a>     } catch (error) {</span>
+<span id="L767"><a href="#L767"> 767</a>       this.logger.record({</span>
+<span id="L768"><a href="#L768"> 768</a>         kind: &quot;failure&quot;,</span>
+<span id="L769"><a href="#L769"> 769</a>         operation: &quot;worker-replacement&quot;,</span>
+<span id="L770"><a href="#L770"> 770</a>         failureCode: &quot;controlled-resource&quot;,</span>
+<span id="L771"><a href="#L771"> 771</a>         errorName: DaemonLogger.errorName(error),</span>
+<span id="L772"><a href="#L772"> 772</a>       });</span>
+<span id="L773"><a href="#L773"> 773</a>       throw error;</span>
+<span id="L774"><a href="#L774"> 774</a>     }</span>
+<span id="L775"><a href="#L775"> 775</a>   }</span>
+<span id="L776"><a href="#L776"> 776</a> }</span></pre>
