@@ -156,3 +156,6 @@ BUILD OK stack-head
 - 2026-09-13 04:12:35 +03: START 22-game-any attempt 1 via claude-opus, pid 86531
 - 2026-09-13 04:14:36 +03: MONITOR OK supervisor=1153, finished=17, running=5, queued=20, dirty-worktrees=0, missing-readmes=0, free-disk=32.9GiB
 - 2026-09-13 04:24:45 +03: FINISH 18-negative-space via codex, exit 0, README present
+- 2026-09-13 04:24:45 +03: COMMIT OK 18-negative-space: [main d9b58d1] Add experiment 18 negative-space
+- 2026-09-13 04:24:45 +03: START 23-zoom-canvas attempt 1 via codex, pid 89480
+- 2026-09-13 04:28:26 +03: FINISH 19-type-level-only via codex, exit 0, README present
