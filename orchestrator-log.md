@@ -285,3 +285,7 @@ BUILD OK stack-head
 - 2026-09-13 06:15:35 +03: MONITOR OK supervisor=1153, finished=35, running=5, queued=6, dirty-worktrees=0, missing-readmes=0, free-disk=32.3GiB
 - 2026-09-13 06:20:37 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log
 - 2026-09-13 06:25:27 +03: FINISH 37-be-weird-b via codex, exit 0, README present
+- 2026-09-13 06:25:27 +03: COMMIT OK 37-be-weird-b: [main 367c853] Add experiment 37 be-weird-b
+- 2026-09-13 06:25:27 +03: START 41-critique-refresh-10 attempt 1 via codex, pid 54905
+- 2026-09-13 06:25:40 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log
+- 2026-09-13 06:29:27 +03: FINISH 36-be-weird-a via codex, exit 0, README present
