@@ -1153,3 +1153,14 @@ no changes added to commit (use "git add" and/or "git commit -a")
 - 2026-09-13 14:01:17 +03: PUBLISH OK: To https://github.com/mohasarc/rich-review-v2.git
    8f2d4d8..6df8e6b  main -> main
 - 2026-09-13 14:05:32 +03: FINISH 73-daemon-weather-map via codex, exit 0, README present
+- 2026-09-13 14:05:32 +03: COMMIT OK 73-daemon-weather-map: [main d2ecb6b] Add experiment 73 daemon-weather-map
+- 2026-09-13 14:05:32 +03: START 76-scientific-specimen-atlas attempt 1 via claude-opus, pid 97344
+- 2026-09-13 14:05:42 +03: README MISSING 76-scientific-specimen-atlas after worker exit 1
+- 2026-09-13 14:05:42 +03: REQUEUE 76-scientific-specimen-atlas after attempt 1: worker exited 1 without README
+- 2026-09-13 14:05:43 +03: START 76-scientific-specimen-atlas attempt 2 via claude-opus, pid 97958
+- 2026-09-13 14:05:53 +03: README MISSING 76-scientific-specimen-atlas after worker exit 1
+- 2026-09-13 14:05:53 +03: REQUEUE 76-scientific-specimen-atlas after attempt 2: worker exited 1 without README
+- 2026-09-13 14:05:53 +03: START 76-scientific-specimen-atlas attempt 3 via codex, pid 98554
+- 2026-09-13 14:06:34 +03: PUBLISH OK: To https://github.com/mohasarc/rich-review-v2.git
+   6df8e6b..d2ecb6b  main -> main
+- 2026-09-13 14:09:43 +03: FINISH 71-pixel-city-stack via codex, exit 0, README present
