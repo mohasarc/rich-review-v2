@@ -289,3 +289,16 @@ BUILD OK stack-head
 - 2026-09-13 06:25:27 +03: START 41-critique-refresh-10 attempt 1 via codex, pid 54905
 - 2026-09-13 06:25:40 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log
 - 2026-09-13 06:29:27 +03: FINISH 36-be-weird-a via codex, exit 0, README present
+- 2026-09-13 06:29:27 +03: COMMIT OK 36-be-weird-a: [main 28292f7] Add experiment 36 be-weird-a
+- 2026-09-13 06:29:27 +03: START 42-fresh-reader-refresh-10 attempt 1 via claude-opus, pid 56867
+- 2026-09-13 06:29:37 +03: README MISSING 42-fresh-reader-refresh-10 after worker exit 1
+- 2026-09-13 06:29:37 +03: REQUEUE 42-fresh-reader-refresh-10 after attempt 1: worker exited 1 without README
+- 2026-09-13 06:29:37 +03: START 42-fresh-reader-refresh-10 attempt 2 via claude-opus, pid 57004
+- 2026-09-13 06:29:47 +03: README MISSING 42-fresh-reader-refresh-10 after worker exit 1
+- 2026-09-13 06:29:47 +03: REQUEUE 42-fresh-reader-refresh-10 after attempt 2: worker exited 1 without README
+- 2026-09-13 06:29:47 +03: START 42-fresh-reader-refresh-10 attempt 3 via codex, pid 57141
+- 2026-09-13 06:30:42 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log
+- 2026-09-13 06:30:42 +03: MONITOR OK supervisor=1153, finished=37, running=5, queued=4, dirty-worktrees=0, missing-readmes=0, free-disk=32.1GiB
+- 2026-09-13 06:35:45 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log
+- 2026-09-13 06:40:47 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/38-critique/worker-attempt-3.log, experiments/39-fresh-reader-check/worker-attempt-1.log, experiments/41-critique-refresh-10/worker-attempt-1.log, experiments/42-fresh-reader-refresh-10/worker-attempt-3.log
+- 2026-09-13 06:41:08 +03: FINISH 38-critique via codex, exit 0, README present
