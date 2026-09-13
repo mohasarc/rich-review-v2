@@ -1,0 +1,540 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>X6 — pinned evidence</title>
+<style>body{background:#faf9f3;color:#182f36;font:16px system-ui;margin:3rem auto;max-width:1100px;padding:0 20px}a{color:#056b73}pre{overflow:auto;background:#eef0e9;padding:1rem;line-height:1.5;font-size:12px}pre span{display:block}pre a{text-decoration:none}h2{margin-top:3rem}</style>
+<a href="../index.html#atlas">← Return to the open briefing</a><h1>X6 · pinned evidence</h1>
+<p>main <code>b6801ebdd2421d0ca2e4bdd61ec0f04c24ddd73e</code> → tip <code>d07002357d3e9596bfaae910a1ac63b77981620b</code>. These are source snapshots, not a test run.</p>
+<h2>Tip · plans/005/daemon-architecture-functional-spec.md</h2><pre><span id="L1"><a href="#L1">   1</a> # Symnav Daemon Architecture Functional Spec</span>
+<span id="L2"><a href="#L2">   2</a> </span>
+<span id="L3"><a href="#L3">   3</a> ## Goal</span>
+<span id="L4"><a href="#L4">   4</a> </span>
+<span id="L5"><a href="#L5">   5</a> Restructure the merged daemon work so each concern lives in the package that owns it: a self-contained daemon package that knows nothing about symbols, a core that knows nothing about daemons, a TypeScript backend that holds only TypeScript-specific logic, and a CLI app that only composes. The daemon&#x27;s user-facing behavior is defined in `daemon-functional-spec.md` and does not change. This is refactor work: not a rewrite of the daemon, not a change to any command&#x27;s output or timing, and not a new language backend. This spec defines product behavior for contributors and hosts of the packages; implementation choices live in the phased plans.</span>
+<span id="L6"><a href="#L6">   6</a> </span>
+<span id="L7"><a href="#L7">   7</a> ## Primary User</span>
+<span id="L8"><a href="#L8">   8</a> </span>
+<span id="L9"><a href="#L9">   9</a> **Contributors** changing symnav. Their default experience: a package boundary tells them where a concern belongs, and the build refuses an import that crosses the locked dependency graph.</span>
+<span id="L10"><a href="#L10">  10</a> </span>
+<span id="L11"><a href="#L11">  11</a> **Hosts** composing the packages into a runnable product. The CLI app is the first host. A future host (editor extension, MCP server, benchmark harness) composes the same packages the same way. No host reaches into another package&#x27;s internals.</span>
+<span id="L12"><a href="#L12">  12</a> </span>
+<span id="L13"><a href="#L13">  13</a> End users of the `symnav` binary observe no change from this work.</span>
+<span id="L14"><a href="#L14">  14</a> </span>
+<span id="L15"><a href="#L15">  15</a> ## Core Guarantees</span>
+<span id="L16"><a href="#L16">  16</a> </span>
+<span id="L17"><a href="#L17">  17</a> ### Behavior is unchanged</span>
+<span id="L18"><a href="#L18">  18</a> </span>
+<span id="L19"><a href="#L19">  19</a> This is a refactor. Every command, daemon lifecycle action, diagnostic record, telemetry event, and failure path behaves as it does today.</span>
+<span id="L20"><a href="#L20">  20</a> </span>
+<span id="L21"><a href="#L21">  21</a> ```text</span>
+<span id="L22"><a href="#L22">  22</a> Given the same workspace, arguments, environment, and daemon state, output bytes,</span>
+<span id="L23"><a href="#L23">  23</a> exit code, execution mode, and lifecycle outcome are identical before and after.</span>
+<span id="L24"><a href="#L24">  24</a> ```</span>
+<span id="L25"><a href="#L25">  25</a> </span>
+<span id="L26"><a href="#L26">  26</a> Correct: a restructuring change passes the existing e2e parity and daemon suites without touching a single expectation. Incorrect: a restructuring change &quot;fixes&quot; a queue, eviction, timeout, or path while moving code.</span>
+<span id="L27"><a href="#L27">  27</a> </span>
+<span id="L28"><a href="#L28">  28</a> There is no &quot;it was obviously a bug&quot; override. Behavior defects found during restructuring are recorded in `daemon-follow-ups-functional-spec.md` and changed separately.</span>
+<span id="L29"><a href="#L29">  29</a> </span>
+<span id="L30"><a href="#L30">  30</a> ### The daemon package depends on nothing internal</span>
+<span id="L31"><a href="#L31">  31</a> </span>
+<span id="L32"><a href="#L32">  32</a> The daemon package imports no other symnav package. It moves bytes for an executor it is handed; it does not know what a symbol, workspace snapshot, or backend is.</span>
+<span id="L33"><a href="#L33">  33</a> </span>
+<span id="L34"><a href="#L34">  34</a> ```text</span>
+<span id="L35"><a href="#L35">  35</a> @symnav/daemon may import: (nothing internal)</span>
+<span id="L36"><a href="#L36">  36</a> ```</span>
+<span id="L37"><a href="#L37">  37</a> </span>
+<span id="L38"><a href="#L38">  38</a> Correct: the daemon logs a worker&#x27;s refresh counters as an opaque diagnostics record supplied by the executor. Incorrect: the daemon&#x27;s protocol names a core type to describe those counters.</span>
+<span id="L39"><a href="#L39">  39</a> </span>
+<span id="L40"><a href="#L40">  40</a> There is no exception for &quot;just a type&quot;.</span>
+<span id="L41"><a href="#L41">  41</a> </span>
+<span id="L42"><a href="#L42">  42</a> ### Core knows nothing about daemons or processes</span>
+<span id="L43"><a href="#L43">  43</a> </span>
+<span id="L44"><a href="#L44">  44</a> Core answers questions about a workspace and its symbols. It has no concept of a background process, socket, registry, warm-up, or route. Retaining state across requests means keeping a core object alive; core does not ask its host how to persist anything.</span>
+<span id="L45"><a href="#L45">  45</a> </span>
+<span id="L46"><a href="#L46">  46</a> ```text</span>
+<span id="L47"><a href="#L47">  47</a> Core has no persistence port, no daemon port, and no notion of warm vs cold.</span>
+<span id="L48"><a href="#L48">  48</a> Warm = the same session object answers again. Cold = a new session object.</span>
+<span id="L49"><a href="#L49">  49</a> ```</span>
+<span id="L50"><a href="#L50">  50</a> </span>
+<span id="L51"><a href="#L51">  51</a> There is no persistence abstraction until a second consumer of one exists.</span>
+<span id="L52"><a href="#L52">  52</a> </span>
+<span id="L53"><a href="#L53">  53</a> ### A language backend holds only language-specific logic</span>
+<span id="L54"><a href="#L54">  54</a> </span>
+<span id="L55"><a href="#L55">  55</a> A concept that another language could share lives in core as a base the backend extends. The backend supplies only what depends on the language&#x27;s toolchain.</span>
+<span id="L56"><a href="#L56">  56</a> </span>
+<span id="L57"><a href="#L57">  57</a> ```text</span>
+<span id="L58"><a href="#L58">  58</a> Shared in core: file revision tracking, prepared-file index, declarations-by-identity,</span>
+<span id="L59"><a href="#L59">  59</a> transactional index publication, project-membership graph with input invalidation,</span>
+<span id="L60"><a href="#L60">  60</a> turn-scoped query cache lifecycle.</span>
+<span id="L61"><a href="#L61">  61</a> TypeScript-only: extraction from TypeScript syntax trees, tsconfig parsing (extends,</span>
+<span id="L62"><a href="#L62">  62</a> references, path aliases, include/exclude), program and language-service creation,</span>
+<span id="L63"><a href="#L63">  63</a> semantic query bodies.</span>
+<span id="L64"><a href="#L64">  64</a> ```</span>
+<span id="L65"><a href="#L65">  65</a> </span>
+<span id="L66"><a href="#L66">  66</a> ### The CLI app is composition only</span>
+<span id="L67"><a href="#L67">  67</a> </span>
+<span id="L68"><a href="#L68">  68</a> `apps/cli` parses command-line syntax, resolves environment (state directory, daemon enabled), creates concrete dependencies, wires packages together, and prints. It holds no daemon policy, no workspace policy, and no navigation logic.</span>
+<span id="L69"><a href="#L69">  69</a> </span>
+<span id="L70"><a href="#L70">  70</a> ```text</span>
+<span id="L71"><a href="#L71">  71</a> A decision about routing, admission, ownership, delivery, memory, or lifetime that</span>
+<span id="L72"><a href="#L72">  72</a> lives in apps/cli is a defect.</span>
+<span id="L73"><a href="#L73">  73</a> ```</span>
+<span id="L74"><a href="#L74">  74</a> </span>
+<span id="L75"><a href="#L75">  75</a> ### Every threshold has one owner and a recorded reason</span>
+<span id="L76"><a href="#L76">  76</a> </span>
+<span id="L77"><a href="#L77">  77</a> Numeric limits (memory caps, spool caps, deadlines, idle timeout, probe timeout, trace retention, replacement circuit, reattachment attempts) live in one policy object inside the daemon package, each with a stated reason in a policy record under `plans/`. Tests override the policy object; users cannot.</span>
+<span id="L78"><a href="#L78">  78</a> </span>
+<span id="L79"><a href="#L79">  79</a> ```text</span>
+<span id="L80"><a href="#L80">  80</a> No CLI flag, environment variable, or config file tunes a daemon threshold.</span>
+<span id="L81"><a href="#L81">  81</a> ```</span>
+<span id="L82"><a href="#L82">  82</a> </span>
+<span id="L83"><a href="#L83">  83</a> This restates the no-tuning rule from `daemon-functional-spec.md`; it is not relaxed here.</span>
+<span id="L84"><a href="#L84">  84</a> </span>
+<span id="L85"><a href="#L85">  85</a> ## Scope</span>
+<span id="L86"><a href="#L86">  86</a> </span>
+<span id="L87"><a href="#L87">  87</a> ### Included</span>
+<span id="L88"><a href="#L88">  88</a> </span>
+<span id="L89"><a href="#L89">  89</a> - New `@symnav/daemon` package owning entry points, process launch, election, registry, transport, worker threads, admission, queueing, delivery, spooling, resource supervision, lifetime, diagnostics, and its own clock.</span>
+<span id="L90"><a href="#L90">  90</a> - Executor contract defined by the daemon package; CLI implements it.</span>
+<span id="L91"><a href="#L91">  91</a> - Executor reaches the daemon&#x27;s worker as an injected module location, dynamically loaded.</span>
+<span id="L92"><a href="#L92">  92</a> - CLI keeps argv classification and hands the daemon client a workspace root plus argv.</span>
+<span id="L93"><a href="#L93">  93</a> - Core `WorkspaceSession` replacing the CLI&#x27;s request-scope factory.</span>
+<span id="L94"><a href="#L94">  94</a> - Core revisioned-backend base, project-graph base, turn-scoped cache; TypeScript backend extends them. `WorkspaceSourceCache` moves to core.</span>
+<span id="L95"><a href="#L95">  95</a> - State-directory resolution moves from telemetry to the CLI; telemetry and daemon receive a path.</span>
+<span id="L96"><a href="#L96">  96</a> - Daemon lifecycle rendering moves to `@symnav/renderer`.</span>
+<span id="L97"><a href="#L97">  97</a> - Admission and client routing restructured as ordered guard lists with one closed rejection vocabulary.</span>
+<span id="L98"><a href="#L98">  98</a> - `WorkspaceDaemon` split into process coordinator, accepted-execution session, delivery session, worker-generation manager, activity projector.</span>
+<span id="L99"><a href="#L99">  99</a> - `LocalDaemonTransport` split into codec/validator, lifecycle client, execution client, result receiver, socket client, socket server.</span>
+<span id="L100"><a href="#L100"> 100</a> - One owner each for command-name vocabulary, lock-ownership check, retry-safety decision, and `DaemonExecutionFailureCode` (worker variant renamed).</span>
+<span id="L101"><a href="#L101"> 101</a> - Dependency table, ESLint boundaries, project references, meta-tests, `CLAUDE.md`, and `symnav-stages.md` updated together with the package introduction. Telemetry added to the table.</span>
+<span id="L102"><a href="#L102"> 102</a> </span>
+<span id="L103"><a href="#L103"> 103</a> ### Excluded</span>
+<span id="L104"><a href="#L104"> 104</a> </span>
+<span id="L105"><a href="#L105"> 105</a> - Any change to navigation command output, exit codes, or `daemon start|status|stop` output.</span>
+<span id="L106"><a href="#L106"> 106</a> - Renaming `@symnav/renderer`. Revisit when a second output family exists.</span>
+<span id="L107"><a href="#L107"> 107</a> - A persistence port in core or an on-disk index for cold runs.</span>
+<span id="L108"><a href="#L108"> 108</a> - New CLI flags or environment variables.</span>
+<span id="L109"><a href="#L109"> 109</a> - A second language backend.</span>
+<span id="L110"><a href="#L110"> 110</a> - Any restructuring that changes an e2e parity or daemon suite expectation.</span>
+<span id="L111"><a href="#L111"> 111</a> - Behavior changes surfaced by the reviews. Specified in `daemon-follow-ups-functional-spec.md`; they land after this restructuring.</span>
+<span id="L112"><a href="#L112"> 112</a> </span>
+<span id="L113"><a href="#L113"> 113</a> ## Interaction Model</span>
+<span id="L114"><a href="#L114"> 114</a> </span>
+<span id="L115"><a href="#L115"> 115</a> ### What a host provides to the daemon package</span>
+<span id="L116"><a href="#L116"> 116</a> </span>
+<span id="L117"><a href="#L117"> 117</a> - An executor: given argv, working directory, and telemetry flag, produces an ordered stream of stdout/stderr byte records and an exit code; can also release transient caches on request.</span>
+<span id="L118"><a href="#L118"> 118</a> - The location of a module that constructs that executor, so the daemon&#x27;s worker can load it in another thread or process.</span>
+<span id="L119"><a href="#L119"> 119</a> - A state directory path.</span>
+<span id="L120"><a href="#L120"> 120</a> - The product version, for compatibility checks.</span>
+<span id="L121"><a href="#L121"> 121</a> - Per invocation: a workspace root and argv, or a control action (`start`, `status`, `stop`).</span>
+<span id="L122"><a href="#L122"> 122</a> </span>
+<span id="L123"><a href="#L123"> 123</a> ### What a host receives</span>
+<span id="L124"><a href="#L124"> 124</a> </span>
+<span id="L125"><a href="#L125"> 125</a> - `execute(workspaceRoot, argv)`: a result identical in bytes to local execution, produced warm, cold, or by fallback. The host does not learn which route was taken except through the execution mode recorded for telemetry.</span>
+<span id="L126"><a href="#L126"> 126</a> - `control(action)`: a lifecycle report the host renders.</span>
+<span id="L127"><a href="#L127"> 127</a> </span>
+<span id="L128"><a href="#L128"> 128</a> ### What a host must not do</span>
+<span id="L129"><a href="#L129"> 129</a> </span>
+<span id="L130"><a href="#L130"> 130</a> - Read or write registry, socket, spool, or log files directly.</span>
+<span id="L131"><a href="#L131"> 131</a> - Decide warm vs cold.</span>
+<span id="L132"><a href="#L132"> 132</a> - Import from the daemon package&#x27;s internal modules; only its public surface.</span>
+<span id="L133"><a href="#L133"> 133</a> </span>
+<span id="L134"><a href="#L134"> 134</a> ### Locked dependency graph</span>
+<span id="L135"><a href="#L135"> 135</a> </span>
+<span id="L136"><a href="#L136"> 136</a> | Package                      | May depend on (internal)                                                          |</span>
+<span id="L137"><a href="#L137"> 137</a> | ---------------------------- | --------------------------------------------------------------------------------- |</span>
+<span id="L138"><a href="#L138"> 138</a> | `@symnav/core`               | (nothing)                                                                         |</span>
+<span id="L139"><a href="#L139"> 139</a> | `@symnav/daemon`             | (nothing)                                                                         |</span>
+<span id="L140"><a href="#L140"> 140</a> | `@symnav/telemetry`          | (nothing)                                                                         |</span>
+<span id="L141"><a href="#L141"> 141</a> | `@symnav/renderer`           | `@symnav/core`, `@symnav/daemon`                                                  |</span>
+<span id="L142"><a href="#L142"> 142</a> | `@symnav/backend-typescript` | `@symnav/core`                                                                    |</span>
+<span id="L143"><a href="#L143"> 143</a> | `symnav` (apps/cli)          | `@symnav/core`, `@symnav/daemon`, `@symnav/telemetry`, `@symnav/renderer`, `@symnav/backend-typescript` |</span>
+<span id="L144"><a href="#L144"> 144</a> | `@symnav/testing`            | (nothing)                                                                         |</span>
+<span id="L145"><a href="#L145"> 145</a> </span>
+<span id="L146"><a href="#L146"> 146</a> A forbidden import fails both `pnpm typecheck` and `pnpm lint`.</span>
+<span id="L147"><a href="#L147"> 147</a> </span>
+<span id="L148"><a href="#L148"> 148</a> ## Output Format</span>
+<span id="L149"><a href="#L149"> 149</a> </span>
+<span id="L150"><a href="#L150"> 150</a> ### Package layout after restructuring</span>
+<span id="L151"><a href="#L151"> 151</a> </span>
+<span id="L152"><a href="#L152"> 152</a> ```text</span>
+<span id="L153"><a href="#L153"> 153</a> packages/core</span>
+<span id="L154"><a href="#L154"> 154</a>   workspace, workspace session, revisioned backend base, project-graph base,</span>
+<span id="L155"><a href="#L155"> 155</a>   turn-scoped cache, source cache, navigation IR, backend ports</span>
+<span id="L156"><a href="#L156"> 156</a> packages/daemon</span>
+<span id="L157"><a href="#L157"> 157</a>   entries, launcher, election, registry, transport (client, server, codec),</span>
+<span id="L158"><a href="#L158"> 158</a>   admission, queue, ledger, execution session, delivery session, spool,</span>
+<span id="L159"><a href="#L159"> 159</a>   resource supervisor, worker generations, lifetime, diagnostics, policy, clock</span>
+<span id="L160"><a href="#L160"> 160</a> packages/backend-typescript</span>
+<span id="L161"><a href="#L161"> 161</a>   TypeScript extraction, tsconfig graph, semantic queries</span>
+<span id="L162"><a href="#L162"> 162</a> packages/renderer</span>
+<span id="L163"><a href="#L163"> 163</a>   text and JSON formatters, including daemon lifecycle reports</span>
+<span id="L164"><a href="#L164"> 164</a> packages/telemetry</span>
+<span id="L165"><a href="#L165"> 165</a>   usage events, recorder, aggregation</span>
+<span id="L166"><a href="#L166"> 166</a> apps/cli</span>
+<span id="L167"><a href="#L167"> 167</a>   argv classification, environment resolution, dependency creation, entry</span>
+<span id="L168"><a href="#L168"> 168</a>   module for the daemon executor, command registration, printing</span>
+<span id="L169"><a href="#L169"> 169</a> ```</span>
+<span id="L170"><a href="#L170"> 170</a> </span>
+<span id="L171"><a href="#L171"> 171</a> ### Policy record</span>
+<span id="L172"><a href="#L172"> 172</a> </span>
+<span id="L173"><a href="#L173"> 173</a> `plans/005/daemon-policy.md` lists every threshold with value and reason. A threshold absent from the record is a defect.</span>
+<span id="L174"><a href="#L174"> 174</a> </span>
+<span id="L175"><a href="#L175"> 175</a> ## Cross-cutting Concerns</span>
+<span id="L176"><a href="#L176"> 176</a> </span>
+<span id="L177"><a href="#L177"> 177</a> ### Verification baseline</span>
+<span id="L178"><a href="#L178"> 178</a> </span>
+<span id="L179"><a href="#L179"> 179</a> The passing e2e parity and daemon suites on main are the baseline. The full-suite teardown flake and the unhandled daemon rejection are fixed before restructuring starts, so that baseline is green. Restructuring matches it exactly; a restructuring change that needs a test expectation changed is mis-scoped.</span>
+<span id="L180"><a href="#L180"> 180</a> </span>
+<span id="L181"><a href="#L181"> 181</a> ### Documentation</span>
+<span id="L182"><a href="#L182"> 182</a> </span>
+<span id="L183"><a href="#L183"> 183</a> `CLAUDE.md` repo layout and dependency table, `plans/000/symnav-stages.md` package list update together with the introduction of `@symnav/daemon`.</span>
+<span id="L184"><a href="#L184"> 184</a> </span>
+<span id="L185"><a href="#L185"> 185</a> ## Daemon Package Extraction</span>
+<span id="L186"><a href="#L186"> 186</a> </span>
+<span id="L187"><a href="#L187"> 187</a> **Purpose.** Give daemon policy and mechanism one home with an enforced boundary.</span>
+<span id="L188"><a href="#L188"> 188</a> </span>
+<span id="L189"><a href="#L189"> 189</a> **Produces.** `@symnav/daemon` with a public surface of: client (execute, control), process entry, worker entry, executor contract, policy object, lifecycle report shapes.</span>
+<span id="L190"><a href="#L190"> 190</a> </span>
+<span id="L191"><a href="#L191"> 191</a> **Does not produce.** Any navigation logic, any dependence on core, any knowledge of Commander syntax.</span>
+<span id="L192"><a href="#L192"> 192</a> </span>
+<span id="L193"><a href="#L193"> 193</a> **Example.** A contributor adds a new admission check. They add one guard in the daemon package and one rejection code. Nothing in `apps/cli` changes.</span>
+<span id="L194"><a href="#L194"> 194</a> </span>
+<span id="L195"><a href="#L195"> 195</a> **Edge cases.** Tests and benchmarks that imported daemon modules by deep relative path switch to the package&#x27;s public surface or move into the package.</span>
+<span id="L196"><a href="#L196"> 196</a> </span>
+<span id="L197"><a href="#L197"> 197</a> ## Executor Contract and Module Injection</span>
+<span id="L198"><a href="#L198"> 198</a> </span>
+<span id="L199"><a href="#L199"> 199</a> **Purpose.** Let the daemon run commands without knowing what they are.</span>
+<span id="L200"><a href="#L200"> 200</a> </span>
+<span id="L201"><a href="#L201"> 201</a> **Produces.** The daemon defines the executor&#x27;s shape. The CLI implements it by re-parsing argv through the normal command program with retained backends. The CLI passes the location of its executor module; the daemon forwards it to the spawned process and worker thread, which load it and verify the expected export exists.</span>
+<span id="L202"><a href="#L202"> 202</a> </span>
+<span id="L203"><a href="#L203"> 203</a> **Does not produce.** A typed navigation request. A second execution path that bypasses the command program.</span>
+<span id="L204"><a href="#L204"> 204</a> </span>
+<span id="L205"><a href="#L205"> 205</a> **Edge cases.** Module missing or export absent: the worker reports a startup failure with a closed failure code; the daemon publishes failed startup; ordinary commands keep executing locally.</span>
+<span id="L206"><a href="#L206"> 206</a> </span>
+<span id="L207"><a href="#L207"> 207</a> ## Client Routing Boundary</span>
+<span id="L208"><a href="#L208"> 208</a> </span>
+<span id="L209"><a href="#L209"> 209</a> **Purpose.** Keep CLI syntax in the CLI and daemon routing in the daemon.</span>
+<span id="L210"><a href="#L210"> 210</a> </span>
+<span id="L211"><a href="#L211"> 211</a> **Produces.** CLI classifies argv into local, control, or workspace; extracts `--cwd`; resolves the workspace root via core. Daemon client receives the root and argv and decides warm, cold, cold-plus-trigger, or fallback.</span>
+<span id="L212"><a href="#L212"> 212</a> </span>
+<span id="L213"><a href="#L213"> 213</a> **Does not produce.** A daemon that parses argv for anything but forwarding. A CLI that reads registry records.</span>
+<span id="L214"><a href="#L214"> 214</a> </span>
+<span id="L215"><a href="#L215"> 215</a> **Defaults.** Unchanged from `daemon-functional-spec.md` routing table.</span>
+<span id="L216"><a href="#L216"> 216</a> </span>
+<span id="L217"><a href="#L217"> 217</a> ## Workspace Session in Core</span>
+<span id="L218"><a href="#L218"> 218</a> </span>
+<span id="L219"><a href="#L219"> 219</a> **Purpose.** Make retention a core object rather than CLI wiring.</span>
+<span id="L220"><a href="#L220"> 220</a> </span>
+<span id="L221"><a href="#L221"> 221</a> **Produces.** A session owning the workspace catalog and backends; prepares a scope (workspace, snapshot, router, refresh summary) for a start directory, with optional file selection. Cold runs create one per process; the daemon&#x27;s worker keeps one alive.</span>
+<span id="L222"><a href="#L222"> 222</a> </span>
+<span id="L223"><a href="#L223"> 223</a> **Does not produce.** Any persistence beyond the process lifetime.</span>
+<span id="L224"><a href="#L224"> 224</a> </span>
+<span id="L225"><a href="#L225"> 225</a> ## Revisioned Backend Base</span>
+<span id="L226"><a href="#L226"> 226</a> </span>
+<span id="L227"><a href="#L227"> 227</a> **Purpose.** Move language-agnostic retention out of the TypeScript backend.</span>
+<span id="L228"><a href="#L228"> 228</a> </span>
+<span id="L229"><a href="#L229"> 229</a> **Produces.** A core base that diffs file revisions, asks the subclass to prepare only added or changed files, publishes the index transactionally, tracks declarations by identity, and scopes a query cache to one turn. A core project-graph base that discovers configuration units, invalidates on input change, maps files to projects, and holds an inferred fallback project. The TypeScript backend extends both.</span>
+<span id="L230"><a href="#L230"> 230</a> </span>
+<span id="L231"><a href="#L231"> 231</a> **Does not produce.** Changes to what any command returns. A second backend.</span>
+<span id="L232"><a href="#L232"> 232</a> </span>
+<span id="L233"><a href="#L233"> 233</a> **Edge cases.** A backend that cannot prepare partially implements prepare as full rebuild; the base does not require partial support.</span>
+<span id="L234"><a href="#L234"> 234</a> </span>
+<span id="L235"><a href="#L235"> 235</a> ## State Directory and Clock Ownership</span>
+<span id="L236"><a href="#L236"> 236</a> </span>
+<span id="L237"><a href="#L237"> 237</a> **Purpose.** Stop telemetry acting as a shared utilities package.</span>
+<span id="L238"><a href="#L238"> 238</a> </span>
+<span id="L239"><a href="#L239"> 239</a> **Produces.** CLI resolves `SYMNAV_STATE_DIR` or `~/.symnav` once and passes the path to telemetry and daemon. Daemon owns its wall and monotonic clock. Telemetry keeps only its own path helpers.</span>
+<span id="L240"><a href="#L240"> 240</a> </span>
+<span id="L241"><a href="#L241"> 241</a> ## Lifecycle Rendering</span>
+<span id="L242"><a href="#L242"> 242</a> </span>
+<span id="L243"><a href="#L243"> 243</a> **Purpose.** Keep all formatting in the renderer package.</span>
+<span id="L244"><a href="#L244"> 244</a> </span>
+<span id="L245"><a href="#L245"> 245</a> **Produces.** Text and JSON rendering of start, status, and stop reports in `@symnav/renderer`, byte-identical to current output.</span>
+<span id="L246"><a href="#L246"> 246</a> </span>
+<span id="L247"><a href="#L247"> 247</a> ## Guard-List Admission and Routing</span>
+<span id="L248"><a href="#L248"> 248</a> </span>
+<span id="L249"><a href="#L249"> 249</a> **Purpose.** Make the check order readable and each check testable alone.</span>
+<span id="L250"><a href="#L250"> 250</a> </span>
+<span id="L251"><a href="#L251"> 251</a> **Produces.** Admission: an ordered list (authenticated, worker ready, memory not paused, not draining, not a conflicting duplicate) where the first failing guard stops with a rejection code. Routing: an ordered list (record present, not starting, version compatible, responsive) producing warm, cold with reason, or fallback with reason. One closed rejection vocabulary owns &quot;safe to retry locally&quot;.</span>
+<span id="L252"><a href="#L252"> 252</a> </span>
+<span id="L253"><a href="#L253"> 253</a> **Does not produce.** Chains for startup election, result delivery, or wire framing; those stay state machines.</span>
+<span id="L254"><a href="#L254"> 254</a> </span>
+<span id="L255"><a href="#L255"> 255</a> ## Summary</span>
+<span id="L256"><a href="#L256"> 256</a> </span>
+<span id="L257"><a href="#L257"> 257</a> | Item                          | One line                                                                  |</span>
+<span id="L258"><a href="#L258"> 258</a> | ----------------------------- | ------------------------------------------------------------------------- |</span>
+<span id="L259"><a href="#L259"> 259</a> | `@symnav/daemon`              | Zero-dependency package owning every daemon concern                      |</span>
+<span id="L260"><a href="#L260"> 260</a> | Executor contract             | Daemon-defined; CLI implements; injected as a module location            |</span>
+<span id="L261"><a href="#L261"> 261</a> | Routing boundary              | CLI classifies argv; daemon client routes                                |</span>
+<span id="L262"><a href="#L262"> 262</a> | `WorkspaceSession`            | Core owns retention as an object; no persistence port                    |</span>
+<span id="L263"><a href="#L263"> 263</a> | Revisioned backend base       | Core owns revision diff, index, project graph, turn cache                 |</span>
+<span id="L264"><a href="#L264"> 264</a> | State dir and clock           | CLI resolves path; daemon owns its clock; telemetry is a leaf            |</span>
+<span id="L265"><a href="#L265"> 265</a> | Lifecycle rendering           | Moves to renderer; renderer may depend on daemon                          |</span>
+<span id="L266"><a href="#L266"> 266</a> | Guard lists                   | Admission and routing as ordered guards with one rejection vocabulary    |</span>
+<span id="L267"><a href="#L267"> 267</a> | Policy record                 | All thresholds in one object, reasons in `plans/005/daemon-policy.md`    |</span>
+<span id="L268"><a href="#L268"> 268</a> | Behavior                      | Unchanged; defects found while restructuring are tracked separately      |</span></pre>
+<h2>Main · plans/005/daemon-architecture-functional-spec.md</h2><pre><span id="L1"><a href="#L1">   1</a> # Symnav Daemon Architecture Functional Spec</span>
+<span id="L2"><a href="#L2">   2</a> </span>
+<span id="L3"><a href="#L3">   3</a> ## Goal</span>
+<span id="L4"><a href="#L4">   4</a> </span>
+<span id="L5"><a href="#L5">   5</a> Restructure the merged daemon work so each concern lives in the package that owns it: a self-contained daemon package that knows nothing about symbols, a core that knows nothing about daemons, a TypeScript backend that holds only TypeScript-specific logic, and a CLI app that only composes. The daemon&#x27;s user-facing behavior is defined in `daemon-functional-spec.md` and does not change. This is refactor work: not a rewrite of the daemon, not a change to any command&#x27;s output or timing, and not a new language backend. This spec defines product behavior for contributors and hosts of the packages; implementation choices live in the phased plans.</span>
+<span id="L6"><a href="#L6">   6</a> </span>
+<span id="L7"><a href="#L7">   7</a> ## Primary User</span>
+<span id="L8"><a href="#L8">   8</a> </span>
+<span id="L9"><a href="#L9">   9</a> **Contributors** changing symnav. Their default experience: a package boundary tells them where a concern belongs, and the build refuses an import that crosses the locked dependency graph.</span>
+<span id="L10"><a href="#L10">  10</a> </span>
+<span id="L11"><a href="#L11">  11</a> **Hosts** composing the packages into a runnable product. The CLI app is the first host. A future host (editor extension, MCP server, benchmark harness) composes the same packages the same way. No host reaches into another package&#x27;s internals.</span>
+<span id="L12"><a href="#L12">  12</a> </span>
+<span id="L13"><a href="#L13">  13</a> End users of the `symnav` binary observe no change from this work.</span>
+<span id="L14"><a href="#L14">  14</a> </span>
+<span id="L15"><a href="#L15">  15</a> ## Core Guarantees</span>
+<span id="L16"><a href="#L16">  16</a> </span>
+<span id="L17"><a href="#L17">  17</a> ### Behavior is unchanged</span>
+<span id="L18"><a href="#L18">  18</a> </span>
+<span id="L19"><a href="#L19">  19</a> This is a refactor. Every command, daemon lifecycle action, diagnostic record, telemetry event, and failure path behaves as it does today.</span>
+<span id="L20"><a href="#L20">  20</a> </span>
+<span id="L21"><a href="#L21">  21</a> ```text</span>
+<span id="L22"><a href="#L22">  22</a> Given the same workspace, arguments, environment, and daemon state, output bytes,</span>
+<span id="L23"><a href="#L23">  23</a> exit code, execution mode, and lifecycle outcome are identical before and after.</span>
+<span id="L24"><a href="#L24">  24</a> ```</span>
+<span id="L25"><a href="#L25">  25</a> </span>
+<span id="L26"><a href="#L26">  26</a> Correct: a restructuring change passes the existing e2e parity and daemon suites without touching a single expectation. Incorrect: a restructuring change &quot;fixes&quot; a queue, eviction, timeout, or path while moving code.</span>
+<span id="L27"><a href="#L27">  27</a> </span>
+<span id="L28"><a href="#L28">  28</a> There is no &quot;it was obviously a bug&quot; override. Behavior defects found during restructuring are recorded in `daemon-follow-ups-functional-spec.md` and changed separately.</span>
+<span id="L29"><a href="#L29">  29</a> </span>
+<span id="L30"><a href="#L30">  30</a> ### The daemon package depends on nothing internal</span>
+<span id="L31"><a href="#L31">  31</a> </span>
+<span id="L32"><a href="#L32">  32</a> The daemon package imports no other symnav package. It moves bytes for an executor it is handed; it does not know what a symbol, workspace snapshot, or backend is.</span>
+<span id="L33"><a href="#L33">  33</a> </span>
+<span id="L34"><a href="#L34">  34</a> ```text</span>
+<span id="L35"><a href="#L35">  35</a> @symnav/daemon may import: (nothing internal)</span>
+<span id="L36"><a href="#L36">  36</a> ```</span>
+<span id="L37"><a href="#L37">  37</a> </span>
+<span id="L38"><a href="#L38">  38</a> Correct: the daemon logs a worker&#x27;s refresh counters as an opaque diagnostics record supplied by the executor. Incorrect: the daemon&#x27;s protocol names a core type to describe those counters.</span>
+<span id="L39"><a href="#L39">  39</a> </span>
+<span id="L40"><a href="#L40">  40</a> There is no exception for &quot;just a type&quot;.</span>
+<span id="L41"><a href="#L41">  41</a> </span>
+<span id="L42"><a href="#L42">  42</a> ### Core knows nothing about daemons or processes</span>
+<span id="L43"><a href="#L43">  43</a> </span>
+<span id="L44"><a href="#L44">  44</a> Core answers questions about a workspace and its symbols. It has no concept of a background process, socket, registry, warm-up, or route. Retaining state across requests means keeping a core object alive; core does not ask its host how to persist anything.</span>
+<span id="L45"><a href="#L45">  45</a> </span>
+<span id="L46"><a href="#L46">  46</a> ```text</span>
+<span id="L47"><a href="#L47">  47</a> Core has no persistence port, no daemon port, and no notion of warm vs cold.</span>
+<span id="L48"><a href="#L48">  48</a> Warm = the same session object answers again. Cold = a new session object.</span>
+<span id="L49"><a href="#L49">  49</a> ```</span>
+<span id="L50"><a href="#L50">  50</a> </span>
+<span id="L51"><a href="#L51">  51</a> There is no persistence abstraction until a second consumer of one exists.</span>
+<span id="L52"><a href="#L52">  52</a> </span>
+<span id="L53"><a href="#L53">  53</a> ### A language backend holds only language-specific logic</span>
+<span id="L54"><a href="#L54">  54</a> </span>
+<span id="L55"><a href="#L55">  55</a> A concept that another language could share lives in core as a base the backend extends. The backend supplies only what depends on the language&#x27;s toolchain.</span>
+<span id="L56"><a href="#L56">  56</a> </span>
+<span id="L57"><a href="#L57">  57</a> ```text</span>
+<span id="L58"><a href="#L58">  58</a> Shared in core: file revision tracking, prepared-file index, declarations-by-identity,</span>
+<span id="L59"><a href="#L59">  59</a> transactional index publication, project-membership graph with input invalidation,</span>
+<span id="L60"><a href="#L60">  60</a> turn-scoped query cache lifecycle.</span>
+<span id="L61"><a href="#L61">  61</a> TypeScript-only: extraction from TypeScript syntax trees, tsconfig parsing (extends,</span>
+<span id="L62"><a href="#L62">  62</a> references, path aliases, include/exclude), program and language-service creation,</span>
+<span id="L63"><a href="#L63">  63</a> semantic query bodies.</span>
+<span id="L64"><a href="#L64">  64</a> ```</span>
+<span id="L65"><a href="#L65">  65</a> </span>
+<span id="L66"><a href="#L66">  66</a> ### The CLI app is composition only</span>
+<span id="L67"><a href="#L67">  67</a> </span>
+<span id="L68"><a href="#L68">  68</a> `apps/cli` parses command-line syntax, resolves environment (state directory, daemon enabled), creates concrete dependencies, wires packages together, and prints. It holds no daemon policy, no workspace policy, and no navigation logic.</span>
+<span id="L69"><a href="#L69">  69</a> </span>
+<span id="L70"><a href="#L70">  70</a> ```text</span>
+<span id="L71"><a href="#L71">  71</a> A decision about routing, admission, ownership, delivery, memory, or lifetime that</span>
+<span id="L72"><a href="#L72">  72</a> lives in apps/cli is a defect.</span>
+<span id="L73"><a href="#L73">  73</a> ```</span>
+<span id="L74"><a href="#L74">  74</a> </span>
+<span id="L75"><a href="#L75">  75</a> ### Every threshold has one owner and a recorded reason</span>
+<span id="L76"><a href="#L76">  76</a> </span>
+<span id="L77"><a href="#L77">  77</a> Numeric limits (memory caps, spool caps, deadlines, idle timeout, probe timeout, trace retention, replacement circuit, reattachment attempts) live in one policy object inside the daemon package, each with a stated reason in a policy record under `plans/`. Tests override the policy object; users cannot.</span>
+<span id="L78"><a href="#L78">  78</a> </span>
+<span id="L79"><a href="#L79">  79</a> ```text</span>
+<span id="L80"><a href="#L80">  80</a> No CLI flag, environment variable, or config file tunes a daemon threshold.</span>
+<span id="L81"><a href="#L81">  81</a> ```</span>
+<span id="L82"><a href="#L82">  82</a> </span>
+<span id="L83"><a href="#L83">  83</a> This restates the no-tuning rule from `daemon-functional-spec.md`; it is not relaxed here.</span>
+<span id="L84"><a href="#L84">  84</a> </span>
+<span id="L85"><a href="#L85">  85</a> ## Scope</span>
+<span id="L86"><a href="#L86">  86</a> </span>
+<span id="L87"><a href="#L87">  87</a> ### Included</span>
+<span id="L88"><a href="#L88">  88</a> </span>
+<span id="L89"><a href="#L89">  89</a> - New `@symnav/daemon` package owning entry points, process launch, election, registry, transport, worker threads, admission, queueing, delivery, spooling, resource supervision, lifetime, diagnostics, and its own clock.</span>
+<span id="L90"><a href="#L90">  90</a> - Executor contract defined by the daemon package; CLI implements it.</span>
+<span id="L91"><a href="#L91">  91</a> - Executor reaches the daemon&#x27;s worker as an injected module location, dynamically loaded.</span>
+<span id="L92"><a href="#L92">  92</a> - CLI keeps argv classification and hands the daemon client a workspace root plus argv.</span>
+<span id="L93"><a href="#L93">  93</a> - Core `WorkspaceSession` replacing the CLI&#x27;s request-scope factory.</span>
+<span id="L94"><a href="#L94">  94</a> - Core revisioned-backend base, project-graph base, turn-scoped cache; TypeScript backend extends them. `WorkspaceSourceCache` moves to core.</span>
+<span id="L95"><a href="#L95">  95</a> - State-directory resolution moves from telemetry to the CLI; telemetry and daemon receive a path.</span>
+<span id="L96"><a href="#L96">  96</a> - Daemon lifecycle rendering moves to `@symnav/renderer`.</span>
+<span id="L97"><a href="#L97">  97</a> - Admission and client routing restructured as ordered guard lists with one closed rejection vocabulary.</span>
+<span id="L98"><a href="#L98">  98</a> - `WorkspaceDaemon` split into process coordinator, accepted-execution session, delivery session, worker-generation manager, activity projector.</span>
+<span id="L99"><a href="#L99">  99</a> - `LocalDaemonTransport` split into codec/validator, lifecycle client, execution client, result receiver, socket client, socket server.</span>
+<span id="L100"><a href="#L100"> 100</a> - One owner each for command-name vocabulary, lock-ownership check, retry-safety decision, and `DaemonExecutionFailureCode` (worker variant renamed).</span>
+<span id="L101"><a href="#L101"> 101</a> - Dependency table, ESLint boundaries, project references, meta-tests, `CLAUDE.md`, and `symnav-stages.md` updated together with the package introduction. Telemetry added to the table.</span>
+<span id="L102"><a href="#L102"> 102</a> </span>
+<span id="L103"><a href="#L103"> 103</a> ### Excluded</span>
+<span id="L104"><a href="#L104"> 104</a> </span>
+<span id="L105"><a href="#L105"> 105</a> - Any change to navigation command output, exit codes, or `daemon start|status|stop` output.</span>
+<span id="L106"><a href="#L106"> 106</a> - Renaming `@symnav/renderer`. Revisit when a second output family exists.</span>
+<span id="L107"><a href="#L107"> 107</a> - A persistence port in core or an on-disk index for cold runs.</span>
+<span id="L108"><a href="#L108"> 108</a> - New CLI flags or environment variables.</span>
+<span id="L109"><a href="#L109"> 109</a> - A second language backend.</span>
+<span id="L110"><a href="#L110"> 110</a> - Any restructuring that changes an e2e parity or daemon suite expectation.</span>
+<span id="L111"><a href="#L111"> 111</a> - Behavior changes surfaced by the reviews. Specified in `daemon-follow-ups-functional-spec.md`; they land after this restructuring.</span>
+<span id="L112"><a href="#L112"> 112</a> </span>
+<span id="L113"><a href="#L113"> 113</a> ## Interaction Model</span>
+<span id="L114"><a href="#L114"> 114</a> </span>
+<span id="L115"><a href="#L115"> 115</a> ### What a host provides to the daemon package</span>
+<span id="L116"><a href="#L116"> 116</a> </span>
+<span id="L117"><a href="#L117"> 117</a> - An executor: given argv, working directory, and telemetry flag, produces an ordered stream of stdout/stderr byte records and an exit code; can also release transient caches on request.</span>
+<span id="L118"><a href="#L118"> 118</a> - The location of a module that constructs that executor, so the daemon&#x27;s worker can load it in another thread or process.</span>
+<span id="L119"><a href="#L119"> 119</a> - A state directory path.</span>
+<span id="L120"><a href="#L120"> 120</a> - The product version, for compatibility checks.</span>
+<span id="L121"><a href="#L121"> 121</a> - Per invocation: a workspace root and argv, or a control action (`start`, `status`, `stop`).</span>
+<span id="L122"><a href="#L122"> 122</a> </span>
+<span id="L123"><a href="#L123"> 123</a> ### What a host receives</span>
+<span id="L124"><a href="#L124"> 124</a> </span>
+<span id="L125"><a href="#L125"> 125</a> - `execute(workspaceRoot, argv)`: a result identical in bytes to local execution, produced warm, cold, or by fallback. The host does not learn which route was taken except through the execution mode recorded for telemetry.</span>
+<span id="L126"><a href="#L126"> 126</a> - `control(action)`: a lifecycle report the host renders.</span>
+<span id="L127"><a href="#L127"> 127</a> </span>
+<span id="L128"><a href="#L128"> 128</a> ### What a host must not do</span>
+<span id="L129"><a href="#L129"> 129</a> </span>
+<span id="L130"><a href="#L130"> 130</a> - Read or write registry, socket, spool, or log files directly.</span>
+<span id="L131"><a href="#L131"> 131</a> - Decide warm vs cold.</span>
+<span id="L132"><a href="#L132"> 132</a> - Import from the daemon package&#x27;s internal modules; only its public surface.</span>
+<span id="L133"><a href="#L133"> 133</a> </span>
+<span id="L134"><a href="#L134"> 134</a> ### Locked dependency graph</span>
+<span id="L135"><a href="#L135"> 135</a> </span>
+<span id="L136"><a href="#L136"> 136</a> | Package                      | May depend on (internal)                                                          |</span>
+<span id="L137"><a href="#L137"> 137</a> | ---------------------------- | --------------------------------------------------------------------------------- |</span>
+<span id="L138"><a href="#L138"> 138</a> | `@symnav/core`               | (nothing)                                                                         |</span>
+<span id="L139"><a href="#L139"> 139</a> | `@symnav/daemon`             | (nothing)                                                                         |</span>
+<span id="L140"><a href="#L140"> 140</a> | `@symnav/telemetry`          | (nothing)                                                                         |</span>
+<span id="L141"><a href="#L141"> 141</a> | `@symnav/renderer`           | `@symnav/core`, `@symnav/daemon`                                                  |</span>
+<span id="L142"><a href="#L142"> 142</a> | `@symnav/backend-typescript` | `@symnav/core`                                                                    |</span>
+<span id="L143"><a href="#L143"> 143</a> | `symnav` (apps/cli)          | `@symnav/core`, `@symnav/daemon`, `@symnav/telemetry`, `@symnav/renderer`, `@symnav/backend-typescript` |</span>
+<span id="L144"><a href="#L144"> 144</a> | `@symnav/testing`            | (nothing)                                                                         |</span>
+<span id="L145"><a href="#L145"> 145</a> </span>
+<span id="L146"><a href="#L146"> 146</a> A forbidden import fails both `pnpm typecheck` and `pnpm lint`.</span>
+<span id="L147"><a href="#L147"> 147</a> </span>
+<span id="L148"><a href="#L148"> 148</a> ## Output Format</span>
+<span id="L149"><a href="#L149"> 149</a> </span>
+<span id="L150"><a href="#L150"> 150</a> ### Package layout after restructuring</span>
+<span id="L151"><a href="#L151"> 151</a> </span>
+<span id="L152"><a href="#L152"> 152</a> ```text</span>
+<span id="L153"><a href="#L153"> 153</a> packages/core</span>
+<span id="L154"><a href="#L154"> 154</a>   workspace, workspace session, revisioned backend base, project-graph base,</span>
+<span id="L155"><a href="#L155"> 155</a>   turn-scoped cache, source cache, navigation IR, backend ports</span>
+<span id="L156"><a href="#L156"> 156</a> packages/daemon</span>
+<span id="L157"><a href="#L157"> 157</a>   entries, launcher, election, registry, transport (client, server, codec),</span>
+<span id="L158"><a href="#L158"> 158</a>   admission, queue, ledger, execution session, delivery session, spool,</span>
+<span id="L159"><a href="#L159"> 159</a>   resource supervisor, worker generations, lifetime, diagnostics, policy, clock</span>
+<span id="L160"><a href="#L160"> 160</a> packages/backend-typescript</span>
+<span id="L161"><a href="#L161"> 161</a>   TypeScript extraction, tsconfig graph, semantic queries</span>
+<span id="L162"><a href="#L162"> 162</a> packages/renderer</span>
+<span id="L163"><a href="#L163"> 163</a>   text and JSON formatters, including daemon lifecycle reports</span>
+<span id="L164"><a href="#L164"> 164</a> packages/telemetry</span>
+<span id="L165"><a href="#L165"> 165</a>   usage events, recorder, aggregation</span>
+<span id="L166"><a href="#L166"> 166</a> apps/cli</span>
+<span id="L167"><a href="#L167"> 167</a>   argv classification, environment resolution, dependency creation, entry</span>
+<span id="L168"><a href="#L168"> 168</a>   module for the daemon executor, command registration, printing</span>
+<span id="L169"><a href="#L169"> 169</a> ```</span>
+<span id="L170"><a href="#L170"> 170</a> </span>
+<span id="L171"><a href="#L171"> 171</a> ### Policy record</span>
+<span id="L172"><a href="#L172"> 172</a> </span>
+<span id="L173"><a href="#L173"> 173</a> `plans/005/daemon-policy.md` lists every threshold with value and reason. A threshold absent from the record is a defect.</span>
+<span id="L174"><a href="#L174"> 174</a> </span>
+<span id="L175"><a href="#L175"> 175</a> ## Cross-cutting Concerns</span>
+<span id="L176"><a href="#L176"> 176</a> </span>
+<span id="L177"><a href="#L177"> 177</a> ### Verification baseline</span>
+<span id="L178"><a href="#L178"> 178</a> </span>
+<span id="L179"><a href="#L179"> 179</a> The passing e2e parity and daemon suites on main are the baseline. The full-suite teardown flake and the unhandled daemon rejection are fixed before restructuring starts, so that baseline is green. Restructuring matches it exactly; a restructuring change that needs a test expectation changed is mis-scoped.</span>
+<span id="L180"><a href="#L180"> 180</a> </span>
+<span id="L181"><a href="#L181"> 181</a> ### Documentation</span>
+<span id="L182"><a href="#L182"> 182</a> </span>
+<span id="L183"><a href="#L183"> 183</a> `CLAUDE.md` repo layout and dependency table, `plans/000/symnav-stages.md` package list update together with the introduction of `@symnav/daemon`.</span>
+<span id="L184"><a href="#L184"> 184</a> </span>
+<span id="L185"><a href="#L185"> 185</a> ## Daemon Package Extraction</span>
+<span id="L186"><a href="#L186"> 186</a> </span>
+<span id="L187"><a href="#L187"> 187</a> **Purpose.** Give daemon policy and mechanism one home with an enforced boundary.</span>
+<span id="L188"><a href="#L188"> 188</a> </span>
+<span id="L189"><a href="#L189"> 189</a> **Produces.** `@symnav/daemon` with a public surface of: client (execute, control), process entry, worker entry, executor contract, policy object, lifecycle report shapes.</span>
+<span id="L190"><a href="#L190"> 190</a> </span>
+<span id="L191"><a href="#L191"> 191</a> **Does not produce.** Any navigation logic, any dependence on core, any knowledge of Commander syntax.</span>
+<span id="L192"><a href="#L192"> 192</a> </span>
+<span id="L193"><a href="#L193"> 193</a> **Example.** A contributor adds a new admission check. They add one guard in the daemon package and one rejection code. Nothing in `apps/cli` changes.</span>
+<span id="L194"><a href="#L194"> 194</a> </span>
+<span id="L195"><a href="#L195"> 195</a> **Edge cases.** Tests and benchmarks that imported daemon modules by deep relative path switch to the package&#x27;s public surface or move into the package.</span>
+<span id="L196"><a href="#L196"> 196</a> </span>
+<span id="L197"><a href="#L197"> 197</a> ## Executor Contract and Module Injection</span>
+<span id="L198"><a href="#L198"> 198</a> </span>
+<span id="L199"><a href="#L199"> 199</a> **Purpose.** Let the daemon run commands without knowing what they are.</span>
+<span id="L200"><a href="#L200"> 200</a> </span>
+<span id="L201"><a href="#L201"> 201</a> **Produces.** The daemon defines the executor&#x27;s shape. The CLI implements it by re-parsing argv through the normal command program with retained backends. The CLI passes the location of its executor module; the daemon forwards it to the spawned process and worker thread, which load it and verify the expected export exists.</span>
+<span id="L202"><a href="#L202"> 202</a> </span>
+<span id="L203"><a href="#L203"> 203</a> **Does not produce.** A typed navigation request. A second execution path that bypasses the command program.</span>
+<span id="L204"><a href="#L204"> 204</a> </span>
+<span id="L205"><a href="#L205"> 205</a> **Edge cases.** Module missing or export absent: the worker reports a startup failure with a closed failure code; the daemon publishes failed startup; ordinary commands keep executing locally.</span>
+<span id="L206"><a href="#L206"> 206</a> </span>
+<span id="L207"><a href="#L207"> 207</a> ## Client Routing Boundary</span>
+<span id="L208"><a href="#L208"> 208</a> </span>
+<span id="L209"><a href="#L209"> 209</a> **Purpose.** Keep CLI syntax in the CLI and daemon routing in the daemon.</span>
+<span id="L210"><a href="#L210"> 210</a> </span>
+<span id="L211"><a href="#L211"> 211</a> **Produces.** CLI classifies argv into local, control, or workspace; extracts `--cwd`; resolves the workspace root via core. Daemon client receives the root and argv and decides warm, cold, cold-plus-trigger, or fallback.</span>
+<span id="L212"><a href="#L212"> 212</a> </span>
+<span id="L213"><a href="#L213"> 213</a> **Does not produce.** A daemon that parses argv for anything but forwarding. A CLI that reads registry records.</span>
+<span id="L214"><a href="#L214"> 214</a> </span>
+<span id="L215"><a href="#L215"> 215</a> **Defaults.** Unchanged from `daemon-functional-spec.md` routing table.</span>
+<span id="L216"><a href="#L216"> 216</a> </span>
+<span id="L217"><a href="#L217"> 217</a> ## Workspace Session in Core</span>
+<span id="L218"><a href="#L218"> 218</a> </span>
+<span id="L219"><a href="#L219"> 219</a> **Purpose.** Make retention a core object rather than CLI wiring.</span>
+<span id="L220"><a href="#L220"> 220</a> </span>
+<span id="L221"><a href="#L221"> 221</a> **Produces.** A session owning the workspace catalog and backends; prepares a scope (workspace, snapshot, router, refresh summary) for a start directory, with optional file selection. Cold runs create one per process; the daemon&#x27;s worker keeps one alive.</span>
+<span id="L222"><a href="#L222"> 222</a> </span>
+<span id="L223"><a href="#L223"> 223</a> **Does not produce.** Any persistence beyond the process lifetime.</span>
+<span id="L224"><a href="#L224"> 224</a> </span>
+<span id="L225"><a href="#L225"> 225</a> ## Revisioned Backend Base</span>
+<span id="L226"><a href="#L226"> 226</a> </span>
+<span id="L227"><a href="#L227"> 227</a> **Purpose.** Move language-agnostic retention out of the TypeScript backend.</span>
+<span id="L228"><a href="#L228"> 228</a> </span>
+<span id="L229"><a href="#L229"> 229</a> **Produces.** A core base that diffs file revisions, asks the subclass to prepare only added or changed files, publishes the index transactionally, tracks declarations by identity, and scopes a query cache to one turn. A core project-graph base that discovers configuration units, invalidates on input change, maps files to projects, and holds an inferred fallback project. The TypeScript backend extends both.</span>
+<span id="L230"><a href="#L230"> 230</a> </span>
+<span id="L231"><a href="#L231"> 231</a> **Does not produce.** Changes to what any command returns. A second backend.</span>
+<span id="L232"><a href="#L232"> 232</a> </span>
+<span id="L233"><a href="#L233"> 233</a> **Edge cases.** A backend that cannot prepare partially implements prepare as full rebuild; the base does not require partial support.</span>
+<span id="L234"><a href="#L234"> 234</a> </span>
+<span id="L235"><a href="#L235"> 235</a> ## State Directory and Clock Ownership</span>
+<span id="L236"><a href="#L236"> 236</a> </span>
+<span id="L237"><a href="#L237"> 237</a> **Purpose.** Stop telemetry acting as a shared utilities package.</span>
+<span id="L238"><a href="#L238"> 238</a> </span>
+<span id="L239"><a href="#L239"> 239</a> **Produces.** CLI resolves `SYMNAV_STATE_DIR` or `~/.symnav` once and passes the path to telemetry and daemon. Daemon owns its wall and monotonic clock. Telemetry keeps only its own path helpers.</span>
+<span id="L240"><a href="#L240"> 240</a> </span>
+<span id="L241"><a href="#L241"> 241</a> ## Lifecycle Rendering</span>
+<span id="L242"><a href="#L242"> 242</a> </span>
+<span id="L243"><a href="#L243"> 243</a> **Purpose.** Keep all formatting in the renderer package.</span>
+<span id="L244"><a href="#L244"> 244</a> </span>
+<span id="L245"><a href="#L245"> 245</a> **Produces.** Text and JSON rendering of start, status, and stop reports in `@symnav/renderer`, byte-identical to current output.</span>
+<span id="L246"><a href="#L246"> 246</a> </span>
+<span id="L247"><a href="#L247"> 247</a> ## Guard-List Admission and Routing</span>
+<span id="L248"><a href="#L248"> 248</a> </span>
+<span id="L249"><a href="#L249"> 249</a> **Purpose.** Make the check order readable and each check testable alone.</span>
+<span id="L250"><a href="#L250"> 250</a> </span>
+<span id="L251"><a href="#L251"> 251</a> **Produces.** Admission: an ordered list (authenticated, worker ready, memory not paused, not draining, not a conflicting duplicate) where the first failing guard stops with a rejection code. Routing: an ordered list (record present, not starting, version compatible, responsive) producing warm, cold with reason, or fallback with reason. One closed rejection vocabulary owns &quot;safe to retry locally&quot;.</span>
+<span id="L252"><a href="#L252"> 252</a> </span>
+<span id="L253"><a href="#L253"> 253</a> **Does not produce.** Chains for startup election, result delivery, or wire framing; those stay state machines.</span>
+<span id="L254"><a href="#L254"> 254</a> </span>
+<span id="L255"><a href="#L255"> 255</a> ## Summary</span>
+<span id="L256"><a href="#L256"> 256</a> </span>
+<span id="L257"><a href="#L257"> 257</a> | Item                          | One line                                                                  |</span>
+<span id="L258"><a href="#L258"> 258</a> | ----------------------------- | ------------------------------------------------------------------------- |</span>
+<span id="L259"><a href="#L259"> 259</a> | `@symnav/daemon`              | Zero-dependency package owning every daemon concern                      |</span>
+<span id="L260"><a href="#L260"> 260</a> | Executor contract             | Daemon-defined; CLI implements; injected as a module location            |</span>
+<span id="L261"><a href="#L261"> 261</a> | Routing boundary              | CLI classifies argv; daemon client routes                                |</span>
+<span id="L262"><a href="#L262"> 262</a> | `WorkspaceSession`            | Core owns retention as an object; no persistence port                    |</span>
+<span id="L263"><a href="#L263"> 263</a> | Revisioned backend base       | Core owns revision diff, index, project graph, turn cache                 |</span>
+<span id="L264"><a href="#L264"> 264</a> | State dir and clock           | CLI resolves path; daemon owns its clock; telemetry is a leaf            |</span>
+<span id="L265"><a href="#L265"> 265</a> | Lifecycle rendering           | Moves to renderer; renderer may depend on daemon                          |</span>
+<span id="L266"><a href="#L266"> 266</a> | Guard lists                   | Admission and routing as ordered guards with one rejection vocabulary    |</span>
+<span id="L267"><a href="#L267"> 267</a> | Policy record                 | All thresholds in one object, reasons in `plans/005/daemon-policy.md`    |</span>
+<span id="L268"><a href="#L268"> 268</a> | Behavior                      | Unchanged; defects found while restructuring are tracked separately      |</span></pre></html>

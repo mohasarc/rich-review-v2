@@ -1,0 +1,634 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>PR #149 — pinned evidence</title>
+<style>body{background:#faf9f3;color:#182f36;font:16px system-ui;margin:3rem auto;max-width:1100px;padding:0 20px}a{color:#056b73}pre{overflow:auto;background:#eef0e9;padding:1rem;line-height:1.5;font-size:12px}pre span{display:block}pre a{text-decoration:none}h2{margin-top:3rem}</style>
+<a href="../index.html#atlas">← Return to the open briefing</a><h1>PR #149 · pinned evidence</h1>
+<p>main <code>b6801ebdd2421d0ca2e4bdd61ec0f04c24ddd73e</code> → tip <code>d07002357d3e9596bfaae910a1ac63b77981620b</code>. These are source snapshots, not a test run.</p>
+<h2>Tip · apps/cli/src/cli-invocation-coordinator.ts</h2><pre><span id="L1"><a href="#L1">   1</a> import type { DaemonClient, DaemonClientExecuteResult } from &quot;@symnav/daemon&quot;;</span>
+<span id="L2"><a href="#L2">   2</a> import type { CliProgramExecutor } from &quot;./cli-program-executor.js&quot;;</span>
+<span id="L3"><a href="#L3">   3</a> import type { CliExecutionRequest } from &quot;./command-execution-result.js&quot;;</span>
+<span id="L4"><a href="#L4">   4</a> import { InvocationWorkspaceSelector } from &quot;./invocation-workspace-selector.js&quot;;</span>
+<span id="L5"><a href="#L5">   5</a> </span>
+<span id="L6"><a href="#L6">   6</a> export interface CliInvocationCoordinatorOptions {</span>
+<span id="L7"><a href="#L7">   7</a>   readonly daemonClient: DaemonClient;</span>
+<span id="L8"><a href="#L8">   8</a>   readonly createLocalExecutor: () =&gt; CliProgramExecutor;</span>
+<span id="L9"><a href="#L9">   9</a>   readonly resolveWorkspaceRoot: (startDirectory: string) =&gt; Promise&lt;string&gt;;</span>
+<span id="L10"><a href="#L10">  10</a> }</span>
+<span id="L11"><a href="#L11">  11</a> </span>
+<span id="L12"><a href="#L12">  12</a> export class CliInvocationCoordinator {</span>
+<span id="L13"><a href="#L13">  13</a>   private readonly selector = new InvocationWorkspaceSelector();</span>
+<span id="L14"><a href="#L14">  14</a> </span>
+<span id="L15"><a href="#L15">  15</a>   constructor(private readonly options: CliInvocationCoordinatorOptions) {}</span>
+<span id="L16"><a href="#L16">  16</a> </span>
+<span id="L17"><a href="#L17">  17</a>   async execute(request: CliExecutionRequest): Promise&lt;DaemonClientExecuteResult&gt; {</span>
+<span id="L18"><a href="#L18">  18</a>     const selected = this.selector.select(request.argv, request.cwd);</span>
+<span id="L19"><a href="#L19">  19</a>     if (selected.route.kind !== &quot;workspace&quot;) {</span>
+<span id="L20"><a href="#L20">  20</a>       return this.executeLocally(request);</span>
+<span id="L21"><a href="#L21">  21</a>     }</span>
+<span id="L22"><a href="#L22">  22</a>     const workspaceRequest: CliExecutionRequest = { ...request, argv: selected.argv };</span>
+<span id="L23"><a href="#L23">  23</a>     let workspaceRoot: string;</span>
+<span id="L24"><a href="#L24">  24</a>     try {</span>
+<span id="L25"><a href="#L25">  25</a>       workspaceRoot = await this.options.resolveWorkspaceRoot(selected.route.startDirectory);</span>
+<span id="L26"><a href="#L26">  26</a>     } catch {</span>
+<span id="L27"><a href="#L27">  27</a>       return this.executeLocally(workspaceRequest);</span>
+<span id="L28"><a href="#L28">  28</a>     }</span>
+<span id="L29"><a href="#L29">  29</a>     return this.options.daemonClient.execute({</span>
+<span id="L30"><a href="#L30">  30</a>       workspaceRoot,</span>
+<span id="L31"><a href="#L31">  31</a>       commandName: selected.route.commandName,</span>
+<span id="L32"><a href="#L32">  32</a>       argv: selected.argv,</span>
+<span id="L33"><a href="#L33">  33</a>       cwd: request.cwd,</span>
+<span id="L34"><a href="#L34">  34</a>       telemetryEnabled: request.telemetryEnabled,</span>
+<span id="L35"><a href="#L35">  35</a>     });</span>
+<span id="L36"><a href="#L36">  36</a>   }</span>
+<span id="L37"><a href="#L37">  37</a> </span>
+<span id="L38"><a href="#L38">  38</a>   private async executeLocally(request: CliExecutionRequest): Promise&lt;DaemonClientExecuteResult&gt; {</span>
+<span id="L39"><a href="#L39">  39</a>     const result = await this.options</span>
+<span id="L40"><a href="#L40">  40</a>       .createLocalExecutor()</span>
+<span id="L41"><a href="#L41">  41</a>       .execute({ ...request, executionMode: &quot;cold&quot; });</span>
+<span id="L42"><a href="#L42">  42</a>     return { mode: &quot;cold&quot;, result };</span>
+<span id="L43"><a href="#L43">  43</a>   }</span>
+<span id="L44"><a href="#L44">  44</a> }</span></pre>
+<h2>Main · apps/cli/src/daemon/daemon-command-dispatcher.ts</h2><pre><span id="L1"><a href="#L1">   1</a> import { randomUUID } from &quot;node:crypto&quot;;</span>
+<span id="L2"><a href="#L2">   2</a> import { createWorkspace } from &quot;@symnav/core&quot;;</span>
+<span id="L3"><a href="#L3">   3</a> import { CliProgramExecutor } from &quot;../cli-program-executor.js&quot;;</span>
+<span id="L4"><a href="#L4">   4</a> import type {</span>
+<span id="L5"><a href="#L5">   5</a>   CliExecutionRequest,</span>
+<span id="L6"><a href="#L6">   6</a>   CommandExecutionResult,</span>
+<span id="L7"><a href="#L7">   7</a>   DispatchedCommandResult,</span>
+<span id="L8"><a href="#L8">   8</a> } from &quot;../command-execution-result.js&quot;;</span>
+<span id="L9"><a href="#L9">   9</a> import { ControlledCommandResult } from &quot;../command-execution-result.js&quot;;</span>
+<span id="L10"><a href="#L10">  10</a> import type { ProgramDependencies } from &quot;../program-dependencies.js&quot;;</span>
+<span id="L11"><a href="#L11">  11</a> import type {</span>
+<span id="L12"><a href="#L12">  12</a>   DaemonExecuteRequest,</span>
+<span id="L13"><a href="#L13">  13</a>   DaemonExecutionFailureCode,</span>
+<span id="L14"><a href="#L14">  14</a>   DaemonRecord,</span>
+<span id="L15"><a href="#L15">  15</a> } from &quot;./daemon-protocol.js&quot;;</span>
+<span id="L16"><a href="#L16">  16</a> import { DaemonRegistry } from &quot;./daemon-registry.js&quot;;</span>
+<span id="L17"><a href="#L17">  17</a> import {</span>
+<span id="L18"><a href="#L18">  18</a>   NodeDaemonProcessLauncher,</span>
+<span id="L19"><a href="#L19">  19</a>   NodeDaemonProcessTerminator,</span>
+<span id="L20"><a href="#L20">  20</a> } from &quot;./daemon-process-launcher.js&quot;;</span>
+<span id="L21"><a href="#L21">  21</a> import {</span>
+<span id="L22"><a href="#L22">  22</a>   DaemonStartupCoordinator,</span>
+<span id="L23"><a href="#L23">  23</a>   type DaemonWarmupTriggerResult,</span>
+<span id="L24"><a href="#L24">  24</a> } from &quot;./daemon-startup-coordinator.js&quot;;</span>
+<span id="L25"><a href="#L25">  25</a> import { DaemonWorkspaceIdentity } from &quot;./daemon-workspace-identity.js&quot;;</span>
+<span id="L26"><a href="#L26">  26</a> import { InvocationWorkspaceSelector } from &quot;./invocation-workspace-selector.js&quot;;</span>
+<span id="L27"><a href="#L27">  27</a> import {</span>
+<span id="L28"><a href="#L28">  28</a>   DaemonTransportError,</span>
+<span id="L29"><a href="#L29">  29</a>   type DaemonExecutionReceipt,</span>
+<span id="L30"><a href="#L30">  30</a>   LocalDaemonTransport,</span>
+<span id="L31"><a href="#L31">  31</a> } from &quot;./local-daemon-transport.js&quot;;</span>
+<span id="L32"><a href="#L32">  32</a> import { DaemonRecordObserver, type DaemonObservation } from &quot;./daemon-record-observer.js&quot;;</span>
+<span id="L33"><a href="#L33">  33</a> </span>
+<span id="L34"><a href="#L34">  34</a> export type DaemonRouteSnapshot =</span>
+<span id="L35"><a href="#L35">  35</a>   | { readonly kind: &quot;disabled&quot; }</span>
+<span id="L36"><a href="#L36">  36</a>   | { readonly kind: &quot;cold&quot;; readonly reason: &quot;absent&quot; | &quot;starting&quot; | &quot;recovering&quot; }</span>
+<span id="L37"><a href="#L37">  37</a>   | { readonly kind: &quot;warm&quot;; readonly record: DaemonRecord }</span>
+<span id="L38"><a href="#L38">  38</a>   | { readonly kind: &quot;fallback&quot;; readonly reason: &quot;dead&quot; | &quot;incompatible&quot; };</span>
+<span id="L39"><a href="#L39">  39</a> </span>
+<span id="L40"><a href="#L40">  40</a> export interface DaemonWarmupTrigger {</span>
+<span id="L41"><a href="#L41">  41</a>   trigger(identity: DaemonWorkspaceIdentity): Promise&lt;DaemonWarmupTriggerResult&gt;;</span>
+<span id="L42"><a href="#L42">  42</a> }</span>
+<span id="L43"><a href="#L43">  43</a> </span>
+<span id="L44"><a href="#L44">  44</a> interface DaemonDispatchRegistry {</span>
+<span id="L45"><a href="#L45">  45</a>   read(identity: DaemonWorkspaceIdentity): DaemonRecord | undefined;</span>
+<span id="L46"><a href="#L46">  46</a>   removeIfProcess(</span>
+<span id="L47"><a href="#L47">  47</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L48"><a href="#L48">  48</a>     instanceId: string,</span>
+<span id="L49"><a href="#L49">  49</a>     processToken: string,</span>
+<span id="L50"><a href="#L50">  50</a>   ): boolean;</span>
+<span id="L51"><a href="#L51">  51</a> }</span>
+<span id="L52"><a href="#L52">  52</a> </span>
+<span id="L53"><a href="#L53">  53</a> interface DaemonDispatchTransport {</span>
+<span id="L54"><a href="#L54">  54</a>   execute(endpoint: string, request: DaemonExecuteRequest): Promise&lt;DaemonExecutionReceipt&gt;;</span>
+<span id="L55"><a href="#L55">  55</a> }</span>
+<span id="L56"><a href="#L56">  56</a> </span>
+<span id="L57"><a href="#L57">  57</a> interface DaemonDispatchObserver {</span>
+<span id="L58"><a href="#L58">  58</a>   observe(record: DaemonRecord): Promise&lt;DaemonObservation&gt;;</span>
+<span id="L59"><a href="#L59">  59</a> }</span>
+<span id="L60"><a href="#L60">  60</a> </span>
+<span id="L61"><a href="#L61">  61</a> export interface DaemonDispatchRuntime {</span>
+<span id="L62"><a href="#L62">  62</a>   readonly coordinator: DaemonWarmupTrigger;</span>
+<span id="L63"><a href="#L63">  63</a>   readonly observer: DaemonDispatchObserver;</span>
+<span id="L64"><a href="#L64">  64</a>   readonly registry: DaemonDispatchRegistry;</span>
+<span id="L65"><a href="#L65">  65</a>   readonly transport: DaemonDispatchTransport;</span>
+<span id="L66"><a href="#L66">  66</a> }</span>
+<span id="L67"><a href="#L67">  67</a> </span>
+<span id="L68"><a href="#L68">  68</a> interface CommandExecutor {</span>
+<span id="L69"><a href="#L69">  69</a>   execute(request: CliExecutionRequest): Promise&lt;CommandExecutionResult&gt;;</span>
+<span id="L70"><a href="#L70">  70</a> }</span>
+<span id="L71"><a href="#L71">  71</a> </span>
+<span id="L72"><a href="#L72">  72</a> export interface DaemonCommandDispatcherOptions {</span>
+<span id="L73"><a href="#L73">  73</a>   readonly createDependencies: (stateDirectory: string) =&gt; ProgramDependencies;</span>
+<span id="L74"><a href="#L74">  74</a>   readonly stateDirectory: string;</span>
+<span id="L75"><a href="#L75">  75</a>   readonly daemonEnabled?: () =&gt; boolean;</span>
+<span id="L76"><a href="#L76">  76</a>   readonly selector?: InvocationWorkspaceSelector;</span>
+<span id="L77"><a href="#L77">  77</a>   readonly resolveWorkspaceRoot?: (</span>
+<span id="L78"><a href="#L78">  78</a>     startDir: string,</span>
+<span id="L79"><a href="#L79">  79</a>     dependencies: ProgramDependencies,</span>
+<span id="L80"><a href="#L80">  80</a>   ) =&gt; Promise&lt;string&gt;;</span>
+<span id="L81"><a href="#L81">  81</a>   readonly runtimeFactory?: (</span>
+<span id="L82"><a href="#L82">  82</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L83"><a href="#L83">  83</a>     dependencies: ProgramDependencies,</span>
+<span id="L84"><a href="#L84">  84</a>   ) =&gt; DaemonDispatchRuntime;</span>
+<span id="L85"><a href="#L85">  85</a>   readonly executorFactory?: (dependencies: ProgramDependencies) =&gt; CommandExecutor;</span>
+<span id="L86"><a href="#L86">  86</a>   readonly requestId?: () =&gt; string;</span>
+<span id="L87"><a href="#L87">  87</a> }</span>
+<span id="L88"><a href="#L88">  88</a> </span>
+<span id="L89"><a href="#L89">  89</a> export class DaemonCommandDispatcher {</span>
+<span id="L90"><a href="#L90">  90</a>   private readonly selector: InvocationWorkspaceSelector;</span>
+<span id="L91"><a href="#L91">  91</a>   private readonly daemonEnabled: () =&gt; boolean;</span>
+<span id="L92"><a href="#L92">  92</a>   private readonly resolveWorkspaceRoot: (</span>
+<span id="L93"><a href="#L93">  93</a>     startDir: string,</span>
+<span id="L94"><a href="#L94">  94</a>     dependencies: ProgramDependencies,</span>
+<span id="L95"><a href="#L95">  95</a>   ) =&gt; Promise&lt;string&gt;;</span>
+<span id="L96"><a href="#L96">  96</a>   private readonly runtimeFactory: (</span>
+<span id="L97"><a href="#L97">  97</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L98"><a href="#L98">  98</a>     dependencies: ProgramDependencies,</span>
+<span id="L99"><a href="#L99">  99</a>   ) =&gt; DaemonDispatchRuntime;</span>
+<span id="L100"><a href="#L100"> 100</a>   private readonly executorFactory: (dependencies: ProgramDependencies) =&gt; CommandExecutor;</span>
+<span id="L101"><a href="#L101"> 101</a>   private readonly requestId: () =&gt; string;</span>
+<span id="L102"><a href="#L102"> 102</a> </span>
+<span id="L103"><a href="#L103"> 103</a>   constructor(private readonly options: DaemonCommandDispatcherOptions) {</span>
+<span id="L104"><a href="#L104"> 104</a>     this.selector = options.selector ?? new InvocationWorkspaceSelector();</span>
+<span id="L105"><a href="#L105"> 105</a>     this.daemonEnabled = options.daemonEnabled ?? (() =&gt; true);</span>
+<span id="L106"><a href="#L106"> 106</a>     this.resolveWorkspaceRoot =</span>
+<span id="L107"><a href="#L107"> 107</a>       options.resolveWorkspaceRoot ??</span>
+<span id="L108"><a href="#L108"> 108</a>       (async (startDir, dependencies) =&gt;</span>
+<span id="L109"><a href="#L109"> 109</a>         (await createWorkspace({ startDir, fs: dependencies.fs })).root);</span>
+<span id="L110"><a href="#L110"> 110</a>     this.runtimeFactory = options.runtimeFactory ?? DaemonCommandDispatcher.createRuntime;</span>
+<span id="L111"><a href="#L111"> 111</a>     this.executorFactory =</span>
+<span id="L112"><a href="#L112"> 112</a>       options.executorFactory ?? ((dependencies) =&gt; new CliProgramExecutor(dependencies));</span>
+<span id="L113"><a href="#L113"> 113</a>     this.requestId = options.requestId ?? randomUUID;</span>
+<span id="L114"><a href="#L114"> 114</a>   }</span>
+<span id="L115"><a href="#L115"> 115</a> </span>
+<span id="L116"><a href="#L116"> 116</a>   async execute(request: CliExecutionRequest): Promise&lt;DispatchedCommandResult&gt; {</span>
+<span id="L117"><a href="#L117"> 117</a>     const selected = this.selector.select(request.argv, request.cwd);</span>
+<span id="L118"><a href="#L118"> 118</a>     const route = selected.route;</span>
+<span id="L119"><a href="#L119"> 119</a>     if (route.kind !== &quot;workspace&quot;) {</span>
+<span id="L120"><a href="#L120"> 120</a>       return this.executeLocally(request, &quot;cold&quot;);</span>
+<span id="L121"><a href="#L121"> 121</a>     }</span>
+<span id="L122"><a href="#L122"> 122</a>     const workspaceRequest: CliExecutionRequest = {</span>
+<span id="L123"><a href="#L123"> 123</a>       ...request,</span>
+<span id="L124"><a href="#L124"> 124</a>       argv: selected.argv,</span>
+<span id="L125"><a href="#L125"> 125</a>     };</span>
+<span id="L126"><a href="#L126"> 126</a>     if (!this.daemonEnabled()) {</span>
+<span id="L127"><a href="#L127"> 127</a>       return this.executeRoute({ kind: &quot;disabled&quot; }, workspaceRequest);</span>
+<span id="L128"><a href="#L128"> 128</a>     }</span>
+<span id="L129"><a href="#L129"> 129</a> </span>
+<span id="L130"><a href="#L130"> 130</a>     const workspaceDependencies = this.options.createDependencies(this.options.stateDirectory);</span>
+<span id="L131"><a href="#L131"> 131</a>     let workspaceRoot: string;</span>
+<span id="L132"><a href="#L132"> 132</a>     try {</span>
+<span id="L133"><a href="#L133"> 133</a>       workspaceRoot = await this.resolveWorkspaceRoot(route.startDir, workspaceDependencies);</span>
+<span id="L134"><a href="#L134"> 134</a>     } catch {</span>
+<span id="L135"><a href="#L135"> 135</a>       return this.executeLocally(workspaceRequest, &quot;cold&quot;);</span>
+<span id="L136"><a href="#L136"> 136</a>     }</span>
+<span id="L137"><a href="#L137"> 137</a> </span>
+<span id="L138"><a href="#L138"> 138</a>     const identity = DaemonWorkspaceIdentity.from(workspaceRoot, this.options.stateDirectory);</span>
+<span id="L139"><a href="#L139"> 139</a>     const runtime = this.runtimeFactory(identity, workspaceDependencies);</span>
+<span id="L140"><a href="#L140"> 140</a>     const routeSnapshot = await this.routeFor(</span>
+<span id="L141"><a href="#L141"> 141</a>       identity,</span>
+<span id="L142"><a href="#L142"> 142</a>       runtime,</span>
+<span id="L143"><a href="#L143"> 143</a>       workspaceDependencies.symnavVersion,</span>
+<span id="L144"><a href="#L144"> 144</a>     );</span>
+<span id="L145"><a href="#L145"> 145</a>     if (routeSnapshot.kind === &quot;warm&quot;) {</span>
+<span id="L146"><a href="#L146"> 146</a>       return this.executeWarm(runtime, routeSnapshot.record, workspaceRequest);</span>
+<span id="L147"><a href="#L147"> 147</a>     }</span>
+<span id="L148"><a href="#L148"> 148</a>     if (</span>
+<span id="L149"><a href="#L149"> 149</a>       (routeSnapshot.kind === &quot;cold&quot; &amp;&amp; routeSnapshot.reason === &quot;absent&quot;) ||</span>
+<span id="L150"><a href="#L150"> 150</a>       routeSnapshot.kind === &quot;fallback&quot;</span>
+<span id="L151"><a href="#L151"> 151</a>     ) {</span>
+<span id="L152"><a href="#L152"> 152</a>       DaemonCommandDispatcher.triggerIndependently(runtime.coordinator, identity);</span>
+<span id="L153"><a href="#L153"> 153</a>     }</span>
+<span id="L154"><a href="#L154"> 154</a>     return this.executeRoute(routeSnapshot, workspaceRequest);</span>
+<span id="L155"><a href="#L155"> 155</a>   }</span>
+<span id="L156"><a href="#L156"> 156</a> </span>
+<span id="L157"><a href="#L157"> 157</a>   private async routeFor(</span>
+<span id="L158"><a href="#L158"> 158</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L159"><a href="#L159"> 159</a>     runtime: DaemonDispatchRuntime,</span>
+<span id="L160"><a href="#L160"> 160</a>     symnavVersion: string,</span>
+<span id="L161"><a href="#L161"> 161</a>   ): Promise&lt;DaemonRouteSnapshot&gt; {</span>
+<span id="L162"><a href="#L162"> 162</a>     let record: DaemonRecord | undefined;</span>
+<span id="L163"><a href="#L163"> 163</a>     try {</span>
+<span id="L164"><a href="#L164"> 164</a>       record = runtime.registry.read(identity);</span>
+<span id="L165"><a href="#L165"> 165</a>     } catch {</span>
+<span id="L166"><a href="#L166"> 166</a>       return { kind: &quot;cold&quot;, reason: &quot;recovering&quot; };</span>
+<span id="L167"><a href="#L167"> 167</a>     }</span>
+<span id="L168"><a href="#L168"> 168</a>     if (record === undefined) return { kind: &quot;cold&quot;, reason: &quot;absent&quot; };</span>
+<span id="L169"><a href="#L169"> 169</a>     if (record.state === &quot;starting&quot;) return { kind: &quot;cold&quot;, reason: &quot;starting&quot; };</span>
+<span id="L170"><a href="#L170"> 170</a>     if (record.symnavVersion !== symnavVersion) {</span>
+<span id="L171"><a href="#L171"> 171</a>       return { kind: &quot;fallback&quot;, reason: &quot;incompatible&quot; };</span>
+<span id="L172"><a href="#L172"> 172</a>     }</span>
+<span id="L173"><a href="#L173"> 173</a>     let observation: DaemonObservation;</span>
+<span id="L174"><a href="#L174"> 174</a>     try {</span>
+<span id="L175"><a href="#L175"> 175</a>       observation = await runtime.observer.observe(record);</span>
+<span id="L176"><a href="#L176"> 176</a>     } catch {</span>
+<span id="L177"><a href="#L177"> 177</a>       return { kind: &quot;cold&quot;, reason: &quot;recovering&quot; };</span>
+<span id="L178"><a href="#L178"> 178</a>     }</span>
+<span id="L179"><a href="#L179"> 179</a>     if (observation.kind === &quot;responsive&quot;) {</span>
+<span id="L180"><a href="#L180"> 180</a>       if (observation.pong.symnavVersion !== symnavVersion) {</span>
+<span id="L181"><a href="#L181"> 181</a>         return { kind: &quot;fallback&quot;, reason: &quot;incompatible&quot; };</span>
+<span id="L182"><a href="#L182"> 182</a>       }</span>
+<span id="L183"><a href="#L183"> 183</a>       if (observation.pong.state === &quot;starting&quot;) {</span>
+<span id="L184"><a href="#L184"> 184</a>         return { kind: &quot;cold&quot;, reason: &quot;recovering&quot; };</span>
+<span id="L185"><a href="#L185"> 185</a>       }</span>
+<span id="L186"><a href="#L186"> 186</a>       return { kind: &quot;warm&quot;, record };</span>
+<span id="L187"><a href="#L187"> 187</a>     }</span>
+<span id="L188"><a href="#L188"> 188</a>     if (observation.kind === &quot;starting&quot;) return { kind: &quot;cold&quot;, reason: &quot;starting&quot; };</span>
+<span id="L189"><a href="#L189"> 189</a>     if (observation.kind === &quot;unresponsive&quot;) return { kind: &quot;cold&quot;, reason: &quot;recovering&quot; };</span>
+<span id="L190"><a href="#L190"> 190</a>     if (observation.kind === &quot;exited&quot;) {</span>
+<span id="L191"><a href="#L191"> 191</a>       try {</span>
+<span id="L192"><a href="#L192"> 192</a>         runtime.registry.removeIfProcess(identity, record.instanceId, record.processToken);</span>
+<span id="L193"><a href="#L193"> 193</a>       } catch {}</span>
+<span id="L194"><a href="#L194"> 194</a>       return { kind: &quot;fallback&quot;, reason: &quot;dead&quot; };</span>
+<span id="L195"><a href="#L195"> 195</a>     }</span>
+<span id="L196"><a href="#L196"> 196</a>     return { kind: &quot;fallback&quot;, reason: &quot;incompatible&quot; };</span>
+<span id="L197"><a href="#L197"> 197</a>   }</span>
+<span id="L198"><a href="#L198"> 198</a> </span>
+<span id="L199"><a href="#L199"> 199</a>   private async executeWarm(</span>
+<span id="L200"><a href="#L200"> 200</a>     runtime: DaemonDispatchRuntime,</span>
+<span id="L201"><a href="#L201"> 201</a>     record: DaemonRecord,</span>
+<span id="L202"><a href="#L202"> 202</a>     request: CliExecutionRequest,</span>
+<span id="L203"><a href="#L203"> 203</a>   ): Promise&lt;DispatchedCommandResult&gt; {</span>
+<span id="L204"><a href="#L204"> 204</a>     let receipt: DaemonExecutionReceipt;</span>
+<span id="L205"><a href="#L205"> 205</a>     try {</span>
+<span id="L206"><a href="#L206"> 206</a>       receipt = await runtime.transport.execute(record.endpoint, {</span>
+<span id="L207"><a href="#L207"> 207</a>         kind: &quot;execute&quot;,</span>
+<span id="L208"><a href="#L208"> 208</a>         protocolVersion: record.protocolVersion,</span>
+<span id="L209"><a href="#L209"> 209</a>         instanceId: record.instanceId,</span>
+<span id="L210"><a href="#L210"> 210</a>         processToken: record.processToken,</span>
+<span id="L211"><a href="#L211"> 211</a>         requestId: this.requestId(),</span>
+<span id="L212"><a href="#L212"> 212</a>         request: { ...request, executionMode: &quot;warm&quot; },</span>
+<span id="L213"><a href="#L213"> 213</a>       });</span>
+<span id="L214"><a href="#L214"> 214</a>     } catch (error) {</span>
+<span id="L215"><a href="#L215"> 215</a>       if (DaemonCommandDispatcher.isRetrySafeFailure(error)) {</span>
+<span id="L216"><a href="#L216"> 216</a>         return this.executeLocally(request, &quot;fallback&quot;);</span>
+<span id="L217"><a href="#L217"> 217</a>       }</span>
+<span id="L218"><a href="#L218"> 218</a>       return { mode: &quot;warm&quot;, result: ControlledCommandResult.acceptedRequestDidNotComplete() };</span>
+<span id="L219"><a href="#L219"> 219</a>     }</span>
+<span id="L220"><a href="#L220"> 220</a>     try {</span>
+<span id="L221"><a href="#L221"> 221</a>       const completion = await receipt.completion;</span>
+<span id="L222"><a href="#L222"> 222</a>       if (completion.status === &quot;failed&quot;) {</span>
+<span id="L223"><a href="#L223"> 223</a>         return {</span>
+<span id="L224"><a href="#L224"> 224</a>           mode: &quot;warm&quot;,</span>
+<span id="L225"><a href="#L225"> 225</a>           result: DaemonCommandDispatcher.controlledFailure(completion.code),</span>
+<span id="L226"><a href="#L226"> 226</a>         };</span>
+<span id="L227"><a href="#L227"> 227</a>       }</span>
+<span id="L228"><a href="#L228"> 228</a>       if (!DaemonCommandDispatcher.isCompleteResult(completion.result)) {</span>
+<span id="L229"><a href="#L229"> 229</a>         return { mode: &quot;warm&quot;, result: ControlledCommandResult.acceptedRequestDidNotComplete() };</span>
+<span id="L230"><a href="#L230"> 230</a>       }</span>
+<span id="L231"><a href="#L231"> 231</a>       return {</span>
+<span id="L232"><a href="#L232"> 232</a>         mode: &quot;warm&quot;,</span>
+<span id="L233"><a href="#L233"> 233</a>         result: completion.result,</span>
+<span id="L234"><a href="#L234"> 234</a>       };</span>
+<span id="L235"><a href="#L235"> 235</a>     } catch {</span>
+<span id="L236"><a href="#L236"> 236</a>       return { mode: &quot;warm&quot;, result: ControlledCommandResult.acceptedRequestDidNotComplete() };</span>
+<span id="L237"><a href="#L237"> 237</a>     }</span>
+<span id="L238"><a href="#L238"> 238</a>   }</span>
+<span id="L239"><a href="#L239"> 239</a> </span>
+<span id="L240"><a href="#L240"> 240</a>   private executeRoute(</span>
+<span id="L241"><a href="#L241"> 241</a>     route: Exclude&lt;DaemonRouteSnapshot, { readonly kind: &quot;warm&quot; }&gt;,</span>
+<span id="L242"><a href="#L242"> 242</a>     request: CliExecutionRequest,</span>
+<span id="L243"><a href="#L243"> 243</a>   ): Promise&lt;DispatchedCommandResult&gt; {</span>
+<span id="L244"><a href="#L244"> 244</a>     return this.executeLocally(request, route.kind === &quot;fallback&quot; ? &quot;fallback&quot; : &quot;cold&quot;);</span>
+<span id="L245"><a href="#L245"> 245</a>   }</span>
+<span id="L246"><a href="#L246"> 246</a> </span>
+<span id="L247"><a href="#L247"> 247</a>   private executeLocally(</span>
+<span id="L248"><a href="#L248"> 248</a>     request: CliExecutionRequest,</span>
+<span id="L249"><a href="#L249"> 249</a>     mode: &quot;cold&quot; | &quot;fallback&quot;,</span>
+<span id="L250"><a href="#L250"> 250</a>   ): Promise&lt;DispatchedCommandResult&gt; {</span>
+<span id="L251"><a href="#L251"> 251</a>     const executor = this.executorFactory(</span>
+<span id="L252"><a href="#L252"> 252</a>       this.options.createDependencies(this.options.stateDirectory),</span>
+<span id="L253"><a href="#L253"> 253</a>     );</span>
+<span id="L254"><a href="#L254"> 254</a>     return executor</span>
+<span id="L255"><a href="#L255"> 255</a>       .execute({ ...request, executionMode: mode })</span>
+<span id="L256"><a href="#L256"> 256</a>       .then((result) =&gt; ({ mode, result }));</span>
+<span id="L257"><a href="#L257"> 257</a>   }</span>
+<span id="L258"><a href="#L258"> 258</a> </span>
+<span id="L259"><a href="#L259"> 259</a>   private static triggerIndependently(</span>
+<span id="L260"><a href="#L260"> 260</a>     trigger: DaemonWarmupTrigger,</span>
+<span id="L261"><a href="#L261"> 261</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L262"><a href="#L262"> 262</a>   ): void {</span>
+<span id="L263"><a href="#L263"> 263</a>     try {</span>
+<span id="L264"><a href="#L264"> 264</a>       void trigger.trigger(identity).catch(() =&gt; {});</span>
+<span id="L265"><a href="#L265"> 265</a>     } catch {}</span>
+<span id="L266"><a href="#L266"> 266</a>   }</span>
+<span id="L267"><a href="#L267"> 267</a> </span>
+<span id="L268"><a href="#L268"> 268</a>   private static createRuntime(</span>
+<span id="L269"><a href="#L269"> 269</a>     identity: DaemonWorkspaceIdentity,</span>
+<span id="L270"><a href="#L270"> 270</a>     dependencies: ProgramDependencies,</span>
+<span id="L271"><a href="#L271"> 271</a>   ): DaemonDispatchRuntime {</span>
+<span id="L272"><a href="#L272"> 272</a>     const registry = new DaemonRegistry(identity.registryDirectory);</span>
+<span id="L273"><a href="#L273"> 273</a>     const transport = new LocalDaemonTransport();</span>
+<span id="L274"><a href="#L274"> 274</a>     const processTerminator = new NodeDaemonProcessTerminator();</span>
+<span id="L275"><a href="#L275"> 275</a>     const launcher = new NodeDaemonProcessLauncher(</span>
+<span id="L276"><a href="#L276"> 276</a>       dependencies.symnavVersion,</span>
+<span id="L277"><a href="#L277"> 277</a>       undefined,</span>
+<span id="L278"><a href="#L278"> 278</a>       processTerminator,</span>
+<span id="L279"><a href="#L279"> 279</a>     );</span>
+<span id="L280"><a href="#L280"> 280</a>     return {</span>
+<span id="L281"><a href="#L281"> 281</a>       registry,</span>
+<span id="L282"><a href="#L282"> 282</a>       transport,</span>
+<span id="L283"><a href="#L283"> 283</a>       observer: new DaemonRecordObserver(transport, processTerminator),</span>
+<span id="L284"><a href="#L284"> 284</a>       coordinator: new DaemonStartupCoordinator(registry, launcher, transport, {</span>
+<span id="L285"><a href="#L285"> 285</a>         processTerminator,</span>
+<span id="L286"><a href="#L286"> 286</a>       }),</span>
+<span id="L287"><a href="#L287"> 287</a>     };</span>
+<span id="L288"><a href="#L288"> 288</a>   }</span>
+<span id="L289"><a href="#L289"> 289</a> </span>
+<span id="L290"><a href="#L290"> 290</a>   private static isCompleteResult(result: CommandExecutionResult): boolean {</span>
+<span id="L291"><a href="#L291"> 291</a>     return Number.isInteger(result.exitCode) &amp;&amp; result.output !== undefined;</span>
+<span id="L292"><a href="#L292"> 292</a>   }</span>
+<span id="L293"><a href="#L293"> 293</a> </span>
+<span id="L294"><a href="#L294"> 294</a>   private static isRetrySafeFailure(error: unknown): boolean {</span>
+<span id="L295"><a href="#L295"> 295</a>     return error instanceof DaemonTransportError &amp;&amp; error.retrySafe;</span>
+<span id="L296"><a href="#L296"> 296</a>   }</span>
+<span id="L297"><a href="#L297"> 297</a> </span>
+<span id="L298"><a href="#L298"> 298</a>   private static controlledFailure(code: DaemonExecutionFailureCode): CommandExecutionResult {</span>
+<span id="L299"><a href="#L299"> 299</a>     if (code === &quot;controlled-resource&quot;) return ControlledCommandResult.workspaceCapacityExceeded();</span>
+<span id="L300"><a href="#L300"> 300</a>     if (code === &quot;response-capacity&quot;) return ControlledCommandResult.responseCapacityExceeded();</span>
+<span id="L301"><a href="#L301"> 301</a>     return ControlledCommandResult.acceptedRequestDidNotComplete();</span>
+<span id="L302"><a href="#L302"> 302</a>   }</span>
+<span id="L303"><a href="#L303"> 303</a> }</span></pre><h2>Supplied PR body (historical stage)</h2><pre>## Context
+
+[PR #148](https://github.com/mohasarc/symnav/pull/148) establishes the package `DaemonClient` and stages daemon mechanisms, but the shipped CLI and external test consumers still retain app-local ownership paths. This PR makes `@symnav/daemon` the sole mechanism owner while preserving command output, telemetry, execution modes, and lifecycle behavior.
+
+## Shape
+
+Before — CLI runtime and external tests still cross the app-local daemon boundary:
+
+```mermaid
+flowchart LR
+  E[CLI entry] --&gt;|calls| D[CLI daemon dispatcher]
+  D --&gt;|calls| A[App-local daemon copies]
+  T[CLI tests and benchmark] --&gt;|calls| A
+  P[DaemonClient package root] --&gt;|calls| M[Staged package mechanisms]
+  classDef removed fill:#ffebe9,stroke:#cf222e,color:#24292f
+  classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f
+  class D,A removed
+  class E,T changed
+```
+
+After — CLI coordinates invocations through the package root, and tests observe package state through a read-only subpath:
+
+```mermaid
+flowchart LR
+  E[CLI entry] --&gt;|calls| C[CLI invocation coordinator]
+  C --&gt;|calls| P[DaemonClient package root]
+  P --&gt;|calls| M[Package-owned mechanisms]
+  T[CLI tests and benchmark] --&gt;|calls| I[Read-only testing inspector]
+  I --&gt;|calls| M
+  classDef added fill:#dafbe1,stroke:#1a7f37,color:#24292f
+  classDef changed fill:#fff8c5,stroke:#9a6700,color:#24292f
+  class C,I added
+  class E,T,M changed
+```
+
+Legend: green = added; red = removed; yellow = changed; unfilled = pre-existing and unchanged.
+
+- Atomic frozen install, build, 2,696 tests with 8 expected skips, lint, and typecheck pass at the exact head.
+- Explicit cold and warm suites each pass 355 tests with 8 expected skips.
+- Scale-1 daemon benchmark passes parity, freshness, responsiveness, continuity, telemetry, resource, and spool-cleanup gates.
+
+## Where it lives
+
+```text
+.
+├── apps/cli/
+│   ├── src/
+│   │   ├── ++ cli-invocation-coordinator.ts       # owns local/control/workspace routing
+│   │   ├── ~~ invocation-workspace-selector.ts   # moved from src/daemon/
+│   │   ├── ** cli.ts                              # composes one public daemon client
+│   │   ├── ** commands/daemon/register-daemon-command.ts # calls public lifecycle controls
+│   │   └── -- daemon/ ... 45 files                # removes app-owned mechanism copies
+│   └── ** test/ ... 34 files                      # uses public behavior or testing inspector
+├── packages/daemon/
+│   ├── ** package.json                            # exposes exactly four package paths
+│   ├── ++ src/testing/ ... 3 files                # read-only state inspection boundary
+│   ├── ** src/transport/ ... 16 files             # replaces compatibility facade
+│   ├── ++ test/actors/daemon-accepted-caller.ts   # package-owned accepted caller
+│   └── ~~ test/actors/ ... 6 files                # moved from apps/cli/test/helpers/
+├── meta-tests/src/
+│   ├── ++ cli-daemon-reachability.test.ts         # locks production import graph
+│   ├── ++ daemon-storage-boundary.test.ts         # locks testing storage boundary
+│   └── ** ... 3 files                             # locks exports, deletion, and lint rules
+├── ** AGENTS.md                                   # records final package ownership
+└── ** plans/000/symnav-stages.md                  # records completed architecture milestone
+```
+
+## Public surface
+
+```ts
+export class DaemonTestingInspector {
+  constructor(canonicalStateDirectory: string);
+  listInstances(): readonly DaemonTestingInstance[];
+  hasStateArtifacts(): boolean;
+  readDiagnostics(canonicalWorkspaceRoot: string, cursor?: number): DaemonTestingDiagnosticPage;
+  completionSpoolUsage(canonicalWorkspaceRoot: string): DaemonTestingSpoolUsage;
+}
+
+// Removed from DaemonPolicy:
+static fromSerialized(value: unknown): DaemonPolicy;
+toSerialized(): Readonly&lt;SerializedDaemonPolicy&gt;;
+```
+
+## Decisions
+
+- Chose a CLI invocation coordinator over the app-local daemon dispatcher, because argv classification and workspace discovery remain host responsibilities while execution belongs behind `DaemonClient`.
+- Chose a read-only testing inspector over exposing registry, diagnostic, or spool paths, because external assertions need observability without storage or mutation authority.
+- Chose package-owned actors with an injected executor URL over package tests naming CLI build artifacts, because daemon tests must not depend on app layout.
+- Chose focused package transport composition over retaining `LocalDaemonTransport`, because lifecycle, execution, result transfer, and socket owners now have one package boundary.
+- Chose exact compiler-backed import, export, clock, and storage inventories over regex or compatibility aliases, because ordinary TypeScript syntax must not bypass final ownership rules.
+
+## Look here
+
+- `apps/cli/src/cli-invocation-coordinator.ts:17`
+- `packages/daemon/src/testing/daemon-testing-inspector.ts:35`
+- `meta-tests/src/daemon-storage-boundary.test.ts:215`
+</pre><h2>Supplied commits</h2><pre>e09553a8269267cdd8ebec95ea4c00fc66712f75 Specify CLI invocation coordination
+
+65371fbba380b21a5077d13a2fa1a3666cc6877e Move invocation selection into CLI
+
+da4261619d7ff38b753b9a4ae6270ba4a3d154d4 Route CLI invocations through DaemonClient
+
+2f914dada453f486c2037fe51ac0bb1f3eb07a57 Specify public daemon lifecycle commands
+
+49ab7c945737136498f3a476288c79871947dfe5 Delegate daemon commands to DaemonClient
+
+ab417b09807c4e7978b2cc056984d775fa5c5c71 Lock top-level daemon composition
+
+75c9a72d5ae5f3e9f5b093583efc9c23b900952a Lock the reachable CLI daemon boundary
+
+803c02bbcb731ffaa88ce8ab4d020ce1e69a91ae Specify relative daemon control cwd
+
+ffa0bb284d2f62bf5182ba58abe779d3be40efe8 Normalize daemon control cwd
+
+cbcebf52c31b53e326ed7f69660d4fbf500a5d20 Align CLI coordinator boundary
+
+9945d596c052b1a7f89da4ddedc901ec82e37700 Exercise diagnostics through package daemon entry
+
+6d81d76fa7951f4a3f2fa147802533e5aac1006a Satisfy CLI test lint contracts
+
+5b940bd0e25a0534bddf2ce6aa7cb71ccc1a0fbf Specify daemon import syntax boundary
+
+17b00cd2375347cdc2ad00d08945f2ab0cb26e11 Enforce daemon import syntax boundary
+
+0a38145da68ebb8326db013bff10ec7a4b13f63f Specify syntax-complete daemon import detection
+
+e5f99828c066f30293374f1122e21fabd7b0e472 Parse TypeScript imports for daemon boundaries
+
+054424b3f5dd5e5ff40c8e6fc9db82e97f02481c Specify read-only daemon testing inspection
+
+d7f60b07fdce1cc039ffeb83802dcb2654f63ad5 Expose read-only daemon testing inspection
+
+6e441e4b4dbb742fe9361f8f1d98c8c53aa270c5 Specify test-only daemon inspector imports
+
+9e80c3d365099f1fcc95b8f88cac48435e57301f Restrict daemon inspector to tests
+
+be272702a940c937179923634d08b47d346bed5f Inspect daemon e2e state through testing API
+
+20559201afa9872c419222c3ca5723e60dc4ce65 Inspect daemon benchmark state through testing API
+
+d04aa0f7a6257690acfc1191978aac8fc4a91ea7 Own test process cleanup outside daemon mechanisms
+
+0afd69187db20001d18cac2487a2fc5870704c02 Specify rotated diagnostic inspection order
+
+fb6d864d3a20af5d5a8b4f44cf61007c76044e4f Inspect rotated daemon diagnostics chronologically
+
+86761bd6454434448eb055df9b8d4a2378290563 Inspect daemon isolation through testing API
+
+a567e24453aa2ab27bc32c9d87e0a74cc20d4fcc Move daemon state actors into daemon package
+
+9e31259fa8a43337ee5c5d1f09c8db2e637e6cf9 Move controlled daemon actor into daemon package
+
+9284116a4bb2be984054d9b3af010b31b61a90b2 Use package-owned daemon parity actors
+
+3b739006ef3e0b0896756358a9fbb5ecaa379473 Inspect persistent pressure through public status
+
+d698b1a55d0ce2e46c7bb716d0b7d4f866276516 Internalize daemon policy serialization
+
+9f4886435a5f71e2dbced0db83814529b10c414f Remove CLI-owned daemon mechanisms
+
+ff2888997bcb8a427960b4aa58de07cc6b7fc105 Replace daemon transport compatibility facade
+
+4d9755a425805d6a00d62770a7b2a2c44ead60d5 Lock final daemon package surface
+
+a92afc1a96d9b22fad3a8dbce93de85252c1e600 Handle invalid inspector state paths
+
+e72f3b10904ea371e7fdeddfce366245e123c5eb Format daemon testing lint cases
+
+fdc718dc8f7b91423487b8bcb8ba770de343e834 Specify invalid daemon inspector state reads
+
+d01799054780a684f9e197489d256c519c0f3276 Normalize invalid daemon inspector state reads
+
+4ed1de0052b29ec776a33e6e7101f1226d47f563 Specify exhaustive daemon export inventory
+
+a7d46afd33f45c9c4286f0f21810e5c9b68f2619 Inventory every TypeScript export form
+
+0ab7e9d011fd80fbada3485ae5176905cef6fe0b Lock daemon source and declaration exports
+
+ff983397427c3ba699899145d90796d00d83c84a Lock emitted daemon policy surface
+
+ac8fd267890b41820a5cd8e41e749950aaaa629a Specify equivalent daemon clock sources
+
+b6761ee46e629b0d66d1a2f39090f631b155cd2c Detect syntax-aware daemon clock sources
+
+2e06c2aa9720e715ca26349d3c74f284a453cb89 Specify adversarial daemon peer integration
+
+0ff9276304571e862c74260e870911500455122e Run adversarial peers through daemon client
+
+7e3dca4b03013d26a2fc02ed6f23c17192541bd6 Format invalid daemon inspector cases
+
+8976d7409f194904a3bf62653eb6bc98fc3b68ab Specify import-equals daemon reachability
+
+7db908eb985844967b82d22674a1651b0b574aae Parse import-equals daemon dependencies
+
+e49515135b2154bb27b38515f652755420ae3e08 Specify import-equals export inventory
+
+3af983dfece4ede0f1ecedc25ba5e8baf5311c5d Inventory import-equals exports
+
+3b9a572f4ee20111d388f3c49bbc36fc30c4455e Specify every inspector filesystem failure
+
+b56a4ea1d8f5f4af0f0bea361235ddadfb25f4fe Classify inspector artifact read failures
+
+7235fff84c81c5198cd7ba6586122a7b25c22d1b Specify semantic daemon clock sources
+
+63fdc227468de95ef89f28c831fd6fb7744541d9 Resolve daemon clock identifiers lexically
+
+5a5198db54764760e996f777d4d6e2b717a00680 Specify package test executor independence
+
+aea44a091f28ea01a26c2985630e7449d35ec024 Inject controlled daemon executor URL
+
+1eb3916559058fbf6294043dbad0f3e25f4444fe Specify runtime import-equals exports
+
+7ab16df4faf4d96e0440a10ada34d5835a42d3fb Classify import-equals exports semantically
+
+3d32eb0eecaaaa7e997258c45f58fef8a078faac Specify import-equals daemon clock aliases
+
+6b6632726ca97ee6d402bd3d33eada1372981365 Resolve import-equals daemon clock aliases
+
+b54aeca64d66ce5c248393f7c9a24a181ec9117a Specify external daemon storage boundary
+
+65bdd226ee069bedca46e3023847bd22a678a4d5 Inspect telemetry daemon state through testing API
+
+64aea4d5fbbd73d2bd62b6f2b576bce24903f45a Document final daemon package ownership
+
+688173885455dd0779b123bfbe90b7c5400b36fc Specify dynamic daemon clock imports
+
+21cb6cfda698e3edd072041cdb1140e52ca335ce Reject dynamic daemon clock imports
+
+279b629d8418a24161fb1fdf5a7ddd3a7ce37427 Specify computed daemon clock members
+
+fc3dc695bc8fd9de850781e6a2e030bb0864ee24 Classify computed daemon clock members
+
+7730a9feb527357e0a055631601e99ec1c06d350 Specify platform daemon path builders
+
+68a6240a80d653ceae9cd3299a88e28cb03d9532 Classify platform daemon path builders
+
+1d76592bbef9ba86bd827dbb64d523d8696fbf9a Specify contextual daemon storage paths
+
+a592cb32a44983538f3e82efe774dc0cfb26dd37 Classify contextual daemon storage paths
+
+8ddb833b3e1970598a3f523a4f02e1550546aec2 Specify aliased daemon clock sources
+
+40c8ab9dad7da6e8d38d8d8726a112ef8f754d97 Resolve aliased daemon clock sources
+
+44080a7563f3f7bafb268a7562028c3c7c627d32 Specify semantic daemon storage access
+
+bcfc89488ff8bf07bc8e3b8f5cff164725b422f0 Resolve semantic daemon storage access
+
+4f2ab33c179b5c6e321bbfd613bf79dbc0fb49d1 Specify callable daemon wall clocks
+
+fe36df025e9cb5ca17cf48d761c6d080c33d5f57 Classify callable daemon wall clocks
+
+25b93bac45053a3242f8e3f200a1ba26754c8c62 Specify dynamic daemon storage access
+
+69e1cd07c1245f5ff28c42e74adeee49a1086bc5 Classify dynamic daemon storage access
+
+0049b660538c3ea118c686e86b5d53e37ea42e51 Specify invoked daemon wall clocks
+
+ec5e4b7547c8a34effdc948beddcba9ad39d5cbe Classify invoked daemon wall clocks
+
+0ac6d1da7125858f26d69461d41fc0c463b0039d Specify promised daemon storage access
+
+b8a09975a59c9f7cdb8ddb4a66e418e3df856aa8 Classify promised daemon storage access
+
+748529679b40310b665720cbf13d217598778860 Specify default dynamic daemon storage access
+
+ea6c6321a634fdccfd10cdd1d67890c04a63bbbc Classify default dynamic daemon storage access
+
+e71da400a18c7972a09fa8d1bacc8a9fc807a59f Specify callback-body daemon storage access
+
+5cbc1cde6ffcd802ab4e30750df3c2001a4ed04a Classify callback-body daemon storage access
+
+c7f36b1b49115972d97ff20def8019a9ec1323a5 Specify aliased callback daemon storage access
+
+673208bc0b510581b6aff988fdc608335c1f77df Resolve aliased callback daemon storage access
+
+66f3c9053f705238dda202dfd9ec1401c72c3db2 Use native paths in CLI reachability gate
+
+eb512e8ea7a57fcc58f8709f8dadf152e725d3d7 Read daemon clock inventory from file URLs
+
+1599252152c565631066bcdc312f8669438beacd Align daemon test workspace path dialect
+
+d07002357d3e9596bfaae910a1ac63b77981620b Track disconnected daemon actor directly
+</pre></html>

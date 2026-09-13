@@ -1,0 +1,1541 @@
+diff --git a/apps/cli/src/command-execution-result.ts b/apps/cli/src/command-execution-result.ts
+index f1d07fd49..e8882bb0b 100644
+--- a/apps/cli/src/command-execution-result.ts
++++ b/apps/cli/src/command-execution-result.ts
+@@ -5,7 +5,11 @@ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import { Writable } from "node:stream";
+ import { finished as streamFinished } from "node:stream/promises";
+-import type { DaemonPolicyValues } from "@symnav/daemon";
++import type {
++  DaemonExecutorExecutionResult,
++  DaemonExecutorOutput,
++  DaemonPolicyValues,
++} from "@symnav/daemon";
+ import type { ProgramContext } from "./program-context.js";
+ 
+ export type CommandOutputStream = "stdout" | "stderr";
+@@ -22,13 +26,13 @@ export interface CommandOutputSummary {
+   readonly sha256: string;
+ }
+ 
+-export interface CommandOutput {
++export interface CommandOutput extends DaemonExecutorOutput {
+   readonly summary: CommandOutputSummary;
+   records(offset?: number): AsyncIterable<CommandOutputRecord>;
+   dispose(): Promise<void>;
+ }
+ 
+-export interface CommandExecutionResult {
++export interface CommandExecutionResult extends DaemonExecutorExecutionResult {
+   readonly output: CommandOutput;
+   readonly exitCode: number;
+ }
+@@ -37,7 +41,7 @@ export type CommandExecutionMode = "cold" | "warm" | "fallback";
+ 
+ export interface DispatchedCommandResult {
+   readonly mode: CommandExecutionMode;
+-  readonly result: CommandExecutionResult;
++  readonly result: DaemonExecutorExecutionResult;
+ }
+ 
+ export interface CliExecutionRequest {
+@@ -380,7 +384,7 @@ export class CommandOutputCapacityError extends Error {
+ 
+ export class CommandResultReplayer {
+   static async replay(
+-    result: CommandExecutionResult,
++    result: DaemonExecutorExecutionResult,
+     context: ProgramContext,
+   ): Promise<never | void> {
+     try {
+diff --git a/apps/cli/src/daemon/daemon-client-result-capture.test.ts b/apps/cli/src/daemon/daemon-client-result-capture.test.ts
+new file mode 100644
+index 000000000..4ca6f3889
+--- /dev/null
++++ b/apps/cli/src/daemon/daemon-client-result-capture.test.ts
+@@ -0,0 +1,262 @@
++import { createHash } from "node:crypto";
++import {
++  constants,
++  mkdirSync,
++  mkdtempSync,
++  readFileSync,
++  readdirSync,
++  renameSync,
++  rmSync,
++  statSync,
++  symlinkSync,
++  writeFileSync,
++} from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { afterEach, describe, expect, it } from "vitest";
++import type { DaemonSequencedOutputRecord } from "@symnav/daemon";
++import { DaemonClientResultCapture } from "./daemon-client-result-capture.js";
++
++describe("DaemonClientResultCapture", () => {
++  const directories: string[] = [];
++
++  afterEach(() => {
++    for (const directory of directories) rmSync(directory, { recursive: true, force: true });
++    directories.length = 0;
++  });
++
++  it("spills on the first byte beyond the inline threshold without changing framing", async () => {
++    const root = temporaryDirectory(directories);
++    const directory = join(root, "capture");
++    const capture = new DaemonClientResultCapture({
++      directory,
++      policy: policy({ inlineRawBytes: 4 }),
++    });
++    const records: DaemonSequencedOutputRecord[] = [
++      { sequence: 0, stream: "stdout", bytes: Buffer.from([0, 255, 10, 13]) },
++      { sequence: 1, stream: "stderr", bytes: Buffer.from([128]) },
++    ];
++
++    await capture.append(records[0]!);
++    expect(() => statSync(directory)).toThrow();
++    await capture.append(records[1]!);
++    const [file] = readdirSync(directory);
++    expect(file).toMatch(/^command-output-.+\.spool$/);
++    if (process.platform !== "win32") {
++      expect(statSync(directory).mode & 0o777).toBe(0o700);
++      expect(statSync(join(directory, file!)).mode & 0o777).toBe(0o600);
++    }
++    const captured = await capture.finish(7);
++
++    expect(captured.summary).toEqual({
++      rawBytes: 5,
++      recordCount: 2,
++      sha256: digest(records),
++    });
++    expect(captured.result.exitCode).toBe(7);
++    expect(captured.result.output).not.toHaveProperty("summary");
++    expect(await replay(captured.result.output.records())).toEqual([
++      { stream: "stdout", bytes: "00ff0a0d" },
++      { stream: "stderr", bytes: "80" },
++    ]);
++    await captured.result.output.dispose();
++    expect(readdirSync(directory)).toEqual([]);
++    await captured.result.output.dispose();
++  });
++
++  it("replays more than eight MiB of interleaved binary output byte for byte", async () => {
++    const directory = temporaryDirectory(directories);
++    const maximumChunkRawBytes = 64 * 1024;
++    const recordCount = 129;
++    const capture = new DaemonClientResultCapture({
++      directory,
++      policy: {
++        maximumChunkRawBytes,
++        inlineRawBytes: 0,
++        maximumResultRawBytes: recordCount * maximumChunkRawBytes,
++      },
++    });
++    const expected: Array<{ stream: "stdout" | "stderr"; bytes: string }> = [];
++    for (let sequence = 0; sequence < recordCount; sequence += 1) {
++      const record: DaemonSequencedOutputRecord = {
++        sequence,
++        stream: sequence % 2 === 0 ? "stdout" : "stderr",
++        bytes: Buffer.alloc(maximumChunkRawBytes, sequence),
++      };
++      expected.push({ stream: record.stream, bytes: Buffer.from(record.bytes).toString("hex") });
++      await capture.append(record);
++    }
++
++    const captured = await capture.finish(0);
++
++    expect(captured.summary.rawBytes).toBe(recordCount * maximumChunkRawBytes);
++    expect(await replay(captured.result.output.records())).toEqual(expected);
++    await captured.result.output.dispose();
++  }, 20_000);
++
++  it("accepts the result limit and rejects the first byte beyond it", async () => {
++    const directory = temporaryDirectory(directories);
++    const capture = new DaemonClientResultCapture({
++      directory,
++      policy: {
++        maximumChunkRawBytes: 4,
++        inlineRawBytes: 0,
++        maximumResultRawBytes: 5,
++      },
++    });
++
++    await capture.append({ sequence: 0, stream: "stdout", bytes: Buffer.alloc(4) });
++    await capture.append({ sequence: 1, stream: "stderr", bytes: Buffer.alloc(1) });
++    await expect(
++      capture.append({ sequence: 2, stream: "stdout", bytes: Buffer.alloc(1) }),
++    ).rejects.toMatchObject({
++      name: "CommandOutputCapacityError",
++      message: "Command output exceeds response capacity",
++    });
++    await expect(capture.finish(0)).rejects.toMatchObject({
++      name: "CommandOutputCapacityError",
++    });
++    await capture.dispose();
++    expect(readdirSync(directory)).toEqual([]);
++  });
++
++  it("rejects a record beyond the chunk bound before storing it", async () => {
++    const directory = temporaryDirectory(directories);
++    const capture = new DaemonClientResultCapture({
++      directory,
++      policy: {
++        maximumChunkRawBytes: 3,
++        inlineRawBytes: 0,
++        maximumResultRawBytes: 10,
++      },
++    });
++
++    await expect(
++      capture.append({ sequence: 0, stream: "stdout", bytes: Buffer.alloc(4) }),
++    ).rejects.toThrow("Command output record exceeds chunk capacity");
++    await capture.dispose();
++    expect(readdirSync(directory)).toEqual([]);
++  });
++
++  it.each([
++    ["truncated header", (encoded: Buffer) => encoded.subarray(0, 8), "Truncated command output"],
++    [
++      "wrong sequence",
++      (encoded: Buffer) => {
++        encoded.writeUInt32BE(1, 0);
++        return encoded;
++      },
++      "Corrupt command output",
++    ],
++    [
++      "invalid stream",
++      (encoded: Buffer) => {
++        encoded.writeUInt8(2, 4);
++        return encoded;
++      },
++      "Corrupt command output",
++    ],
++    [
++      "oversized record",
++      (encoded: Buffer) => {
++        encoded.writeUInt32BE(4, 5);
++        return Buffer.concat([encoded.subarray(0, 9), Buffer.alloc(4)]);
++      },
++      "Corrupt command output",
++    ],
++  ] as const)("rejects a %s in stored output", async (_name, corrupt, message) => {
++    const { directory, path, output } = await storedOutput(directories);
++    writeFileSync(path, corrupt(readFileSync(path)));
++
++    await expect(replay(output.records())).rejects.toThrow(message);
++    await output.dispose();
++    expect(readdirSync(directory)).toEqual([]);
++  });
++
++  it("requires a regular result file", async () => {
++    const { path, output } = await storedOutput(directories);
++    rmSync(path);
++    mkdirSync(path);
++
++    await expect(replay(output.records())).rejects.toThrow(
++      "Command output spool is not a regular file",
++    );
++  });
++
++  it.runIf("O_NOFOLLOW" in constants && constants.O_NOFOLLOW !== 0)(
++    "does not follow a replacement result-file link",
++    async () => {
++      const { path, output } = await storedOutput(directories);
++      const target = `${path}.target`;
++      renameSync(path, target);
++      symlinkSync(target, path);
++
++      await expect(replay(output.records())).rejects.toBeDefined();
++      await output.dispose();
++    },
++  );
++});
++
++function policy(overrides: Partial<CapturePolicy> = {}): CapturePolicy {
++  return {
++    maximumChunkRawBytes: 64 * 1024,
++    inlineRawBytes: 256 * 1024,
++    maximumResultRawBytes: 256 * 1024 * 1024,
++    ...overrides,
++  };
++}
++
++interface CapturePolicy {
++  readonly maximumChunkRawBytes: number;
++  readonly inlineRawBytes: number;
++  readonly maximumResultRawBytes: number;
++}
++
++function temporaryDirectory(directories: string[]): string {
++  const directory = mkdtempSync(join(tmpdir(), "symnav-client-capture-"));
++  directories.push(directory);
++  return directory;
++}
++
++function digest(records: readonly DaemonSequencedOutputRecord[]): string {
++  const hash = createHash("sha256");
++  for (const record of records) hash.update(encode(record).subarray(4));
++  return hash.digest("hex");
++}
++
++function encode(record: DaemonSequencedOutputRecord): Buffer {
++  const header = Buffer.alloc(9);
++  header.writeUInt32BE(record.sequence, 0);
++  header.writeUInt8(record.stream === "stdout" ? 0 : 1, 4);
++  header.writeUInt32BE(record.bytes.byteLength, 5);
++  return Buffer.concat([header, Buffer.from(record.bytes)]);
++}
++
++async function replay(
++  records: AsyncIterable<{ readonly stream: "stdout" | "stderr"; readonly bytes: Uint8Array }>,
++): Promise<Array<{ stream: "stdout" | "stderr"; bytes: string }>> {
++  const replayed = [];
++  for await (const record of records) {
++    replayed.push({ stream: record.stream, bytes: Buffer.from(record.bytes).toString("hex") });
++  }
++  return replayed;
++}
++
++async function storedOutput(directories: string[]) {
++  const directory = temporaryDirectory(directories);
++  const capture = new DaemonClientResultCapture({
++    directory,
++    policy: {
++      maximumChunkRawBytes: 3,
++      inlineRawBytes: 0,
++      maximumResultRawBytes: 10,
++    },
++  });
++  await capture.append({ sequence: 0, stream: "stdout", bytes: Buffer.from([1]) });
++  const captured = await capture.finish(0);
++  return {
++    directory,
++    path: join(directory, readdirSync(directory)[0]!),
++    output: captured.result.output,
++  };
++}
+diff --git a/apps/cli/src/daemon/daemon-client-result-capture.ts b/apps/cli/src/daemon/daemon-client-result-capture.ts
+new file mode 100644
+index 000000000..5c697915f
+--- /dev/null
++++ b/apps/cli/src/daemon/daemon-client-result-capture.ts
+@@ -0,0 +1,231 @@
++import { createHash, randomUUID } from "node:crypto";
++import { constants } from "node:fs";
++import { mkdir, open, unlink, type FileHandle } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import type {
++  DaemonExecutorExecutionResult,
++  DaemonExecutorOutput,
++  DaemonOutputRecord,
++  DaemonPolicyValues,
++  DaemonSequencedOutputRecord,
++} from "@symnav/daemon";
++
++const RECORD_HEADER_BYTES = 9;
++
++export interface DaemonOutputCapture {
++  append(record: DaemonSequencedOutputRecord): Promise<void>;
++  finish(exitCode: number): Promise<DaemonCapturedOutput>;
++  dispose(): Promise<void>;
++}
++
++export interface DaemonCapturedOutputSummary {
++  readonly rawBytes: number;
++  readonly recordCount: number;
++  readonly sha256: string;
++}
++
++export interface DaemonCapturedOutput {
++  readonly result: DaemonExecutorExecutionResult;
++  readonly summary: DaemonCapturedOutputSummary;
++}
++
++export interface DaemonClientResultCaptureOptions {
++  readonly directory?: string;
++  readonly policy: Pick<
++    DaemonPolicyValues["output"],
++    "maximumChunkRawBytes" | "inlineRawBytes" | "maximumResultRawBytes"
++  >;
++}
++
++export class DaemonClientResultCapture implements DaemonOutputCapture {
++  private readonly directory: string;
++  private readonly inlineRawBytes: number;
++  private readonly maximumResultRawBytes: number;
++  private readonly maximumChunkRawBytes: number;
++  private readonly hash = createHash("sha256");
++  private readonly inlineRecords: DaemonSequencedOutputRecord[] = [];
++  private file: FileHandle | undefined;
++  private filePath: string | undefined;
++  private rawBytes = 0;
++  private recordCount = 0;
++  private finished = false;
++  private tail: Promise<void> = Promise.resolve();
++  private failure: Error | undefined;
++
++  constructor(options: DaemonClientResultCaptureOptions) {
++    this.directory = options.directory ?? tmpdir();
++    this.inlineRawBytes = options.policy.inlineRawBytes;
++    this.maximumResultRawBytes = options.policy.maximumResultRawBytes;
++    this.maximumChunkRawBytes = options.policy.maximumChunkRawBytes;
++  }
++
++  append(record: DaemonSequencedOutputRecord): Promise<void> {
++    const operation = this.tail.then(async () => {
++      if (this.finished) throw new Error("Command output is already finished");
++      if (record.sequence !== this.recordCount) {
++        throw new Error("Unexpected command output sequence");
++      }
++      if (record.bytes.byteLength > this.maximumChunkRawBytes) {
++        throw new Error("Command output record exceeds chunk capacity");
++      }
++      if (this.rawBytes + record.bytes.byteLength > this.maximumResultRawBytes) {
++        throw new DaemonClientResultCapacityError();
++      }
++      await this.storeRecord({ ...record, bytes: Buffer.from(record.bytes) });
++    });
++    this.tail = operation.catch((error: unknown) => {
++      this.failure = error instanceof Error ? error : new Error(String(error));
++    });
++    return operation;
++  }
++
++  async finish(exitCode: number): Promise<DaemonCapturedOutput> {
++    if (this.finished) throw new Error("Command output is already finished");
++    await this.tail;
++    if (this.failure !== undefined) throw this.failure;
++    this.finished = true;
++    await this.file?.close();
++    this.file = undefined;
++    const summary: DaemonCapturedOutputSummary = {
++      rawBytes: this.rawBytes,
++      recordCount: this.recordCount,
++      sha256: this.hash.digest("hex"),
++    };
++    return {
++      result: {
++        exitCode,
++        output: new DaemonStoredExecutorOutput(
++          [...this.inlineRecords],
++          this.filePath,
++          this.maximumChunkRawBytes,
++        ),
++      },
++      summary,
++    };
++  }
++
++  async dispose(): Promise<void> {
++    await this.file?.close();
++    this.file = undefined;
++    if (this.filePath === undefined) return;
++    await DaemonClientResultCapture.remove(this.filePath);
++    this.filePath = undefined;
++  }
++
++  private async storeRecord(record: DaemonSequencedOutputRecord): Promise<void> {
++    const encoded = DaemonClientResultCapture.encodeRecord(record);
++    if (this.file === undefined && this.rawBytes + record.bytes.byteLength > this.inlineRawBytes) {
++      await this.spillInlineRecords();
++    }
++    if (this.file === undefined) this.inlineRecords.push(record);
++    else await this.file.write(encoded);
++    this.hash.update(encoded.subarray(4));
++    this.rawBytes += record.bytes.byteLength;
++    this.recordCount += 1;
++  }
++
++  private async spillInlineRecords(): Promise<void> {
++    await mkdir(this.directory, { recursive: true, mode: 0o700 });
++    this.filePath = join(this.directory, `command-output-${randomUUID()}.spool`);
++    this.file = await open(this.filePath, "wx", 0o600);
++    for (const record of this.inlineRecords) {
++      await this.file.write(DaemonClientResultCapture.encodeRecord(record));
++    }
++    this.inlineRecords.length = 0;
++  }
++
++  private static encodeRecord(record: DaemonSequencedOutputRecord): Buffer {
++    const header = Buffer.alloc(RECORD_HEADER_BYTES);
++    header.writeUInt32BE(record.sequence, 0);
++    header.writeUInt8(record.stream === "stdout" ? 0 : 1, 4);
++    header.writeUInt32BE(record.bytes.byteLength, 5);
++    return Buffer.concat([header, Buffer.from(record.bytes)]);
++  }
++
++  private static async remove(filePath: string): Promise<void> {
++    await unlink(filePath).catch((error: NodeJS.ErrnoException) => {
++      if (error.code !== "ENOENT") throw error;
++    });
++  }
++}
++
++class DaemonClientResultCapacityError extends Error {
++  constructor() {
++    super("Command output exceeds response capacity");
++    this.name = "CommandOutputCapacityError";
++  }
++}
++
++export class DaemonStoredExecutorOutput implements DaemonExecutorOutput {
++  constructor(
++    private readonly inlineRecords: readonly DaemonSequencedOutputRecord[],
++    private readonly filePath?: string,
++    private readonly maximumRecordBytes?: number,
++  ) {}
++
++  async *records(): AsyncIterable<DaemonOutputRecord> {
++    const records =
++      this.filePath === undefined
++        ? this.inlineRecords
++        : DaemonStoredExecutorOutput.decodeFileRecords(this.filePath, this.maximumRecordBytes!);
++    for await (const record of records) yield { stream: record.stream, bytes: record.bytes };
++  }
++
++  async dispose(): Promise<void> {
++    if (this.filePath === undefined) return;
++    await unlink(this.filePath).catch((error: NodeJS.ErrnoException) => {
++      if (error.code !== "ENOENT") throw error;
++    });
++  }
++
++  private static async *decodeFileRecords(
++    filePath: string,
++    maximumRecordBytes: number,
++  ): AsyncIterable<DaemonSequencedOutputRecord> {
++    const noFollow = "O_NOFOLLOW" in constants ? constants.O_NOFOLLOW : 0;
++    const handle = await open(filePath, constants.O_RDONLY | noFollow);
++    try {
++      const metadata = await handle.stat();
++      if (!metadata.isFile()) throw new Error("Command output spool is not a regular file");
++      let position = 0;
++      let expectedSequence = 0;
++      while (position < metadata.size) {
++        const header = Buffer.alloc(RECORD_HEADER_BYTES);
++        await DaemonStoredExecutorOutput.readExact(handle, header, position);
++        position += RECORD_HEADER_BYTES;
++        const sequence = header.readUInt32BE(0);
++        const streamByte = header.readUInt8(4);
++        const length = header.readUInt32BE(5);
++        if (sequence !== expectedSequence || streamByte > 1 || length > maximumRecordBytes) {
++          throw new Error("Corrupt command output");
++        }
++        const bytes = Buffer.alloc(length);
++        await DaemonStoredExecutorOutput.readExact(handle, bytes, position);
++        position += length;
++        expectedSequence += 1;
++        yield { sequence, stream: streamByte === 0 ? "stdout" : "stderr", bytes };
++      }
++    } finally {
++      await handle.close();
++    }
++  }
++
++  private static async readExact(
++    handle: FileHandle,
++    target: Buffer,
++    position: number,
++  ): Promise<void> {
++    let readBytes = 0;
++    while (readBytes < target.byteLength) {
++      const result = await handle.read(
++        target,
++        readBytes,
++        target.byteLength - readBytes,
++        position + readBytes,
++      );
++      if (result.bytesRead === 0) throw new Error("Truncated command output");
++      readBytes += result.bytesRead;
++    }
++  }
++}
+diff --git a/apps/cli/src/daemon/daemon-command-dispatcher.ts b/apps/cli/src/daemon/daemon-command-dispatcher.ts
+index 9ef4ab7a0..2a994025a 100644
+--- a/apps/cli/src/daemon/daemon-command-dispatcher.ts
++++ b/apps/cli/src/daemon/daemon-command-dispatcher.ts
+@@ -1,6 +1,11 @@
+ import { randomUUID } from "node:crypto";
+ import { createWorkspace } from "@symnav/core";
+-import type { DaemonCommandName, DaemonExecutionFailureCode, DaemonPolicy } from "@symnav/daemon";
++import type {
++  DaemonCommandName,
++  DaemonExecutionFailureCode,
++  DaemonExecutorExecutionResult,
++  DaemonPolicy,
++} from "@symnav/daemon";
+ import { CliProgramExecutor } from "../cli-program-executor.js";
+ import { daemonExecutorModuleUrl } from "../daemon-executor.js";
+ import type {
+@@ -293,7 +298,7 @@ export class DaemonCommandDispatcher {
+     };
+   }
+ 
+-  private static isCompleteResult(result: CommandExecutionResult): boolean {
++  private static isCompleteResult(result: DaemonExecutorExecutionResult): boolean {
+     return Number.isInteger(result.exitCode) && result.output !== undefined;
+   }
+ 
+diff --git a/apps/cli/src/daemon/daemon-result-transfer-receiver.test.ts b/apps/cli/src/daemon/daemon-result-transfer-receiver.test.ts
+new file mode 100644
+index 000000000..44e969c29
+--- /dev/null
++++ b/apps/cli/src/daemon/daemon-result-transfer-receiver.test.ts
+@@ -0,0 +1,290 @@
++import { createHash } from "node:crypto";
++import { describe, expect, it, vi } from "vitest";
++import type {
++  DaemonExecutorExecutionResult,
++  DaemonOutputRecord,
++  DaemonSequencedOutputRecord,
++} from "@symnav/daemon";
++import type { CompletionSpoolManifest } from "./completion-spool.js";
++import type { DaemonExecutionServerFrame, DaemonResultChunk } from "./daemon-protocol.js";
++import type {
++  DaemonCapturedOutput,
++  DaemonCapturedOutputSummary,
++  DaemonOutputCapture,
++} from "./daemon-client-result-capture.js";
++import { DaemonResultTransferReceiver } from "./daemon-result-transfer-receiver.js";
++
++describe("DaemonResultTransferReceiver", () => {
++  it("requires one matching manifest at the start of every connection", async () => {
++    const output = new FakeCapture(summary([]));
++    const receiver = new DaemonResultTransferReceiver("request", output);
++
++    await expect(receiver.acceptChunk(chunk(0))).rejects.toThrow(
++      "Daemon returned an invalid result chunk",
++    );
++    expect(() => receiver.acceptEnd(resultEnd(manifest()))).toThrow(
++      "Daemon result transfer did not match its manifest",
++    );
++    expect(() =>
++      receiver.acceptManifest(resultManifest(manifest(), { requestId: "other" })),
++    ).toThrow("Daemon result manifest has invalid coordinates");
++    receiver.acceptManifest(resultManifest(manifest()));
++    expect(() => receiver.acceptManifest(resultManifest(manifest()))).toThrow(
++      "Duplicate result manifest",
++    );
++
++    receiver.beginConnection();
++    expect(receiver.manifest).toEqual(manifest());
++    expect(receiver.nextOffset).toBe(0);
++    expect(receiver.terminal).toBe(false);
++    receiver.acceptManifest(resultManifest(manifest()));
++
++    receiver.beginConnection();
++    expect(() =>
++      receiver.acceptManifest(resultManifest({ ...manifest(), transferId: "different" })),
++    ).toThrow("Daemon resumed with a different result manifest");
++  });
++
++  it.each([
++    { requestId: "other" },
++    { instanceId: "other" },
++    { exitCode: 1 },
++    { rawBytes: 1 },
++    { recordCount: 1 },
++    { sha256: "f".repeat(64) },
++  ] as const)("rejects a changed resumed manifest: %j", (change) => {
++    const receiver = new DaemonResultTransferReceiver("request", new FakeCapture(summary([])));
++    receiver.acceptManifest(resultManifest(manifest()));
++    receiver.beginConnection();
++
++    expect(() => receiver.acceptManifest(resultManifest({ ...manifest(), ...change }))).toThrow(
++      "Daemon resumed with a different result manifest",
++    );
++  });
++
++  it("advances its offset only after the matching record is durably appended", async () => {
++    let releaseAppend!: () => void;
++    const appendGate = new Promise<void>((resolve) => {
++      releaseAppend = resolve;
++    });
++    const output = new FakeCapture(summary([]), async () => appendGate);
++    const receiver = new DaemonResultTransferReceiver("request", output);
++    receiver.acceptManifest(resultManifest(manifest({ recordCount: 1, rawBytes: 1 })));
++
++    const accepting = receiver.acceptChunk(chunk(0));
++    expect(receiver.nextOffset).toBe(0);
++    releaseAppend();
++    await accepting;
++
++    expect(receiver.nextOffset).toBe(1);
++    expect(output.appended).toEqual([{ sequence: 0, stream: "stdout", bytes: Buffer.from("a") }]);
++    receiver.beginConnection();
++    expect(receiver.manifest).toEqual(manifest({ recordCount: 1, rawBytes: 1 }));
++    expect(receiver.nextOffset).toBe(1);
++    expect(receiver.terminal).toBe(false);
++    receiver.acceptManifest(resultManifest(manifest({ recordCount: 1, rawBytes: 1 })));
++  });
++
++  it.each([
++    { transferId: "other" },
++    { requestId: "other" },
++    { offset: 1 },
++    { sequence: 1 },
++  ] as const)("rejects invalid chunk coordinates: %j", async (change) => {
++    const receiver = new DaemonResultTransferReceiver("request", new FakeCapture(summary([])));
++    receiver.acceptManifest(resultManifest(manifest({ recordCount: 1, rawBytes: 1 })));
++
++    await expect(receiver.acceptChunk({ ...chunk(0), ...change })).rejects.toThrow(
++      "Daemon returned an invalid result chunk",
++    );
++  });
++
++  it("requires one matching end after every manifest record", async () => {
++    const records = [chunk(0), chunk(1, "stderr")];
++    const expectedSummary = summary(records);
++    const expectedManifest = manifest(expectedSummary);
++    const receiver = new DaemonResultTransferReceiver("request", new FakeCapture(expectedSummary));
++    receiver.acceptManifest(resultManifest(expectedManifest));
++    expect(() => receiver.acceptEnd(resultEnd(expectedManifest))).toThrow(
++      "Daemon result transfer did not match its manifest",
++    );
++    for (const record of records) await receiver.acceptChunk(record);
++    receiver.acceptEnd(resultEnd(expectedManifest));
++
++    expect(receiver.terminal).toBe(true);
++    await expect(receiver.acceptChunk(chunk(2))).rejects.toThrow(
++      "Daemon returned an invalid result chunk",
++    );
++    expect(() => receiver.acceptEnd(resultEnd(expectedManifest))).toThrow(
++      "Daemon result transfer did not match its manifest",
++    );
++  });
++
++  it.each([
++    { instanceId: "other" },
++    { transferId: "other" },
++    { requestId: "other" },
++    { rawBytes: 2 },
++    { recordCount: 2 },
++    { sha256: "f".repeat(64) },
++  ] as const)("rejects invalid end coordinates: %j", (change) => {
++    const receiver = new DaemonResultTransferReceiver("request", new FakeCapture(summary([])));
++    receiver.acceptManifest(resultManifest(manifest()));
++
++    expect(() => receiver.acceptEnd({ ...resultEnd(manifest()), ...change })).toThrow(
++      "Daemon result transfer did not match its manifest",
++    );
++  });
++
++  it("returns the captured result only after terminal summary validation", async () => {
++    const expectedSummary = summary([]);
++    const output = new FakeCapture(expectedSummary);
++    const receiver = new DaemonResultTransferReceiver("request", output);
++
++    await expect(receiver.finish()).rejects.toThrow("Daemon result transfer is incomplete");
++    receiver.acceptManifest(resultManifest(manifest(expectedSummary)));
++    receiver.acceptEnd(resultEnd(manifest(expectedSummary)));
++
++    await expect(receiver.finish()).resolves.toBe(output.result);
++    expect(output.finishExitCodes).toEqual([0]);
++  });
++
++  it("disposes a captured result that fails digest validation", async () => {
++    const output = new FakeCapture({ ...summary([]), sha256: "f".repeat(64) });
++    const receiver = new DaemonResultTransferReceiver("request", output);
++    receiver.acceptManifest(resultManifest(manifest()));
++    receiver.acceptEnd(resultEnd(manifest()));
++
++    await expect(receiver.finish()).rejects.toThrow(
++      "Daemon result transfer failed digest validation",
++    );
++    expect(output.resultOutput.dispose).toHaveBeenCalledOnce();
++  });
++
++  it("disposes abandoned partial capture once but leaves completed output caller-owned", async () => {
++    const partial = new FakeCapture(summary([]));
++    const partialReceiver = new DaemonResultTransferReceiver("request", partial);
++    partialReceiver.acceptManifest(resultManifest(manifest()));
++    await partialReceiver.dispose();
++    await partialReceiver.dispose();
++    expect(partial.disposeCalls).toBe(1);
++
++    const completed = new FakeCapture(summary([]));
++    const completedReceiver = new DaemonResultTransferReceiver("request", completed);
++    completedReceiver.acceptManifest(resultManifest(manifest()));
++    completedReceiver.acceptEnd(resultEnd(manifest()));
++    await completedReceiver.finish();
++    await completedReceiver.dispose();
++    expect(completed.disposeCalls).toBe(0);
++    expect(completed.resultOutput.dispose).not.toHaveBeenCalled();
++  });
++});
++
++class FakeCapture implements DaemonOutputCapture {
++  readonly appended: DaemonSequencedOutputRecord[] = [];
++  readonly finishExitCodes: number[] = [];
++  readonly resultOutput = new FakeOutput();
++  readonly result: DaemonExecutorExecutionResult = { exitCode: 0, output: this.resultOutput };
++  disposeCalls = 0;
++
++  constructor(
++    private readonly capturedSummary: DaemonCapturedOutputSummary,
++    private readonly appendOperation: () => Promise<void> = () => Promise.resolve(),
++  ) {}
++
++  async append(record: DaemonSequencedOutputRecord): Promise<void> {
++    await this.appendOperation();
++    this.appended.push({ ...record, bytes: Buffer.from(record.bytes) });
++  }
++
++  finish(exitCode: number): Promise<DaemonCapturedOutput> {
++    this.finishExitCodes.push(exitCode);
++    return Promise.resolve({
++      result: this.result,
++      summary: this.capturedSummary,
++    });
++  }
++
++  dispose(): Promise<void> {
++    this.disposeCalls += 1;
++    return Promise.resolve();
++  }
++}
++
++class FakeOutput {
++  readonly dispose = vi.fn(() => Promise.resolve());
++
++  async *records(): AsyncIterable<DaemonOutputRecord> {}
++}
++
++function manifest(overrides: Partial<CompletionSpoolManifest> = {}): CompletionSpoolManifest {
++  return {
++    transferId: "transfer",
++    requestId: "request",
++    instanceId: "instance",
++    exitCode: 0,
++    rawBytes: 0,
++    recordCount: 0,
++    sha256: createHash("sha256").digest("hex"),
++    ...overrides,
++  };
++}
++
++function resultManifest(
++  value: CompletionSpoolManifest,
++  overrides: Partial<ResultManifestFrame> = {},
++): ResultManifestFrame {
++  return {
++    kind: "result-manifest",
++    instanceId: value.instanceId,
++    processToken: "token",
++    requestId: value.requestId,
++    manifest: value,
++    ...overrides,
++  };
++}
++
++function resultEnd(
++  value: CompletionSpoolManifest,
++): Extract<DaemonExecutionServerFrame, { readonly kind: "result-end" }> {
++  return {
++    kind: "result-end",
++    instanceId: value.instanceId,
++    processToken: "token",
++    requestId: value.requestId,
++    transferId: value.transferId,
++    rawBytes: value.rawBytes,
++    recordCount: value.recordCount,
++    sha256: value.sha256,
++  };
++}
++
++type ResultManifestFrame = Extract<
++  DaemonExecutionServerFrame,
++  { readonly kind: "result-manifest" }
++>;
++
++function chunk(sequence: number, stream: "stdout" | "stderr" = "stdout"): DaemonResultChunk {
++  return {
++    transferId: "transfer",
++    requestId: "request",
++    offset: sequence,
++    sequence,
++    stream,
++    bytes: Buffer.from(String.fromCharCode(97 + sequence)),
++  };
++}
++
++function summary(records: readonly DaemonResultChunk[]): DaemonCapturedOutputSummary {
++  const hash = createHash("sha256");
++  let rawBytes = 0;
++  for (const record of records) {
++    const encoded = Buffer.alloc(5 + record.bytes.byteLength);
++    encoded.writeUInt8(record.stream === "stdout" ? 0 : 1, 0);
++    encoded.writeUInt32BE(record.bytes.byteLength, 1);
++    Buffer.from(record.bytes).copy(encoded, 5);
++    hash.update(encoded);
++    rawBytes += record.bytes.byteLength;
++  }
++  return { rawBytes, recordCount: records.length, sha256: hash.digest("hex") };
++}
+diff --git a/apps/cli/src/daemon/daemon-result-transfer-receiver.ts b/apps/cli/src/daemon/daemon-result-transfer-receiver.ts
+new file mode 100644
+index 000000000..e39e20bca
+--- /dev/null
++++ b/apps/cli/src/daemon/daemon-result-transfer-receiver.ts
+@@ -0,0 +1,156 @@
++import type { DaemonExecutorExecutionResult } from "@symnav/daemon";
++import type { CompletionSpoolManifest } from "./completion-spool.js";
++import type { DaemonExecutionServerFrame, DaemonResultChunk } from "./daemon-protocol.js";
++import type {
++  DaemonCapturedOutputSummary,
++  DaemonOutputCapture,
++} from "./daemon-client-result-capture.js";
++
++type ResultManifestFrame = Extract<
++  DaemonExecutionServerFrame,
++  { readonly kind: "result-manifest" }
++>;
++
++type ResultEndFrame = Extract<DaemonExecutionServerFrame, { readonly kind: "result-end" }>;
++
++export class DaemonResultTransferReceiver {
++  private expectedManifest: CompletionSpoolManifest | undefined;
++  private nextRecordOffset = 0;
++  private manifestReceived = false;
++  private terminalReceived = false;
++  private completed = false;
++  private disposal: Promise<void> | undefined;
++
++  constructor(
++    private readonly requestId: string,
++    private readonly output: DaemonOutputCapture,
++  ) {}
++
++  get manifest(): CompletionSpoolManifest | undefined {
++    return this.expectedManifest;
++  }
++
++  get nextOffset(): number {
++    return this.nextRecordOffset;
++  }
++
++  get terminal(): boolean {
++    return this.terminalReceived;
++  }
++
++  beginConnection(): void {
++    this.manifestReceived = false;
++    this.terminalReceived = false;
++  }
++
++  acceptManifest(frame: ResultManifestFrame): void {
++    if (this.manifestReceived || this.terminalReceived) {
++      throw new Error("Duplicate result manifest");
++    }
++    if (
++      this.expectedManifest !== undefined &&
++      !DaemonResultTransferReceiver.manifestsMatch(this.expectedManifest, frame.manifest)
++    ) {
++      throw new Error("Daemon resumed with a different result manifest");
++    }
++    if (
++      frame.requestId !== this.requestId ||
++      frame.manifest.requestId !== this.requestId ||
++      frame.manifest.instanceId !== frame.instanceId
++    ) {
++      throw new Error("Daemon result manifest has invalid coordinates");
++    }
++    this.expectedManifest ??= frame.manifest;
++    this.manifestReceived = true;
++  }
++
++  async acceptChunk(chunk: DaemonResultChunk): Promise<void> {
++    const manifest = this.expectedManifest;
++    if (
++      !this.manifestReceived ||
++      this.terminalReceived ||
++      manifest === undefined ||
++      chunk.requestId !== this.requestId ||
++      chunk.transferId !== manifest.transferId ||
++      chunk.offset !== this.nextRecordOffset ||
++      chunk.sequence !== this.nextRecordOffset
++    ) {
++      throw new Error("Daemon returned an invalid result chunk");
++    }
++    await this.output.append({
++      sequence: chunk.sequence,
++      stream: chunk.stream,
++      bytes: chunk.bytes,
++    });
++    this.nextRecordOffset += 1;
++  }
++
++  acceptEnd(frame: ResultEndFrame): void {
++    const manifest = this.expectedManifest;
++    if (
++      !this.manifestReceived ||
++      this.terminalReceived ||
++      manifest === undefined ||
++      frame.instanceId !== manifest.instanceId ||
++      frame.requestId !== this.requestId ||
++      frame.transferId !== manifest.transferId ||
++      frame.rawBytes !== manifest.rawBytes ||
++      frame.recordCount !== manifest.recordCount ||
++      frame.sha256 !== manifest.sha256 ||
++      this.nextRecordOffset !== manifest.recordCount
++    ) {
++      throw new Error("Daemon result transfer did not match its manifest");
++    }
++    this.terminalReceived = true;
++  }
++
++  async finish(): Promise<DaemonExecutorExecutionResult> {
++    const manifest = this.expectedManifest;
++    if (!this.terminalReceived || manifest === undefined) {
++      throw new Error("Daemon result transfer is incomplete");
++    }
++    try {
++      const captured = await this.output.finish(manifest.exitCode);
++      if (!DaemonResultTransferReceiver.summariesMatch(captured.summary, manifest)) {
++        this.disposal = captured.result.output.dispose();
++        await this.disposal;
++        throw new Error("Daemon result transfer failed digest validation");
++      }
++      this.completed = true;
++      return captured.result;
++    } catch (error) {
++      await this.dispose();
++      throw error;
++    }
++  }
++
++  dispose(): Promise<void> {
++    if (this.completed) return Promise.resolve();
++    this.disposal ??= this.output.dispose();
++    return this.disposal;
++  }
++
++  private static manifestsMatch(
++    expected: CompletionSpoolManifest,
++    actual: CompletionSpoolManifest,
++  ): boolean {
++    return (
++      actual.transferId === expected.transferId &&
++      actual.requestId === expected.requestId &&
++      actual.instanceId === expected.instanceId &&
++      actual.exitCode === expected.exitCode &&
++      DaemonResultTransferReceiver.summariesMatch(actual, expected)
++    );
++  }
++
++  private static summariesMatch(
++    actual: CompletionSpoolManifest | DaemonCapturedOutputSummary,
++    expected: CompletionSpoolManifest,
++  ): boolean {
++    return (
++      actual.rawBytes === expected.rawBytes &&
++      actual.recordCount === expected.recordCount &&
++      actual.sha256 === expected.sha256
++    );
++  }
++}
+diff --git a/apps/cli/src/daemon/daemon-transport.ts b/apps/cli/src/daemon/daemon-transport.ts
+index ddb3e1906..77d5b0f09 100644
+--- a/apps/cli/src/daemon/daemon-transport.ts
++++ b/apps/cli/src/daemon/daemon-transport.ts
+@@ -1,4 +1,4 @@
+-import type { DaemonExecutionFailureCode } from "@symnav/daemon";
++import type { DaemonExecutionFailureCode, DaemonExecutorExecutionResult } from "@symnav/daemon";
+ import type {
+   DaemonExecuteRequest,
+   DaemonExecutionStatus,
+@@ -10,7 +10,6 @@ import type {
+   DaemonServer,
+   DaemonServerMessage,
+ } from "./daemon-protocol.js";
+-import type { LocalDaemonExecutionResult } from "./local-daemon-output.js";
+ 
+ export interface DaemonSocketConnection {
+   readonly incoming: AsyncIterable<Uint8Array>;
+@@ -46,7 +45,7 @@ export interface DaemonExecutionAcceptance {
+ export interface DaemonExecutionReceipt {
+   readonly acceptance: DaemonExecutionAcceptance;
+   readonly completion: Promise<
+-    | { readonly status: "completed"; readonly result: LocalDaemonExecutionResult }
++    | { readonly status: "completed"; readonly result: DaemonExecutorExecutionResult }
+     | { readonly status: "failed"; readonly code: DaemonExecutionFailureCode }
+   >;
+ }
+diff --git a/apps/cli/src/daemon/local-daemon-output.ts b/apps/cli/src/daemon/local-daemon-output.ts
+deleted file mode 100644
+index 19194a0ad..000000000
+--- a/apps/cli/src/daemon/local-daemon-output.ts
++++ /dev/null
+@@ -1,48 +0,0 @@
+-import type { DaemonOutputStream, DaemonPolicyValues } from "@symnav/daemon";
+-import { OrderedCommandOutput } from "../command-execution-result.js";
+-
+-export interface LocalDaemonOutputRecord {
+-  readonly sequence: number;
+-  readonly stream: DaemonOutputStream;
+-  readonly bytes: Uint8Array;
+-}
+-
+-export interface LocalDaemonOutputSummary {
+-  readonly rawBytes: number;
+-  readonly recordCount: number;
+-  readonly sha256: string;
+-}
+-
+-export interface LocalDaemonStoredOutput {
+-  readonly summary: LocalDaemonOutputSummary;
+-  records(offset?: number): AsyncIterable<LocalDaemonOutputRecord>;
+-  dispose(): Promise<void>;
+-}
+-
+-export interface LocalDaemonExecutionResult {
+-  readonly output: LocalDaemonStoredOutput;
+-  readonly exitCode: number;
+-}
+-
+-export class LocalDaemonOutput {
+-  private readonly output: OrderedCommandOutput;
+-
+-  constructor(options: {
+-    readonly policy: DaemonPolicyValues["output"];
+-    readonly directory?: string;
+-  }) {
+-    this.output = new OrderedCommandOutput(options);
+-  }
+-
+-  appendRecord(record: LocalDaemonOutputRecord): Promise<void> {
+-    return this.output.appendRecord(record);
+-  }
+-
+-  finish(exitCode: number): Promise<LocalDaemonExecutionResult> {
+-    return this.output.finish(exitCode);
+-  }
+-
+-  dispose(): Promise<void> {
+-    return this.output.dispose();
+-  }
+-}
+diff --git a/apps/cli/src/daemon/local-daemon-transport-execution.test.ts b/apps/cli/src/daemon/local-daemon-transport-execution.test.ts
+index c5eb0738d..56e402379 100644
+--- a/apps/cli/src/daemon/local-daemon-transport-execution.test.ts
++++ b/apps/cli/src/daemon/local-daemon-transport-execution.test.ts
+@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import { afterEach, describe, expect, it, vi } from "vitest";
+ import { DaemonPolicy, type DaemonExecutionFailureCode } from "@symnav/daemon";
+-import { OrderedCommandOutput } from "../command-execution-result.js";
+ import {
+   DAEMON_PROTOCOL_VERSION,
+   type DaemonExecuteRequest,
+@@ -19,6 +18,7 @@ import {
+   type DaemonCompletionSpoolStoreOptions,
+ } from "./completion-spool.js";
+ import { DaemonWireCodec } from "./daemon-wire-codec.js";
++import { DaemonClientResultCapture } from "./daemon-client-result-capture.js";
+ 
+ const TEST_CHUNK_BYTES = 64 * 1024;
+ const wireCodec = new DaemonWireCodec({
+@@ -311,15 +311,18 @@ describe("LocalDaemonTransport execution delivery", () => {
+ 
+     expect(completion.status).toBe("completed");
+     if (completion.status !== "completed" || completion.result.output === undefined) return;
+-    expect(completion.result.output.summary).toEqual({
+-      rawBytes: manifest.rawBytes,
+-      recordCount: manifest.recordCount,
+-      sha256: manifest.sha256,
+-    });
++    expect(completion.result.output).not.toHaveProperty("summary");
++    let receivedRecords = 0;
++    for await (const record of completion.result.output.records()) {
++      expect(record.stream).toBe(receivedRecords % 2 === 0 ? "stdout" : "stderr");
++      expect(Buffer.from(record.bytes)).toEqual(Buffer.alloc(TEST_CHUNK_BYTES, receivedRecords));
++      receivedRecords += 1;
++    }
++    expect(receivedRecords).toBe(chunkCount);
+     expect(store.usage()).toEqual({ rawBytes: 0, completionCount: 0 });
+     await completion.result.output.dispose();
+     await server.close();
+-  }, 20_000);
++  }, 60_000);
+ 
+   it("advances one client record only after its spool append completes", async () => {
+     const directory = mkdtempSync(join(tmpdir(), "symnav-stalled-client-spool-"));
+@@ -349,9 +352,9 @@ describe("LocalDaemonTransport execution delivery", () => {
+     const appendGate = new Promise<void>((resolve) => {
+       releaseAppend = resolve;
+     });
+-    const appendRecord = OrderedCommandOutput.prototype.appendRecord;
+-    vi.spyOn(OrderedCommandOutput.prototype, "appendRecord").mockImplementation(async function (
+-      this: OrderedCommandOutput,
++    const append = DaemonClientResultCapture.prototype.append;
++    vi.spyOn(DaemonClientResultCapture.prototype, "append").mockImplementation(async function (
++      this: DaemonClientResultCapture,
+       record,
+     ) {
+       appendCalls += 1;
+@@ -360,7 +363,7 @@ describe("LocalDaemonTransport execution delivery", () => {
+       markAppendStarted();
+       if (appendCalls === 1) await appendGate;
+       try {
+-        await appendRecord.call(this, record);
++        await append.call(this, record);
+       } finally {
+         activeAppends -= 1;
+       }
+@@ -431,16 +434,16 @@ describe("LocalDaemonTransport execution delivery", () => {
+     const appendGate = new Promise<void>((resolve) => {
+       releaseAppend = resolve;
+     });
+-    const appendRecord = OrderedCommandOutput.prototype.appendRecord;
++    const append = DaemonClientResultCapture.prototype.append;
+     let appendCalls = 0;
+-    vi.spyOn(OrderedCommandOutput.prototype, "appendRecord").mockImplementation(async function (
+-      this: OrderedCommandOutput,
++    vi.spyOn(DaemonClientResultCapture.prototype, "append").mockImplementation(async function (
++      this: DaemonClientResultCapture,
+       record,
+     ) {
+       appendCalls += 1;
+       markAppendStarted();
+       if (appendCalls === 1) await appendGate;
+-      await appendRecord.call(this, record);
++      await append.call(this, record);
+     });
+     const fetchOffsets: number[] = [];
+     const endpoint = await rawExecutionServer(servers, sockets, directories, (socket) => {
+@@ -548,19 +551,20 @@ describe("LocalDaemonTransport execution delivery", () => {
+     const completion = await receipt.completion;
+ 
+     expect(fetchOffsets).toEqual([2]);
+-    expect(completion).toMatchObject({
+-      status: "completed",
+-      result: {
+-        exitCode: 0,
+-        output: {
+-          summary: {
+-            rawBytes: manifest.rawBytes,
+-            recordCount: manifest.recordCount,
+-            sha256: manifest.sha256,
+-          },
+-        },
+-      },
+-    });
++    expect(completion).toMatchObject({ status: "completed", result: { exitCode: 0 } });
++    if (completion.status === "completed") {
++      expect(completion.result.output).not.toHaveProperty("summary");
++      const records = [];
++      for await (const record of completion.result.output.records()) {
++        records.push({ stream: record.stream, bytes: Buffer.from(record.bytes).toString() });
++      }
++      expect(records).toEqual(
++        Array.from({ length: 5 }, (_, sequence) => ({
++          stream: sequence % 2 === 0 ? "stdout" : "stderr",
++          bytes: `record-${sequence}\n`,
++        })),
++      );
++    }
+     expect(store.usage()).toEqual({ rawBytes: 0, completionCount: 0 });
+     if (completion.status === "completed") await completion.result.output?.dispose();
+   });
+@@ -587,7 +591,7 @@ describe("LocalDaemonTransport execution delivery", () => {
+       await spool.append({
+         sequence,
+         stream: sequence % 2 === 0 ? "stdout" : "stderr",
+-        bytes: Buffer.from(`record-${sequence}\n`),
++        bytes: Buffer.alloc(TEST_CHUNK_BYTES, sequence),
+       });
+     }
+     const manifest = await spool.finish(0);
+@@ -685,6 +689,11 @@ describe("LocalDaemonTransport execution delivery", () => {
+         stream: "stdout",
+         bytes: Buffer.alloc(TEST_CHUNK_BYTES, 7),
+       });
++      await spool.append({
++        sequence: 1,
++        stream: "stderr",
++        bytes: Buffer.from("spill"),
++      });
+       const manifest = await spool.finish(0);
+       const acknowledgement = frame({
+         kind: "result-acknowledged",
+@@ -803,6 +812,11 @@ describe("LocalDaemonTransport execution delivery", () => {
+       stream: "stdout",
+       bytes: Buffer.alloc(TEST_CHUNK_BYTES, 3),
+     });
++    await spool.append({
++      sequence: 1,
++      stream: "stderr",
++      bytes: Buffer.from("spill"),
++    });
+     const manifest = await spool.finish(0);
+     let acknowledgementCount = 0;
+     const endpoint = await rawExecutionServer(servers, sockets, directories, (socket) => {
+diff --git a/apps/cli/src/daemon/local-daemon-transport.ts b/apps/cli/src/daemon/local-daemon-transport.ts
+index 966695983..0d510bfe3 100644
+--- a/apps/cli/src/daemon/local-daemon-transport.ts
++++ b/apps/cli/src/daemon/local-daemon-transport.ts
+@@ -31,8 +31,8 @@ import type {
+ } from "./daemon-transport.js";
+ import { DaemonWireCodec } from "./daemon-wire-codec.js";
+ import { DaemonProtocolError, DaemonProtocolValidator } from "./daemon-protocol-validator.js";
+-import type { CompletionSpoolManifest } from "./completion-spool.js";
+-import { LocalDaemonOutput, type LocalDaemonExecutionResult } from "./local-daemon-output.js";
++import { DaemonClientResultCapture } from "./daemon-client-result-capture.js";
++import { DaemonResultTransferReceiver } from "./daemon-result-transfer-receiver.js";
+ 
+ interface LocalDaemonTransportOptions {
+   readonly responseTimeoutPurpose?: "ordinary" | "status-observer";
+@@ -82,131 +82,6 @@ export class DaemonTransportError extends Error {
+   }
+ }
+ 
+-class DaemonResultTransferReceiver {
+-  private expectedManifest: CompletionSpoolManifest | undefined;
+-  private nextRecordOffset: number;
+-  private manifestReceived = false;
+-  private terminalReceived = false;
+-
+-  constructor(
+-    private readonly request: DaemonExecuteRequest,
+-    private readonly output: LocalDaemonOutput,
+-    manifest?: CompletionSpoolManifest,
+-    initialOffset = 0,
+-  ) {
+-    this.expectedManifest = manifest;
+-    this.nextRecordOffset = initialOffset;
+-  }
+-
+-  get manifest(): CompletionSpoolManifest | undefined {
+-    return this.expectedManifest;
+-  }
+-
+-  get nextOffset(): number {
+-    return this.nextRecordOffset;
+-  }
+-
+-  get terminal(): boolean {
+-    return this.terminalReceived;
+-  }
+-
+-  beginConnection(): void {
+-    this.manifestReceived = false;
+-    this.terminalReceived = false;
+-  }
+-
+-  acceptManifest(
+-    frame: Extract<DaemonExecutionServerFrame, { readonly kind: "result-manifest" }>,
+-  ): void {
+-    if (this.manifestReceived || this.terminalReceived) {
+-      throw new Error("Duplicate result manifest");
+-    }
+-    if (
+-      this.expectedManifest !== undefined &&
+-      !DaemonResultTransferReceiver.manifestsMatch(this.expectedManifest, frame.manifest)
+-    ) {
+-      throw new Error("Daemon resumed with a different result manifest");
+-    }
+-    this.expectedManifest ??= frame.manifest;
+-    this.manifestReceived = true;
+-  }
+-
+-  async acceptChunk(chunk: DaemonResultChunk): Promise<void> {
+-    const manifest = this.expectedManifest;
+-    if (
+-      !this.manifestReceived ||
+-      this.terminalReceived ||
+-      manifest === undefined ||
+-      chunk.requestId !== this.request.requestId ||
+-      chunk.transferId !== manifest.transferId ||
+-      chunk.offset !== this.nextRecordOffset ||
+-      chunk.sequence !== this.nextRecordOffset
+-    ) {
+-      throw new Error("Daemon returned an invalid result chunk");
+-    }
+-    await this.output.appendRecord({
+-      sequence: chunk.sequence,
+-      stream: chunk.stream,
+-      bytes: chunk.bytes,
+-    });
+-    this.nextRecordOffset += 1;
+-  }
+-
+-  acceptEnd(frame: Extract<DaemonExecutionServerFrame, { readonly kind: "result-end" }>): void {
+-    const manifest = this.expectedManifest;
+-    if (
+-      !this.manifestReceived ||
+-      this.terminalReceived ||
+-      manifest === undefined ||
+-      frame.transferId !== manifest.transferId ||
+-      frame.rawBytes !== manifest.rawBytes ||
+-      frame.recordCount !== manifest.recordCount ||
+-      frame.sha256 !== manifest.sha256 ||
+-      this.nextRecordOffset !== manifest.recordCount
+-    ) {
+-      throw new Error("Daemon result transfer did not match its manifest");
+-    }
+-    this.terminalReceived = true;
+-  }
+-
+-  async finish(): Promise<LocalDaemonExecutionResult> {
+-    const manifest = this.expectedManifest;
+-    if (!this.terminalReceived || manifest === undefined) {
+-      throw new Error("Daemon result transfer is incomplete");
+-    }
+-    const result = await this.output.finish(manifest.exitCode);
+-    if (!DaemonResultTransferReceiver.summariesMatch(result.output.summary, manifest)) {
+-      await result.output.dispose();
+-      throw new Error("Daemon result transfer failed digest validation");
+-    }
+-    return result;
+-  }
+-
+-  private static manifestsMatch(
+-    expected: CompletionSpoolManifest,
+-    actual: CompletionSpoolManifest,
+-  ): boolean {
+-    return (
+-      actual.transferId === expected.transferId &&
+-      actual.requestId === expected.requestId &&
+-      actual.instanceId === expected.instanceId &&
+-      actual.exitCode === expected.exitCode &&
+-      DaemonResultTransferReceiver.summariesMatch(actual, expected)
+-    );
+-  }
+-
+-  private static summariesMatch(
+-    actual: CompletionSpoolManifest | LocalDaemonExecutionResult["output"]["summary"],
+-    expected: CompletionSpoolManifest,
+-  ): boolean {
+-    return (
+-      actual.rawBytes === expected.rawBytes &&
+-      actual.recordCount === expected.recordCount &&
+-      actual.sha256 === expected.sha256
+-    );
+-  }
+-}
+-
+ class ListeningDaemonServer implements DaemonServer {
+   constructor(
+     private readonly server: Server,
+@@ -392,11 +267,11 @@ export class LocalDaemonTransport
+     this.validator.request(request);
+     return new Promise((resolve, reject) => {
+       const decoder = this.codec.transferDecoder();
+-      const output = new LocalDaemonOutput({
++      const output = new DaemonClientResultCapture({
+         policy: this.outputPolicy,
+         ...(this.outputDirectory === undefined ? {} : { directory: this.outputDirectory }),
+       });
+-      const transfer = new DaemonResultTransferReceiver(request, output);
++      const transfer = new DaemonResultTransferReceiver(request.requestId, output);
+       const socket = createConnection(endpoint);
+       let delivery: DaemonDeliveryState = "not-submitted";
+       let acceptance: DaemonExecutionAcceptance | undefined;
+@@ -418,12 +293,12 @@ export class LocalDaemonTransport
+         socket.destroy();
+         if (!outerSettled) {
+           outerSettled = true;
+-          void output.dispose().finally(() => reject(transportError));
++          void transfer.dispose().finally(() => reject(transportError));
+           return;
+         }
+         if (!completionSettled) {
+           completionSettled = true;
+-          void output.dispose().finally(() => rejectCompletion(transportError));
++          void transfer.dispose().finally(() => rejectCompletion(transportError));
+         }
+       };
+       const resume = (): boolean => {
+@@ -439,7 +314,7 @@ export class LocalDaemonTransport
+         resumeCount += 1;
+         socket.destroy();
+         transfer.beginConnection();
+-        void this.fetchCompletion(endpoint, request, output, transfer)
++        void this.fetchCompletion(endpoint, request, transfer)
+           .then((completionValue) => {
+             if (completionSettled) return;
+             completionSettled = true;
+@@ -541,7 +416,12 @@ export class LocalDaemonTransport
+           const result = await transfer.finish();
+           const completedManifest = transfer.manifest;
+           if (completedManifest === undefined) throw new Error("Completion manifest is missing");
+-          await this.acknowledgeResult(endpoint, request, completedManifest);
++          try {
++            await this.acknowledgeResult(endpoint, request, completedManifest);
++          } catch (error) {
++            await result.output.dispose();
++            throw error;
++          }
+           if (!completionSettled) {
+             completionSettled = true;
+             socket.end();
+@@ -551,7 +431,7 @@ export class LocalDaemonTransport
+         if (failedCode !== undefined && !completionSettled) {
+           completionSettled = true;
+           socket.end();
+-          await output.dispose();
++          await transfer.dispose();
+           resolveCompletion({ status: "failed", code: failedCode });
+         }
+       };
+@@ -601,7 +481,6 @@ export class LocalDaemonTransport
+   private fetchCompletion(
+     endpoint: string,
+     request: DaemonExecuteRequest,
+-    output: LocalDaemonOutput,
+     transfer: DaemonResultTransferReceiver,
+   ): DaemonExecutionReceipt["completion"] {
+     return new Promise((resolve, reject) => {
+@@ -663,7 +542,12 @@ export class LocalDaemonTransport
+           const result = await transfer.finish();
+           const manifest = transfer.manifest;
+           if (manifest === undefined) throw new Error("Completion manifest is missing");
+-          await this.acknowledgeResult(endpoint, request, manifest);
++          try {
++            await this.acknowledgeResult(endpoint, request, manifest);
++          } catch (error) {
++            await result.output.dispose();
++            throw error;
++          }
+           settled = true;
+           socket.end();
+           resolve({ status: "completed", result });
+@@ -671,7 +555,7 @@ export class LocalDaemonTransport
+         if (failedCode !== undefined) {
+           settled = true;
+           socket.end();
+-          await output.dispose();
++          await transfer.dispose();
+           resolve({ status: "failed", code: failedCode });
+         }
+       };
+diff --git a/apps/cli/test/e2e/daemon/parity.test.ts b/apps/cli/test/e2e/daemon/parity.test.ts
+index ec6feef46..d44aa6320 100644
+--- a/apps/cli/test/e2e/daemon/parity.test.ts
++++ b/apps/cli/test/e2e/daemon/parity.test.ts
+@@ -901,7 +901,7 @@ function waitForProcess(child: ChildProcess): Promise<void> {
+ }
+ 
+ async function decodeOutput(
+-  output: import("../../../src/command-execution-result.js").CommandOutput,
++  output: import("@symnav/daemon").DaemonExecutorOutput,
+ ): Promise<string> {
+   const chunks = [];
+   for await (const record of output.records()) chunks.push(Buffer.from(record.bytes));
+diff --git a/apps/cli/test/e2e/daemon/status.test.ts b/apps/cli/test/e2e/daemon/status.test.ts
+index ba230e5b7..a3ff1a676 100644
+--- a/apps/cli/test/e2e/daemon/status.test.ts
++++ b/apps/cli/test/e2e/daemon/status.test.ts
+@@ -793,7 +793,7 @@ function daemonRecords(stateDir: string): readonly DaemonRecord[] {
+ }
+ 
+ async function replay(
+-  output: import("../../../src/command-execution-result.js").CommandOutput,
++  output: import("@symnav/daemon").DaemonExecutorOutput,
+   stream: "stdout" | "stderr",
+ ): Promise<string> {
+   const chunks = [];

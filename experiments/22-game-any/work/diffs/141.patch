@@ -1,0 +1,960 @@
+diff --git a/apps/cli/src/daemon/local-daemon-socket-server.test.ts b/apps/cli/src/daemon/local-daemon-socket-server.test.ts
+new file mode 100644
+index 000000000..eff1727d6
+--- /dev/null
++++ b/apps/cli/src/daemon/local-daemon-socket-server.test.ts
+@@ -0,0 +1,484 @@
++import { EventEmitter } from "node:events";
++import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
++import { createConnection, type Socket } from "node:net";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { DaemonPolicy } from "@symnav/daemon";
++import type { DaemonSocketClient, DaemonSocketConnection } from "./daemon-transport.js";
++import { DAEMON_PROTOCOL_VERSION, type DaemonRequest } from "./daemon-protocol.js";
++import { DaemonProtocolValidator } from "./daemon-protocol-validator.js";
++import { DaemonWireCodec } from "./daemon-wire-codec.js";
++import { LocalDaemonSocketClient } from "./local-daemon-socket-client.js";
++import { LocalDaemonSocketServer } from "./local-daemon-socket-server.js";
++
++describe("LocalDaemonSocketServer", () => {
++  const harness = new DaemonSocketServerHarness();
++
++  afterEach(() => {
++    harness.cleanUp();
++  });
++
++  it("probes endpoint reachability through the injected socket client", async () => {
++    const connection = new RecordingDaemonSocketConnection();
++    const sockets = new RecordingDaemonSocketClient(connection);
++    const policy = DaemonPolicy.currentSystem().values;
++    const server = new LocalDaemonSocketServer({
++      sockets,
++      codec: new DaemonWireCodec({
++        maximumJsonPayloadBytes: policy.transport.maximumJsonPayloadBytes,
++        maximumExecutionControlPayloadBytes: policy.transport.maximumExecutionControlPayloadBytes,
++        maximumChunkRawBytes: policy.output.maximumChunkRawBytes,
++      }),
++      validator: new DaemonProtocolValidator(),
++      policy: policy.transport,
++    });
++
++    await expect(server.removeUnavailableEndpoint("daemon-endpoint")).resolves.toBe(false);
++
++    expect(sockets.connections).toEqual([
++      {
++        endpoint: "daemon-endpoint",
++        timeoutMs: policy.transport.singleResponseTimeoutMs,
++      },
++    ]);
++    expect(connection.destroyCount).toBe(1);
++  });
++
++  it("binds, removes stale endpoints, and refuses live endpoint replacement", async () => {
++    const endpoint = harness.endpoint();
++    if (process.platform !== "win32") writeFileSync(endpoint, "stale");
++    const first = harness.server();
++
++    await expect(first.removeUnavailableEndpoint(endpoint)).resolves.toBe(true);
++    if (process.platform !== "win32") expect(existsSync(endpoint)).toBe(false);
++
++    const listening = await first.listen(endpoint, async (request) =>
++      harness.pong(request.instanceId),
++    );
++    const second = harness.server();
++
++    await expect(second.removeUnavailableEndpoint(endpoint)).resolves.toBe(false);
++    await expect(second.listen(endpoint, async () => harness.pong("replacement"))).rejects.toThrow(
++      /already in use/,
++    );
++    await expect(harness.request(endpoint, harness.ping("owner"))).resolves.toMatchObject({
++      kind: "pong",
++      instanceId: "owner",
++    });
++    await listening.close();
++  });
++
++  it("dispatches fragmented and coalesced request frames serially", async () => {
++    const endpoint = harness.endpoint();
++    const firstHandler = DaemonSocketServerHarness.deferred<void>();
++    const handled: string[] = [];
++    const server = harness.server();
++    const listening = await server.listen(endpoint, async (daemonRequest) => {
++      handled.push(daemonRequest.instanceId);
++      if (daemonRequest.instanceId === "first") await firstHandler.promise;
++      return harness.pong(daemonRequest.instanceId);
++    });
++    const encoded = Buffer.concat([
++      harness.encode(harness.ping("first")),
++      harness.encode(harness.ping("second")),
++    ]);
++    const responses = harness.receiveFrames(
++      endpoint,
++      encoded.subarray(0, 3),
++      encoded.subarray(3),
++      2,
++    );
++
++    await vi.waitFor(() => expect(handled).toEqual(["first"]));
++    firstHandler.resolve();
++
++    await expect(responses).resolves.toMatchObject([
++      { kind: "pong", instanceId: "first" },
++      { kind: "pong", instanceId: "second" },
++    ]);
++    expect(handled).toEqual(["first", "second"]);
++    await listening.close();
++  });
++
++  it("serializes JSON and binary sends from accepted background work", async () => {
++    const endpoint = harness.endpoint();
++    const releaseBackground = DaemonSocketServerHarness.deferred<void>();
++    const backgroundFinished = DaemonSocketServerHarness.deferred<void>();
++    const server = harness.server();
++    const listening = await server.listen(endpoint, async (daemonRequest, send) => {
++      if (daemonRequest.kind !== "execute") throw new Error("Expected execution request");
++      await send({
++        kind: "accepted",
++        instanceId: daemonRequest.instanceId,
++        processToken: daemonRequest.processToken,
++        requestId: daemonRequest.requestId,
++        acceptedAt: 1,
++        queuePosition: 0,
++      });
++      void releaseBackground.promise.then(async () => {
++        await send({
++          transferId: "transfer",
++          requestId: daemonRequest.requestId,
++          offset: 0,
++          sequence: 0,
++          stream: "stdout",
++          bytes: Buffer.from("background"),
++        });
++        backgroundFinished.resolve();
++      });
++    });
++    const received = harness.receiveTransferFrames(endpoint, harness.executeRequest());
++
++    releaseBackground.resolve();
++
++    await expect(received).resolves.toMatchObject([
++      { kind: "accepted", requestId: "request" },
++      {
++        transferId: "transfer",
++        requestId: "request",
++        sequence: 0,
++        stream: "stdout",
++        bytes: Uint8Array.from(Buffer.from("background")),
++      },
++    ]);
++    await backgroundFinished.promise;
++    await listening.close();
++  });
++
++  it("waits for socket drain before writing the next fragment", async () => {
++    const writes: Buffer[] = [];
++    const socket = new EventEmitter() as EventEmitter & {
++      destroyed: boolean;
++      write: (bytes: Buffer) => boolean;
++    };
++    socket.destroyed = false;
++    socket.write = (bytes) => {
++      writes.push(bytes);
++      return writes.length !== 1;
++    };
++    const server = harness.server({ writeChunkSize: 1 }) as unknown as {
++      writeServerMessage(socket: Socket, value: unknown): Promise<void>;
++    };
++
++    const writing = server.writeServerMessage(socket as unknown as Socket, {
++      kind: "stopped",
++      instanceId: "instance",
++    });
++    await Promise.resolve();
++
++    expect(writes).toHaveLength(1);
++    socket.emit("drain");
++    await writing;
++    expect(Buffer.concat(writes)).toEqual(
++      harness.encode({ kind: "stopped", instanceId: "instance" }),
++    );
++  });
++
++  it("subscribes and unsubscribes close listeners exactly once", async () => {
++    const endpoint = harness.endpoint();
++    const connected = DaemonSocketServerHarness.deferred<void>();
++    const notified = vi.fn();
++    const removed = vi.fn();
++    const server = harness.server();
++    const listening = await server.listen(endpoint, async (daemonRequest, send) => {
++      send.onClose(notified);
++      const unsubscribe = send.onClose(removed);
++      unsubscribe();
++      connected.resolve();
++      return harness.pong(daemonRequest.instanceId);
++    });
++    const client = createConnection(endpoint);
++    client.once("connect", () => client.write(harness.encode(harness.ping("instance"))));
++
++    await connected.promise;
++    client.destroy();
++    await vi.waitFor(() => expect(notified).toHaveBeenCalledTimes(1));
++
++    expect(removed).not.toHaveBeenCalled();
++    await listening.close();
++    expect(notified).toHaveBeenCalledTimes(1);
++  });
++
++  it("isolates malformed and rejected requests to their connections", async () => {
++    const endpoint = harness.endpoint();
++    const handled: string[] = [];
++    const server = harness.server();
++    const listening = await server.listen(endpoint, async (daemonRequest) => {
++      handled.push(daemonRequest.instanceId);
++      if (daemonRequest.instanceId === "unauthorized") throw new Error("Authentication failed");
++      return harness.pong(daemonRequest.instanceId);
++    });
++
++    await expect(
++      harness.connectionResult(endpoint, Buffer.from([0, 0, 0, 1, 123])),
++    ).resolves.toEqual(Buffer.alloc(0));
++    await expect(
++      harness.connectionResult(endpoint, harness.encode(harness.ping("unauthorized"))),
++    ).resolves.toEqual(Buffer.alloc(0));
++    await expect(harness.request(endpoint, harness.ping("healthy"))).resolves.toMatchObject({
++      kind: "pong",
++      instanceId: "healthy",
++    });
++    expect(handled).toEqual(["unauthorized", "healthy"]);
++    await listening.close();
++  });
++
++  it("drains queued sends before graceful shutdown", async () => {
++    const endpoint = harness.endpoint();
++    const sendStarted = DaemonSocketServerHarness.deferred<void>();
++    const releaseSend = DaemonSocketServerHarness.deferred<void>();
++    const server = harness.server();
++    const listening = await server.listen(endpoint, async (daemonRequest, send) => {
++      sendStarted.resolve();
++      await releaseSend.promise;
++      return send(harness.pong(daemonRequest.instanceId));
++    });
++    const response = harness.request(endpoint, harness.ping("instance"));
++
++    await sendStarted.promise;
++    const closing = listening.close();
++    let closed = false;
++    void closing.then(() => {
++      closed = true;
++    });
++    await Promise.resolve();
++    expect(closed).toBe(false);
++    releaseSend.resolve();
++
++    await expect(response).resolves.toMatchObject({ kind: "pong", instanceId: "instance" });
++    await expect(closing).resolves.toBeUndefined();
++  });
++
++  it("shares concurrent graceful closes and escalates them to forced shutdown", async () => {
++    const endpoint = harness.endpoint();
++    const server = harness.server();
++    const listening = await server.listen(endpoint, async (daemonRequest) =>
++      harness.pong(daemonRequest.instanceId),
++    );
++    const connectionClosed = DaemonSocketServerHarness.deferred<void>();
++    const client = createConnection(endpoint);
++    client.once("close", () => connectionClosed.resolve());
++    await new Promise<void>((resolve, reject) => {
++      client.once("error", reject);
++      client.once("connect", resolve);
++    });
++
++    const gracefulClose = listening.close();
++    const repeatedGracefulClose = listening.close();
++    let shutdownFinished = false;
++    void gracefulClose.then(() => {
++      shutdownFinished = true;
++    });
++    await Promise.resolve();
++
++    const repeatedCloseSharedShutdown = repeatedGracefulClose === gracefulClose;
++    const gracefulCloseStayedPending = !shutdownFinished;
++
++    const forcedClose = listening.close(true);
++    const forcedCloseSharedShutdown = forcedClose === gracefulClose;
++    const forceClosedClient = await harness.settlesWithin(connectionClosed.promise);
++    if (!forceClosedClient) client.destroy();
++
++    await connectionClosed.promise;
++    await expect(Promise.all([gracefulClose, repeatedGracefulClose, forcedClose])).resolves.toEqual(
++      [undefined, undefined, undefined],
++    );
++    expect(repeatedCloseSharedShutdown).toBe(true);
++    expect(gracefulCloseStayedPending).toBe(true);
++    expect(forcedCloseSharedShutdown).toBe(true);
++    expect(forceClosedClient).toBe(true);
++    expect(shutdownFinished).toBe(true);
++  });
++});
++
++interface SocketServerOptions {
++  readonly sockets?: DaemonSocketClient;
++  readonly writeChunkSize?: number;
++}
++
++class DaemonSocketServerHarness {
++  private readonly roots: string[] = [];
++
++  cleanUp(): void {
++    for (const root of this.roots) rmSync(root, { recursive: true, force: true });
++    this.roots.length = 0;
++  }
++
++  endpoint(): string {
++    const root = mkdtempSync(join(tmpdir(), "symnav-socket-server-"));
++    this.roots.push(root);
++    return process.platform === "win32"
++      ? `\\\\.\\pipe\\symnav-${Date.now()}`
++      : join(root, "d.sock");
++  }
++
++  server(options: SocketServerOptions = {}): LocalDaemonSocketServer {
++    const policy = DaemonPolicy.currentSystem().values;
++    return new LocalDaemonSocketServer({
++      sockets: options.sockets ?? new LocalDaemonSocketClient(),
++      codec: this.codec(),
++      validator: new DaemonProtocolValidator(),
++      policy: policy.transport,
++      ...(options.writeChunkSize === undefined ? {} : { writeChunkSize: options.writeChunkSize }),
++    });
++  }
++
++  ping(instanceId: string): DaemonRequest {
++    return {
++      kind: "ping",
++      protocolVersion: DAEMON_PROTOCOL_VERSION,
++      instanceId,
++    };
++  }
++
++  pong(instanceId: string) {
++    return {
++      kind: "pong" as const,
++      protocolVersion: DAEMON_PROTOCOL_VERSION,
++      instanceId,
++      symnavVersion: "test",
++    };
++  }
++
++  executeRequest(): DaemonRequest {
++    return {
++      kind: "execute",
++      protocolVersion: DAEMON_PROTOCOL_VERSION,
++      instanceId: "instance",
++      processToken: "token",
++      requestId: "request",
++      commandName: "version",
++      request: {
++        argv: ["--version"],
++        cwd: "/repo",
++        telemetryEnabled: false,
++        executionMode: "warm",
++      },
++    };
++  }
++
++  encode(value: unknown): Buffer {
++    return Buffer.from(this.codec().encodeControl(value));
++  }
++
++  request(endpoint: string, daemonRequest: DaemonRequest): Promise<unknown> {
++    return this.receiveFrames(endpoint, this.encode(daemonRequest), Buffer.alloc(0), 1).then(
++      (responses) => responses[0],
++    );
++  }
++
++  receiveFrames(
++    endpoint: string,
++    first: Uint8Array,
++    second: Uint8Array,
++    count: number,
++  ): Promise<readonly unknown[]> {
++    return new Promise((resolve, reject) => {
++      const socket = createConnection(endpoint);
++      let bytes = Buffer.alloc(0);
++      socket.once("error", reject);
++      socket.once("connect", () => {
++        socket.write(first);
++        socket.write(second);
++      });
++      socket.on("data", (chunk) => {
++        bytes = Buffer.concat([bytes, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
++        const values = this.codec().controlDecoder().append(bytes);
++        if (values.length !== count) return;
++        socket.end();
++        resolve(values);
++      });
++    });
++  }
++
++  receiveTransferFrames(
++    endpoint: string,
++    daemonRequest: DaemonRequest,
++  ): Promise<readonly unknown[]> {
++    return new Promise((resolve, reject) => {
++      const decoder = this.codec().transferDecoder();
++      const frames: unknown[] = [];
++      const socket = createConnection(endpoint);
++      socket.once("error", reject);
++      socket.once("connect", () => socket.write(this.encode(daemonRequest)));
++      socket.on("data", (bytes) => {
++        frames.push(...decoder.append(Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes)));
++        if (frames.length !== 2) return;
++        socket.end();
++        resolve(frames);
++      });
++    });
++  }
++
++  connectionResult(endpoint: string, bytes: Uint8Array): Promise<Buffer> {
++    return new Promise((resolve, reject) => {
++      const socket = createConnection(endpoint);
++      let received = Buffer.alloc(0);
++      socket.once("error", reject);
++      socket.once("connect", () => socket.write(bytes));
++      socket.on("data", (chunk) => {
++        received = Buffer.concat([received, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
++      });
++      socket.once("close", () => resolve(received));
++    });
++  }
++
++  settlesWithin(promise: Promise<unknown>): Promise<boolean> {
++    return new Promise((resolve) => {
++      const timeout = setTimeout(() => resolve(false), 250);
++      void promise.then(() => {
++        clearTimeout(timeout);
++        resolve(true);
++      });
++    });
++  }
++
++  static deferred<T>(): {
++    readonly promise: Promise<T>;
++    readonly resolve: (value: T) => void;
++  } {
++    let resolve!: (value: T) => void;
++    const promise = new Promise<T>((settle) => {
++      resolve = settle;
++    });
++    return { promise, resolve };
++  }
++
++  private codec(): DaemonWireCodec {
++    const policy = DaemonPolicy.currentSystem().values;
++    return new DaemonWireCodec({
++      maximumJsonPayloadBytes: policy.transport.maximumJsonPayloadBytes,
++      maximumExecutionControlPayloadBytes: policy.transport.maximumExecutionControlPayloadBytes,
++      maximumChunkRawBytes: policy.output.maximumChunkRawBytes,
++    });
++  }
++}
++
++class RecordingDaemonSocketClient implements DaemonSocketClient {
++  readonly connections: { readonly endpoint: string; readonly timeoutMs?: number }[] = [];
++
++  constructor(private readonly connection: DaemonSocketConnection) {}
++
++  connect(endpoint: string, timeoutMs?: number): Promise<DaemonSocketConnection> {
++    this.connections.push({ endpoint, ...(timeoutMs === undefined ? {} : { timeoutMs }) });
++    return Promise.resolve(this.connection);
++  }
++}
++
++class RecordingDaemonSocketConnection implements DaemonSocketConnection {
++  readonly incoming: AsyncIterable<Uint8Array> = RecordingDaemonSocketConnection.empty();
++  destroyCount = 0;
++
++  write(): void {}
++
++  disableTimeout(): void {}
++
++  end(): void {}
++
++  destroy(): void {
++    this.destroyCount += 1;
++  }
++
++  private static async *empty(): AsyncIterable<Uint8Array> {}
++}
+diff --git a/apps/cli/src/daemon/local-daemon-socket-server.ts b/apps/cli/src/daemon/local-daemon-socket-server.ts
+new file mode 100644
+index 000000000..040c9175f
+--- /dev/null
++++ b/apps/cli/src/daemon/local-daemon-socket-server.ts
+@@ -0,0 +1,181 @@
++import { existsSync, mkdirSync, rmSync } from "node:fs";
++import { createServer, type Server, type Socket } from "node:net";
++import { dirname } from "node:path";
++import type { DaemonPolicyValues } from "@symnav/daemon";
++import type { DaemonServer, DaemonServerMessage } from "./daemon-protocol.js";
++import type {
++  DaemonRequestHandler,
++  DaemonRequestServer,
++  DaemonServerSend,
++  DaemonSocketClient,
++} from "./daemon-transport.js";
++import type { DaemonProtocolValidator } from "./daemon-protocol-validator.js";
++import type { DaemonWireCodec } from "./daemon-wire-codec.js";
++
++interface LocalDaemonSocketServerOptions {
++  readonly sockets: DaemonSocketClient;
++  readonly codec: DaemonWireCodec;
++  readonly validator: DaemonProtocolValidator;
++  readonly policy: DaemonPolicyValues["transport"];
++  readonly writeChunkSize?: number;
++}
++
++class ListeningDaemonServer implements DaemonServer {
++  private closing: Promise<void> | undefined;
++
++  constructor(
++    private readonly server: Server,
++    private readonly sockets: ReadonlySet<Socket>,
++  ) {}
++
++  close(force = false): Promise<void> {
++    if (force) {
++      for (const socket of this.sockets) socket.destroy();
++    }
++    if (this.closing !== undefined) return this.closing;
++    if (!this.server.listening) return Promise.resolve();
++    this.closing = new Promise((resolve, reject) => {
++      this.server.close((error) => {
++        if (error) reject(error);
++        else resolve();
++      });
++    });
++    return this.closing;
++  }
++}
++
++export class LocalDaemonSocketServer implements DaemonRequestServer {
++  constructor(private readonly options: LocalDaemonSocketServerOptions) {}
++
++  async listen(endpoint: string, handler: DaemonRequestHandler): Promise<DaemonServer> {
++    if (process.platform !== "win32") {
++      mkdirSync(dirname(endpoint), { recursive: true, mode: 0o700 });
++      if (existsSync(endpoint)) {
++        if (await this.endpointIsReachable(endpoint)) {
++          throw new Error(`Daemon endpoint is already in use: ${endpoint}`);
++        }
++        rmSync(endpoint, { force: true });
++      }
++    }
++    const sockets = new Set<Socket>();
++    const server = createServer((socket) => {
++      sockets.add(socket);
++      socket.once("close", () => sockets.delete(socket));
++      this.serve(socket, handler);
++    });
++    return new Promise((resolve, reject) => {
++      server.once("error", reject);
++      server.listen(endpoint, () => resolve(new ListeningDaemonServer(server, sockets)));
++    });
++  }
++
++  async removeUnavailableEndpoint(endpoint: string): Promise<boolean> {
++    if (await this.endpointIsReachable(endpoint)) return false;
++    if (process.platform !== "win32") rmSync(endpoint, { force: true });
++    return true;
++  }
++
++  private async endpointIsReachable(endpoint: string): Promise<boolean> {
++    try {
++      const connection = await this.options.sockets.connect(
++        endpoint,
++        this.options.policy.singleResponseTimeoutMs,
++      );
++      connection.destroy();
++      return true;
++    } catch {
++      return false;
++    }
++  }
++
++  private serve(socket: Socket, handler: DaemonRequestHandler): void {
++    const decoder = this.options.codec.controlDecoder();
++    let responses = Promise.resolve();
++    let writes = Promise.resolve();
++    const closeListeners = new Set<() => void>();
++    const send: DaemonServerSend = Object.assign(
++      (message: DaemonServerMessage) => {
++        const write = writes.then(() => this.writeServerMessage(socket, message));
++        writes = write;
++        return write;
++      },
++      {
++        onClose: (listener: () => void): (() => void) => {
++          closeListeners.add(listener);
++          return () => closeListeners.delete(listener);
++        },
++      },
++    );
++    socket.on("data", (bytes) => {
++      try {
++        for (const value of decoder.append(Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes))) {
++          const request = this.options.validator.request(value);
++          responses = responses
++            .then(async () => {
++              const response = await handler(request, send);
++              if (response !== undefined) await send(response);
++            })
++            .catch(() => {
++              socket.destroy();
++            });
++        }
++      } catch {
++        socket.destroy();
++      }
++    });
++    socket.once("end", () => {
++      try {
++        decoder.assertComplete();
++      } catch {
++        socket.destroy();
++      }
++    });
++    socket.once("close", () => {
++      for (const listener of closeListeners) {
++        try {
++          listener();
++        } catch {}
++      }
++      closeListeners.clear();
++    });
++    socket.once("error", () => socket.destroy());
++  }
++
++  private async writeServerMessage(socket: Socket, message: DaemonServerMessage): Promise<void> {
++    await this.writeEncodedServerFrame(socket, this.options.codec.encodeServerMessage(message));
++  }
++
++  private async writeEncodedServerFrame(socket: Socket, frame: Uint8Array): Promise<void> {
++    const chunkSize = this.options.writeChunkSize ?? frame.length;
++    for (let offset = 0; offset < frame.length; offset += chunkSize) {
++      if (socket.destroyed) throw new Error("Daemon socket closed during response delivery");
++      const accepted = socket.write(frame.subarray(offset, offset + chunkSize));
++      if (!accepted) await LocalDaemonSocketServer.waitForDrain(socket);
++    }
++  }
++
++  private static waitForDrain(socket: Socket): Promise<void> {
++    return new Promise((resolve, reject) => {
++      const cleanup = (): void => {
++        socket.off("drain", drained);
++        socket.off("error", failed);
++        socket.off("close", closed);
++      };
++      const drained = (): void => {
++        cleanup();
++        resolve();
++      };
++      const failed = (error: Error): void => {
++        cleanup();
++        reject(error);
++      };
++      const closed = (): void => {
++        cleanup();
++        reject(new Error("Daemon socket closed during response delivery"));
++      };
++      socket.once("drain", drained);
++      socket.once("error", failed);
++      socket.once("close", closed);
++    });
++  }
++}
+diff --git a/apps/cli/src/daemon/local-daemon-transport.test.ts b/apps/cli/src/daemon/local-daemon-transport.test.ts
+index 00d29197a..e05afc114 100644
+--- a/apps/cli/src/daemon/local-daemon-transport.test.ts
++++ b/apps/cli/src/daemon/local-daemon-transport.test.ts
+@@ -1,6 +1,5 @@
+ import { mkdtempSync, rmSync } from "node:fs";
+-import { EventEmitter } from "node:events";
+-import { createConnection, createServer, type Socket } from "node:net";
++import { createConnection, createServer } from "node:net";
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import { afterEach, describe, expect, it, vi } from "vitest";
+@@ -169,34 +168,6 @@ describe("LocalDaemonTransport", () => {
+     await server.close();
+   });
+ 
+-  it("waits for socket drain before writing the next server fragment", async () => {
+-    const writes: Buffer[] = [];
+-    const socket = new EventEmitter() as EventEmitter & {
+-      destroyed: boolean;
+-      write: (bytes: Buffer) => boolean;
+-    };
+-    socket.destroyed = false;
+-    socket.write = (bytes) => {
+-      writes.push(bytes);
+-      return writes.length !== 1;
+-    };
+-    const transport = new LocalDaemonTransport({ writeChunkSize: 1 });
+-    const serverWriter = transport as unknown as {
+-      writeServerMessage(socket: Socket, value: unknown): Promise<void>;
+-    };
+-
+-    const writing = serverWriter.writeServerMessage(socket as unknown as Socket, {
+-      kind: "stopped",
+-      instanceId: "instance",
+-    });
+-    await Promise.resolve();
+-
+-    expect(writes).toHaveLength(1);
+-    socket.emit("drain");
+-    await writing;
+-    expect(Buffer.concat(writes)).toEqual(frame({ kind: "stopped", instanceId: "instance" }));
+-  });
+-
+   it("decodes coalesced request frames independently", async () => {
+     const endpoint = endpointFor(roots);
+     const transport = new LocalDaemonTransport();
+diff --git a/apps/cli/src/daemon/local-daemon-transport.ts b/apps/cli/src/daemon/local-daemon-transport.ts
+index a75657f2f..3df5385c5 100644
+--- a/apps/cli/src/daemon/local-daemon-transport.ts
++++ b/apps/cli/src/daemon/local-daemon-transport.ts
+@@ -1,6 +1,3 @@
+-import { existsSync, mkdirSync, rmSync } from "node:fs";
+-import { createServer, type Server, type Socket } from "node:net";
+-import { dirname } from "node:path";
+ import { type DaemonExecutionFailureCode, type DaemonPolicyValues } from "@symnav/daemon";
+ import type {
+   DaemonExecuteRequest,
+@@ -9,7 +6,6 @@ import type {
+   DaemonLifecycleRequest,
+   DaemonLifecycleResponse,
+   DaemonResultChunk,
+-  DaemonServerMessage,
+   DaemonServer,
+ } from "./daemon-protocol.js";
+ import type {
+@@ -19,7 +15,6 @@ import type {
+   DaemonLifecycleRequester,
+   DaemonRequestHandler,
+   DaemonRequestServer,
+-  DaemonServerSend,
+   DaemonSocketClient,
+ } from "./daemon-transport.js";
+ import { DaemonWireCodec } from "./daemon-wire-codec.js";
+@@ -29,6 +24,7 @@ import { DaemonResultTransferReceiver } from "./daemon-result-transfer-receiver.
+ import { LocalDaemonSocketClient } from "./local-daemon-socket-client.js";
+ import { DaemonLifecycleClient } from "./daemon-lifecycle-client.js";
+ import { DaemonTransportError, type DaemonDeliveryState } from "./daemon-transport-error.js";
++import { LocalDaemonSocketServer } from "./local-daemon-socket-server.js";
+ 
+ interface LocalDaemonTransportOptions {
+   readonly lifecycleResponseTimeoutMs?: number;
+@@ -42,32 +38,10 @@ export type LocalDaemonTransportPolicy = Pick<
+   "transport" | "delivery" | "output"
+ >;
+ 
+-class ListeningDaemonServer implements DaemonServer {
+-  constructor(
+-    private readonly server: Server,
+-    private readonly sockets: ReadonlySet<Socket>,
+-  ) {}
+-
+-  close(force = false): Promise<void> {
+-    if (force) {
+-      for (const socket of this.sockets) socket.destroy();
+-    }
+-    if (!this.server.listening) return Promise.resolve();
+-    return new Promise((resolve, reject) => {
+-      this.server.close((error) => {
+-        if (error) reject(error);
+-        else resolve();
+-      });
+-    });
+-  }
+-}
+-
+ export class LocalDaemonTransport
+   implements DaemonLifecycleRequester, DaemonExecutionRequester, DaemonRequestServer
+ {
+-  private readonly endpointProbeTimeoutMs: number;
+   private readonly executionRequestTimeoutMs: number;
+-  private readonly writeChunkSize: number | undefined;
+   private readonly outputDirectory: string | undefined;
+   private readonly codec: DaemonWireCodec;
+   private readonly validator = new DaemonProtocolValidator();
+@@ -75,9 +49,9 @@ export class LocalDaemonTransport
+   private readonly deliveryPolicy: DaemonPolicyValues["delivery"];
+   private readonly sockets: DaemonSocketClient;
+   private readonly lifecycle: DaemonLifecycleClient;
++  private readonly server: DaemonRequestServer;
+ 
+   constructor(policy: LocalDaemonTransportPolicy, options: LocalDaemonTransportOptions = {}) {
+-    this.endpointProbeTimeoutMs = policy.transport.singleResponseTimeoutMs;
+     this.executionRequestTimeoutMs = policy.transport.executionAdmissionTimeoutMs;
+     this.codec = new DaemonWireCodec({
+       maximumJsonPayloadBytes: policy.transport.maximumJsonPayloadBytes,
+@@ -86,7 +60,6 @@ export class LocalDaemonTransport
+     });
+     this.outputPolicy = policy.output;
+     this.deliveryPolicy = policy.delivery;
+-    this.writeChunkSize = options.writeChunkSize;
+     this.outputDirectory = options.outputDirectory;
+     this.sockets =
+       options.sockets ??
+@@ -100,6 +73,13 @@ export class LocalDaemonTransport
+       responseTimeoutMs:
+         options.lifecycleResponseTimeoutMs ?? policy.transport.singleResponseTimeoutMs,
+     });
++    this.server = new LocalDaemonSocketServer({
++      sockets: this.sockets,
++      codec: this.codec,
++      validator: this.validator,
++      policy: policy.transport,
++      ...(options.writeChunkSize === undefined ? {} : { writeChunkSize: options.writeChunkSize }),
++    });
+   }
+ 
+   canFrame(value: unknown): boolean {
+@@ -486,132 +466,11 @@ export class LocalDaemonTransport
+   }
+ 
+   async listen(endpoint: string, handler: DaemonRequestHandler): Promise<DaemonServer> {
+-    if (process.platform !== "win32") {
+-      mkdirSync(dirname(endpoint), { recursive: true, mode: 0o700 });
+-      if (existsSync(endpoint)) {
+-        if (await this.endpointIsReachable(endpoint)) {
+-          throw new Error(`Daemon endpoint is already in use: ${endpoint}`);
+-        }
+-        rmSync(endpoint, { force: true });
+-      }
+-    }
+-    const sockets = new Set<Socket>();
+-    const server = createServer((socket) => {
+-      sockets.add(socket);
+-      socket.once("close", () => sockets.delete(socket));
+-      this.serve(socket, handler);
+-    });
+-    return new Promise((resolve, reject) => {
+-      server.once("error", reject);
+-      server.listen(endpoint, () => resolve(new ListeningDaemonServer(server, sockets)));
+-    });
++    return this.server.listen(endpoint, handler);
+   }
+ 
+   async removeUnavailableEndpoint(endpoint: string): Promise<boolean> {
+-    if (await this.endpointIsReachable(endpoint)) return false;
+-    if (process.platform !== "win32") rmSync(endpoint, { force: true });
+-    return true;
+-  }
+-
+-  private async endpointIsReachable(endpoint: string): Promise<boolean> {
+-    try {
+-      const connection = await this.sockets.connect(endpoint, this.endpointProbeTimeoutMs);
+-      connection.destroy();
+-      return true;
+-    } catch {
+-      return false;
+-    }
+-  }
+-
+-  private serve(socket: Socket, handler: DaemonRequestHandler): void {
+-    const decoder = this.codec.controlDecoder();
+-    let responses = Promise.resolve();
+-    let writes = Promise.resolve();
+-    const closeListeners = new Set<() => void>();
+-    const send: DaemonServerSend = Object.assign(
+-      (message: DaemonServerMessage) => {
+-        const write = writes.then(() => this.writeServerMessage(socket, message));
+-        writes = write;
+-        return write;
+-      },
+-      {
+-        onClose: (listener: () => void): (() => void) => {
+-          closeListeners.add(listener);
+-          return () => closeListeners.delete(listener);
+-        },
+-      },
+-    );
+-    socket.on("data", (bytes) => {
+-      try {
+-        for (const value of decoder.append(Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes))) {
+-          const request = this.validator.request(value);
+-          responses = responses
+-            .then(async () => {
+-              const response = await handler(request, send);
+-              if (response !== undefined) await send(response);
+-            })
+-            .catch(() => {
+-              socket.destroy();
+-            });
+-        }
+-      } catch {
+-        socket.destroy();
+-      }
+-    });
+-    socket.once("end", () => {
+-      try {
+-        decoder.assertComplete();
+-      } catch {
+-        socket.destroy();
+-      }
+-    });
+-    socket.once("close", () => {
+-      for (const listener of closeListeners) {
+-        try {
+-          listener();
+-        } catch {}
+-      }
+-      closeListeners.clear();
+-    });
+-    socket.once("error", () => socket.destroy());
+-  }
+-
+-  private async writeServerMessage(socket: Socket, message: DaemonServerMessage): Promise<void> {
+-    await this.writeEncodedServerFrame(socket, this.codec.encodeServerMessage(message));
+-  }
+-
+-  private async writeEncodedServerFrame(socket: Socket, frame: Uint8Array): Promise<void> {
+-    const chunkSize = this.writeChunkSize ?? frame.length;
+-    for (let offset = 0; offset < frame.length; offset += chunkSize) {
+-      if (socket.destroyed) throw new Error("Daemon socket closed during response delivery");
+-      const accepted = socket.write(frame.subarray(offset, offset + chunkSize));
+-      if (!accepted) await LocalDaemonTransport.waitForDrain(socket);
+-    }
+-  }
+-
+-  private static waitForDrain(socket: Socket): Promise<void> {
+-    return new Promise((resolve, reject) => {
+-      const cleanup = (): void => {
+-        socket.off("drain", drained);
+-        socket.off("error", failed);
+-        socket.off("close", closed);
+-      };
+-      const drained = (): void => {
+-        cleanup();
+-        resolve();
+-      };
+-      const failed = (error: Error): void => {
+-        cleanup();
+-        reject(error);
+-      };
+-      const closed = (): void => {
+-        cleanup();
+-        reject(new Error("Daemon socket closed during response delivery"));
+-      };
+-      socket.once("drain", drained);
+-      socket.once("error", failed);
+-      socket.once("close", closed);
+-    });
++    return this.server.removeUnavailableEndpoint(endpoint);
+   }
+ 
+   private static transportError(

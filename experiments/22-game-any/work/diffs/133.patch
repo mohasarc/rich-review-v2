@@ -1,0 +1,932 @@
+diff --git a/apps/cli/src/daemon/accepted-request-ledger.test.ts b/apps/cli/src/daemon/accepted-request-ledger.test.ts
+index 0f4dfbc52..27138f756 100644
+--- a/apps/cli/src/daemon/accepted-request-ledger.test.ts
++++ b/apps/cli/src/daemon/accepted-request-ledger.test.ts
+@@ -1,4 +1,5 @@
+ import { describe, expect, it, vi } from "vitest";
++import type { DaemonExecutionFailureCode } from "@symnav/daemon";
+ import type { CliExecutionRequest } from "../command-execution-result.js";
+ import {
+   AcceptedRequestCorruptionError,
+@@ -64,23 +65,29 @@ describe("AcceptedRequestLedger", () => {
+     expect(ledger.status("request")).toEqual({ state: "completed" });
+   });
+ 
+-  it("transitions queued or running requests to a typed failure", () => {
++  it.each<DaemonExecutionFailureCode>([
++    "worker-exit",
++    "controlled-resource",
++    "response-capacity",
++    "stopping",
++    "internal",
++  ])("transitions a request to the closed failure %s", (code) => {
+     const queued = new AcceptedRequestLedger(() => 10);
+     queued.accept("queued", "overview", request);
+-    expect(queued.fail("queued", "stopping", 20).state).toEqual({
++    expect(queued.fail("queued", code, 20).state).toEqual({
+       state: "failed",
+       completedAt: 20,
+-      code: "stopping",
++      code,
+     });
++  });
+ 
+-    const running = new AcceptedRequestLedger(() => 10);
+-    running.accept("running", "overview", request);
+-    running.markRunning("running", 15);
+-    expect(running.fail("running", "worker-exit", 20).state).toEqual({
+-      state: "failed",
+-      completedAt: 20,
+-      code: "worker-exit",
+-    });
++  it("rejects failures outside the closed vocabulary", () => {
++    const ledger = new AcceptedRequestLedger(() => 10);
++    ledger.accept("request", "overview", request);
++
++    expect(() => ledger.fail("request", "unknown" as never, 20)).toThrow(
++      "Invalid daemon execution failure code",
++    );
+   });
+ 
+   it("publishes the current entry and each transition to subscribers", () => {
+diff --git a/apps/cli/src/daemon/accepted-request-ledger.ts b/apps/cli/src/daemon/accepted-request-ledger.ts
+index 57872994e..adc0b40f1 100644
+--- a/apps/cli/src/daemon/accepted-request-ledger.ts
++++ b/apps/cli/src/daemon/accepted-request-ledger.ts
+@@ -1,7 +1,11 @@
+ import { createHash } from "node:crypto";
+ import type { CliExecutionRequest } from "../command-execution-result.js";
+-import type { DaemonCommandName } from "@symnav/daemon";
+-import type { DaemonExecutionFailureCode, DaemonExecutionStatus } from "./daemon-protocol.js";
++import {
++  DaemonExecutionFailures,
++  type DaemonCommandName,
++  type DaemonExecutionFailureCode,
++} from "@symnav/daemon";
++import type { DaemonExecutionStatus } from "./daemon-protocol.js";
+ 
+ export type AcceptedRequestState =
+   | { readonly state: "queued"; readonly acceptedAt: number; readonly queuePosition: number }
+@@ -102,6 +106,7 @@ export class AcceptedRequestLedger {
+     code: DaemonExecutionFailureCode,
+     completedAt: number,
+   ): AcceptedRequestEntry {
++    AcceptedRequestLedger.assertFailureCode(code);
+     const entry = this.transitionable(requestId);
+     return this.publish({
+       ...entry,
+@@ -114,6 +119,7 @@ export class AcceptedRequestLedger {
+     code: DaemonExecutionFailureCode,
+     completedAt: number,
+   ): AcceptedRequestEntry {
++    AcceptedRequestLedger.assertFailureCode(code);
+     const entry = this.entry(requestId);
+     if (entry.state.state === "failed" && entry.state.code === code) return entry;
+     if (entry.state.state !== "completed") {
+@@ -125,6 +131,12 @@ export class AcceptedRequestLedger {
+     });
+   }
+ 
++  private static assertFailureCode(code: unknown): asserts code is DaemonExecutionFailureCode {
++    if (!DaemonExecutionFailures.isCode(code)) {
++      throw new Error("Invalid daemon execution failure code");
++    }
++  }
++
+   status(requestId: string): DaemonExecutionStatus {
+     const state = this.entries.get(requestId)?.state;
+     if (state === undefined) return { state: "unknown" };
+diff --git a/apps/cli/src/daemon/daemon-command-dispatcher.test.ts b/apps/cli/src/daemon/daemon-command-dispatcher.test.ts
+index c756e601c..6c2822d76 100644
+--- a/apps/cli/src/daemon/daemon-command-dispatcher.test.ts
++++ b/apps/cli/src/daemon/daemon-command-dispatcher.test.ts
+@@ -1,6 +1,6 @@
+ import { join, resolve } from "node:path";
+ import { describe, expect, it, vi } from "vitest";
+-import { DaemonPolicy } from "@symnav/daemon";
++import { DaemonPolicy, type DaemonExecutionFailureCode } from "@symnav/daemon";
+ import {
+   CommandOutputSnapshot,
+   type CliExecutionRequest,
+@@ -170,7 +170,7 @@ describe("DaemonCommandDispatcher", () => {
+   it.each(["worker-exit", "controlled-resource", "response-capacity", "stopping", "internal"])(
+     "returns one controlled result and never replays terminal daemon failure %s",
+     async (code) => {
+-      const harness = new DispatchHarness({ failed: code as DaemonFailureCode });
++      const harness = new DispatchHarness({ failed: code as DaemonExecutionFailureCode });
+ 
+       await expect(harness.dispatcher().execute(request)).resolves.toMatchObject({
+         mode: "warm",
+@@ -260,7 +260,7 @@ class DispatchHarness {
+     private readonly daemonAnswer:
+       | CommandExecutionResult
+       | Error
+-      | { readonly failed: DaemonFailureCode },
++      | { readonly failed: DaemonExecutionFailureCode },
+     private readonly options: DispatchHarnessOptions = {},
+   ) {
+     this.registered =
+@@ -351,13 +351,6 @@ class DispatchHarness {
+   }
+ }
+ 
+-type DaemonFailureCode =
+-  | "worker-exit"
+-  | "controlled-resource"
+-  | "response-capacity"
+-  | "stopping"
+-  | "internal";
+-
+ function daemonRecord(instanceId = "instance-1"): DaemonRecord {
+   return {
+     schemaVersion: DAEMON_RECORD_SCHEMA_VERSION,
+diff --git a/apps/cli/src/daemon/daemon-command-dispatcher.ts b/apps/cli/src/daemon/daemon-command-dispatcher.ts
+index 2fff4822b..9fe5d12af 100644
+--- a/apps/cli/src/daemon/daemon-command-dispatcher.ts
++++ b/apps/cli/src/daemon/daemon-command-dispatcher.ts
+@@ -1,6 +1,6 @@
+ import { randomUUID } from "node:crypto";
+ import { createWorkspace } from "@symnav/core";
+-import type { DaemonCommandName, DaemonPolicy } from "@symnav/daemon";
++import type { DaemonCommandName, DaemonExecutionFailureCode, DaemonPolicy } from "@symnav/daemon";
+ import { CliProgramExecutor } from "../cli-program-executor.js";
+ import type {
+   CliExecutionRequest,
+@@ -9,11 +9,7 @@ import type {
+ } from "../command-execution-result.js";
+ import { ControlledCommandResult } from "../command-execution-result.js";
+ import type { ProgramDependencies } from "../program-dependencies.js";
+-import type {
+-  DaemonExecuteRequest,
+-  DaemonExecutionFailureCode,
+-  DaemonRecord,
+-} from "./daemon-protocol.js";
++import type { DaemonExecuteRequest, DaemonRecord } from "./daemon-protocol.js";
+ import { DaemonRegistry } from "./daemon-registry.js";
+ import {
+   NodeDaemonProcessLauncher,
+diff --git a/apps/cli/src/daemon/daemon-logger.ts b/apps/cli/src/daemon/daemon-logger.ts
+index 2552ba0d9..46e171674 100644
+--- a/apps/cli/src/daemon/daemon-logger.ts
++++ b/apps/cli/src/daemon/daemon-logger.ts
+@@ -1,7 +1,7 @@
+ import { chmod, mkdir, open, rename, rm, stat, appendFile } from "node:fs/promises";
+ import { createHash } from "node:crypto";
+ import { dirname } from "node:path";
+-import type { DaemonPolicyValues } from "@symnav/daemon";
++import { DaemonExecutionFailures, type DaemonPolicyValues } from "@symnav/daemon";
+ import type { DaemonClock } from "./daemon-clock.js";
+ import {
+   DAEMON_DIAGNOSTIC_SCHEMA_VERSION,
+@@ -115,17 +115,6 @@ const CLOSED_DIAGNOSTIC_VALUES = new Map<string, ReadonlySet<string>>([
+       "diagnostics-rotation",
+     ]),
+   ],
+-  [
+-    "failureCode",
+-    new Set([
+-      "worker-exit",
+-      "controlled-resource",
+-      "response-capacity",
+-      "stopping",
+-      "internal",
+-      "operation-failed",
+-    ]),
+-  ],
+   ["outcome", new Set(["completed", "failed", "delivered", "disconnected"])],
+   ["reason", new Set(["graceful", "idle", "resource", "workspace-deleted"])],
+   ["cause", new Set(["hard-pressure", "out-of-memory", "shed-failure", "worker-exit"])],
+@@ -311,6 +300,13 @@ export class DaemonLogger {
+     if ("errorName" in closed && !ERROR_NAMES.has(closed.errorName as DaemonDiagnosticErrorName)) {
+       closed.errorName = "UnknownError";
+     }
++    if (
++      "failureCode" in closed &&
++      closed.failureCode !== "operation-failed" &&
++      !DaemonExecutionFailures.isCode(closed.failureCode)
++    ) {
++      return undefined;
++    }
+     for (const [field, values] of CLOSED_DIAGNOSTIC_VALUES) {
+       if (field in closed && !values.has(String(closed[field]))) return undefined;
+     }
+diff --git a/apps/cli/src/daemon/daemon-navigation-worker-entry.ts b/apps/cli/src/daemon/daemon-navigation-worker-entry.ts
+index 4a227edec..8b582391f 100644
+--- a/apps/cli/src/daemon/daemon-navigation-worker-entry.ts
++++ b/apps/cli/src/daemon/daemon-navigation-worker-entry.ts
+@@ -2,13 +2,12 @@ import { performance } from "node:perf_hooks";
+ import { parentPort, workerData } from "node:worker_threads";
+ import { getHeapStatistics } from "node:v8";
+ import type { BackendRefreshSummary } from "@symnav/core";
+-import { DaemonPolicy } from "@symnav/daemon";
++import { DaemonPolicy, type DaemonWorkerFailureCode } from "@symnav/daemon";
+ import type { CommandPhaseDurations } from "../program-dependencies.js";
+ import { createDefaultDependencies } from "../program.js";
+ import { RetainedWorkspaceProgram } from "./retained-workspace-program.js";
+ import {
+   DaemonNavigationWorkerProtocol,
+-  type DaemonExecutionFailureCode,
+   type DaemonNavigationWorkerRequest,
+   type DaemonNavigationWorkerResponse,
+ } from "./daemon-navigation-worker-protocol.js";
+@@ -177,7 +176,7 @@ class DaemonNavigationWorkerEntry {
+   }
+ 
+   private fail(
+-    failureCode: DaemonExecutionFailureCode,
++    failureCode: DaemonWorkerFailureCode,
+     error: unknown,
+     correlation:
+       | { readonly requestId: string }
+diff --git a/apps/cli/src/daemon/daemon-navigation-worker-protocol.test.ts b/apps/cli/src/daemon/daemon-navigation-worker-protocol.test.ts
+index 9b8cceae6..d3f773a00 100644
+--- a/apps/cli/src/daemon/daemon-navigation-worker-protocol.test.ts
++++ b/apps/cli/src/daemon/daemon-navigation-worker-protocol.test.ts
+@@ -14,6 +14,15 @@ const request = {
+ const refresh = { added: 1, changed: 0, removed: 0, unchanged: 2 } as const;
+ 
+ describe("DaemonNavigationWorkerProtocol", () => {
++  it.each(["initialization", "execution", "protocol", "resource"] as const)(
++    "accepts the closed worker failure %s without changing its value",
++    (failureCode) => {
++      const response = { kind: "failed", generation: 4, failureCode } as const;
++
++      expect(DaemonNavigationWorkerProtocol.response(response, 64 * 1024)).toEqual(response);
++    },
++  );
++
+   it.each<DaemonNavigationWorkerRequest>([
+     { kind: "initialize", generation: 4, workspaceRoot: "/repo" },
+     {
+diff --git a/apps/cli/src/daemon/daemon-navigation-worker-protocol.ts b/apps/cli/src/daemon/daemon-navigation-worker-protocol.ts
+index a1caf3e6f..f3a4ea119 100644
+--- a/apps/cli/src/daemon/daemon-navigation-worker-protocol.ts
++++ b/apps/cli/src/daemon/daemon-navigation-worker-protocol.ts
+@@ -1,10 +1,8 @@
+ import type { BackendRefreshSummary } from "@symnav/core";
+-import type { DaemonCommandName } from "@symnav/daemon";
++import type { DaemonCommandName, DaemonWorkerFailureCode } from "@symnav/daemon";
+ import type { CliExecutionRequest, CommandOutputStream } from "../command-execution-result.js";
+ import { DaemonRuntimeValues } from "./daemon-runtime-values.js";
+ 
+-export type DaemonExecutionFailureCode = "initialization" | "execution" | "protocol" | "resource";
+-
+ export interface WorkerStartupDurations {
+   readonly discoveryMs: number;
+   readonly indexingMs: number;
+@@ -73,7 +71,7 @@ export type DaemonNavigationWorkerResponse =
+       readonly kind: "failed";
+       readonly generation: number;
+       readonly requestId?: string;
+-      readonly failureCode: DaemonExecutionFailureCode;
++      readonly failureCode: DaemonWorkerFailureCode;
+       readonly errorName?: string;
+       readonly operationId?: string;
+     }
+diff --git a/apps/cli/src/daemon/daemon-protocol.ts b/apps/cli/src/daemon/daemon-protocol.ts
+index aaecfa307..4cb77732e 100644
+--- a/apps/cli/src/daemon/daemon-protocol.ts
++++ b/apps/cli/src/daemon/daemon-protocol.ts
+@@ -1,5 +1,5 @@
+ import type { CliExecutionRequest } from "../command-execution-result.js";
+-import type { DaemonCommandName } from "@symnav/daemon";
++import type { DaemonCommandName, DaemonExecutionFailureCode } from "@symnav/daemon";
+ import type { CompletionSpoolManifest } from "./completion-spool.js";
+ import type { CommandOutputStream } from "../command-execution-result.js";
+ import type { BackendRefreshSummary } from "@symnav/core";
+@@ -112,13 +112,6 @@ export type DaemonStopResult =
+ 
+ export type DaemonStopReason = "graceful" | "idle" | "resource" | "workspace-deleted";
+ 
+-export type DaemonExecutionFailureCode =
+-  | "worker-exit"
+-  | "controlled-resource"
+-  | "response-capacity"
+-  | "stopping"
+-  | "internal";
+-
+ export type DaemonExecuteRejectionCode =
+   | "not-ready"
+   | "draining"
+diff --git a/apps/cli/src/daemon/local-daemon-transport-execution.test.ts b/apps/cli/src/daemon/local-daemon-transport-execution.test.ts
+index ad334c752..70dcfb35e 100644
+--- a/apps/cli/src/daemon/local-daemon-transport-execution.test.ts
++++ b/apps/cli/src/daemon/local-daemon-transport-execution.test.ts
+@@ -4,7 +4,7 @@ import { createServer, type Server, type Socket } from "node:net";
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import { afterEach, describe, expect, it, vi } from "vitest";
+-import { DaemonPolicy } from "@symnav/daemon";
++import { DaemonPolicy, type DaemonExecutionFailureCode } from "@symnav/daemon";
+ import { OrderedCommandOutput } from "../command-execution-result.js";
+ import {
+   DAEMON_PROTOCOL_VERSION,
+@@ -141,6 +141,38 @@ describe("LocalDaemonTransport execution delivery", () => {
+     await expect(receipt.completion).resolves.toEqual({ status: "failed", code: "internal" });
+   });
+ 
++  it.each<DaemonExecutionFailureCode>([
++    "worker-exit",
++    "controlled-resource",
++    "response-capacity",
++    "stopping",
++    "internal",
++  ])("preserves accepted terminal failure %s without replay", async (code) => {
++    const endpoint = await rawExecutionServer(servers, sockets, directories, (socket) => {
++      socket.once("data", () =>
++        socket.end(
++          Buffer.concat([
++            frame(accepted()),
++            frame({
++              kind: "execution-failed",
++              instanceId: request.instanceId,
++              processToken: request.processToken,
++              requestId: request.requestId,
++              code,
++            } satisfies DaemonExecutionServerFrame),
++          ]),
++        ),
++      );
++    });
++
++    const receipt = await new LocalDaemonTransport({ requestTimeoutMs: 100 }).execute(
++      endpoint,
++      request,
++    );
++
++    await expect(receipt.completion).resolves.toEqual({ status: "failed", code });
++  });
++
+   it("has no completion deadline after acceptance", async () => {
+     const endpoint = await rawExecutionServer(servers, sockets, directories, (socket) => {
+       socket.once("data", () => {
+diff --git a/apps/cli/src/daemon/local-daemon-transport.ts b/apps/cli/src/daemon/local-daemon-transport.ts
+index 29d34be56..105144321 100644
+--- a/apps/cli/src/daemon/local-daemon-transport.ts
++++ b/apps/cli/src/daemon/local-daemon-transport.ts
+@@ -1,11 +1,14 @@
+ import { existsSync, mkdirSync, rmSync } from "node:fs";
+ import { createConnection, createServer, type Server, type Socket } from "node:net";
+ import { dirname } from "node:path";
+-import type { DaemonPolicyValues } from "@symnav/daemon";
++import {
++  DaemonExecutionFailures,
++  type DaemonExecutionFailureCode,
++  type DaemonPolicyValues,
++} from "@symnav/daemon";
+ import { OrderedCommandOutput, type CommandExecutionResult } from "../command-execution-result.js";
+ import type {
+   DaemonExecuteRequest,
+-  DaemonExecutionFailureCode,
+   DaemonExecutionServerFrame,
+   DaemonExecutionStatus,
+   DaemonExecutionStatusRequest,
+@@ -1341,7 +1344,7 @@ export class LocalDaemonTransport {
+         "requestId",
+         "code",
+       ]) ||
+-      !LocalDaemonTransport.isExecutionFailureCode(value.code)
++      !DaemonExecutionFailures.isCode(value.code)
+     ) {
+       throw new Error("Malformed daemon execution failure");
+     }
+@@ -1384,22 +1387,12 @@ export class LocalDaemonTransport {
+     );
+   }
+ 
+-  private static isExecutionFailureCode(value: unknown): value is DaemonExecutionFailureCode {
+-    return (
+-      value === "worker-exit" ||
+-      value === "controlled-resource" ||
+-      value === "response-capacity" ||
+-      value === "stopping" ||
+-      value === "internal"
+-    );
+-  }
+-
+   private static isExecutionStatus(value: unknown): value is DaemonExecutionStatus {
+     if (!LocalDaemonTransport.isRecord(value)) return false;
+     if (value.state === "unknown" || value.state === "completed") return true;
+     if (value.state === "queued") return LocalDaemonTransport.isCount(value.queuePosition);
+     if (value.state === "running") return LocalDaemonTransport.isMetric(value.startedAt);
+-    return value.state === "failed" && LocalDaemonTransport.isExecutionFailureCode(value.code);
++    return value.state === "failed" && DaemonExecutionFailures.isCode(value.code);
+   }
+ 
+   private static isActivitySnapshot(value: unknown): boolean {
+diff --git a/apps/cli/src/daemon/workspace-daemon-requests.test.ts b/apps/cli/src/daemon/workspace-daemon-requests.test.ts
+index 405275016..844f44968 100644
+--- a/apps/cli/src/daemon/workspace-daemon-requests.test.ts
++++ b/apps/cli/src/daemon/workspace-daemon-requests.test.ts
+@@ -20,7 +20,11 @@ import type {
+   DaemonServer,
+ } from "./daemon-protocol.js";
+ import { DAEMON_PROTOCOL_VERSION, DAEMON_RECORD_SCHEMA_VERSION } from "./daemon-protocol.js";
+-import { NodeCompletionSpoolStorage, type CompletionSpoolFile } from "./completion-spool.js";
++import {
++  CompletionSpoolCapacityError,
++  NodeCompletionSpoolStorage,
++  type CompletionSpoolFile,
++} from "./completion-spool.js";
+ import { TestDaemonRegistry as DaemonRegistry } from "../../test/helpers/daemon-registry.js";
+ import { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
+ import type { LocalDaemonTransport } from "./local-daemon-transport.js";
+@@ -28,7 +32,10 @@ import type {
+   DaemonNavigationWorker,
+   DaemonNavigationWorkerExit,
+ } from "./daemon-navigation-worker.js";
+-import { NodeDaemonNavigationWorker } from "./daemon-navigation-worker.js";
++import {
++  DaemonNavigationWorkerExitedError,
++  NodeDaemonNavigationWorker,
++} from "./daemon-navigation-worker.js";
+ import type { DaemonNavigationWorkerResponse } from "./daemon-navigation-worker-protocol.js";
+ import { TestDaemonResourcePolicy as DaemonResourcePolicy } from "../../test/helpers/daemon-resource-policy.js";
+ import {
+@@ -388,6 +395,35 @@ describe("WorkspaceDaemon requests", () => {
+     await expect(harness.execute("small")).resolves.toMatchObject({ kind: "result-end" });
+   });
+ 
++  it("preserves capacity classification for a derived capacity error", async () => {
++    const harness = await RequestHarness.start(new MultipleRecordExecutor(), {
++      completionSpoolLimits: { inlineBytes: 5, maximumResultBytes: 100 },
++      completionSpoolStorage: new DerivedCapacityCompletionStorage(),
++    });
++    harnesses.push(harness);
++
++    await expect(harness.execute("derived-capacity")).resolves.toMatchObject({
++      kind: "execution-failed",
++      code: "response-capacity",
++    });
++  });
++
++  it("preserves worker-exit classification for a derived worker error", async () => {
++    const error = new DerivedNavigationWorkerExitedError({
++      generation: 1,
++      cause: "error",
++    });
++    const harness = await RequestHarness.start(undefined, {
++      navigationWorker: new ExecutionFailingNavigationWorker(error),
++    });
++    harnesses.push(harness);
++
++    await expect(harness.execute("derived-worker-exit")).resolves.toMatchObject({
++      kind: "execution-failed",
++      code: "worker-exit",
++    });
++  });
++
+   it("keeps one result chunk in flight while the attachment sink is stalled", async () => {
+     const harness = await RequestHarness.start(new MultipleRecordExecutor());
+     harnesses.push(harness);
+@@ -1944,6 +1980,19 @@ class MultipleRecordExecutor implements DaemonCommandExecutor {
+   }
+ }
+ 
++class DerivedCompletionSpoolCapacityError extends CompletionSpoolCapacityError {}
++
++class DerivedCapacityCompletionStorage extends NodeCompletionSpoolStorage {
++  override async createFile(path: string): Promise<CompletionSpoolFile> {
++    const file = await super.createFile(path);
++    return {
++      write: (bytes) => file.write(bytes),
++      sync: () => Promise.reject(new DerivedCompletionSpoolCapacityError()),
++      close: () => file.close(),
++    };
++  }
++}
++
+ class RequestFailingCompletionStorage extends NodeCompletionSpoolStorage {
+   private failed = false;
+ 
+@@ -2068,6 +2117,18 @@ class ExecutorNavigationWorker implements DaemonNavigationWorker {
+   }
+ }
+ 
++class DerivedNavigationWorkerExitedError extends DaemonNavigationWorkerExitedError {}
++
++class ExecutionFailingNavigationWorker extends ExecutorNavigationWorker {
++  constructor(private readonly error: Error) {
++    super(new ImmediateExecutor());
++  }
++
++  override execute(): Promise<DaemonNavigationWorkerResponse> {
++    return Promise.reject(this.error);
++  }
++}
++
+ class ReleaseGatedNavigationWorker extends ExecutorNavigationWorker {
+   readonly releaseStarted: Promise<void>;
+   releaseCount = 0;
+diff --git a/apps/cli/src/daemon/workspace-daemon.ts b/apps/cli/src/daemon/workspace-daemon.ts
+index d44a09dc3..1af20a957 100644
+--- a/apps/cli/src/daemon/workspace-daemon.ts
++++ b/apps/cli/src/daemon/workspace-daemon.ts
+@@ -1,5 +1,10 @@
+ import type { ProgramDependencies } from "../program-dependencies.js";
+-import type { DaemonPolicy, DaemonPolicyValues } from "@symnav/daemon";
++import {
++  DaemonExecutionFailures,
++  type DaemonExecutionFailureCode,
++  type DaemonPolicy,
++  type DaemonPolicyValues,
++} from "@symnav/daemon";
+ import type { CommandExecutionResult, CommandOutputRecord } from "../command-execution-result.js";
+ import {
+   AcceptedRequestCorruptionError,
+@@ -8,7 +13,6 @@ import {
+ import type {
+   DaemonActivitySnapshot,
+   DaemonDeliveryOutcome,
+-  DaemonExecutionFailureCode,
+   DaemonExecutionServerFrame,
+   DaemonRecord,
+   DaemonRequest,
+@@ -98,7 +102,7 @@ export class WorkspaceDaemon {
+   private lastCompletedMonotonicAt: number | undefined;
+   private workerReady = false;
+   private shutdownStarted = false;
+-  private shutdownFailureCode: DaemonExecutionFailureCode | undefined;
++  private shutdownFailureCode: "stopping" | "controlled-resource" | undefined;
+   private shutdownOperation: Promise<void> | undefined;
+   private forcedWorkerShutdown: Promise<void> | undefined;
+   private readonly forceEscalated: Promise<void>;
+@@ -634,17 +638,15 @@ export class WorkspaceDaemon {
+         failureCode: "internal",
+         errorName: DaemonLogger.errorName(error),
+       });
+-      const code =
+-        (this.resourceInterruptedRequests.delete(request.requestId)
+-          ? "controlled-resource"
+-          : undefined) ??
+-        (error instanceof CompletionSpoolCapacityError
+-          ? "response-capacity"
+-          : error instanceof DaemonNavigationWorkerExitedError
+-            ? this.shutdownFailureCode === "stopping"
+-              ? "stopping"
+-              : "worker-exit"
+-            : (this.shutdownFailureCode ?? (this.shutdownStarted ? "stopping" : "internal")));
++      const code = DaemonExecutionFailures.classify({
++        resourceInterrupted: this.resourceInterruptedRequests.delete(request.requestId),
++        responseCapacityExceeded: error instanceof CompletionSpoolCapacityError,
++        workerExited: error instanceof DaemonNavigationWorkerExitedError,
++        ...(this.shutdownFailureCode === undefined
++          ? {}
++          : { shutdownFailureCode: this.shutdownFailureCode }),
++        shutdownStarted: this.shutdownStarted,
++      });
+       await spool?.dispose().catch((cleanupError) => {
+         this.logger.record({
+           kind: "failure",
+diff --git a/packages/daemon/src/daemon-execution-failure.test.ts b/packages/daemon/src/daemon-execution-failure.test.ts
+new file mode 100644
+index 000000000..30cc88050
+--- /dev/null
++++ b/packages/daemon/src/daemon-execution-failure.test.ts
+@@ -0,0 +1,122 @@
++import { describe, expect, expectTypeOf, it } from "vitest";
++
++import {
++  DaemonExecutionFailures,
++  type DaemonExecutionFailureCode,
++  type DaemonExecutionFailureContext,
++  type DaemonWorkerFailureCode,
++} from "./daemon-execution-failure.js";
++
++describe("DaemonExecutionFailures", () => {
++  it("accepts exactly the closed outer failure vocabulary", () => {
++    const codes = [
++      "worker-exit",
++      "controlled-resource",
++      "response-capacity",
++      "stopping",
++      "internal",
++    ] as const satisfies readonly DaemonExecutionFailureCode[];
++
++    for (const code of codes) expect(DaemonExecutionFailures.isCode(code)).toBe(true);
++    for (const value of [undefined, null, 1, "", "execution", "resource", "unknown"]) {
++      expect(DaemonExecutionFailures.isCode(value)).toBe(false);
++    }
++  });
++
++  it("keeps the worker vocabulary distinct from outer failures", () => {
++    expectTypeOf<DaemonWorkerFailureCode>().toEqualTypeOf<
++      "initialization" | "execution" | "protocol" | "resource"
++    >();
++    expectTypeOf<Extract<DaemonWorkerFailureCode, DaemonExecutionFailureCode>>().toBeNever();
++  });
++
++  it.each<[string, DaemonExecutionFailureContext, DaemonExecutionFailureCode]>([
++    [
++      "consumed resource interruption",
++      {
++        resourceInterrupted: true,
++        responseCapacityExceeded: true,
++        workerExited: true,
++        shutdownFailureCode: "stopping",
++        shutdownStarted: true,
++      },
++      "controlled-resource",
++    ],
++    [
++      "spool capacity",
++      {
++        resourceInterrupted: false,
++        responseCapacityExceeded: true,
++        workerExited: true,
++        shutdownFailureCode: "stopping",
++        shutdownStarted: true,
++      },
++      "response-capacity",
++    ],
++    [
++      "worker exit during graceful shutdown",
++      {
++        resourceInterrupted: false,
++        responseCapacityExceeded: false,
++        workerExited: true,
++        shutdownFailureCode: "stopping",
++        shutdownStarted: true,
++      },
++      "stopping",
++    ],
++    [
++      "worker exit during controlled shutdown",
++      {
++        resourceInterrupted: false,
++        responseCapacityExceeded: false,
++        workerExited: true,
++        shutdownFailureCode: "controlled-resource",
++        shutdownStarted: true,
++      },
++      "worker-exit",
++    ],
++    [
++      "worker exit without shutdown",
++      {
++        resourceInterrupted: false,
++        responseCapacityExceeded: false,
++        workerExited: true,
++        shutdownStarted: false,
++      },
++      "worker-exit",
++    ],
++    [
++      "first shutdown failure",
++      {
++        resourceInterrupted: false,
++        responseCapacityExceeded: false,
++        workerExited: false,
++        shutdownFailureCode: "controlled-resource",
++        shutdownStarted: true,
++      },
++      "controlled-resource",
++    ],
++    [
++      "shutdown begun",
++      {
++        resourceInterrupted: false,
++        responseCapacityExceeded: false,
++        workerExited: false,
++        shutdownStarted: true,
++      },
++      "stopping",
++    ],
++    [
++      "internal fallback",
++      {
++        resourceInterrupted: false,
++        responseCapacityExceeded: false,
++        workerExited: false,
++        shutdownStarted: false,
++      },
++      "internal",
++    ],
++  ])("classifies %s with preserved precedence", (_name, context, expected) => {
++    expect(DaemonExecutionFailures.classify(context)).toBe(expected);
++  });
++});
+diff --git a/packages/daemon/src/daemon-execution-failure.ts b/packages/daemon/src/daemon-execution-failure.ts
+new file mode 100644
+index 000000000..8516a3ce7
+--- /dev/null
++++ b/packages/daemon/src/daemon-execution-failure.ts
+@@ -0,0 +1,35 @@
++const executionFailureCodes = [
++  "worker-exit",
++  "controlled-resource",
++  "response-capacity",
++  "stopping",
++  "internal",
++] as const;
++
++export type DaemonExecutionFailureCode = (typeof executionFailureCodes)[number];
++
++export type DaemonWorkerFailureCode = "initialization" | "execution" | "protocol" | "resource";
++
++export interface DaemonExecutionFailureContext {
++  readonly resourceInterrupted: boolean;
++  readonly responseCapacityExceeded: boolean;
++  readonly workerExited: boolean;
++  readonly shutdownFailureCode?: "stopping" | "controlled-resource";
++  readonly shutdownStarted: boolean;
++}
++
++export class DaemonExecutionFailures {
++  static isCode(value: unknown): value is DaemonExecutionFailureCode {
++    return executionFailureCodes.includes(value as DaemonExecutionFailureCode);
++  }
++
++  static classify(context: DaemonExecutionFailureContext): DaemonExecutionFailureCode {
++    if (context.resourceInterrupted) return "controlled-resource";
++    if (context.responseCapacityExceeded) return "response-capacity";
++    if (context.workerExited) {
++      return context.shutdownFailureCode === "stopping" ? "stopping" : "worker-exit";
++    }
++    if (context.shutdownFailureCode !== undefined) return context.shutdownFailureCode;
++    return context.shutdownStarted ? "stopping" : "internal";
++  }
++}
+diff --git a/packages/daemon/src/host-contract.test.ts b/packages/daemon/src/host-contract.test.ts
+index 114e14d83..5c7d04296 100644
+--- a/packages/daemon/src/host-contract.test.ts
++++ b/packages/daemon/src/host-contract.test.ts
+@@ -13,6 +13,8 @@ import type {
+   DaemonCommandName,
+   DaemonDiagnostics,
+   DaemonDiagnosticValue,
++  DaemonExecutionFailureCode,
++  DaemonExecutionFailureContext,
+   DaemonExecutionMode,
+   DaemonExecutor,
+   DaemonExecutorExecutionResult,
+@@ -28,12 +30,13 @@ import type {
+   DaemonPolicyValues,
+   DaemonReadinessProbe,
+   DaemonSystemMemory,
++  DaemonWorkerFailureCode,
+   DaemonStartResult,
+   DaemonStatusEnvelope,
+   DaemonStopResult,
+   RunningDaemonStatus,
+ } from "./index.js";
+-import { DAEMON_COMMAND_NAMES, DaemonPolicy } from "./index.js";
++import { DAEMON_COMMAND_NAMES, DaemonExecutionFailures, DaemonPolicy } from "./index.js";
+ 
+ type ExportKind = "runtime" | "type";
+ 
+@@ -56,11 +59,14 @@ class DaemonContractSourcePath {
+ class DaemonContractExpectation {
+   public static readonly exports: readonly ExportedSymbol[] = [
+     { kind: "runtime", name: "DAEMON_COMMAND_NAMES" },
++    { kind: "runtime", name: "DaemonExecutionFailures" },
+     { kind: "runtime", name: "DaemonPolicy" },
+     { kind: "type", name: "DaemonActivitySnapshot" },
+     { kind: "type", name: "DaemonCommandName" },
+     { kind: "type", name: "DaemonDiagnostics" },
+     { kind: "type", name: "DaemonDiagnosticValue" },
++    { kind: "type", name: "DaemonExecutionFailureCode" },
++    { kind: "type", name: "DaemonExecutionFailureContext" },
+     { kind: "type", name: "DaemonExecutionMode" },
+     { kind: "type", name: "DaemonExecutor" },
+     { kind: "type", name: "DaemonExecutorExecutionResult" },
+@@ -79,6 +85,7 @@ class DaemonContractExpectation {
+     { kind: "type", name: "DaemonStatusEnvelope" },
+     { kind: "type", name: "DaemonStopResult" },
+     { kind: "type", name: "DaemonSystemMemory" },
++    { kind: "type", name: "DaemonWorkerFailureCode" },
+     { kind: "type", name: "RunningDaemonStatus" },
+   ];
+ 
+@@ -92,6 +99,8 @@ class DaemonContractExpectation {
+ 
+   public static readonly commandNameMembers = ["static:is", "static:parse"];
+ 
++  public static readonly executionFailureMembers = ["static:classify", "static:isCode"];
++
+   public static readonly policyTestingExports: readonly ExportedSymbol[] = [
+     { kind: "runtime", name: "DaemonPolicyTestFactory" },
+   ];
+@@ -99,6 +108,7 @@ class DaemonContractExpectation {
+   public static readonly productionSources: readonly string[] = [
+     "daemon-command-name.ts",
+     "daemon-diagnostics.ts",
++    "daemon-execution-failure.ts",
+     "daemon-executor.ts",
+     "daemon-lifecycle-report.ts",
+     "daemon-policy.ts",
+@@ -316,6 +326,41 @@ describe("daemon host contract", () => {
+     expect(DaemonContractSourcePath.root(pathToFileURL(sourcePath).href)).toBe(dirname(sourcePath));
+   });
+ 
++  it("defines the exact execution failure contract", () => {
++    expectTypeOf<DaemonExecutionFailureCode>().toEqualTypeOf<
++      "worker-exit" | "controlled-resource" | "response-capacity" | "stopping" | "internal"
++    >();
++    expectTypeOf<DaemonWorkerFailureCode>().toEqualTypeOf<
++      "initialization" | "execution" | "protocol" | "resource"
++    >();
++    expectTypeOf<DaemonExecutionFailureContext>().toEqualTypeOf<{
++      readonly resourceInterrupted: boolean;
++      readonly responseCapacityExceeded: boolean;
++      readonly workerExited: boolean;
++      readonly shutdownFailureCode?: "stopping" | "controlled-resource";
++      readonly shutdownStarted: boolean;
++    }>();
++
++    const sourceRoot = DaemonContractSourcePath.root(import.meta.url);
++    const source = ts.sys.readFile(join(sourceRoot, "daemon-execution-failure.ts"));
++    expect(source).toBeDefined();
++    expect(TypeScriptClassMemberInventory.read(source ?? "", "DaemonExecutionFailures")).toEqual(
++      DaemonContractExpectation.executionFailureMembers,
++    );
++
++    const compilation = NodeFreeDeclarationCompiler.compile([
++      join(sourceRoot, "daemon-execution-failure.ts"),
++    ]);
++    expect(compilation.diagnostics).toEqual([]);
++    const declaration = [...compilation.outputs].find(([path]) =>
++      path.endsWith("/daemon-execution-failure.d.ts"),
++    );
++    expect(declaration).toBeDefined();
++    expect(
++      TypeScriptClassMemberInventory.read(declaration?.[1] ?? "", "DaemonExecutionFailures"),
++    ).toEqual(DaemonContractExpectation.executionFailureMembers);
++  });
++
+   it("defines the exact command vocabulary and readiness probe", () => {
+     expectTypeOf<typeof DAEMON_COMMAND_NAMES>().toEqualTypeOf<
+       readonly [
+@@ -587,7 +632,11 @@ describe("daemon host contract", () => {
+     expect(TypeScriptExportInventory.read(indexSource ?? "")).toEqual(
+       DaemonContractExpectation.exports,
+     );
+-    expect(Object.keys(daemonRuntime)).toEqual(["DAEMON_COMMAND_NAMES", "DaemonPolicy"]);
++    expect(Object.keys(daemonRuntime)).toEqual([
++      "DAEMON_COMMAND_NAMES",
++      "DaemonExecutionFailures",
++      "DaemonPolicy",
++    ]);
+   });
+ 
+   it("detects a public member added to DaemonPolicy", () => {
+diff --git a/packages/daemon/src/index.ts b/packages/daemon/src/index.ts
+index 554df3c03..21a66640c 100644
+--- a/packages/daemon/src/index.ts
++++ b/packages/daemon/src/index.ts
+@@ -1,6 +1,12 @@
+ export { DAEMON_COMMAND_NAMES } from "./daemon-command-name.js";
+ export type { DaemonCommandName, DaemonReadinessProbe } from "./daemon-command-name.js";
+ export type { DaemonDiagnosticValue, DaemonDiagnostics } from "./daemon-diagnostics.js";
++export { DaemonExecutionFailures } from "./daemon-execution-failure.js";
++export type {
++  DaemonExecutionFailureCode,
++  DaemonExecutionFailureContext,
++  DaemonWorkerFailureCode,
++} from "./daemon-execution-failure.js";
+ export type {
+   DaemonExecutionMode,
+   DaemonExecutor,
+diff --git a/packages/daemon/test/public-import.test.ts b/packages/daemon/test/public-import.test.ts
+index ac072f8f0..4353a0411 100644
+--- a/packages/daemon/test/public-import.test.ts
++++ b/packages/daemon/test/public-import.test.ts
+@@ -3,14 +3,17 @@ import { describe, expect, expectTypeOf, it } from "vitest";
+ import * as daemonRuntime from "@symnav/daemon";
+ import type {
+   DaemonActivitySnapshot,
++  DaemonExecutionFailureCode,
++  DaemonExecutionFailureContext,
+   DaemonExecutor,
+   DaemonPolicyValues,
+   DaemonReadinessProbe,
+   DaemonStartResult,
+   DaemonStatusEnvelope,
+   DaemonStopResult,
++  DaemonWorkerFailureCode,
+ } from "@symnav/daemon";
+-import { DAEMON_COMMAND_NAMES, DaemonPolicy } from "@symnav/daemon";
++import { DAEMON_COMMAND_NAMES, DaemonExecutionFailures, DaemonPolicy } from "@symnav/daemon";
+ 
+ describe("@symnav/daemon public package import", () => {
+   it("resolves the root contract with only the policy runtime", () => {
+@@ -21,10 +24,18 @@ describe("@symnav/daemon public package import", () => {
+     expectTypeOf<DaemonStopResult>().not.toBeNever();
+     expectTypeOf<DaemonPolicyValues>().toBeObject();
+     expectTypeOf<DaemonReadinessProbe>().toBeObject();
++    expectTypeOf<DaemonExecutionFailureCode>().not.toBeNever();
++    expectTypeOf<DaemonExecutionFailureContext>().toBeObject();
++    expectTypeOf<DaemonWorkerFailureCode>().not.toBeNever();
++    expect(DaemonExecutionFailures.isCode("internal")).toBe(true);
+     expect(DAEMON_COMMAND_NAMES).toHaveLength(10);
+     expect(DaemonPolicy.fromSystemMemory({ totalBytes: 1024 * 1024 * 1024 })).toBeInstanceOf(
+       DaemonPolicy,
+     );
+-    expect(Object.keys(daemonRuntime)).toEqual(["DAEMON_COMMAND_NAMES", "DaemonPolicy"]);
++    expect(Object.keys(daemonRuntime)).toEqual([
++      "DAEMON_COMMAND_NAMES",
++      "DaemonExecutionFailures",
++      "DaemonPolicy",
++    ]);
+   });
+ });

@@ -1,0 +1,1090 @@
+diff --git a/apps/cli/src/cli.test.ts b/apps/cli/src/cli.test.ts
+index 9f3aa38b5..e7a52d536 100644
+--- a/apps/cli/src/cli.test.ts
++++ b/apps/cli/src/cli.test.ts
+@@ -6,10 +6,10 @@ import { DaemonWorkspaceIdentity } from "./daemon/daemon-workspace-identity.js";
+ afterEach(() => {
+   vi.resetModules();
+   vi.restoreAllMocks();
+-  vi.doUnmock("@symnav/telemetry");
+   vi.doUnmock("./cli-program-executor.js");
+   vi.doUnmock("./daemon/daemon-command-dispatcher.js");
+   vi.doUnmock("./program.js");
++  vi.doUnmock("./state-directory-resolver.js");
+ });
+ 
+ it("owns one canonical state directory across one client invocation", async () => {
+@@ -22,11 +22,10 @@ it("owns one canonical state directory across one client invocation", async () =
+     return resolvedStateDirectory;
+   });
+   const dependencyStateDirectories: string[] = [];
+-  const createDefaultDependencies = vi.fn((stateDirectory?: string) => {
+-    const dependencyStateDirectory = stateDirectory ?? resolveStateDirectory();
+-    dependencyStateDirectories.push(dependencyStateDirectory);
++  const createDefaultDependencies = vi.fn((stateDirectory: string) => {
++    dependencyStateDirectories.push(stateDirectory);
+     return {
+-      stateDirectory: dependencyStateDirectory,
++      stateDirectory,
+       telemetryEnabled: true,
+     } as unknown as ProgramDependencies;
+   });
+@@ -34,7 +33,11 @@ it("owns one canonical state directory across one client invocation", async () =
+   let daemonRecordPath = "";
+   let daemonEndpoint = "";
+ 
+-  vi.doMock("@symnav/telemetry", () => ({ resolveStateDir: resolveStateDirectory }));
++  vi.doMock("./state-directory-resolver.js", () => ({
++    StateDirectoryResolver: class {
++      resolve = resolveStateDirectory;
++    },
++  }));
+   vi.doMock("./program.js", () => ({
+     createDefaultDependencies,
+     createDefaultProgramContext: () => ({ stdout: {}, stderr: {}, cwd: "/client" }),
+diff --git a/apps/cli/src/cli.ts b/apps/cli/src/cli.ts
+index d3eebc55e..e8635e9c7 100644
+--- a/apps/cli/src/cli.ts
++++ b/apps/cli/src/cli.ts
+@@ -1,10 +1,10 @@
+ #!/usr/bin/env node
+-import { resolveStateDir } from "@symnav/telemetry";
+ import { CommandResultReplayer } from "./cli-program-executor.js";
+ import { DaemonCommandDispatcher } from "./daemon/daemon-command-dispatcher.js";
+ import { createDefaultDependencies, createDefaultProgramContext } from "./program.js";
++import { StateDirectoryResolver } from "./state-directory-resolver.js";
+ 
+-const stateDirectory = resolveStateDir(process.env);
++const stateDirectory = new StateDirectoryResolver(process.env).resolve();
+ const dependencies = createDefaultDependencies(stateDirectory);
+ const dispatched = await new DaemonCommandDispatcher({
+   createDependencies: createDefaultDependencies,
+diff --git a/apps/cli/src/daemon/daemon-process-launcher.test.ts b/apps/cli/src/daemon/daemon-process-launcher.test.ts
+index 236596d0e..8e4231239 100644
+--- a/apps/cli/src/daemon/daemon-process-launcher.test.ts
++++ b/apps/cli/src/daemon/daemon-process-launcher.test.ts
+@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+ import { tmpdir } from "node:os";
+ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+-import { canonicalStateDir } from "@symnav/telemetry";
++import { StateDirectoryResolver } from "../state-directory-resolver.js";
+ 
+ const { processListeners, spawnMock } = vi.hoisted(() => ({
+   processListeners: new Map<string, (...args: unknown[]) => void>(),
+@@ -64,7 +64,7 @@ describe("NodeDaemonProcessLauncher", () => {
+       const stateDirectory = join(root, "state");
+       const identity = DaemonWorkspaceIdentity.from(
+         join(root, "workspace"),
+-        canonicalStateDir(identityStateDirectory(stateDirectory)),
++        StateDirectoryResolver.canonicalize(identityStateDirectory(stateDirectory)),
+       );
+       mkdirSync(identity.identityDirectory, { recursive: true });
+ 
+@@ -88,7 +88,7 @@ describe("NodeDaemonProcessLauncher", () => {
+       expect(args).toHaveLength(2);
+       expect(args).not.toEqual(expect.arrayContaining([expect.stringContaining("max-old-space")]));
+       const configuration = DaemonProcessConfigurationParser.parse(args[1]);
+-      const absoluteStateDirectory = canonicalStateDir(resolve(stateDirectory));
++      const absoluteStateDirectory = StateDirectoryResolver.canonicalize(resolve(stateDirectory));
+       const absoluteWorkspaceRoot = resolve(root, "workspace");
+       expect(configuration.stateDirectory).toBe(absoluteStateDirectory);
+       expect(configuration.workspaceRoot).toBe(identity.workspaceRoot);
+diff --git a/apps/cli/src/daemon/daemon-startup-coordinator.test.ts b/apps/cli/src/daemon/daemon-startup-coordinator.test.ts
+index 875c0d11d..02b2888bb 100644
+--- a/apps/cli/src/daemon/daemon-startup-coordinator.test.ts
++++ b/apps/cli/src/daemon/daemon-startup-coordinator.test.ts
+@@ -3,9 +3,9 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
+ import { tmpdir } from "node:os";
+ import { dirname, join } from "node:path";
+ import { fileURLToPath } from "node:url";
+-import { canonicalStateDir } from "@symnav/telemetry";
+ import { afterEach, describe, expect, it, vi } from "vitest";
+ import { CommandOutputSnapshot } from "../command-execution-result.js";
++import { StateDirectoryResolver } from "../state-directory-resolver.js";
+ import { DaemonController } from "./daemon-controller.js";
+ import { DaemonStartupCoordinator } from "./daemon-startup-coordinator.js";
+ import {
+@@ -1128,7 +1128,7 @@ class DelayedMarkerLauncher implements DaemonProcessLauncher {
+ }
+ 
+ function temporaryDirectory(roots: string[]): string {
+-  const root = canonicalStateDir(mkdtempSync(join(tmpdir(), "symnav-startup-")));
++  const root = StateDirectoryResolver.canonicalize(mkdtempSync(join(tmpdir(), "symnav-startup-")));
+   roots.push(root);
+   return root;
+ }
+diff --git a/apps/cli/src/daemon/daemon-workspace-identity.test.ts b/apps/cli/src/daemon/daemon-workspace-identity.test.ts
+index 064f881c1..521a2f024 100644
+--- a/apps/cli/src/daemon/daemon-workspace-identity.test.ts
++++ b/apps/cli/src/daemon/daemon-workspace-identity.test.ts
+@@ -1,8 +1,8 @@
+ import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+ import { tmpdir } from "node:os";
+ import { dirname, join, relative } from "node:path";
+-import { canonicalStateDir } from "@symnav/telemetry";
+ import { afterEach, describe, expect, it } from "vitest";
++import { StateDirectoryResolver } from "../state-directory-resolver.js";
+ import { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
+ 
+ describe("DaemonWorkspaceIdentity", () => {
+@@ -20,11 +20,17 @@ describe("DaemonWorkspaceIdentity", () => {
+     mkdirSync(firstState);
+     mkdirSync(secondState);
+ 
+-    const first = DaemonWorkspaceIdentity.from("/workspace", canonicalStateDir(firstState));
+-    const second = DaemonWorkspaceIdentity.from("/workspace", canonicalStateDir(secondState));
++    const first = DaemonWorkspaceIdentity.from(
++      "/workspace",
++      StateDirectoryResolver.canonicalize(firstState),
++    );
++    const second = DaemonWorkspaceIdentity.from(
++      "/workspace",
++      StateDirectoryResolver.canonicalize(secondState),
++    );
+     const otherWorkspace = DaemonWorkspaceIdentity.from(
+       "/other-workspace",
+-      canonicalStateDir(firstState),
++      StateDirectoryResolver.canonicalize(firstState),
+     );
+ 
+     expect(first.workspaceKey).toBe(second.workspaceKey);
+@@ -47,9 +53,12 @@ describe("DaemonWorkspaceIdentity", () => {
+       stateDirectory,
+       join(root, ".", "state"),
+       stateSymlink,
+-      canonicalStateDir(stateDirectory),
++      StateDirectoryResolver.canonicalize(stateDirectory),
+     ].map((stateLocation) =>
+-      DaemonWorkspaceIdentity.from("/workspace", canonicalStateDir(stateLocation)),
++      DaemonWorkspaceIdentity.from(
++        "/workspace",
++        StateDirectoryResolver.canonicalize(stateLocation),
++      ),
+     );
+ 
+     expect(new Set(identities.map((identity) => identity.stateDirectory)).size).toBe(1);
+@@ -60,7 +69,10 @@ describe("DaemonWorkspaceIdentity", () => {
+   it("places lifecycle files under one identity directory and keys endpoints by instance", () => {
+     const root = mkdtempSync(join(tmpdir(), "symnav-daemon-identity-"));
+     roots.push(root);
+-    const identity = DaemonWorkspaceIdentity.from("/workspace", canonicalStateDir(root));
++    const identity = DaemonWorkspaceIdentity.from(
++      "/workspace",
++      StateDirectoryResolver.canonicalize(root),
++    );
+     const lifecyclePaths = [
+       identity.recordPath("instance"),
+       identity.lockPath,
+diff --git a/apps/cli/src/daemon/workspace-daemon.test.ts b/apps/cli/src/daemon/workspace-daemon.test.ts
+index b15138cfa..a699c4ddb 100644
+--- a/apps/cli/src/daemon/workspace-daemon.test.ts
++++ b/apps/cli/src/daemon/workspace-daemon.test.ts
+@@ -3,7 +3,6 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import { fileURLToPath } from "node:url";
+-import { canonicalStateDir } from "@symnav/telemetry";
+ import { afterEach, describe, expect, it, vi } from "vitest";
+ import {
+   CommandOutputSnapshot,
+@@ -11,6 +10,7 @@ import {
+   type CommandExecutionResult,
+ } from "../command-execution-result.js";
+ import { createDefaultDependencies } from "../program.js";
++import { StateDirectoryResolver } from "../state-directory-resolver.js";
+ import { DaemonController } from "./daemon-controller.js";
+ import type {
+   DaemonNavigationWorker,
+@@ -184,7 +184,7 @@ describe("WorkspaceDaemon runtime lifecycle", () => {
+   });
+ 
+   it("force-stops a real matching daemon process with a stuck request", async () => {
+-    const stateDirectory = canonicalStateDir(
++    const stateDirectory = StateDirectoryResolver.canonicalize(
+       mkdtempSync(join(tmpdir(), "symnav-daemon-child-state-")),
+     );
+     const workspaceRoot = mkdtempSync(join(tmpdir(), "symnav-daemon-child-workspace-"));
+diff --git a/apps/cli/src/program.test.ts b/apps/cli/src/program.test.ts
+index ede5cdef2..a83c92fba 100644
+--- a/apps/cli/src/program.test.ts
++++ b/apps/cli/src/program.test.ts
+@@ -1,15 +1,17 @@
+ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+-import { afterEach, expect, it } from "vitest";
+-import { resolveStateDir, usageLogPath } from "@symnav/telemetry";
++import { afterEach, expect, it, vi } from "vitest";
++import { usageLogPath } from "@symnav/telemetry";
+ import type { ProgramDependencies } from "./program-dependencies.js";
+-import { createDefaultDependencies } from "./program.js";
++import { buildProgram, createDefaultDependencies } from "./program.js";
++import { StateDirectoryResolver } from "./state-directory-resolver.js";
+ 
+ const temporaryDirectories: string[] = [];
+ const originalStateDirectory = process.env.SYMNAV_STATE_DIR;
+ 
+ afterEach(() => {
++  vi.restoreAllMocks();
+   if (originalStateDirectory === undefined) delete process.env.SYMNAV_STATE_DIR;
+   else process.env.SYMNAV_STATE_DIR = originalStateDirectory;
+   for (const directory of temporaryDirectories.splice(0)) {
+@@ -31,7 +33,7 @@ it("keeps telemetry recorder and machine identity on the captured state director
+     process.platform === "win32" ? "junction" : "dir",
+   );
+   process.env.SYMNAV_STATE_DIR = configuredStateDirectory;
+-  const capturedStateDirectory = resolveStateDir(process.env);
++  const capturedStateDirectory = new StateDirectoryResolver(process.env).resolve();
+   rmSync(configuredStateDirectory);
+   symlinkSync(
+     secondStateDirectory,
+@@ -60,3 +62,13 @@ it("keeps telemetry recorder and machine identity on the captured state director
+   expect(existsSync(join(secondStateDirectory, "machine-id"))).toBe(false);
+   expect(existsSync(usageLogPath(secondStateDirectory))).toBe(false);
+ });
++
++it("resolves a state directory when buildProgram constructs default dependencies", () => {
++  const resolve = vi
++    .spyOn(StateDirectoryResolver.prototype, "resolve")
++    .mockReturnValue("/canonical/direct-build");
++
++  buildProgram();
++
++  expect(resolve).toHaveBeenCalledTimes(1);
++});
+diff --git a/apps/cli/src/program.ts b/apps/cli/src/program.ts
+index 0eb5e1112..c03ba18dc 100644
+--- a/apps/cli/src/program.ts
++++ b/apps/cli/src/program.ts
+@@ -5,12 +5,7 @@ import { fileURLToPath } from "node:url";
+ import { Command as CommanderCommand } from "commander";
+ import { NodeFileSystem } from "@symnav/core";
+ import { TypeScriptBackend } from "@symnav/backend-typescript";
+-import {
+-  NodeTelemetryWritePort,
+-  NodeUsageRecorder,
+-  resolveStateDir,
+-  usageLogPath,
+-} from "@symnav/telemetry";
++import { NodeTelemetryWritePort, NodeUsageRecorder, usageLogPath } from "@symnav/telemetry";
+ import type { Clock } from "@symnav/telemetry";
+ import { registerContextCommand } from "./commands/context/register-context-command.js";
+ import { registerDaemonCommand } from "./commands/daemon/register-daemon-command.js";
+@@ -28,6 +23,7 @@ import {
+   NodeGitRemoteReader,
+   NodeTelemetryIdentityProvider,
+ } from "./telemetry/node-telemetry-identity-provider.js";
++import { StateDirectoryResolver } from "./state-directory-resolver.js";
+ 
+ function readPackageVersion(): string {
+   const here = dirname(fileURLToPath(import.meta.url));
+@@ -69,7 +65,8 @@ export function buildProgram(
+   dependencies?: ProgramDependencies,
+ ): CommanderCommand {
+   const ctx = context ?? createDefaultProgramContext();
+-  const deps = dependencies ?? createDefaultDependencies(resolveStateDir(process.env));
++  const deps =
++    dependencies ?? createDefaultDependencies(new StateDirectoryResolver(process.env).resolve());
+   const program = new CommanderCommand();
+   program
+     .name("symnav")
+diff --git a/apps/cli/src/state-directory-resolver.test.ts b/apps/cli/src/state-directory-resolver.test.ts
+new file mode 100644
+index 000000000..ce23a9fb6
+--- /dev/null
++++ b/apps/cli/src/state-directory-resolver.test.ts
+@@ -0,0 +1,95 @@
++import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join, parse, resolve } from "node:path";
++import { afterEach, describe, expect, it } from "vitest";
++import { StateDirectoryResolver } from "./state-directory-resolver.js";
++
++const temporaryDirectories: string[] = [];
++
++afterEach(() => {
++  for (const directory of temporaryDirectories.splice(0)) {
++    rmSync(directory, { recursive: true, force: true });
++  }
++});
++
++describe("StateDirectoryResolver", () => {
++  it("resolves a configured absolute directory", () => {
++    const root = temporaryDirectory();
++
++    expect(
++      new StateDirectoryResolver({ SYMNAV_STATE_DIR: join(root, "state") }, "/unused").resolve(),
++    ).toBe(join(realpathSync(root), "state"));
++  });
++
++  it("resolves configured relative paths and dot segments", () => {
++    expect(new StateDirectoryResolver({ SYMNAV_STATE_DIR: "state/../state" }).resolve()).toBe(
++      resolve("state"),
++    );
++  });
++
++  it("preserves an explicitly configured empty directory", () => {
++    expect(new StateDirectoryResolver({ SYMNAV_STATE_DIR: "" }, "/unused").resolve()).toBe(
++      realpathSync(resolve("")),
++    );
++  });
++
++  it("retains missing tail segments after canonicalizing a symlink ancestor", () => {
++    const root = temporaryDirectory();
++    const target = join(root, "target");
++    const link = join(root, "state-link");
++    mkdirSync(target);
++    symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir");
++
++    expect(StateDirectoryResolver.canonicalize(join(link, "missing", "nested"))).toBe(
++      join(realpathSync(target), "missing", "nested"),
++    );
++  });
++
++  it("canonicalizes an existing symlink directory", () => {
++    const root = temporaryDirectory();
++    const target = join(root, "target");
++    const link = join(root, "state-link");
++    mkdirSync(target);
++    symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir");
++
++    expect(StateDirectoryResolver.canonicalize(link)).toBe(realpathSync(target));
++  });
++
++  it("canonicalizes the filesystem root", () => {
++    const fileSystemRoot = parse(resolve(process.cwd())).root;
++
++    expect(StateDirectoryResolver.canonicalize(fileSystemRoot)).toBe(realpathSync(fileSystemRoot));
++  });
++
++  it("keeps an already canonical directory unchanged", () => {
++    const canonicalDirectory = realpathSync(temporaryDirectory());
++
++    expect(StateDirectoryResolver.canonicalize(canonicalDirectory)).toBe(canonicalDirectory);
++  });
++
++  it("uses the injected home directory when configuration is unset", () => {
++    const homeDirectory = temporaryDirectory();
++
++    expect(new StateDirectoryResolver({}, homeDirectory).resolve()).toBe(
++      join(realpathSync(homeDirectory), ".symnav"),
++    );
++  });
++
++  it("uses injected environment and home values without mutating global state", () => {
++    const root = temporaryDirectory();
++    const globalStateDirectory = process.env.SYMNAV_STATE_DIR;
++    const environment: NodeJS.ProcessEnv = { SYMNAV_STATE_DIR: join(root, "configured") };
++
++    expect(new StateDirectoryResolver(environment, join(root, "home")).resolve()).toBe(
++      join(realpathSync(root), "configured"),
++    );
++    expect(environment).toEqual({ SYMNAV_STATE_DIR: join(root, "configured") });
++    expect(process.env.SYMNAV_STATE_DIR).toBe(globalStateDirectory);
++  });
++});
++
++function temporaryDirectory(): string {
++  const directory = mkdtempSync(join(tmpdir(), "symnav-state-directory-"));
++  temporaryDirectories.push(directory);
++  return directory;
++}
+diff --git a/apps/cli/src/state-directory-resolver.ts b/apps/cli/src/state-directory-resolver.ts
+new file mode 100644
+index 000000000..2bab31f4e
+--- /dev/null
++++ b/apps/cli/src/state-directory-resolver.ts
+@@ -0,0 +1,29 @@
++import { existsSync, realpathSync } from "node:fs";
++import { homedir } from "node:os";
++import { basename, dirname, join, resolve } from "node:path";
++
++export class StateDirectoryResolver {
++  constructor(
++    private readonly environment: NodeJS.ProcessEnv = process.env,
++    private readonly homeDirectory: string = homedir(),
++  ) {}
++
++  resolve(): string {
++    const configuredDirectory =
++      this.environment.SYMNAV_STATE_DIR ?? join(this.homeDirectory, ".symnav");
++    return StateDirectoryResolver.canonicalize(configuredDirectory);
++  }
++
++  static canonicalize(stateDirectory: string): string {
++    const absoluteDirectory = resolve(stateDirectory);
++    const missingSegments: string[] = [];
++    let existingAncestor = absoluteDirectory;
++    while (!existsSync(existingAncestor)) {
++      const parent = dirname(existingAncestor);
++      if (parent === existingAncestor) return absoluteDirectory;
++      missingSegments.unshift(basename(existingAncestor));
++      existingAncestor = parent;
++    }
++    return join(realpathSync(existingAncestor), ...missingSegments);
++  }
++}
+diff --git a/apps/cli/test/benchmark/daemon-scale-benchmark-harness.ts b/apps/cli/test/benchmark/daemon-scale-benchmark-harness.ts
+index dc4ca093d..d20a740e0 100644
+--- a/apps/cli/test/benchmark/daemon-scale-benchmark-harness.ts
++++ b/apps/cli/test/benchmark/daemon-scale-benchmark-harness.ts
+@@ -20,11 +20,11 @@ import { join } from "node:path";
+ import { performance } from "node:perf_hooks";
+ import { fileURLToPath } from "node:url";
+ import { runSymnavBinary, type RunSymnavBinaryResult } from "@symnav/testing";
+-import { canonicalStateDir } from "@symnav/telemetry";
+ import { DaemonRegistry } from "../../src/daemon/daemon-registry.js";
+ import type { DaemonCommandName } from "../../src/daemon/daemon-protocol.js";
+ import { DaemonResourcePolicy } from "../../src/daemon/daemon-resource-monitor.js";
+ import { DaemonWorkspaceIdentity } from "../../src/daemon/daemon-workspace-identity.js";
++import { StateDirectoryResolver } from "../../src/state-directory-resolver.js";
+ import { canonicalWorkspaceRoot } from "../helpers/canonical-workspace-root.js";
+ import type {
+   DaemonBenchmarkGateResult,
+@@ -100,7 +100,7 @@ export class DaemonScaleBenchmarkHarness {
+       const generatedProfile = await new DaemonWorkspaceProfiler().profile(workspaceRoot);
+       const identity = DaemonWorkspaceIdentity.from(
+         canonicalWorkspaceRoot(realpathSync(workspaceRoot)),
+-        canonicalStateDir(stateDirectory),
++        StateDirectoryResolver.canonicalize(stateDirectory),
+       );
+       const startupStartedAt = performance.now();
+       const started = this.runCommand(workspaceRoot, stateDirectory, ["daemon", "start"], false);
+diff --git a/apps/cli/test/e2e/daemon/diagnostic-output.test.ts b/apps/cli/test/e2e/daemon/diagnostic-output.test.ts
+index 91e8e57ce..af5097b28 100644
+--- a/apps/cli/test/e2e/daemon/diagnostic-output.test.ts
++++ b/apps/cli/test/e2e/daemon/diagnostic-output.test.ts
+@@ -12,13 +12,13 @@ import { join } from "node:path";
+ import { fileURLToPath } from "node:url";
+ import { afterEach, describe, expect, it } from "vitest";
+ import { runSymnavBinary } from "@symnav/testing";
+-import { canonicalStateDir } from "@symnav/telemetry";
+ import {
+   DAEMON_LOG_BACKUP_COUNT,
+   DAEMON_LOG_ROTATE_BYTES,
+ } from "../../../src/daemon/daemon-logger.js";
+ import { DaemonRegistry } from "../../../src/daemon/daemon-registry.js";
+ import { DaemonWorkspaceIdentity } from "../../../src/daemon/daemon-workspace-identity.js";
++import { StateDirectoryResolver } from "../../../src/state-directory-resolver.js";
+ import { canonicalWorkspaceRoot } from "../../helpers/canonical-workspace-root.js";
+ import { E2eProcessCleanup } from "../../helpers/e2e-process-cleanup.js";
+ 
+@@ -56,7 +56,7 @@ describe("daemon diagnostic output isolation", () => {
+     });
+     const identity = DaemonWorkspaceIdentity.from(
+       canonicalWorkspaceRoot(realpathSync(workspaceRoot)),
+-      canonicalStateDir(stateDirectory),
++      StateDirectoryResolver.canonicalize(stateDirectory),
+     );
+     const record = new DaemonRegistry(identity.registryDirectory).read(identity);
+ 
+@@ -106,7 +106,7 @@ describe("daemon diagnostic output isolation", () => {
+       });
+       const identity = DaemonWorkspaceIdentity.from(
+         canonicalWorkspaceRoot(realpathSync(workspaceRoot)),
+-        canonicalStateDir(stateDirectory),
++        StateDirectoryResolver.canonicalize(stateDirectory),
+       );
+       const registry = new DaemonRegistry(identity.registryDirectory);
+       const record = registry.read(identity);
+@@ -156,7 +156,7 @@ describe("daemon diagnostic output isolation", () => {
+     });
+     const identity = DaemonWorkspaceIdentity.from(
+       canonicalWorkspaceRoot(realpathSync(workspaceRoot)),
+-      canonicalStateDir(stateDirectory),
++      StateDirectoryResolver.canonicalize(stateDirectory),
+     );
+     const registry = new DaemonRegistry(identity.registryDirectory);
+     const record = registry.read(identity);
+diff --git a/apps/cli/test/e2e/daemon/parity.test.ts b/apps/cli/test/e2e/daemon/parity.test.ts
+index a7c9576e4..6801597fe 100644
+--- a/apps/cli/test/e2e/daemon/parity.test.ts
++++ b/apps/cli/test/e2e/daemon/parity.test.ts
+@@ -20,7 +20,6 @@ import { spawn } from "node:child_process";
+ import { createHash } from "node:crypto";
+ import { afterEach, describe, expect, it } from "vitest";
+ import { fixturePath, runSymnavBinary, type RunSymnavBinaryResult } from "@symnav/testing";
+-import { canonicalStateDir } from "@symnav/telemetry";
+ import type { ChildProcess } from "node:child_process";
+ import type { CliExecutionRequest } from "../../../src/command-execution-result.js";
+ import {
+@@ -30,6 +29,7 @@ import {
+ } from "../../../src/daemon/daemon-protocol.js";
+ import { DaemonRegistry } from "../../../src/daemon/daemon-registry.js";
+ import { DaemonWorkspaceIdentity } from "../../../src/daemon/daemon-workspace-identity.js";
++import { StateDirectoryResolver } from "../../../src/state-directory-resolver.js";
+ import { LocalDaemonTransport } from "../../../src/daemon/local-daemon-transport.js";
+ import { createDefaultDependencies } from "../../../src/program.js";
+ import { canonicalWorkspaceRoot } from "../../helpers/canonical-workspace-root.js";
+@@ -372,7 +372,12 @@ describe("symnav daemon parity", () => {
+     harnesses.push(harness);
+     const controlled = await harness.startControlledDaemon("--worker-exit");
+     const execution = harness.warmAsync(["overview", "input.ts"], "1");
+-    await waitUntil(() => existsSync(controlled.requestStartedPath));
++    await waitUntil(
++      () =>
++        existsSync(controlled.requestStartedPath) &&
++        existsSync(controlled.requestIdPath) &&
++        existsSync(controlled.requestPayloadPath),
++    );
+     const requestId = readFileSync(controlled.requestIdPath, "utf8");
+     const acceptedRequest = JSON.parse(
+       readFileSync(controlled.requestPayloadPath, "utf8"),
+@@ -729,7 +734,7 @@ class DaemonParityHarness {
+     const controlledWorkspaceRoot = canonicalWorkspaceRoot(realpathSync(this.workspaceRoot));
+     const identity = DaemonWorkspaceIdentity.from(
+       controlledWorkspaceRoot,
+-      canonicalStateDir(this.stateDirectory),
++      StateDirectoryResolver.canonicalize(this.stateDirectory),
+     );
+     const registry = new DaemonRegistry(identity.registryDirectory);
+     const instanceId = "controlled-crash";
+@@ -814,7 +819,7 @@ class DaemonParityHarness {
+   completionSpoolFileCount(): number {
+     const identity = DaemonWorkspaceIdentity.from(
+       canonicalWorkspaceRoot(realpathSync(this.workspaceRoot)),
+-      canonicalStateDir(this.stateDirectory),
++      StateDirectoryResolver.canonicalize(this.stateDirectory),
+     );
+     if (!existsSync(identity.spoolDirectory)) return 0;
+     return readdirSync(identity.spoolDirectory, { recursive: true }).filter((entry) =>
+diff --git a/apps/cli/test/e2e/daemon/persistent-pressure.test.ts b/apps/cli/test/e2e/daemon/persistent-pressure.test.ts
+index 5538e3d52..c060a4f5b 100644
+--- a/apps/cli/test/e2e/daemon/persistent-pressure.test.ts
++++ b/apps/cli/test/e2e/daemon/persistent-pressure.test.ts
+@@ -11,7 +11,6 @@ import {
+ import { tmpdir } from "node:os";
+ import { dirname, join } from "node:path";
+ import { fileURLToPath } from "node:url";
+-import { canonicalStateDir } from "@symnav/telemetry";
+ import { afterEach, describe, expect, it } from "vitest";
+ import { createDefaultDependencies } from "../../../src/program.js";
+ import {
+@@ -22,6 +21,7 @@ import {
+ import { DaemonRegistry } from "../../../src/daemon/daemon-registry.js";
+ import { DaemonWorkspaceIdentity } from "../../../src/daemon/daemon-workspace-identity.js";
+ import { LocalDaemonTransport } from "../../../src/daemon/local-daemon-transport.js";
++import { StateDirectoryResolver } from "../../../src/state-directory-resolver.js";
+ import { canonicalWorkspaceRoot } from "../../helpers/canonical-workspace-root.js";
+ 
+ describe("persistent daemon resource pressure", () => {
+@@ -38,7 +38,7 @@ describe("persistent daemon resource pressure", () => {
+   it("bounds replacement, preserves queued FIFO, and cleans exact ownership after exit", async () => {
+     const root = mkdtempSync(join(tmpdir(), "symnav-persistent-pressure-"));
+     roots.push(root);
+-    const stateDirectory = canonicalStateDir(join(root, "state"));
++    const stateDirectory = StateDirectoryResolver.canonicalize(join(root, "state"));
+     const workspaceRoot = join(root, "workspace");
+     mkdirSync(join(workspaceRoot, ".git"), { recursive: true });
+     for (const filename of ["active.ts", "queued-one.ts", "queued-two.ts"]) {
+diff --git a/apps/cli/test/e2e/daemon/state-isolation.test.ts b/apps/cli/test/e2e/daemon/state-isolation.test.ts
+index 73309cbf2..dad1be58c 100644
+--- a/apps/cli/test/e2e/daemon/state-isolation.test.ts
++++ b/apps/cli/test/e2e/daemon/state-isolation.test.ts
+@@ -1,12 +1,12 @@
+ import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+-import { canonicalStateDir } from "@symnav/telemetry";
+ import { runSymnavBinary } from "@symnav/testing";
+ import { afterEach, describe, expect, it } from "vitest";
+ import type { DaemonRecord } from "../../../src/daemon/daemon-protocol.js";
+ import { DaemonRegistry } from "../../../src/daemon/daemon-registry.js";
+ import { DaemonWorkspaceIdentity } from "../../../src/daemon/daemon-workspace-identity.js";
++import { StateDirectoryResolver } from "../../../src/state-directory-resolver.js";
+ import { E2eProcessCleanup } from "../../helpers/e2e-process-cleanup.js";
+ 
+ describe("symnav daemon state location isolation", () => {
+@@ -139,6 +139,6 @@ function overview(workspace: string, stateDirectory: string) {
+ }
+ 
+ function registry(stateDirectory: string): DaemonRegistry {
+-  const canonicalDirectory = canonicalStateDir(stateDirectory);
++  const canonicalDirectory = StateDirectoryResolver.canonicalize(stateDirectory);
+   return new DaemonRegistry(DaemonWorkspaceIdentity.registryDirectory(canonicalDirectory));
+ }
+diff --git a/apps/cli/test/e2e/daemon/status.test.ts b/apps/cli/test/e2e/daemon/status.test.ts
+index 6c126c6fa..a7710fd24 100644
+--- a/apps/cli/test/e2e/daemon/status.test.ts
++++ b/apps/cli/test/e2e/daemon/status.test.ts
+@@ -10,17 +10,17 @@ import { spawn, type ChildProcess } from "node:child_process";
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import { fileURLToPath } from "node:url";
+-import { afterEach, describe, expect, it } from "vitest";
++import { afterEach, describe, expect, it, vi } from "vitest";
+ import { runSymnavBinary } from "@symnav/testing";
+-import { canonicalStateDir } from "@symnav/telemetry";
+ import {
+   DAEMON_PROTOCOL_VERSION,
+   DAEMON_RECORD_SCHEMA_VERSION,
+   type DaemonRecord,
+ } from "../../../src/daemon/daemon-protocol.js";
+-import { DaemonRegistry } from "../../../src/daemon/daemon-registry.js";
++import { DaemonRegistry, type StartupOwner } from "../../../src/daemon/daemon-registry.js";
+ import { DaemonWorkspaceIdentity } from "../../../src/daemon/daemon-workspace-identity.js";
+ import { LocalDaemonTransport } from "../../../src/daemon/local-daemon-transport.js";
++import { StateDirectoryResolver } from "../../../src/state-directory-resolver.js";
+ import { canonicalWorkspaceRoot } from "../../helpers/canonical-workspace-root.js";
+ import { E2eProcessCleanup } from "../../helpers/e2e-process-cleanup.js";
+ import { DaemonStateFiles } from "../../helpers/daemon-state-files.js";
+@@ -170,11 +170,29 @@ describe("symnav daemon status", () => {
+       childReleasePath,
+     );
+     helperProcesses.push(caller);
+-    await waitUntil(() => existsSync(callerBarrierPath));
++    await waitUntil(
++      () => existsSync(callerBarrierPath),
++      5_000,
++      "Timed out waiting for initiating caller startup",
++    );
+     const childPid = Number(readFileSync(bootPath, "utf8"));
+     daemonPids.push(childPid);
+-    const identity = DaemonWorkspaceIdentity.from(workspaceRoot, canonicalStateDir(stateDir));
++    const identity = DaemonWorkspaceIdentity.from(
++      workspaceRoot,
++      StateDirectoryResolver.canonicalize(stateDir),
++    );
+     const registry = new DaemonRegistry(identity.registryDirectory);
++    const readStartupOwner = registry.startupOwner.bind(registry);
++    vi.spyOn(registry, "startupOwner")
++      .mockReturnValueOnce(undefined)
++      .mockImplementation(readStartupOwner);
++    const startupOwnerSpy = vi.mocked(registry.startupOwner);
++    const matchesDaemonOwner = (owner: StartupOwner | undefined): owner is StartupOwner =>
++      owner?.identityKey === identity.identityKey &&
++      owner.instanceId === instanceId &&
++      owner.processToken === processToken &&
++      owner.ownerKind === "daemon" &&
++      owner.ownerPid === childPid;
+ 
+     expect(registry.readStoredInstance(identity, instanceId)).toMatchObject({
+       instanceId,
+@@ -182,19 +200,35 @@ describe("symnav daemon status", () => {
+       pid: childPid,
+       state: "starting",
+     });
+-    const ownerBeforeCallerExit = registry.startupOwner(identity);
+-    expect(ownerBeforeCallerExit).toMatchObject({
+-      instanceId,
+-      processToken,
+-      ownerKind: "daemon",
+-      ownerPid: childPid,
+-    });
++    let ownerBeforeCallerExit: StartupOwner | undefined;
++    await waitUntil(
++      () => {
++        const owner = registry.startupOwner(identity);
++        if (!matchesDaemonOwner(owner)) return false;
++        ownerBeforeCallerExit = owner;
++        return true;
++      },
++      5_000,
++      "Timed out waiting for daemon startup ownership",
++    );
++    if (ownerBeforeCallerExit === undefined) throw new Error("Expected daemon startup ownership");
++    const revisionBeforeCallerExit = ownerBeforeCallerExit.revision;
+     expect(caller.kill("SIGKILL")).toBe(true);
+     await waitForKilledProcess(caller);
+     helperProcesses.splice(helperProcesses.indexOf(caller), 1);
++    startupOwnerSpy.mockReturnValueOnce(undefined);
++    let ownerAfterCallerExit: StartupOwner | undefined;
+     await waitUntil(
+-      () => registry.startupOwner(identity)?.revision !== ownerBeforeCallerExit?.revision,
++      () => {
++        const owner = registry.startupOwner(identity);
++        if (!matchesDaemonOwner(owner) || owner.revision === revisionBeforeCallerExit) return false;
++        ownerAfterCallerExit = owner;
++        return true;
++      },
++      5_000,
++      "Timed out waiting for daemon-owned startup heartbeat after caller exit",
+     );
++    expect(ownerAfterCallerExit).toBeDefined();
+ 
+     const statusStartedAt = Date.now();
+     const starting = runSymnavBinary(["daemon", "status", "--json"], {
+@@ -213,12 +247,11 @@ describe("symnav daemon status", () => {
+         memoryBytes: expect.any(Number),
+       }),
+     ]);
+-    expect(registry.startupOwner(identity)).toMatchObject({
+-      instanceId,
+-      processToken,
+-      ownerKind: "daemon",
+-      ownerPid: childPid,
+-    });
++    await waitUntil(
++      () => matchesDaemonOwner(registry.startupOwner(identity)),
++      5_000,
++      "Timed out waiting for daemon startup ownership after status",
++    );
+ 
+     const laterStarts = [
+       spawnDaemonStart(workspaceRoot, stateDir),
+@@ -232,7 +265,7 @@ describe("symnav daemon status", () => {
+     ]);
+ 
+     writeFileSync(childReleasePath, "go");
+-    await waitUntil(() => existsSync(readyPath));
++    await waitUntil(() => existsSync(readyPath), 15_000, "Timed out waiting for daemon readiness");
+     await Promise.all(laterStarts.map(waitForProcess));
+     for (const laterStart of laterStarts) {
+       helperProcesses.splice(helperProcesses.indexOf(laterStart), 1);
+@@ -261,7 +294,7 @@ describe("symnav daemon status", () => {
+     expect(stopped.status).toBe(0);
+     expect(isProcessAlive(childPid)).toBe(false);
+     expect(daemonRecords(stateDir)).toEqual([]);
+-  }, 15_000);
++  }, 30_000);
+ 
+   it("cleans a stale current-schema record", async () => {
+     const stateDir = temporaryStateDirectory(stateDirectories);
+@@ -298,7 +331,10 @@ describe("symnav daemon status", () => {
+     const processToken = "stuck-status-process";
+     const readyPath = join(stateDir, "stuck-ready");
+     const requestStartedPath = join(stateDir, "stuck-request");
+-    const identity = DaemonWorkspaceIdentity.from(workspaceRoot, canonicalStateDir(stateDir));
++    const identity = DaemonWorkspaceIdentity.from(
++      workspaceRoot,
++      StateDirectoryResolver.canonicalize(stateDir),
++    );
+     const registry = new DaemonRegistry(identity.registryDirectory);
+     const lease = registry.acquireStartup(identity, instanceId);
+     expect(lease).toBeDefined();
+@@ -385,7 +421,10 @@ describe("symnav daemon status", () => {
+     const processToken = "live-silent-process";
+     const startedAt = Date.now();
+     const readyPath = join(stateDir, "live-silent-ready");
+-    const identity = DaemonWorkspaceIdentity.from(workspaceRoot, canonicalStateDir(stateDir));
++    const identity = DaemonWorkspaceIdentity.from(
++      workspaceRoot,
++      StateDirectoryResolver.canonicalize(stateDir),
++    );
+     const child = spawnLiveSilentDaemon(
+       identity.endpoint(instanceId),
+       instanceId,
+@@ -439,7 +478,10 @@ describe("symnav daemon status", () => {
+     const startedAt = Date.now();
+     const readyPath = join(stateDir, "malformed-activity-ready");
+     const secret = "/private/source/PaymentProcessor::charge?token=secret";
+-    const identity = DaemonWorkspaceIdentity.from(workspaceRoot, canonicalStateDir(stateDir));
++    const identity = DaemonWorkspaceIdentity.from(
++      workspaceRoot,
++      StateDirectoryResolver.canonicalize(stateDir),
++    );
+     const child = spawnMalformedActivityDaemon(
+       identity.endpoint(instanceId),
+       instanceId,
+@@ -756,11 +798,15 @@ async function replay(
+   return Buffer.concat(chunks).toString("utf8");
+ }
+ 
+-async function waitUntil(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
++async function waitUntil(
++  predicate: () => boolean,
++  timeoutMs = 5_000,
++  failureMessage = "Timed out waiting for daemon shutdown",
++): Promise<void> {
+   const deadline = Date.now() + timeoutMs;
+   while (Date.now() <= deadline) {
+     if (predicate()) return;
+     await new Promise((resolve) => setTimeout(resolve, 10));
+   }
+-  throw new Error("Timed out waiting for daemon shutdown");
++  throw new Error(failureMessage);
+ }
+diff --git a/apps/cli/test/e2e/daemon/stop.test.ts b/apps/cli/test/e2e/daemon/stop.test.ts
+index 922530d1b..70dce2505 100644
+--- a/apps/cli/test/e2e/daemon/stop.test.ts
++++ b/apps/cli/test/e2e/daemon/stop.test.ts
+@@ -12,7 +12,6 @@ import { join } from "node:path";
+ import { fileURLToPath } from "node:url";
+ import { afterEach, describe, expect, it } from "vitest";
+ import { runSymnavBinary } from "@symnav/testing";
+-import { canonicalStateDir } from "@symnav/telemetry";
+ import {
+   DAEMON_PROTOCOL_VERSION,
+   DAEMON_RECORD_SCHEMA_VERSION,
+@@ -21,6 +20,7 @@ import {
+ import { DaemonRegistry } from "../../../src/daemon/daemon-registry.js";
+ import { DaemonWorkspaceIdentity } from "../../../src/daemon/daemon-workspace-identity.js";
+ import { LocalDaemonTransport } from "../../../src/daemon/local-daemon-transport.js";
++import { StateDirectoryResolver } from "../../../src/state-directory-resolver.js";
+ import { canonicalWorkspaceRoot } from "../../helpers/canonical-workspace-root.js";
+ import { E2eProcessCleanup } from "../../helpers/e2e-process-cleanup.js";
+ import { DaemonStateFiles } from "../../helpers/daemon-state-files.js";
+@@ -102,7 +102,7 @@ describe("symnav daemon stop", () => {
+     const cwd = temporaryWorkspace(stateDirectories);
+     const identity = DaemonWorkspaceIdentity.from(
+       canonicalWorkspaceRoot(realpathSync(cwd)),
+-      canonicalStateDir(stateDir),
++      StateDirectoryResolver.canonicalize(stateDir),
+     );
+     const registry = new DaemonRegistry(identity.registryDirectory);
+     const instanceId = "starting-stop";
+@@ -228,7 +228,10 @@ async function startControlledDaemon(
+   workspaceRoot: string,
+   releasePath?: string,
+ ): Promise<ControlledDaemon> {
+-  const identity = DaemonWorkspaceIdentity.from(workspaceRoot, canonicalStateDir(stateDirectory));
++  const identity = DaemonWorkspaceIdentity.from(
++    workspaceRoot,
++    StateDirectoryResolver.canonicalize(stateDirectory),
++  );
+   const registry = new DaemonRegistry(identity.registryDirectory);
+   const instanceId = `controlled-${releasePath === undefined ? "forced" : "draining"}`;
+   const processToken = `${instanceId}-token`;
+diff --git a/apps/cli/test/helpers/daemon-startup-caller-exit.ts b/apps/cli/test/helpers/daemon-startup-caller-exit.ts
+index ec7661f34..2521af73c 100644
+--- a/apps/cli/test/helpers/daemon-startup-caller-exit.ts
++++ b/apps/cli/test/helpers/daemon-startup-caller-exit.ts
+@@ -1,8 +1,8 @@
+ import { spawn } from "node:child_process";
+ import { existsSync, writeFileSync } from "node:fs";
+ import { fileURLToPath } from "node:url";
+-import { canonicalStateDir } from "@symnav/telemetry";
+ import { createDefaultDependencies } from "../../src/program.js";
++import { StateDirectoryResolver } from "../../src/state-directory-resolver.js";
+ import type { CliExecutionRequest } from "../../src/command-execution-result.js";
+ import type {
+   DaemonNavigationWorker,
+@@ -52,7 +52,10 @@ class DaemonStartupCallerExit {
+     ) {
+       process.exit(2);
+     }
+-    const identity = DaemonWorkspaceIdentity.from(workspaceRoot, canonicalStateDir(stateDirectory));
++    const identity = DaemonWorkspaceIdentity.from(
++      workspaceRoot,
++      StateDirectoryResolver.canonicalize(stateDirectory),
++    );
+     const registry = new DaemonRegistry(identity.registryDirectory);
+     if (
+       registry.acquireStartup(identity, {
+@@ -127,7 +130,10 @@ class DaemonStartupCallerExit {
+     ) {
+       process.exit(2);
+     }
+-    const identity = DaemonWorkspaceIdentity.from(workspaceRoot, canonicalStateDir(stateDirectory));
++    const identity = DaemonWorkspaceIdentity.from(
++      workspaceRoot,
++      StateDirectoryResolver.canonicalize(stateDirectory),
++    );
+     const dependencies = createDefaultDependencies(identity.stateDirectory);
+     const navigationWorker = new StartupBarrierNavigationWorker(
+       new NodeDaemonNavigationWorker({
+diff --git a/apps/cli/test/helpers/daemon-startup-mutation-owner.ts b/apps/cli/test/helpers/daemon-startup-mutation-owner.ts
+index 2a89fca4d..af564d245 100644
+--- a/apps/cli/test/helpers/daemon-startup-mutation-owner.ts
++++ b/apps/cli/test/helpers/daemon-startup-mutation-owner.ts
+@@ -1,6 +1,6 @@
+ import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+ import { randomUUID } from "node:crypto";
+-import { canonicalStateDir } from "@symnav/telemetry";
++import { StateDirectoryResolver } from "../../src/state-directory-resolver.js";
+ import {
+   DAEMON_PROTOCOL_VERSION,
+   DAEMON_RECORD_SCHEMA_VERSION,
+@@ -19,7 +19,10 @@ if (
+ 
+ await new Promise<void>((resolve) => setTimeout(resolve, Number(startupDelayMsText)));
+ 
+-const identity = DaemonWorkspaceIdentity.from(workspaceRoot, canonicalStateDir(stateDirectory));
++const identity = DaemonWorkspaceIdentity.from(
++  workspaceRoot,
++  StateDirectoryResolver.canonicalize(stateDirectory),
++);
+ const registry = new DaemonRegistry(identity.registryDirectory);
+ const instanceId = "orphaned-mutation";
+ const lease = registry.acquireStartup(identity, instanceId);
+diff --git a/apps/cli/test/helpers/daemon-startup-publisher.ts b/apps/cli/test/helpers/daemon-startup-publisher.ts
+index f8281d6ee..569b188bf 100644
+--- a/apps/cli/test/helpers/daemon-startup-publisher.ts
++++ b/apps/cli/test/helpers/daemon-startup-publisher.ts
+@@ -1,5 +1,5 @@
+ import { existsSync, writeFileSync } from "node:fs";
+-import { canonicalStateDir } from "@symnav/telemetry";
++import { StateDirectoryResolver } from "../../src/state-directory-resolver.js";
+ import { DaemonRegistry } from "../../src/daemon/daemon-registry.js";
+ import { DaemonWorkspaceIdentity } from "../../src/daemon/daemon-workspace-identity.js";
+ import {
+@@ -19,7 +19,10 @@ if (
+   process.exit(2);
+ }
+ 
+-const identity = DaemonWorkspaceIdentity.from(workspaceRoot, canonicalStateDir(stateDirectory));
++const identity = DaemonWorkspaceIdentity.from(
++  workspaceRoot,
++  StateDirectoryResolver.canonicalize(stateDirectory),
++);
+ const registry = new DaemonRegistry(identity.registryDirectory);
+ const instanceId = "cross-process-startup";
+ const lease = registry.acquireStartup(identity, instanceId);
+diff --git a/apps/cli/test/helpers/workspace-daemon-persistent-pressure.ts b/apps/cli/test/helpers/workspace-daemon-persistent-pressure.ts
+index a252b2099..80a3e684a 100644
+--- a/apps/cli/test/helpers/workspace-daemon-persistent-pressure.ts
++++ b/apps/cli/test/helpers/workspace-daemon-persistent-pressure.ts
+@@ -1,5 +1,5 @@
+ import { appendFileSync, existsSync, writeFileSync } from "node:fs";
+-import { canonicalStateDir } from "@symnav/telemetry";
++import { StateDirectoryResolver } from "../../src/state-directory-resolver.js";
+ import type {
+   CliExecutionRequest,
+   CommandOutputRecord,
+@@ -130,7 +130,7 @@ class PressureNavigationWorker implements DaemonNavigationWorker {
+   }
+ }
+ 
+-const canonicalStateDirectory = canonicalStateDir(stateDirectory);
++const canonicalStateDirectory = StateDirectoryResolver.canonicalize(stateDirectory);
+ const identity = DaemonWorkspaceIdentity.from(workspaceRoot, canonicalStateDirectory);
+ const policy = DaemonResourcePolicy.fromSystemMemory(512 * 1024 * 1024);
+ writeFileSync(`${readyPath}.boot`, String(process.pid));
+diff --git a/apps/cli/test/helpers/workspace-daemon-stuck.ts b/apps/cli/test/helpers/workspace-daemon-stuck.ts
+index 6500540c7..4c733fc9a 100644
+--- a/apps/cli/test/helpers/workspace-daemon-stuck.ts
++++ b/apps/cli/test/helpers/workspace-daemon-stuck.ts
+@@ -1,5 +1,5 @@
+ import { existsSync, writeFileSync } from "node:fs";
+-import { canonicalStateDir } from "@symnav/telemetry";
++import { StateDirectoryResolver } from "../../src/state-directory-resolver.js";
+ import type {
+   CliExecutionRequest,
+   CommandExecutionResult,
+@@ -48,7 +48,7 @@ const releasePath =
+     ? undefined
+     : releasePathArgument;
+ const symnavVersion = configuredSymnavVersion ?? "test";
+-const canonicalStateDirectory = canonicalStateDir(stateDirectory);
++const canonicalStateDirectory = StateDirectoryResolver.canonicalize(stateDirectory);
+ const dependencies = createDefaultDependencies(canonicalStateDirectory);
+ const retainedBackends = dependencies.backends();
+ const executor = new CliProgramExecutor({ ...dependencies, backends: () => retainedBackends });
+diff --git a/packages/telemetry/src/index.ts b/packages/telemetry/src/index.ts
+index 3504bb3e8..5a73b8d47 100644
+--- a/packages/telemetry/src/index.ts
++++ b/packages/telemetry/src/index.ts
+@@ -3,7 +3,7 @@ export type { Clock } from "./clock.js";
+ export type { IdGenerator } from "./id-generator.js";
+ export { NodeUsageRecorder } from "./recorder.js";
+ export type { Recorder, UsageEventInput } from "./recorder.js";
+-export { canonicalStateDir, resolveStateDir, usageLogPath } from "./state-dir.js";
++export { usageLogPath } from "./state-dir.js";
+ export { NodeUsageLogReader } from "./node-usage-log-reader.js";
+ export type { UsageLogReader } from "./usage-log-reader.js";
+ export { SCHEMA_VERSION } from "./usage-event.js";
+diff --git a/packages/telemetry/src/state-dir.test.ts b/packages/telemetry/src/state-dir.test.ts
+index 442232ae9..8edccda10 100644
+--- a/packages/telemetry/src/state-dir.test.ts
++++ b/packages/telemetry/src/state-dir.test.ts
+@@ -1,61 +1,15 @@
+-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+-import { tmpdir } from "node:os";
+-import { join, resolve } from "node:path";
+-import { afterEach, describe, expect, it } from "vitest";
+-import { canonicalStateDir, resolveStateDir, usageLogPath } from "./state-dir.js";
+-
+-const temporaryDirectories: string[] = [];
+-
+-afterEach(() => {
+-  for (const directory of temporaryDirectories.splice(0)) {
+-    rmSync(directory, { recursive: true, force: true });
+-  }
+-});
+-
+-describe("resolveStateDir", () => {
+-  it("uses SYMNAV_STATE_DIR when set", () => {
+-    const root = mkdtempSync(join(tmpdir(), "symnav-state-dir-"));
+-    temporaryDirectories.push(root);
+-
+-    expect(resolveStateDir({ SYMNAV_STATE_DIR: join(root, "state") }, "/unused")).toBe(
+-      join(realpathSync(root), "state"),
+-    );
+-  });
+-
+-  it("uses the homedir symnav directory when SYMNAV_STATE_DIR is unset", () => {
+-    const root = mkdtempSync(join(tmpdir(), "symnav-state-dir-"));
+-    temporaryDirectories.push(root);
+-
+-    expect(resolveStateDir({}, root)).toBe(join(realpathSync(root), ".symnav"));
+-  });
+-
+-  it("canonicalizes relative and dot-segment state directories", () => {
+-    expect(resolveStateDir({ SYMNAV_STATE_DIR: "state/../state" })).toBe(resolve("state"));
+-  });
+-
+-  it("canonicalizes a symlinked state directory", () => {
+-    const root = mkdtempSync(join(tmpdir(), "symnav-state-dir-"));
+-    temporaryDirectories.push(root);
+-    const target = join(root, "target");
+-    const symlink = join(root, "state-link");
+-    mkdirSync(target);
+-    symlinkSync(target, symlink, process.platform === "win32" ? "junction" : "dir");
+-
+-    expect(resolveStateDir({ SYMNAV_STATE_DIR: symlink })).toBe(realpathSync(target));
+-  });
+-
+-  it("keeps an already canonical state directory unchanged", () => {
+-    const root = mkdtempSync(join(tmpdir(), "symnav-state-dir-"));
+-    temporaryDirectories.push(root);
+-    const canonicalRoot = realpathSync(root);
+-
+-    expect(resolveStateDir({ SYMNAV_STATE_DIR: canonicalRoot })).toBe(canonicalRoot);
+-    expect(canonicalStateDir(canonicalRoot)).toBe(canonicalRoot);
+-  });
+-});
++import { join } from "node:path";
++import { describe, expect, it } from "vitest";
++import * as telemetry from "./index.js";
++import { usageLogPath } from "./state-dir.js";
+ 
+ describe("usageLogPath", () => {
+   it("places usage.jsonl under the state directory", () => {
+     expect(usageLogPath("/state")).toBe(join("/state", "usage.jsonl"));
+   });
++
++  it("leaves shared state directory resolution to the CLI", () => {
++    expect(telemetry).not.toHaveProperty("resolveStateDir");
++    expect(telemetry).not.toHaveProperty("canonicalStateDir");
++  });
+ });
+diff --git a/packages/telemetry/src/state-dir.ts b/packages/telemetry/src/state-dir.ts
+index 3543e6df6..31cbbc5a2 100644
+--- a/packages/telemetry/src/state-dir.ts
++++ b/packages/telemetry/src/state-dir.ts
+@@ -1,33 +1,4 @@
+-import { existsSync, realpathSync } from "node:fs";
+-import { homedir as osHomedir } from "node:os";
+-import { basename, dirname, join, resolve } from "node:path";
+-
+-class StateDirectoryPath {
+-  static canonicalize(stateDirectory: string): string {
+-    const absoluteDirectory = resolve(stateDirectory);
+-    const missingSegments: string[] = [];
+-    let existingAncestor = absoluteDirectory;
+-    while (!existsSync(existingAncestor)) {
+-      const parent = dirname(existingAncestor);
+-      if (parent === existingAncestor) return absoluteDirectory;
+-      missingSegments.unshift(basename(existingAncestor));
+-      existingAncestor = parent;
+-    }
+-    return join(realpathSync(existingAncestor), ...missingSegments);
+-  }
+-}
+-
+-export function canonicalStateDir(stateDirectory: string): string {
+-  return StateDirectoryPath.canonicalize(stateDirectory);
+-}
+-
+-export function resolveStateDir(
+-  env: NodeJS.ProcessEnv = process.env,
+-  homedir = osHomedir(),
+-): string {
+-  const configuredDirectory = env.SYMNAV_STATE_DIR ?? join(homedir, ".symnav");
+-  return StateDirectoryPath.canonicalize(configuredDirectory);
+-}
++import { join } from "node:path";
+ 
+ export function usageLogPath(stateDir: string): string {
+   return join(stateDir, "usage.jsonl");

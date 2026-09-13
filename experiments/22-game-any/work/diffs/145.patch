@@ -1,0 +1,1427 @@
+diff --git a/apps/cli/src/daemon/daemon-activity-projector.test.ts b/apps/cli/src/daemon/daemon-activity-projector.test.ts
+index a80ba4f05..b1be22ce9 100644
+--- a/apps/cli/src/daemon/daemon-activity-projector.test.ts
++++ b/apps/cli/src/daemon/daemon-activity-projector.test.ts
+@@ -244,6 +244,18 @@ describe("DaemonActivityProjector", () => {
+       expect(source).not.toMatch(processOwnedFormatting);
+     }
+   });
++
++  it("imports the worker snapshot contract from its lifecycle owner", () => {
++    const source = readFileSync(
++      fileURLToPath(new URL("./daemon-activity-projector.ts", import.meta.url)),
++      "utf8",
++    );
++
++    expect(source).toContain(
++      'import type { DaemonWorkerGenerationSnapshot } from "./daemon-worker-generation-manager.js";',
++    );
++    expect(source).not.toMatch(/export interface DaemonWorkerGenerationSnapshot/);
++  });
+ });
+ 
+ interface ActivityProjectionOverrides {
+diff --git a/apps/cli/src/daemon/daemon-activity-projector.ts b/apps/cli/src/daemon/daemon-activity-projector.ts
+index cc611fe9e..df5ee9339 100644
+--- a/apps/cli/src/daemon/daemon-activity-projector.ts
++++ b/apps/cli/src/daemon/daemon-activity-projector.ts
+@@ -4,14 +4,9 @@ import {
+   type DaemonPong,
+ } from "./daemon-protocol.js";
+ import type { DaemonResourceSnapshot } from "./daemon-resource-monitor.js";
++import type { DaemonWorkerGenerationSnapshot } from "./daemon-worker-generation-manager.js";
+ import type { WorkspaceRequestQueueSnapshot } from "./workspace-request-queue.js";
+ 
+-export interface DaemonWorkerGenerationSnapshot {
+-  readonly generation: number;
+-  readonly ready: boolean;
+-  readonly fileCount?: number;
+-}
+-
+ export interface DaemonActivityProjectionInput {
+   readonly nowMonotonicMs: number;
+   readonly pid: number;
+diff --git a/apps/cli/src/daemon/daemon-resource-monitor.test.ts b/apps/cli/src/daemon/daemon-resource-monitor.test.ts
+index ebbb57529..cd24f5270 100644
+--- a/apps/cli/src/daemon/daemon-resource-monitor.test.ts
++++ b/apps/cli/src/daemon/daemon-resource-monitor.test.ts
+@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ import { DaemonPolicy } from "@symnav/daemon";
+ import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
+ import { DaemonResourceSupervisor } from "./daemon-resource-monitor.js";
++import type { DaemonWorkerExitRecovery } from "./daemon-worker-generation-manager.js";
+ 
+ const MEBIBYTE = 1024 * 1024;
+ const GIBIBYTE = 1024 * MEBIBYTE;
+@@ -225,6 +226,29 @@ describe("DaemonResourceSupervisor", () => {
+     expect(supervisor.snapshot.processRssBytes).toBe(policy.hardProcessRssBytes + 1);
+   });
+ 
++  it("recovers current worker exits through the worker recovery port", async () => {
++    const policy = resourcePolicy();
++    const replaceWorker = vi.fn(async () => 2);
++    const supervisor = new DaemonResourceSupervisor({
++      policy,
++      generation: 1,
++      residentMemoryBytes: () => 0,
++      spoolBytes: () => 0,
++      scheduleAtTurnBoundary: runImmediately,
++      releaseTransientResources: async () => undefined,
++      replaceWorker,
++      drain: async () => undefined,
++    });
++    const recovery: DaemonWorkerExitRecovery = supervisor;
++
++    await recovery.recover({ generation: 0, cause: "error" });
++    await recovery.recover({ generation: 1, cause: "out-of-memory" });
++
++    expect(replaceWorker).toHaveBeenCalledOnce();
++    expect(replaceWorker).toHaveBeenCalledWith("out-of-memory");
++    expect(supervisor.snapshot).toMatchObject({ generation: 2, replacementCount: 1 });
++  });
++
+   it("reports large disk spools without treating them as process RSS", async () => {
+     const policy = resourcePolicy();
+     const replaceWorker = vi.fn(async () => 2);
+diff --git a/apps/cli/src/daemon/daemon-resource-monitor.ts b/apps/cli/src/daemon/daemon-resource-monitor.ts
+index 2f32dbf6f..124bbd137 100644
+--- a/apps/cli/src/daemon/daemon-resource-monitor.ts
++++ b/apps/cli/src/daemon/daemon-resource-monitor.ts
+@@ -135,7 +135,7 @@ export class DaemonResourceSupervisor {
+     this.peakWorkerHeapUsedBytes = Math.max(this.peakWorkerHeapUsedBytes ?? 0, peakUsedBytes);
+   }
+ 
+-  async workerExited(exit: import("./daemon-navigation-worker.js").DaemonNavigationWorkerExit) {
++  async recover(exit: import("./daemon-navigation-worker.js").DaemonNavigationWorkerExit) {
+     if (exit.generation !== this.currentGeneration || this.currentState === "stopped") return;
+     await this.replace(exit.cause === "out-of-memory" ? "out-of-memory" : "worker-exit");
+   }
+diff --git a/apps/cli/src/daemon/daemon-worker-generation-manager.test.ts b/apps/cli/src/daemon/daemon-worker-generation-manager.test.ts
+new file mode 100644
+index 000000000..4cbbdfcd6
+--- /dev/null
++++ b/apps/cli/src/daemon/daemon-worker-generation-manager.test.ts
+@@ -0,0 +1,472 @@
++import { describe, expect, it, vi } from "vitest";
++import type { DaemonExecutorRequest, DaemonOutputSink } from "@symnav/daemon";
++import type {
++  DaemonNavigationWorker,
++  DaemonNavigationWorkerExit,
++} from "./daemon-navigation-worker.js";
++import { DaemonNavigationWorkerExitedError } from "./daemon-navigation-worker.js";
++import type { DaemonNavigationWorkerResponse } from "./daemon-navigation-worker-protocol.js";
++import type {
++  DaemonWorkerExitRecovery,
++  DaemonWorkerGenerationManagerOptions,
++} from "./daemon-worker-generation-manager.js";
++import { DaemonWorkerGenerationManager } from "./daemon-worker-generation-manager.js";
++
++describe("DaemonWorkerGenerationManager", () => {
++  it("keeps protocol initialization distinct from externally activated readiness", async () => {
++    const worker = new ControlledNavigationWorker(1);
++    const manager = createManager({ createWorker: () => worker });
++
++    expect(manager.snapshot).toEqual({ generation: 1, ready: false });
++    const starting = manager.start();
++    expect(worker.operations).toEqual(["start:1"]);
++    expect(manager.snapshot).toEqual({ generation: 1, ready: false });
++
++    worker.completeReady(7);
++
++    await expect(starting).resolves.toMatchObject({
++      kind: "ready",
++      generation: 1,
++      fileCount: 7,
++    });
++    expect(manager.snapshot).toEqual({ generation: 1, ready: false, fileCount: 7 });
++    manager.activateReadiness();
++    expect(manager.snapshot).toEqual({ generation: 1, ready: true, fileCount: 7 });
++    expect(Object.isFrozen(manager.snapshot)).toBe(true);
++  });
++
++  it("rejects an invalid startup report without publishing readiness", async () => {
++    const worker = new ControlledNavigationWorker(1);
++    const manager = createManager({ createWorker: () => worker });
++    const starting = manager.start();
++
++    worker.complete({ kind: "closed", generation: 1 });
++
++    await expect(starting).rejects.toThrow("did not become ready");
++    expect(manager.snapshot).toEqual({ generation: 1, ready: false });
++  });
++
++  it("delegates execution to the ready generation", async () => {
++    const worker = new ControlledNavigationWorker(1);
++    const manager = createManager({ createWorker: () => worker });
++    const output: DaemonOutputSink = { append: vi.fn(async () => undefined) };
++    const request: DaemonExecutorRequest = {
++      argv: ["--version"],
++      cwd: "/workspace",
++      telemetryEnabled: false,
++      executionMode: "warm",
++    };
++    const execution = manager.execute("request-1", { commandName: "version", request }, output);
++    worker.completeReady(7);
++    worker.executionResponse = resultResponse(1, "request-1");
++
++    await expect(execution).resolves.toEqual(resultResponse(1, "request-1"));
++    expect(worker.execution).toEqual({
++      requestId: "request-1",
++      commandName: "version",
++      request,
++      output,
++    });
++  });
++
++  it("rejects an uncorrelated worker execution report", async () => {
++    const worker = new ControlledNavigationWorker(1);
++    const manager = createManager({ createWorker: () => worker });
++    const execution = manager.execute(
++      "request-1",
++      {
++        commandName: "version",
++        request: {
++          argv: ["--version"],
++          cwd: "/workspace",
++          telemetryEnabled: false,
++          executionMode: "warm",
++        },
++      },
++      { append: async () => undefined },
++    );
++    worker.completeReady(7);
++    worker.executionResponse = resultResponse(1, "another-request");
++
++    await expect(execution).rejects.toThrow("uncorrelated result");
++  });
++
++  it("coalesces replacement while preserving transition order and diagnostics", async () => {
++    const operations: string[] = [];
++    const initial = new ControlledNavigationWorker(1, operations);
++    const replacement = new ControlledNavigationWorker(2, operations);
++    const activeResourceInterruption = vi.fn();
++    const onDiagnostic = vi.fn();
++    const manager = createManager({
++      initialWorker: initial,
++      createWorker: (generation) => {
++        expect(generation).toBe(2);
++        return replacement;
++      },
++      onActiveResourceInterruption: activeResourceInterruption,
++      onDiagnostic,
++    });
++    const starting = manager.start();
++    initial.completeReady(7);
++    await starting;
++    manager.activateReadiness();
++    operations.length = 0;
++
++    const first = manager.replace("hard-pressure");
++    const second = manager.replace("hard-pressure");
++
++    expect(first).toBe(second);
++    expect(activeResourceInterruption).toHaveBeenCalledOnce();
++    expect(activeResourceInterruption).toHaveBeenCalledWith("hard-pressure");
++    expect(operations).toEqual(["start:2", "terminate:1"]);
++    expect(manager.snapshot).toEqual({ generation: 2, ready: false, fileCount: 7 });
++
++    replacement.completeReady(9);
++
++    await expect(first).resolves.toMatchObject({ kind: "ready", generation: 2, fileCount: 9 });
++    expect(manager.snapshot).toEqual({ generation: 2, ready: true, fileCount: 9 });
++    expect(onDiagnostic).toHaveBeenCalledWith({
++      kind: "worker-replaced",
++      cause: "hard-pressure",
++      previousWorkerGeneration: 1,
++      workerGeneration: 2,
++      fileCount: 9,
++      discoveryMs: 1,
++      indexingMs: 2,
++      totalMs: 3,
++    });
++  });
++
++  it("does not mark active work as resource-interrupted for literal worker exits", async () => {
++    const initial = new ControlledNavigationWorker(1);
++    const replacement = new ControlledNavigationWorker(2);
++    const activeResourceInterruption = vi.fn();
++    const manager = createManager({
++      initialWorker: initial,
++      createWorker: () => replacement,
++      onActiveResourceInterruption: activeResourceInterruption,
++    });
++    const starting = manager.start();
++    initial.completeReady(1);
++    await starting;
++
++    const replacing = manager.replace("worker-exit");
++    replacement.completeReady(2);
++    await replacing;
++
++    expect(activeResourceInterruption).not.toHaveBeenCalled();
++  });
++
++  it.each(["out-of-memory", "shed-failure"] as const)(
++    "marks active work as resource-interrupted for %s replacement",
++    async (cause) => {
++      const initial = new ControlledNavigationWorker(1);
++      const replacement = new ControlledNavigationWorker(2);
++      const activeResourceInterruption = vi.fn();
++      const manager = createManager({
++        initialWorker: initial,
++        createWorker: () => replacement,
++        onActiveResourceInterruption: activeResourceInterruption,
++      });
++      const starting = manager.start();
++      initial.completeReady(1);
++      await starting;
++
++      const replacing = manager.replace(cause);
++      replacement.completeReady(2);
++      await replacing;
++
++      expect(activeResourceInterruption).toHaveBeenCalledOnce();
++      expect(activeResourceInterruption).toHaveBeenCalledWith(cause);
++    },
++  );
++
++  it("recovers only exits from the current generation", async () => {
++    const initial = new ControlledNavigationWorker(1);
++    const replacement = new ControlledNavigationWorker(2);
++    const recover = vi.fn(async () => undefined);
++    const manager = createManager({
++      initialWorker: initial,
++      createWorker: () => replacement,
++      exitRecovery: { recover },
++    });
++    const starting = manager.start();
++    initial.completeReady(1);
++    await starting;
++    const replacing = manager.replace("hard-pressure");
++    replacement.completeReady(2);
++    await replacing;
++
++    initial.exit({ generation: 1, cause: "error", errorName: "LateExit" });
++    await Promise.resolve();
++    expect(recover).not.toHaveBeenCalled();
++
++    replacement.exit({ generation: 2, cause: "error", errorName: "CurrentExit" });
++    await vi.waitFor(() => expect(recover).toHaveBeenCalledOnce());
++    expect(recover).toHaveBeenCalledWith({
++      generation: 2,
++      cause: "error",
++      errorName: "CurrentExit",
++    });
++  });
++
++  it("returns replacement readiness when the initial worker exits during startup", async () => {
++    const initial = new ControlledNavigationWorker(1);
++    const replacement = new ControlledNavigationWorker(2);
++    let manager: DaemonWorkerGenerationManager;
++    const recover = vi.fn(async (exit: DaemonNavigationWorkerExit) => {
++      const cause = exit.cause === "out-of-memory" ? "out-of-memory" : "worker-exit";
++      await manager.replace(cause);
++    });
++    manager = createManager({
++      initialWorker: initial,
++      createWorker: () => replacement,
++      exitRecovery: { recover },
++    });
++    const starting = manager.start();
++    const exit: DaemonNavigationWorkerExit = {
++      generation: 1,
++      cause: "out-of-memory",
++      errorName: "WorkerOom",
++    };
++
++    initial.rejectStart(new DaemonNavigationWorkerExitedError(exit));
++    initial.exit(exit);
++    await vi.waitFor(() => expect(replacement.operations).toContain("start:2"));
++    replacement.completeReady(11);
++
++    await expect(starting).resolves.toMatchObject({
++      kind: "ready",
++      generation: 2,
++      fileCount: 11,
++    });
++    expect(manager.snapshot).toEqual({ generation: 2, ready: false, fileCount: 11 });
++  });
++
++  it("releases transient resources through the current generation", async () => {
++    const worker = new ControlledNavigationWorker(1);
++    const onDiagnostic = vi.fn();
++    const manager = createManager({ initialWorker: worker, onDiagnostic });
++    const starting = manager.start();
++    worker.completeReady(1);
++    await starting;
++    worker.resourceResponse = {
++      kind: "heap",
++      generation: 1,
++      operationId: "release-1",
++      usedHeapBytes: 12,
++      heapLimitBytes: 24,
++    };
++
++    await expect(manager.releaseTransientResources()).resolves.toEqual(worker.resourceResponse);
++    expect(worker.operations).toContain("release:1");
++    expect(onDiagnostic).toHaveBeenCalledWith({
++      kind: "resources-released",
++      workerGeneration: 1,
++      workerHeapUsedBytes: 12,
++      workerHeapLimitBytes: 24,
++    });
++  });
++
++  it("rejects an invalid transient resource report", async () => {
++    const worker = new ControlledNavigationWorker(1);
++    const manager = createManager({ initialWorker: worker });
++    const starting = manager.start();
++    worker.completeReady(1);
++    await starting;
++    worker.resourceResponse = { kind: "closed", generation: 1 };
++
++    await expect(manager.releaseTransientResources()).rejects.toThrow("did not report heap usage");
++  });
++
++  it("shares idempotent drain-close and terminate operations", async () => {
++    const worker = new ControlledNavigationWorker(1);
++    const manager = createManager({ initialWorker: worker });
++    const closeGate = deferredVoid();
++    const terminateGate = deferredVoid();
++    worker.closeOperation = closeGate.promise;
++    worker.terminateOperation = terminateGate.promise;
++
++    const firstClose = manager.close();
++    const secondClose = manager.close();
++    const firstTerminate = manager.terminate();
++    const secondTerminate = manager.terminate();
++
++    expect(firstClose).toBe(secondClose);
++    expect(firstTerminate).toBe(secondTerminate);
++    expect(worker.operations.filter((operation) => operation === "close:1")).toHaveLength(1);
++    expect(worker.operations.filter((operation) => operation === "terminate:1")).toHaveLength(1);
++    closeGate.resolve();
++    terminateGate.resolve();
++    await expect(Promise.all([firstClose, firstTerminate])).resolves.toEqual([
++      undefined,
++      undefined,
++    ]);
++  });
++
++  it("retains worker close and termination failures across repeated calls", async () => {
++    const worker = new ControlledNavigationWorker(1);
++    const manager = createManager({ initialWorker: worker });
++    const closeFailure = deferredFailure();
++    const terminateFailure = deferredFailure();
++    worker.closeOperation = closeFailure.promise;
++    worker.terminateOperation = terminateFailure.promise;
++
++    const close = manager.close();
++    const terminate = manager.terminate();
++    closeFailure.reject(new Error("close failed"));
++    terminateFailure.reject(new Error("terminate failed"));
++
++    await expect(close).rejects.toThrow("close failed");
++    await expect(terminate).rejects.toThrow("terminate failed");
++    expect(manager.close()).toBe(close);
++    expect(manager.terminate()).toBe(terminate);
++  });
++});
++
++function createManager(
++  overrides: Partial<DaemonWorkerGenerationManagerOptions>,
++): DaemonWorkerGenerationManager {
++  const exitRecovery: DaemonWorkerExitRecovery = {
++    recover: vi.fn(async () => undefined),
++  };
++  return new DaemonWorkerGenerationManager({
++    workspaceRoot: "/workspace",
++    createWorker: (generation) => new ControlledNavigationWorker(generation),
++    exitRecovery,
++    onActiveResourceInterruption: vi.fn(),
++    onDiagnostic: vi.fn(),
++    ...overrides,
++  });
++}
++
++class ControlledNavigationWorker implements DaemonNavigationWorker {
++  readonly exited: Promise<DaemonNavigationWorkerExit>;
++  readonly operations: string[] = [];
++  execution:
++    | {
++        readonly requestId: string;
++        readonly commandName: Parameters<DaemonNavigationWorker["execute"]>[1];
++        readonly request: Parameters<DaemonNavigationWorker["execute"]>[2];
++        readonly output: DaemonOutputSink;
++      }
++    | undefined;
++  executionResponse: DaemonNavigationWorkerResponse | undefined;
++  resourceResponse: DaemonNavigationWorkerResponse | undefined;
++  closeOperation: Promise<void> = Promise.resolve();
++  terminateOperation: Promise<void> = Promise.resolve();
++  private resolveExited!: (exit: DaemonNavigationWorkerExit) => void;
++  private resolveReady!: (response: DaemonNavigationWorkerResponse) => void;
++  private rejectReady!: (error: Error) => void;
++  private readonly ready: Promise<DaemonNavigationWorkerResponse>;
++
++  constructor(
++    readonly generation: number,
++    private readonly sharedOperations: string[] = [],
++  ) {
++    this.exited = new Promise((resolve) => {
++      this.resolveExited = resolve;
++    });
++    this.ready = new Promise((resolve, reject) => {
++      this.resolveReady = resolve;
++      this.rejectReady = reject;
++    });
++  }
++
++  start(workspaceRoot: string): Promise<DaemonNavigationWorkerResponse> {
++    this.operations.push(`start:${this.generation}`);
++    this.sharedOperations.push(`start:${this.generation}`);
++    expect(workspaceRoot).toBe("/workspace");
++    return this.ready;
++  }
++
++  execute(
++    requestId: string,
++    commandName: Parameters<DaemonNavigationWorker["execute"]>[1],
++    request: Parameters<DaemonNavigationWorker["execute"]>[2],
++    output: DaemonOutputSink,
++  ): Promise<DaemonNavigationWorkerResponse> {
++    this.execution = { requestId, commandName, request, output };
++    if (this.executionResponse === undefined) {
++      return Promise.reject(new Error("Execution response is unavailable"));
++    }
++    return Promise.resolve(this.executionResponse);
++  }
++
++  releaseTransientResources(): Promise<DaemonNavigationWorkerResponse> {
++    this.operations.push(`release:${this.generation}`);
++    if (this.resourceResponse === undefined) {
++      return Promise.reject(new Error("Resource response is unavailable"));
++    }
++    return Promise.resolve(this.resourceResponse);
++  }
++
++  drainAndClose(): Promise<void> {
++    this.operations.push(`close:${this.generation}`);
++    this.sharedOperations.push(`close:${this.generation}`);
++    return this.closeOperation;
++  }
++
++  terminate(): Promise<void> {
++    this.operations.push(`terminate:${this.generation}`);
++    this.sharedOperations.push(`terminate:${this.generation}`);
++    return this.terminateOperation;
++  }
++
++  completeReady(fileCount: number): void {
++    this.complete({
++      kind: "ready",
++      generation: this.generation,
++      fileCount,
++      refresh: { added: fileCount, changed: 0, removed: 0, unchanged: 0 },
++      startupDurations: { discoveryMs: 1, indexingMs: 2, totalMs: 3 },
++    });
++  }
++
++  complete(response: DaemonNavigationWorkerResponse): void {
++    this.resolveReady(response);
++  }
++
++  rejectStart(error: Error): void {
++    this.rejectReady(error);
++  }
++
++  exit(exit: DaemonNavigationWorkerExit): void {
++    this.resolveExited(exit);
++  }
++}
++
++function resultResponse(generation: number, requestId: string): DaemonNavigationWorkerResponse {
++  return {
++    kind: "result",
++    generation,
++    requestId,
++    result: { exitCode: 0 },
++    refresh: { added: 0, changed: 0, removed: 0, unchanged: 7 },
++    durations: { freshnessMs: 1, navigationMs: 2, renderMs: 3, outputMs: 4 },
++    resources: {
++      workerHeapUsedBytes: 10,
++      peakWorkerHeapUsedBytes: 20,
++      workerHeapLimitBytes: 30,
++    },
++  };
++}
++
++function deferredVoid(): { readonly promise: Promise<void>; readonly resolve: () => void } {
++  let resolve!: () => void;
++  const promise = new Promise<void>((complete) => {
++    resolve = complete;
++  });
++  return { promise, resolve };
++}
++
++function deferredFailure(): {
++  readonly promise: Promise<void>;
++  readonly reject: (error: Error) => void;
++} {
++  let reject!: (error: Error) => void;
++  const promise = new Promise<void>((_resolve, fail) => {
++    reject = fail;
++  });
++  return { promise, reject };
++}
+diff --git a/apps/cli/src/daemon/daemon-worker-generation-manager.ts b/apps/cli/src/daemon/daemon-worker-generation-manager.ts
+new file mode 100644
+index 000000000..ebb5e0b45
+--- /dev/null
++++ b/apps/cli/src/daemon/daemon-worker-generation-manager.ts
+@@ -0,0 +1,246 @@
++import type { DaemonCommandName, DaemonExecutorRequest, DaemonOutputSink } from "@symnav/daemon";
++import {
++  DaemonNavigationWorkerExitedError,
++  type DaemonNavigationWorker,
++  type DaemonNavigationWorkerExit,
++} from "./daemon-navigation-worker.js";
++import type { DaemonNavigationWorkerResponse } from "./daemon-navigation-worker-protocol.js";
++import type { DaemonWorkerDiagnostic, DaemonWorkerReplacementCause } from "./daemon-protocol.js";
++
++export type DaemonWorkerReadyReport = Extract<
++  DaemonNavigationWorkerResponse,
++  { readonly kind: "ready" }
++>;
++
++export type DaemonWorkerExecutionReport = Extract<
++  DaemonNavigationWorkerResponse,
++  { readonly kind: "result" }
++>;
++
++export type DaemonWorkerResourceReport = Extract<
++  DaemonNavigationWorkerResponse,
++  { readonly kind: "heap" }
++>;
++
++export interface DaemonWorkerExecuteRequest {
++  readonly commandName: DaemonCommandName;
++  readonly request: DaemonExecutorRequest;
++}
++
++export interface DaemonWorkerGenerationSnapshot {
++  readonly generation: number;
++  readonly ready: boolean;
++  readonly fileCount?: number;
++}
++
++export interface DaemonWorkerExitRecovery {
++  recover(exit: DaemonNavigationWorkerExit): Promise<void>;
++}
++
++export interface DaemonWorkerGenerationManagerOptions {
++  readonly workspaceRoot: string;
++  readonly createWorker: (generation: number) => DaemonNavigationWorker;
++  readonly initialWorker?: DaemonNavigationWorker;
++  readonly exitRecovery: DaemonWorkerExitRecovery;
++  readonly onActiveResourceInterruption: (cause: DaemonWorkerReplacementCause) => void;
++  readonly onDiagnostic: (diagnostic: DaemonWorkerDiagnostic) => void;
++}
++
++interface DaemonWorkerGeneration {
++  readonly worker: DaemonNavigationWorker;
++  ready: Promise<DaemonWorkerReadyReport> | undefined;
++}
++
++export class DaemonWorkerGenerationManager {
++  private currentGeneration: DaemonWorkerGeneration;
++  private startOperation: Promise<DaemonWorkerReadyReport> | undefined;
++  private replacementOperation: Promise<DaemonWorkerReadyReport> | undefined;
++  private recoveryOperation: Promise<void> | undefined;
++  private closeOperation: Promise<void> | undefined;
++  private terminationOperation: Promise<void> | undefined;
++  private protocolReadyGeneration: DaemonWorkerGeneration | undefined;
++  private readinessActivated = false;
++  private workerReady = false;
++  private fileCount: number | undefined;
++  private stopping = false;
++
++  constructor(private readonly options: DaemonWorkerGenerationManagerOptions) {
++    const worker = options.initialWorker ?? options.createWorker(1);
++    this.currentGeneration = this.createGeneration(worker);
++  }
++
++  get snapshot(): DaemonWorkerGenerationSnapshot {
++    return Object.freeze({
++      generation: this.currentGeneration.worker.generation,
++      ready: this.workerReady,
++      ...(this.fileCount === undefined ? {} : { fileCount: this.fileCount }),
++    });
++  }
++
++  start(): Promise<DaemonWorkerReadyReport> {
++    if (this.startOperation !== undefined) return this.startOperation;
++    const generation = this.currentGeneration;
++    generation.ready = this.startGeneration(generation);
++    this.startOperation = this.waitForReadyGeneration(generation).then((report) => {
++      this.publishProtocolReady(generation, report);
++      return report;
++    });
++    return this.startOperation;
++  }
++
++  activateReadiness(): void {
++    if (this.protocolReadyGeneration !== this.currentGeneration) {
++      throw new Error("Navigation worker protocol readiness is unavailable");
++    }
++    this.readinessActivated = true;
++    this.workerReady = true;
++  }
++
++  execute(
++    requestId: string,
++    request: DaemonWorkerExecuteRequest,
++    output: DaemonOutputSink,
++  ): Promise<DaemonWorkerExecutionReport> {
++    const generation = this.currentGeneration;
++    const ready = generation.ready ?? this.start();
++    return ready
++      .then(() =>
++        generation.worker.execute(requestId, request.commandName, request.request, output),
++      )
++      .then((response): DaemonWorkerExecutionReport => {
++        if (
++          response.kind !== "result" ||
++          response.requestId !== requestId ||
++          response.generation !== generation.worker.generation
++        ) {
++          throw new Error("Navigation worker returned an uncorrelated result");
++        }
++        return response;
++      });
++  }
++
++  replace(cause: DaemonWorkerReplacementCause): Promise<DaemonWorkerReadyReport> {
++    if (this.replacementOperation !== undefined) return this.replacementOperation;
++    const operation = this.replaceGeneration(cause);
++    this.replacementOperation = operation;
++    void operation.then(
++      () => this.clearReplacement(operation),
++      () => this.clearReplacement(operation),
++    );
++    return operation;
++  }
++
++  async releaseTransientResources(): Promise<DaemonWorkerResourceReport> {
++    const response = await this.currentGeneration.worker.releaseTransientResources();
++    if (response.kind !== "heap") {
++      throw new Error("Navigation worker did not report heap usage");
++    }
++    this.options.onDiagnostic({
++      kind: "resources-released",
++      workerGeneration: response.generation,
++      workerHeapUsedBytes: response.usedHeapBytes,
++      workerHeapLimitBytes: response.heapLimitBytes,
++    });
++    return response;
++  }
++
++  close(): Promise<void> {
++    if (this.closeOperation !== undefined) return this.closeOperation;
++    this.stopping = true;
++    this.workerReady = false;
++    this.closeOperation = this.currentGeneration.worker.drainAndClose();
++    return this.closeOperation;
++  }
++
++  terminate(): Promise<void> {
++    if (this.terminationOperation !== undefined) return this.terminationOperation;
++    this.stopping = true;
++    this.workerReady = false;
++    this.terminationOperation = this.currentGeneration.worker.terminate();
++    return this.terminationOperation;
++  }
++
++  private async replaceGeneration(
++    cause: DaemonWorkerReplacementCause,
++  ): Promise<DaemonWorkerReadyReport> {
++    const previous = this.currentGeneration;
++    if (cause !== "worker-exit") this.options.onActiveResourceInterruption(cause);
++    this.workerReady = false;
++    this.protocolReadyGeneration = undefined;
++    const nextWorker = this.options.createWorker(previous.worker.generation + 1);
++    if (nextWorker.generation !== previous.worker.generation + 1) {
++      throw new Error("Navigation worker factory returned the wrong generation");
++    }
++    const next = this.createGeneration(nextWorker);
++    this.currentGeneration = next;
++    next.ready = this.startGeneration(next);
++    await previous.worker.terminate().catch(() => undefined);
++    const report = await next.ready;
++    this.publishProtocolReady(next, report);
++    this.options.onDiagnostic({
++      kind: "worker-replaced",
++      cause,
++      previousWorkerGeneration: previous.worker.generation,
++      workerGeneration: next.worker.generation,
++      fileCount: report.fileCount,
++      ...report.startupDurations,
++    });
++    return report;
++  }
++
++  private startGeneration(generation: DaemonWorkerGeneration): Promise<DaemonWorkerReadyReport> {
++    return generation.worker
++      .start(this.options.workspaceRoot)
++      .then((response): DaemonWorkerReadyReport => {
++        if (response.kind !== "ready" || response.generation !== generation.worker.generation) {
++          throw new Error("Navigation worker did not become ready");
++        }
++        return response;
++      });
++  }
++
++  private async waitForReadyGeneration(
++    generation: DaemonWorkerGeneration,
++  ): Promise<DaemonWorkerReadyReport> {
++    try {
++      if (generation.ready === undefined) throw new Error("Navigation worker is not starting");
++      return await generation.ready;
++    } catch (error) {
++      if (!(error instanceof DaemonNavigationWorkerExitedError)) throw error;
++      await generation.worker.exited;
++      const recovery = this.recoveryOperation;
++      if (recovery === undefined) throw error;
++      await recovery;
++      const replacement = this.currentGeneration;
++      if (replacement === generation || replacement.ready === undefined) throw error;
++      return replacement.ready;
++    }
++  }
++
++  private createGeneration(worker: DaemonNavigationWorker): DaemonWorkerGeneration {
++    const generation: DaemonWorkerGeneration = { worker, ready: undefined };
++    void worker.exited.then((exit) => this.observeExit(generation, exit));
++    return generation;
++  }
++
++  private observeExit(generation: DaemonWorkerGeneration, exit: DaemonNavigationWorkerExit): void {
++    if (this.stopping || generation !== this.currentGeneration) return;
++    const recovery = this.options.exitRecovery.recover(exit);
++    this.recoveryOperation = recovery;
++    void recovery.catch(() => undefined);
++  }
++
++  private publishProtocolReady(
++    generation: DaemonWorkerGeneration,
++    report: DaemonWorkerReadyReport,
++  ): void {
++    if (generation !== this.currentGeneration) return;
++    this.protocolReadyGeneration = generation;
++    this.fileCount = report.fileCount;
++    if (this.readinessActivated) this.workerReady = true;
++  }
++
++  private clearReplacement(operation: Promise<DaemonWorkerReadyReport>): void {
++    if (this.replacementOperation === operation) this.replacementOperation = undefined;
++  }
++}
+diff --git a/apps/cli/src/daemon/workspace-daemon-requests.test.ts b/apps/cli/src/daemon/workspace-daemon-requests.test.ts
+index a6df2ce37..16eaf12e5 100644
+--- a/apps/cli/src/daemon/workspace-daemon-requests.test.ts
++++ b/apps/cli/src/daemon/workspace-daemon-requests.test.ts
+@@ -43,6 +43,7 @@ import type {
+   DaemonResourceSnapshot,
+   DaemonResourceSupervisor,
+ } from "./daemon-resource-monitor.js";
++import type { DaemonWorkerGenerationManager } from "./daemon-worker-generation-manager.js";
+ import type { WorkspaceRequestQueue } from "./workspace-request-queue.js";
+ import { TestDaemonResourcePolicy as DaemonResourcePolicy } from "../../test/helpers/daemon-resource-policy.js";
+ import {
+@@ -98,6 +99,7 @@ describe("WorkspaceDaemon requests", () => {
+     expect(startingStatus).toMatchObject({
+       kind: "pong",
+       state: "starting",
++      fileCount: 0,
+       activity: {
+         lifecycle: "starting",
+         pid: process.pid,
+@@ -111,6 +113,7 @@ describe("WorkspaceDaemon requests", () => {
+     if (startingActivity === undefined) {
+       throw new Error("Expected daemon activity snapshot");
+     }
++    expect(startingActivity).not.toHaveProperty("fileCount");
+     expect(() => Object.assign(startingActivity, { queued: 9 })).toThrow();
+     expect(harness.registry.read(harness.identity)?.state).toBe("starting");
+ 
+@@ -1272,6 +1275,40 @@ describe("WorkspaceDaemon requests", () => {
+     expect(workers).toHaveLength(2);
+   });
+ 
++  it("classifies a literal active worker exit without replaying the request", async () => {
++    const activeExecutor = new SerializedExecutor();
++    const replacementExecutor = new RecordingExecutor();
++    const workers: ExecutorNavigationWorker[] = [];
++    const harness = await RequestHarness.start(undefined, {
++      navigationWorkerFactory: (generation) => {
++        const worker = new ExecutorNavigationWorker(
++          generation === 1 ? activeExecutor : replacementExecutor,
++          generation,
++        );
++        workers.push(worker);
++        return worker;
++      },
++    });
++    harnesses.push(harness);
++    const active = harness.execute("worker-exit-active", ["refs", "input"]);
++    await activeExecutor.started(1);
++    const queued = harness.execute("worker-exit-queued", ["overview", "input.ts"]);
++
++    workers[0]?.fail({ generation: 1, cause: "error", errorName: "WorkerCrash" });
++
++    await expect(active).resolves.toMatchObject({
++      kind: "execution-failed",
++      requestId: "worker-exit-active",
++      code: "worker-exit",
++    });
++    await expect(queued).resolves.toMatchObject({
++      kind: "result-end",
++      requestId: "worker-exit-queued",
++    });
++    expect(activeExecutor.requests).toHaveLength(1);
++    expect(replacementExecutor.requests).toHaveLength(1);
++  });
++
+   it("reports worker replacement recovery from the main thread", async () => {
+     const initial = new ExecutorNavigationWorker(new ImmediateExecutor(), 1);
+     const replacement = new DeferredInitializationWorker(2);
+@@ -1283,6 +1320,41 @@ describe("WorkspaceDaemon requests", () => {
+     initial.fail({ generation: 1, cause: "out-of-memory", errorName: "WorkerOom" });
+     await replacement.initializationStarted;
+ 
++    const recovering = await harness.ping();
++    expect(recovering).toMatchObject({
++      kind: "pong",
++      fileCount: 1,
++      activity: {
++        lifecycle: "recovering",
++        recoveryDetail: "worker-replacement",
++        workerGeneration: 2,
++      },
++    });
++    expect(recovering.kind === "pong" ? recovering.activity : undefined).not.toHaveProperty(
++      "fileCount",
++    );
++
++    replacement.completeInitialization();
++    await waitUntil(async () => {
++      const pong = await harness.ping();
++      return pong.kind === "pong" && pong.state === "ready";
++    });
++  });
++
++  it("starts the next generation before terminating the previous worker", async () => {
++    const transitions: string[] = [];
++    const initial = new OrderedInitializationWorker(1, transitions, true);
++    const replacement = new OrderedInitializationWorker(2, transitions, false);
++    const harness = await RequestHarness.start(undefined, {
++      navigationWorkerFactory: (generation) => (generation === 1 ? initial : replacement),
++    });
++    harnesses.push(harness);
++    transitions.length = 0;
++
++    initial.fail({ generation: 1, cause: "out-of-memory", errorName: "WorkerOom" });
++    await replacement.initializationStarted;
++
++    expect(transitions).toEqual(["start:2", "terminate:1"]);
+     await expect(harness.ping()).resolves.toMatchObject({
+       kind: "pong",
+       activity: {
+@@ -1528,10 +1600,31 @@ describe("WorkspaceDaemon requests", () => {
+     await worker.releaseStarted;
+     expect(ready).toBe(false);
+     expect(harness.registry.read(harness.identity)?.state).toBe("starting");
++    const warming = await harness.ping();
++    const admission = await harness.admit("before-warmup-completes");
++    const rejection = await admission.terminal;
+     worker.allowRelease();
+     await starting;
+     lease.release();
+ 
++    expect(warming).toMatchObject({
++      kind: "pong",
++      fileCount: 1,
++      activity: {
++        lifecycle: "recovering",
++        recoveryDetail: "resource-pressure",
++        workerGeneration: 1,
++      },
++    });
++    expect
++      .soft(warming.kind === "pong" ? warming.activity : undefined)
++      .not.toHaveProperty("fileCount");
++    expect.soft(rejection).toMatchObject({
++      kind: "rejected",
++      code: "not-ready",
++    });
++    expect(harness.acceptedRequestCount()).toBe(0);
++
+     await expect(harness.ping()).resolves.toMatchObject({ state: "ready" });
+   });
+ 
+@@ -1825,7 +1918,9 @@ class RequestHarness {
+   }
+ 
+   setWorkerReady(workerReady: boolean): void {
+-    this.daemonInternals.workerReady = workerReady;
++    const workerManager = this.daemonInternals.workerManager;
++    const snapshot = workerManager.snapshot;
++    vi.spyOn(workerManager, "snapshot", "get").mockReturnValue({ ...snapshot, ready: workerReady });
+   }
+ 
+   setResourceAdmissionPaused(admissionPaused: boolean): void {
+@@ -1859,18 +1954,18 @@ class RequestHarness {
+   }
+ 
+   private get daemonInternals(): {
+-    workerReady: boolean;
+     readonly acceptedRequests: AcceptedRequestLedger;
+     readonly requestQueue: WorkspaceRequestQueue;
++    readonly workerManager: DaemonWorkerGenerationManager;
+     readonly resourceSupervisor: DaemonResourceSupervisor & {
+       readonly snapshot: DaemonResourceSnapshot;
+     };
+   } {
+     if (this.daemon === undefined) throw new Error("Workspace daemon is unavailable");
+     return this.daemon as unknown as {
+-      workerReady: boolean;
+       readonly acceptedRequests: AcceptedRequestLedger;
+       readonly requestQueue: WorkspaceRequestQueue;
++      readonly workerManager: DaemonWorkerGenerationManager;
+       readonly resourceSupervisor: DaemonResourceSupervisor & {
+         readonly snapshot: DaemonResourceSnapshot;
+       };
+@@ -2333,6 +2428,7 @@ class ExecutorNavigationWorker implements DaemonNavigationWorker {
+   }
+ 
+   fail(exit: DaemonNavigationWorkerExit): void {
++    this.rejectTermination(new DaemonNavigationWorkerExitedError(exit));
+     this.resolveExited(exit);
+   }
+ }
+@@ -2440,6 +2536,69 @@ class DeferredInitializationWorker implements DaemonNavigationWorker {
+   }
+ }
+ 
++class OrderedInitializationWorker implements DaemonNavigationWorker {
++  readonly exited: Promise<DaemonNavigationWorkerExit>;
++  readonly initializationStarted: Promise<void>;
++  private resolveExited!: (exit: DaemonNavigationWorkerExit) => void;
++  private resolveInitializationStarted!: () => void;
++  private resolveReady!: (response: DaemonNavigationWorkerResponse) => void;
++  private readonly ready: Promise<DaemonNavigationWorkerResponse>;
++
++  constructor(
++    readonly generation: number,
++    private readonly transitions: string[],
++    readyImmediately: boolean,
++  ) {
++    this.exited = new Promise((resolve) => {
++      this.resolveExited = resolve;
++    });
++    this.initializationStarted = new Promise((resolve) => {
++      this.resolveInitializationStarted = resolve;
++    });
++    this.ready = new Promise((resolve) => {
++      this.resolveReady = resolve;
++    });
++    if (readyImmediately) this.completeInitialization();
++  }
++
++  start(): Promise<DaemonNavigationWorkerResponse> {
++    this.transitions.push(`start:${this.generation}`);
++    this.resolveInitializationStarted();
++    return this.ready;
++  }
++
++  execute(): Promise<DaemonNavigationWorkerResponse> {
++    throw new Error("Ordered initialization worker is not executable");
++  }
++
++  releaseTransientResources(): Promise<DaemonNavigationWorkerResponse> {
++    throw new Error("Ordered initialization worker has no transient resources");
++  }
++
++  drainAndClose(): Promise<void> {
++    return Promise.resolve();
++  }
++
++  terminate(): Promise<void> {
++    this.transitions.push(`terminate:${this.generation}`);
++    return Promise.resolve();
++  }
++
++  fail(exit: DaemonNavigationWorkerExit): void {
++    this.resolveExited(exit);
++  }
++
++  completeInitialization(): void {
++    this.resolveReady({
++      kind: "ready",
++      generation: this.generation,
++      fileCount: 1,
++      refresh: { added: 1, changed: 0, removed: 0, unchanged: 0 },
++      startupDurations: { discoveryMs: 0, indexingMs: 1, totalMs: 1 },
++    });
++  }
++}
++
+ class RejectingInitializationWorker extends DeferredInitializationWorker {
+   terminateCount = 0;
+ 
+diff --git a/apps/cli/src/daemon/workspace-daemon.ts b/apps/cli/src/daemon/workspace-daemon.ts
+index 3b0421018..9701e94d8 100644
+--- a/apps/cli/src/daemon/workspace-daemon.ts
++++ b/apps/cli/src/daemon/workspace-daemon.ts
+@@ -38,11 +38,11 @@ import {
+   type DaemonNavigationWorker,
+   NodeDaemonNavigationWorker,
+ } from "./daemon-navigation-worker.js";
++import { DaemonWorkerGenerationManager } from "./daemon-worker-generation-manager.js";
+ import {
+   DaemonResourceSupervisor,
+   type DaemonWorkerReplacementCause,
+ } from "./daemon-resource-monitor.js";
+-import type { DaemonNavigationWorkerResponse } from "./daemon-navigation-worker-protocol.js";
+ import type { DaemonRegistry, DaemonStartupLease } from "./daemon-registry.js";
+ import type { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
+ import type { DaemonRequestServer, DaemonServerSend } from "./daemon-transport.js";
+@@ -70,21 +70,11 @@ export interface WorkspaceDaemonOptions {
+   readonly logger?: DaemonLogger;
+ }
+ 
+-export interface DaemonWorkerGeneration {
+-  readonly id: number;
+-  readonly worker: DaemonNavigationWorker;
+-  readonly ready: Promise<DaemonNavigationWorkerResponse>;
+-}
+-
+ export class WorkspaceDaemon {
+   private readonly now: () => number;
+   private readonly clock: DaemonClock;
+   private readonly exit: (code: number) => void;
+-  private readonly initialNavigationWorker: DaemonNavigationWorker;
+-  private readonly navigationWorkerFactory:
+-    | ((generation: number) => DaemonNavigationWorker)
+-    | undefined;
+-  private workerGeneration: DaemonWorkerGeneration | undefined;
++  private readonly workerManager: DaemonWorkerGenerationManager;
+   private readonly requestQueue: WorkspaceRequestQueue;
+   private readonly logger: DaemonLogger;
+   private readonly lifetime: DaemonLifetime;
+@@ -102,10 +92,8 @@ export class WorkspaceDaemon {
+   private server: DaemonServer | undefined;
+   private startedAt = 0;
+   private readonly startedMonotonicAt: number;
+-  private fileCount = 0;
+   private lastNavigationAt: number | undefined;
+   private lastCompletedMonotonicAt: number | undefined;
+-  private workerReady = false;
+   private shutdownStarted = false;
+   private shutdownFailureCode: "stopping" | "controlled-resource" | undefined;
+   private shutdownOperation: Promise<void> | undefined;
+@@ -117,7 +105,6 @@ export class WorkspaceDaemon {
+   private readonly operationTraces = new Map<string, DaemonOperationTrace>();
+   private readonly operationTraceExpirations = new Map<string, NodeJS.Timeout>();
+   private readonly operationTraceConnections = new Map<string, number>();
+-  private workerRecoveryOperation: Promise<void> | undefined;
+ 
+   constructor(private readonly options: WorkspaceDaemonOptions) {
+     const policy = options.policy;
+@@ -146,7 +133,7 @@ export class WorkspaceDaemon {
+       });
+     const resourcePolicy = policy.values.resources;
+     this.resourcePolicy = resourcePolicy;
+-    this.navigationWorkerFactory =
++    const navigationWorkerFactory =
+       options.navigationWorkerFactory ??
+       (options.navigationWorker === undefined
+         ? (generation) =>
+@@ -164,21 +151,48 @@ export class WorkspaceDaemon {
+               },
+             })
+         : undefined);
+-    this.initialNavigationWorker = options.navigationWorker ?? this.createNavigationWorker(1);
++    const createNavigationWorker = (generation: number): DaemonNavigationWorker => {
++      const worker = navigationWorkerFactory?.(generation);
++      if (worker === undefined) throw new Error("Navigation worker replacement is unavailable");
++      if (worker.generation !== generation) {
++        throw new Error("Navigation worker factory returned the wrong generation");
++      }
++      return worker;
++    };
++    const initialNavigationWorker = options.navigationWorker ?? createNavigationWorker(1);
+     this.exit = options.exit ?? ((code) => process.exit(code));
+     this.lifetime = new DaemonLifetime({ now: this.now }, policy.values.shutdown, () =>
+       this.drainAndShutdown("idle"),
+     );
++    this.workerManager = new DaemonWorkerGenerationManager({
++      workspaceRoot: options.identity.workspaceRoot,
++      initialWorker: initialNavigationWorker,
++      createWorker: createNavigationWorker,
++      exitRecovery: { recover: (workerExit) => this.recoverWorkerExit(workerExit) },
++      onActiveResourceInterruption: (cause) => this.markActiveResourceInterruption(cause),
++      onDiagnostic: (diagnostic) => this.operationObserver.worker(diagnostic),
++    });
+     this.resourceSupervisor = new DaemonResourceSupervisor({
+       policy: resourcePolicy,
+-      generation: this.initialNavigationWorker.generation,
++      generation: this.workerManager.snapshot.generation,
+       ...(options.residentMemoryBytes === undefined
+         ? {}
+         : { residentMemoryBytes: options.residentMemoryBytes }),
+       spoolBytes: () => this.completionSpools.usage().rawBytes,
+       scheduleAtTurnBoundary: (operation) => this.requestQueue.scheduleAtTurnBoundary(operation),
+-      releaseTransientResources: () => this.releaseTransientResources(),
+-      replaceWorker: (cause) => this.replaceNavigationWorker(cause),
++      releaseTransientResources: async () => {
++        const response = await this.workerManager.releaseTransientResources();
++        this.resourceSupervisor.workerHeapReported(
++          response.generation,
++          response.usedHeapBytes,
++          response.heapLimitBytes,
++        );
++      },
++      replaceWorker: async (cause) => {
++        const response = await this.workerManager.replace(cause);
++        this.logger.record({ kind: "freshness", ...response.refresh });
++        return response.generation;
++      },
+       drain: () => this.initiateResourceDrain(),
+     });
+     this.operationObserver = new DaemonOperationObserver(
+@@ -206,10 +220,7 @@ export class WorkspaceDaemon {
+         this.options.identity.endpoint(this.options.instanceId),
+         (request, send) => this.handle(request, send),
+       );
+-      const generation = this.startWorkerGeneration(this.initialNavigationWorker);
+-      const response = await this.waitForReadyGeneration(generation);
+-      if (response.kind !== "ready") throw new Error("Navigation worker did not become ready");
+-      this.fileCount = response.fileCount;
++      const response = await this.workerManager.start();
+       this.operationObserver.startup({
+         kind: "startup-completed",
+         workerGeneration: response.generation,
+@@ -218,7 +229,7 @@ export class WorkspaceDaemon {
+       });
+       this.logger.record({ kind: "freshness", ...response.refresh });
+       await this.resourceSupervisor.sample("warmup");
+-      this.workerReady = true;
++      this.workerManager.activateReadiness();
+       const readyRecord: DaemonRecord = {
+         schemaVersion: DAEMON_RECORD_SCHEMA_VERSION,
+         protocolVersion: DAEMON_PROTOCOL_VERSION,
+@@ -313,7 +324,7 @@ export class WorkspaceDaemon {
+   private async cleanupFailedStartup(startupLease: DaemonStartupLease | undefined): Promise<void> {
+     this.shutdownStarted = true;
+     try {
+-      await (this.workerGeneration?.worker ?? this.initialNavigationWorker).terminate();
++      await this.workerManager.terminate();
+     } catch {}
+     try {
+       await this.server?.close();
+@@ -449,6 +460,7 @@ export class WorkspaceDaemon {
+   private pong(): DaemonResponse {
+     const queue = this.requestQueue.snapshot;
+     const resources = this.resourceSupervisor.snapshot;
++    const worker = this.workerManager.snapshot;
+     return DaemonActivityProjector.project({
+       nowMonotonicMs: this.clock.monotonicNowMs(),
+       pid: process.pid,
+@@ -465,9 +477,9 @@ export class WorkspaceDaemon {
+       queue,
+       resources,
+       worker: {
+-        generation: this.workerGeneration?.id ?? resources.generation,
+-        ready: this.workerReady,
+-        fileCount: this.fileCount,
++        generation: worker.generation,
++        ready: worker.ready,
++        fileCount: worker.fileCount ?? 0,
+       },
+     }).pong;
+   }
+@@ -581,7 +593,7 @@ export class WorkspaceDaemon {
+     return this.admissionPolicy.decide({
+       request,
+       authenticated,
+-      workerReady: this.workerReady,
++      workerReady: this.workerManager.snapshot.ready,
+       resourceAdmissionPaused: this.resourceSupervisor.snapshot.admissionPaused,
+       queueState: this.requestQueue.state,
+       compatibility: this.acceptedRequests.compatibilityFor(
+@@ -610,19 +622,11 @@ export class WorkspaceDaemon {
+           try {
+             spool = await this.completionSpools.create(request.requestId);
+             this.acceptedRequests.markRunning(request.requestId, this.now());
+-            const generation = this.workerGeneration;
+-            if (generation === undefined) throw new Error("Navigation worker is unavailable");
+-            const ready = await generation.ready;
+-            if (ready.kind !== "ready") throw new Error("Navigation worker did not become ready");
+-            const response = await generation.worker.execute(
++            const response = await this.workerManager.execute(
+               request.requestId,
+-              request.commandName,
+-              request.request,
++              { commandName: request.commandName, request: request.request },
+               spool,
+             );
+-            if (response.kind !== "result" || response.requestId !== request.requestId) {
+-              throw new Error("Navigation worker returned an uncorrelated result");
+-            }
+             this.resourceSupervisor.workerHeapReported(
+               response.generation,
+               response.resources.workerHeapUsedBytes,
+@@ -1016,14 +1020,14 @@ export class WorkspaceDaemon {
+ 
+   private async gracefullyShutdownWorker(): Promise<void> {
+     await this.requestQueue.drain();
+-    const gracefulClose = this.currentNavigationWorker().drainAndClose();
++    const gracefulClose = this.workerManager.close();
+     await Promise.race([gracefulClose, this.forceEscalated.then(() => this.forceWorkerShutdown())]);
+   }
+ 
+   private forceWorkerShutdown(): Promise<void> {
+     if (this.forcedWorkerShutdown !== undefined) return this.forcedWorkerShutdown;
+     this.requestQueue.close();
+-    this.forcedWorkerShutdown = this.currentNavigationWorker()
++    this.forcedWorkerShutdown = this.workerManager
+       .terminate()
+       .then(() => this.requestQueue.drain());
+     this.resolveForceEscalated();
+@@ -1036,113 +1040,34 @@ export class WorkspaceDaemon {
+     );
+   }
+ 
+-  private createNavigationWorker(generation: number): DaemonNavigationWorker {
+-    const worker = this.navigationWorkerFactory?.(generation);
+-    if (worker === undefined) throw new Error("Navigation worker replacement is unavailable");
+-    if (worker.generation !== generation) {
+-      throw new Error("Navigation worker factory returned the wrong generation");
+-    }
+-    return worker;
+-  }
+-
+-  private startWorkerGeneration(worker: DaemonNavigationWorker): DaemonWorkerGeneration {
+-    const generation: DaemonWorkerGeneration = {
+-      id: worker.generation,
+-      worker,
+-      ready: worker.start(this.options.identity.workspaceRoot),
+-    };
+-    this.workerGeneration = generation;
+-    void worker.exited.then((exit) => this.observeWorkerExit(exit));
+-    return generation;
++  private markActiveResourceInterruption(cause: DaemonWorkerReplacementCause): void {
++    if (cause === "worker-exit") return;
++    const activeRequest = this.requestQueue.snapshot.active;
++    if (activeRequest !== undefined) this.resourceInterruptedRequests.add(activeRequest.requestId);
+   }
+ 
+-  private observeWorkerExit(
+-    exit: import("./daemon-navigation-worker.js").DaemonNavigationWorkerExit,
+-  ): void {
++  private async recoverWorkerExit(
++    workerExit: import("./daemon-navigation-worker.js").DaemonNavigationWorkerExit,
++  ): Promise<void> {
+     if (this.shutdownStarted) return;
+     this.logger.record({
+       kind: "failure",
+       operation: "worker-exit",
+       failureCode: "worker-exit",
+       errorName: DaemonLogger.errorName(
+-        exit.errorName === undefined ? undefined : { name: exit.errorName },
++        workerExit.errorName === undefined ? undefined : { name: workerExit.errorName },
+       ),
+     });
+-    const recovery = this.resourceSupervisor.workerExited(exit);
+-    this.workerRecoveryOperation = recovery;
+-    void recovery.catch((error) => {
++    try {
++      await this.resourceSupervisor.recover(workerExit);
++    } catch (error) {
+       this.logger.record({
+         kind: "failure",
+         operation: "worker-replacement",
+         failureCode: "controlled-resource",
+         errorName: DaemonLogger.errorName(error),
+       });
+-    });
+-  }
+-
+-  private async waitForReadyGeneration(
+-    generation: DaemonWorkerGeneration,
+-  ): Promise<DaemonNavigationWorkerResponse> {
+-    try {
+-      return await generation.ready;
+-    } catch (error) {
+-      if (!(error instanceof DaemonNavigationWorkerExitedError)) throw error;
+-      await generation.worker.exited;
+-      const recovery = this.workerRecoveryOperation;
+-      if (recovery === undefined) throw error;
+-      await recovery;
+-      const replacement = this.workerGeneration;
+-      if (replacement === undefined || replacement.id === generation.id) throw error;
+-      return replacement.ready;
+-    }
+-  }
+-
+-  private async replaceNavigationWorker(cause: DaemonWorkerReplacementCause): Promise<number> {
+-    const current = this.workerGeneration;
+-    if (current === undefined) throw new Error("Navigation worker generation is unavailable");
+-    const activeRequest = this.requestQueue.snapshot.active;
+-    if (activeRequest !== undefined && cause !== "worker-exit") {
+-      this.resourceInterruptedRequests.add(activeRequest.requestId);
++      throw error;
+     }
+-    const nextWorker = this.createNavigationWorker(current.id + 1);
+-    this.workerReady = false;
+-    const next = this.startWorkerGeneration(nextWorker);
+-    await current.worker.terminate().catch(() => undefined);
+-    const response = await next.ready;
+-    if (response.kind !== "ready") throw new Error("Replacement navigation worker did not start");
+-    this.fileCount = response.fileCount;
+-    this.workerReady = true;
+-    this.operationObserver.worker({
+-      kind: "worker-replaced",
+-      cause,
+-      previousWorkerGeneration: current.id,
+-      workerGeneration: next.id,
+-      fileCount: response.fileCount,
+-      ...response.startupDurations,
+-    });
+-    this.logger.record({ kind: "freshness", ...response.refresh });
+-    return next.id;
+-  }
+-
+-  private async releaseTransientResources(): Promise<void> {
+-    const generation = this.workerGeneration;
+-    if (generation === undefined) return;
+-    const response = await generation.worker.releaseTransientResources();
+-    if (response.kind !== "heap") throw new Error("Navigation worker did not report heap usage");
+-    this.resourceSupervisor.workerHeapReported(
+-      response.generation,
+-      response.usedHeapBytes,
+-      response.heapLimitBytes,
+-    );
+-    this.operationObserver.worker({
+-      kind: "resources-released",
+-      workerGeneration: response.generation,
+-      workerHeapUsedBytes: response.usedHeapBytes,
+-      workerHeapLimitBytes: response.heapLimitBytes,
+-    });
+-  }
+-
+-  private currentNavigationWorker(): DaemonNavigationWorker {
+-    return this.workerGeneration?.worker ?? this.initialNavigationWorker;
+   }
+ }

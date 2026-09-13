@@ -1,0 +1,3477 @@
+diff --git a/apps/cli/src/daemon/daemon-command-dispatcher.integration.test.ts b/apps/cli/src/daemon/daemon-command-dispatcher.integration.test.ts
+index 9402c2f1a..c85039462 100644
+--- a/apps/cli/src/daemon/daemon-command-dispatcher.integration.test.ts
++++ b/apps/cli/src/daemon/daemon-command-dispatcher.integration.test.ts
+@@ -26,7 +26,7 @@ import type {
+ import { TestDaemonRegistry as DaemonRegistry } from "../../test/helpers/daemon-registry.js";
+ import { TestDaemonStartupCoordinator as DaemonStartupCoordinator } from "../../test/helpers/daemon-startup-coordinator.js";
+ import { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
+-import type { DaemonExecutionReceipt, LocalDaemonTransport } from "./local-daemon-transport.js";
++import type { DaemonExecutionReceipt } from "./daemon-transport.js";
+ 
+ const workspaceRoot = resolve("reference-workspace");
+ const REFERENCE_WORKSPACE_FILE_COUNT = 4_000;
+@@ -43,7 +43,7 @@ describe("DaemonCommandDispatcher startup routing", () => {
+       const coordinator = new DaemonStartupCoordinator(
+         registry,
+         launcher,
+-        new RegistryDaemonTransport(registry, identity) as unknown as LocalDaemonTransport,
++        new RegistryDaemonTransport(registry, identity),
+         { pollIntervalMs: 1, processTerminator },
+       );
+       const coldExecute = vi.fn(async (request: CliExecutionRequest) =>
+@@ -190,6 +190,10 @@ class RegistryDaemonTransport {
+     private readonly identity: DaemonWorkspaceIdentity,
+   ) {}
+ 
++  execute(): Promise<never> {
++    return Promise.reject(new Error("Controller observation must not execute"));
++  }
++
+   async request(
+     _endpoint: string,
+     request: DaemonLifecycleRequest,
+diff --git a/apps/cli/src/daemon/daemon-command-dispatcher.ts b/apps/cli/src/daemon/daemon-command-dispatcher.ts
+index fa16644a5..9ef4ab7a0 100644
+--- a/apps/cli/src/daemon/daemon-command-dispatcher.ts
++++ b/apps/cli/src/daemon/daemon-command-dispatcher.ts
+@@ -22,11 +22,8 @@ import {
+ } from "./daemon-startup-coordinator.js";
+ import { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
+ import { InvocationWorkspaceSelector } from "./invocation-workspace-selector.js";
+-import {
+-  DaemonTransportError,
+-  type DaemonExecutionReceipt,
+-  LocalDaemonTransport,
+-} from "./local-daemon-transport.js";
++import { DaemonTransportError, LocalDaemonTransport } from "./local-daemon-transport.js";
++import type { DaemonExecutionReceipt, DaemonExecutionRequester } from "./daemon-transport.js";
+ import { DaemonRecordObserver, type DaemonObservation } from "./daemon-record-observer.js";
+ 
+ export type DaemonRouteSnapshot =
+@@ -48,10 +45,6 @@ interface DaemonDispatchRegistry {
+   ): boolean;
+ }
+ 
+-interface DaemonDispatchTransport {
+-  execute(endpoint: string, request: DaemonExecuteRequest): Promise<DaemonExecutionReceipt>;
+-}
+-
+ interface DaemonDispatchObserver {
+   observe(record: DaemonRecord): Promise<DaemonObservation>;
+ }
+@@ -60,7 +53,7 @@ export interface DaemonDispatchRuntime {
+   readonly coordinator: DaemonWarmupTrigger;
+   readonly observer: DaemonDispatchObserver;
+   readonly registry: DaemonDispatchRegistry;
+-  readonly transport: DaemonDispatchTransport;
++  readonly transport: DaemonExecutionRequester;
+ }
+ 
+ interface CommandExecutor {
+diff --git a/apps/cli/src/daemon/daemon-controller.test.ts b/apps/cli/src/daemon/daemon-controller.test.ts
+index 9f95ce41a..31a59c035 100644
+--- a/apps/cli/src/daemon/daemon-controller.test.ts
++++ b/apps/cli/src/daemon/daemon-controller.test.ts
+@@ -15,7 +15,6 @@ import {
+ import { TestDaemonRegistry as DaemonRegistry } from "../../test/helpers/daemon-registry.js";
+ import { DaemonStartupCoordinator } from "./daemon-startup-coordinator.js";
+ import { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
+-import type { LocalDaemonTransport } from "./local-daemon-transport.js";
+ 
+ describe("DaemonController", () => {
+   const roots: string[] = [];
+@@ -46,12 +45,9 @@ describe("DaemonController", () => {
+       memoryCapBytes: 1024,
+       launch: vi.fn(),
+     };
+-    const controller = new DaemonController(
+-      registry,
+-      new ControllerTransport() as unknown as LocalDaemonTransport,
+-      stateDirectory,
+-      { launcher },
+-    );
++    const controller = new DaemonController(registry, new ControllerTransport(), stateDirectory, {
++      launcher,
++    });
+ 
+     await expect(controller.start("/repo")).resolves.toEqual(result);
+ 
+@@ -68,12 +64,11 @@ describe("DaemonController", () => {
+     expect(registry.writeStartingIfStartupOwner(identity, startingRecord(identity))).toBe(true);
+     expect(registry.armStartingProcessLaunch(identity, startingRecord(identity))).toBe(true);
+     const terminator = new BlockingControllerTerminator([process.pid, 7000]);
+-    const controller = new DaemonController(
+-      registry,
+-      new ControllerTransport() as unknown as LocalDaemonTransport,
+-      stateDirectory,
+-      { processTerminator: terminator, stopTimeoutMs: 1_000, pollIntervalMs: 1 },
+-    );
++    const controller = new DaemonController(registry, new ControllerTransport(), stateDirectory, {
++      processTerminator: terminator,
++      stopTimeoutMs: 1_000,
++      pollIntervalMs: 1,
++    });
+ 
+     const stopping = controller.stop("/repo");
+     const published = registry.writeStartingIfStartupOwner(identity, {
+@@ -105,12 +100,9 @@ describe("DaemonController", () => {
+     expect(registry.acquireStartup(identity, record.instanceId)).toBeDefined();
+     expect(registry.writeStartingIfStartupOwner(identity, record)).toBe(true);
+     const terminator = new BlockingControllerTerminator([process.pid, record.pid]);
+-    const controller = new DaemonController(
+-      registry,
+-      new ControllerTransport() as unknown as LocalDaemonTransport,
+-      stateDirectory,
+-      { processTerminator: terminator },
+-    );
++    const controller = new DaemonController(registry, new ControllerTransport(), stateDirectory, {
++      processTerminator: terminator,
++    });
+ 
+     const stopping = controller.stop("/repo");
+     try {
+@@ -141,15 +133,10 @@ describe("DaemonController", () => {
+     const registry = new DaemonRegistry(identity.registryDirectory);
+     expect(registry.acquireStartup(identity, "starting")).toBeDefined();
+     expect(registry.writeStartingIfStartupOwner(identity, startingRecord(identity))).toBe(true);
+-    const controller = new DaemonController(
+-      registry,
+-      new ControllerTransport() as unknown as LocalDaemonTransport,
+-      stateDirectory,
+-      {
+-        processTerminator: new ControllerTerminator([process.pid]),
+-        now: () => 20,
+-      },
+-    );
++    const controller = new DaemonController(registry, new ControllerTransport(), stateDirectory, {
++      processTerminator: new ControllerTerminator([process.pid]),
++      now: () => 20,
++    });
+ 
+     await expect(controller.status()).resolves.toEqual([
+       {
+@@ -170,7 +157,7 @@ describe("DaemonController", () => {
+     expect(registry.writeStartingIfStartupOwner(identity, daemonRecord)).toBe(true);
+     const controller = new DaemonController(
+       registry,
+-      new ActivityControllerTransport(daemonRecord) as unknown as LocalDaemonTransport,
++      new ActivityControllerTransport(daemonRecord),
+       stateDirectory,
+       { processTerminator: new ControllerTerminator([daemonRecord.pid]), now: () => 20 },
+     );
+@@ -220,7 +207,7 @@ describe("DaemonController", () => {
+       registry.write(daemonRecord);
+       const controller = new DaemonController(
+         registry,
+-        new ActivityControllerTransport(daemonRecord, snapshot) as unknown as LocalDaemonTransport,
++        new ActivityControllerTransport(daemonRecord, snapshot),
+         stateDirectory,
+         { processTerminator: new ControllerTerminator([daemonRecord.pid]), now: () => -10_000 },
+       );
+@@ -245,7 +232,7 @@ describe("DaemonController", () => {
+     });
+     const controller = new DaemonController(
+       registry,
+-      new ActivityControllerTransport(daemonRecord, snapshot) as unknown as LocalDaemonTransport,
++      new ActivityControllerTransport(daemonRecord, snapshot),
+       stateDirectory,
+       { processTerminator: new ControllerTerminator([daemonRecord.pid]), now: () => 20 },
+     );
+@@ -273,12 +260,9 @@ describe("DaemonController", () => {
+       identity.startupOwnerPath(identity.lockPath),
+       JSON.stringify({ ...owner, heartbeatAt: Date.now() - 60_000 }),
+     );
+-    const controller = new DaemonController(
+-      registry,
+-      new ControllerTransport() as unknown as LocalDaemonTransport,
+-      stateDirectory,
+-      { processTerminator: new ControllerTerminator([]) },
+-    );
++    const controller = new DaemonController(registry, new ControllerTransport(), stateDirectory, {
++      processTerminator: new ControllerTerminator([]),
++    });
+ 
+     await expect(controller.status()).resolves.toEqual([]);
+     expect(registry.startupOwner(identity)).toBeUndefined();
+@@ -301,12 +285,9 @@ describe("DaemonController", () => {
+     const terminator = new ReplacingControllerTerminator(observed.pid, () => {
+       expect(registry.writeStartingIfStartupOwner(identity, replacement)).toBe(true);
+     });
+-    const controller = new DaemonController(
+-      registry,
+-      new ControllerTransport() as unknown as LocalDaemonTransport,
+-      stateDirectory,
+-      { processTerminator: terminator },
+-    );
++    const controller = new DaemonController(registry, new ControllerTransport(), stateDirectory, {
++      processTerminator: terminator,
++    });
+ 
+     await expect(controller.status()).resolves.toEqual([]);
+     expect(registry.startupOwner(identity)).toMatchObject({
+@@ -319,6 +300,10 @@ describe("DaemonController", () => {
+ });
+ 
+ class ControllerTransport {
++  execute(): Promise<never> {
++    return Promise.reject(new Error("Starting-daemon cancellation must not execute"));
++  }
++
+   request(_endpoint: string, _request: DaemonRequest): Promise<DaemonResponse> {
+     throw new Error("Starting-daemon cancellation must not use transport");
+   }
+@@ -334,6 +319,10 @@ class ActivityControllerTransport {
+     private readonly activity?: DaemonActivitySnapshot,
+   ) {}
+ 
++  execute(): Promise<never> {
++    return Promise.reject(new Error("Activity observation must not execute"));
++  }
++
+   request(_endpoint: string, request: DaemonRequest): Promise<DaemonResponse> {
+     if (request.kind === "identify") {
+       return Promise.resolve({
+diff --git a/apps/cli/src/daemon/daemon-controller.ts b/apps/cli/src/daemon/daemon-controller.ts
+index ac7294b73..d174c2ded 100644
+--- a/apps/cli/src/daemon/daemon-controller.ts
++++ b/apps/cli/src/daemon/daemon-controller.ts
+@@ -16,7 +16,7 @@ import { DaemonRecordObserver, type DaemonObservation } from "./daemon-record-ob
+ import { DaemonStartupCoordinator } from "./daemon-startup-coordinator.js";
+ import { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
+ import { DaemonRuntimeValues } from "./daemon-runtime-values.js";
+-import type { LocalDaemonTransport } from "./local-daemon-transport.js";
++import type { DaemonExecutionRequester, DaemonLifecycleRequestSender } from "./daemon-transport.js";
+ 
+ interface DaemonControllerOptions {
+   readonly policy: Pick<DaemonPolicyValues, "startup" | "shutdown">;
+@@ -36,7 +36,7 @@ export class DaemonController {
+ 
+   constructor(
+     private readonly registry: DaemonRegistry,
+-    private readonly transport: LocalDaemonTransport,
++    private readonly transport: DaemonLifecycleRequestSender & DaemonExecutionRequester,
+     private readonly stateDirectory: string,
+     options: DaemonControllerOptions,
+   ) {
+diff --git a/apps/cli/src/daemon/daemon-protocol-validator.test.ts b/apps/cli/src/daemon/daemon-protocol-validator.test.ts
+new file mode 100644
+index 000000000..7ff6b3c7f
+--- /dev/null
++++ b/apps/cli/src/daemon/daemon-protocol-validator.test.ts
+@@ -0,0 +1,322 @@
++import { describe, expect, it } from "vitest";
++import { DaemonProtocolValidator } from "./daemon-protocol-validator.js";
++import {
++  DAEMON_PROTOCOL_VERSION,
++  type DaemonExecuteRequest,
++  type DaemonExecutionServerFrame,
++  type DaemonLifecycleRequest,
++  type DaemonLifecycleResponse,
++} from "./daemon-protocol.js";
++
++const validator = new DaemonProtocolValidator();
++const executionRequest: DaemonExecuteRequest = {
++  kind: "execute",
++  protocolVersion: DAEMON_PROTOCOL_VERSION,
++  instanceId: "instance",
++  processToken: "token",
++  requestId: "request",
++  commandName: "version",
++  request: {
++    argv: ["--version"],
++    cwd: "/repo",
++    telemetryEnabled: false,
++    executionMode: "warm",
++  },
++};
++
++describe("DaemonProtocolValidator", () => {
++  it.each([
++    { kind: "identify", instanceId: "instance", processToken: "token" },
++    { kind: "terminate", instanceId: "instance", processToken: "token" },
++    { kind: "kill", instanceId: "instance", processToken: "token" },
++    { kind: "ping", protocolVersion: DAEMON_PROTOCOL_VERSION, instanceId: "instance" },
++    { kind: "stop", protocolVersion: DAEMON_PROTOCOL_VERSION, instanceId: "instance" },
++    executionRequest,
++    {
++      kind: "execution-status",
++      protocolVersion: DAEMON_PROTOCOL_VERSION,
++      instanceId: "instance",
++      processToken: "token",
++      requestId: "request",
++    },
++    {
++      kind: "result-fetch",
++      protocolVersion: DAEMON_PROTOCOL_VERSION,
++      instanceId: "instance",
++      processToken: "token",
++      requestId: "request",
++      offset: 0,
++    },
++    {
++      kind: "result-ack",
++      protocolVersion: DAEMON_PROTOCOL_VERSION,
++      instanceId: "instance",
++      processToken: "token",
++      requestId: "request",
++      transferId: "transfer",
++    },
++  ] as const)("accepts the exact $kind request schema", (request) => {
++    expect(validator.request(request)).toEqual(request);
++    expect(() => validator.request({ ...request, extra: true })).toThrow(/Malformed daemon/);
++  });
++
++  it.each([Number.NaN, Number.POSITIVE_INFINITY, 1.5])(
++    "rejects invalid protocol version %s",
++    (protocolVersion) => {
++      expect(() =>
++        validator.lifecycleRequest({ kind: "ping", protocolVersion, instanceId: "instance" }),
++      ).toThrow("Malformed daemon request envelope");
++    },
++  );
++
++  it.each(["/source/secret", " space", "request!", ""])(
++    "rejects invalid runtime request identifier %s",
++    (requestId) => {
++      expect(() => validator.request({ ...executionRequest, requestId })).toThrow(
++        "Malformed daemon execution request",
++      );
++    },
++  );
++
++  it.each([
++    [
++      { kind: "identify", instanceId: "instance", processToken: "token" },
++      {
++        kind: "identity",
++        instanceId: "instance",
++        processToken: "token",
++        pid: 123,
++        startedAt: 10,
++      },
++    ],
++    [
++      { kind: "terminate", instanceId: "instance", processToken: "token" },
++      { kind: "terminating", instanceId: "instance", processToken: "token" },
++    ],
++    [
++      { kind: "kill", instanceId: "instance", processToken: "token" },
++      { kind: "killing", instanceId: "instance", processToken: "token" },
++    ],
++    [
++      { kind: "ping", protocolVersion: DAEMON_PROTOCOL_VERSION, instanceId: "instance" },
++      {
++        kind: "pong",
++        protocolVersion: DAEMON_PROTOCOL_VERSION,
++        instanceId: "instance",
++        symnavVersion: "0.1.0",
++      },
++    ],
++    [
++      { kind: "stop", protocolVersion: DAEMON_PROTOCOL_VERSION, instanceId: "instance" },
++      { kind: "stopped", instanceId: "instance" },
++    ],
++  ] as const)("accepts and correlates an exact $0.kind lifecycle response", (request, response) => {
++    expect(validator.lifecycleResponse(request as DaemonLifecycleRequest, response)).toEqual(
++      response,
++    );
++    expect(() =>
++      validator.lifecycleResponse(request as DaemonLifecycleRequest, { ...response, extra: true }),
++    ).toThrow(/Malformed daemon/);
++  });
++
++  it("requires finite lifecycle metrics and consistent activity", () => {
++    const request = {
++      kind: "ping",
++      protocolVersion: DAEMON_PROTOCOL_VERSION,
++      instanceId: "instance",
++    } as const;
++    const response = {
++      kind: "pong",
++      protocolVersion: DAEMON_PROTOCOL_VERSION,
++      instanceId: "instance",
++      symnavVersion: "0.1.0",
++      startedAt: Number.POSITIVE_INFINITY,
++    } satisfies DaemonLifecycleResponse;
++    expect(() => validator.lifecycleResponse(request, response)).toThrow("Malformed daemon pong");
++
++    expect(() =>
++      validator.lifecycleResponse(request, {
++        ...response,
++        startedAt: 10,
++        activity: {
++          lifecycle: "busy",
++          pid: 123,
++          startedAt: 10,
++          startupElapsedMs: 1,
++          fileCount: 1,
++          processRssBytes: 1,
++          hardProcessRssBytes: 2,
++          workerGeneration: 1,
++          queued: 0,
++          spoolBytes: 0,
++        },
++      }),
++    ).toThrow("Malformed daemon pong");
++  });
++
++  it.each([
++    acceptedFrame(),
++    {
++      kind: "rejected",
++      instanceId: "instance",
++      processToken: "token",
++      requestId: "request",
++      code: "not-ready",
++      retrySafe: true,
++    },
++    {
++      kind: "execution-failed",
++      instanceId: "instance",
++      processToken: "token",
++      requestId: "request",
++      code: "internal",
++    },
++    {
++      kind: "result-manifest",
++      instanceId: "instance",
++      processToken: "token",
++      requestId: "request",
++      manifest: {
++        transferId: "transfer",
++        instanceId: "instance",
++        requestId: "request",
++        exitCode: 0,
++        rawBytes: 0,
++        recordCount: 0,
++        sha256: "0".repeat(64),
++      },
++    },
++    {
++      kind: "result-end",
++      instanceId: "instance",
++      processToken: "token",
++      requestId: "request",
++      transferId: "transfer",
++      rawBytes: 0,
++      recordCount: 0,
++      sha256: "0".repeat(64),
++    },
++  ] satisfies readonly DaemonExecutionServerFrame[])(
++    "accepts and correlates an exact $kind execution frame",
++    (frame) => {
++      expect(validator.executionFrame(executionRequest, frame)).toEqual(frame);
++      expect(() => validator.executionFrame(executionRequest, { ...frame, extra: true })).toThrow(
++        /Malformed daemon/,
++      );
++    },
++  );
++
++  it("rejects invalid execution codes and inconsistent retry flags", () => {
++    expect(() =>
++      validator.executionFrame(executionRequest, {
++        ...acceptedFrame(),
++        kind: "execution-failed",
++        code: "legacy-worker-failure",
++      }),
++    ).toThrow("Malformed daemon execution failure");
++    expect(() =>
++      validator.executionFrame(executionRequest, {
++        ...acceptedFrame(),
++        kind: "rejected",
++        code: "not-ready",
++        retrySafe: false,
++      }),
++    ).toThrow("Malformed daemon execution rejection");
++  });
++
++  it.each([{ instanceId: "other" }, { processToken: "other" }, { requestId: "other" }])(
++    "rejects mismatched execution coordinates %#",
++    (mismatch) => {
++      expect(() =>
++        validator.executionFrame(executionRequest, { ...acceptedFrame(), ...mismatch }),
++      ).toThrow(/does not match/);
++    },
++  );
++
++  it("rejects legacy embedded results and wrong-kind responses", () => {
++    expect(() =>
++      validator.executionFrame(executionRequest, {
++        kind: "completed",
++        instanceId: "instance",
++        processToken: "token",
++        requestId: "request",
++        result: { exitCode: 0 },
++      }),
++    ).toThrow("Malformed daemon response");
++    expect(() =>
++      validator.lifecycleResponse(
++        { kind: "ping", protocolVersion: DAEMON_PROTOCOL_VERSION, instanceId: "instance" },
++        { kind: "stopped", instanceId: "instance" },
++      ),
++    ).toThrow("Daemon pong does not match request protocol and instance");
++  });
++
++  it("validates status and acknowledgement schemas and coordinates", () => {
++    const statusRequest = {
++      kind: "execution-status",
++      protocolVersion: DAEMON_PROTOCOL_VERSION,
++      instanceId: "instance",
++      processToken: "token",
++      requestId: "request",
++    } as const;
++    expect(
++      validator.executionStatusResponse(statusRequest, {
++        kind: "execution-status",
++        instanceId: "instance",
++        processToken: "token",
++        requestId: "request",
++        status: { state: "running", startedAt: 10 },
++      }),
++    ).toMatchObject({ status: { state: "running" } });
++    expect(() =>
++      validator.executionStatusResponse(statusRequest, {
++        kind: "execution-status",
++        instanceId: "instance",
++        processToken: "token",
++        requestId: "request",
++        status: { state: "completed" },
++        extra: true,
++      }),
++    ).toThrow("Malformed daemon execution status");
++    expect(() =>
++      validator.executionStatusResponse(statusRequest, {
++        kind: "execution-status",
++        instanceId: "instance",
++        processToken: "token",
++        requestId: "request",
++        status: { state: "failed", code: "legacy" },
++      }),
++    ).toThrow("Malformed daemon execution status");
++
++    expect(() =>
++      validator.resultAcknowledgement(executionRequest, "transfer", {
++        kind: "result-acknowledged",
++        instanceId: "instance",
++        processToken: "token",
++        requestId: "request",
++        transferId: "other",
++      }),
++    ).toThrow("Invalid daemon result acknowledgement");
++    expect(() =>
++      validator.resultAcknowledgement(executionRequest, "transfer", {
++        kind: "result-acknowledged",
++        instanceId: "instance",
++        processToken: "token",
++        requestId: "request",
++        transferId: "transfer",
++        extra: true,
++      }),
++    ).toThrow("Malformed daemon result acknowledgement");
++  });
++});
++
++function acceptedFrame(): Extract<DaemonExecutionServerFrame, { kind: "accepted" }> {
++  return {
++    kind: "accepted",
++    instanceId: "instance",
++    processToken: "token",
++    requestId: "request",
++    acceptedAt: 1,
++    queuePosition: 0,
++  };
++}
+diff --git a/apps/cli/src/daemon/daemon-protocol-validator.ts b/apps/cli/src/daemon/daemon-protocol-validator.ts
+new file mode 100644
+index 000000000..e8683a9ad
+--- /dev/null
++++ b/apps/cli/src/daemon/daemon-protocol-validator.ts
+@@ -0,0 +1,672 @@
++import {
++  DaemonAdmissionRejections,
++  DaemonExecutionFailures,
++  type DaemonRejectedExecutionFrame,
++} from "@symnav/daemon";
++import type { CompletionSpoolManifest } from "./completion-spool.js";
++import type {
++  DaemonExecuteRequest,
++  DaemonExecutionServerFrame,
++  DaemonExecutionStatus,
++  DaemonExecutionStatusRequest,
++  DaemonExecutionStatusResponse,
++  DaemonLifecycleRequest,
++  DaemonLifecycleResponse,
++  DaemonRequest,
++  DaemonResponse,
++} from "./daemon-protocol.js";
++import { DaemonRuntimeValues } from "./daemon-runtime-values.js";
++
++export class DaemonProtocolError extends Error {
++  constructor(
++    readonly code: "authentication" | "corrupt" | "incompatible",
++    message: string,
++    readonly authenticatedInstanceId?: string,
++  ) {
++    super(message);
++  }
++}
++
++export class DaemonProtocolValidator {
++  lifecycleRequest(value: unknown): DaemonLifecycleRequest {
++    const request = this.request(value);
++    if (
++      request.kind !== "identify" &&
++      request.kind !== "terminate" &&
++      request.kind !== "kill" &&
++      request.kind !== "ping" &&
++      request.kind !== "stop"
++    ) {
++      throw new Error("Malformed daemon lifecycle request");
++    }
++    return request;
++  }
++
++  request(value: unknown): DaemonRequest {
++    if (!DaemonProtocolValidator.isRecord(value) || typeof value.kind !== "string") {
++      throw new Error("Malformed daemon request");
++    }
++    if (value.kind === "identify" || value.kind === "terminate" || value.kind === "kill") {
++      if (
++        !DaemonProtocolValidator.hasExactKeys(value, ["kind", "instanceId", "processToken"]) ||
++        !DaemonProtocolValidator.isRuntimeString(value.instanceId) ||
++        !DaemonProtocolValidator.isRuntimeString(value.processToken)
++      ) {
++        throw new Error("Malformed daemon identity request");
++      }
++      return value as unknown as DaemonRequest;
++    }
++    if (
++      !DaemonProtocolValidator.isProtocolVersion(value.protocolVersion) ||
++      !DaemonProtocolValidator.isRuntimeString(value.instanceId)
++    ) {
++      throw new Error("Malformed daemon request envelope");
++    }
++    if (value.kind === "ping" || value.kind === "stop") {
++      if (!DaemonProtocolValidator.hasExactKeys(value, ["kind", "protocolVersion", "instanceId"])) {
++        throw new Error("Malformed daemon request envelope");
++      }
++      return value as unknown as DaemonRequest;
++    }
++    if (!DaemonProtocolValidator.isExecutionRequestEnvelope(value)) {
++      throw new Error("Malformed daemon execution request");
++    }
++    return value as unknown as DaemonRequest;
++  }
++
++  lifecycleResponse(request: DaemonLifecycleRequest, value: unknown): DaemonLifecycleResponse {
++    const response = this.response(value);
++    if (request.kind === "identify") {
++      if (response.kind !== "identity") {
++        throw new DaemonProtocolError("corrupt", "Daemon returned a non-identity response");
++      }
++      if (
++        response.instanceId !== request.instanceId ||
++        response.processToken !== request.processToken
++      ) {
++        throw new DaemonProtocolError(
++          "authentication",
++          "Daemon identity does not match process instance",
++          response.instanceId === request.instanceId ? response.instanceId : undefined,
++        );
++      }
++      return response;
++    }
++    if (request.kind === "terminate" || request.kind === "kill") {
++      const expectedKind = request.kind === "terminate" ? "terminating" : "killing";
++      if (response.kind !== expectedKind) {
++        throw new DaemonProtocolError("corrupt", "Daemon returned a non-termination response");
++      }
++      if (
++        response.instanceId !== request.instanceId ||
++        response.processToken !== request.processToken
++      ) {
++        throw new DaemonProtocolError(
++          "authentication",
++          "Daemon termination does not match process instance",
++          response.instanceId === request.instanceId ? response.instanceId : undefined,
++        );
++      }
++      return response;
++    }
++    if (request.kind === "ping") {
++      if (response.kind !== "pong") {
++        throw new DaemonProtocolError(
++          "corrupt",
++          "Daemon pong does not match request protocol and instance",
++        );
++      }
++      if (response.instanceId !== request.instanceId) {
++        throw new DaemonProtocolError(
++          "authentication",
++          "Daemon pong does not match request instance",
++        );
++      }
++      if (response.protocolVersion !== request.protocolVersion) {
++        throw new DaemonProtocolError(
++          "incompatible",
++          "Daemon pong does not match request protocol",
++          response.instanceId,
++        );
++      }
++      return response;
++    }
++    if (response.kind !== "stopped") {
++      throw new DaemonProtocolError("corrupt", "Daemon returned a non-stop response");
++    }
++    if (response.instanceId !== request.instanceId) {
++      throw new DaemonProtocolError(
++        "authentication",
++        "Daemon stop response does not match instance",
++      );
++    }
++    return response;
++  }
++
++  executionStatusResponse(
++    request: DaemonExecutionStatusRequest,
++    value: unknown,
++  ): DaemonExecutionStatusResponse {
++    const response = this.response(value);
++    if (response.kind !== "execution-status") {
++      throw new DaemonProtocolError("corrupt", "Daemon returned a non-status response");
++    }
++    this.assertExecutionCoordinates(request, response);
++    return response;
++  }
++
++  executionFrame(
++    request: Pick<DaemonExecuteRequest, "instanceId" | "processToken" | "requestId">,
++    value: unknown,
++  ): DaemonExecutionServerFrame {
++    const response = this.response(value);
++    if (
++      response.kind !== "accepted" &&
++      response.kind !== "rejected" &&
++      response.kind !== "result-manifest" &&
++      response.kind !== "result-end" &&
++      response.kind !== "execution-failed"
++    ) {
++      throw new DaemonProtocolError("corrupt", "Daemon returned a non-execution frame");
++    }
++    this.assertExecutionCoordinates(request, response);
++    return response;
++  }
++
++  resultAcknowledgement(
++    request: Pick<DaemonExecuteRequest, "instanceId" | "processToken" | "requestId">,
++    transferId: string,
++    value: unknown,
++  ): void {
++    const response = this.response(value);
++    if (
++      response.kind !== "result-acknowledged" ||
++      response.instanceId !== request.instanceId ||
++      response.processToken !== request.processToken ||
++      response.requestId !== request.requestId ||
++      response.transferId !== transferId
++    ) {
++      throw new Error("Invalid daemon result acknowledgement");
++    }
++  }
++
++  private response(value: unknown): DaemonResponse {
++    if (!DaemonProtocolValidator.isRecord(value) || typeof value.kind !== "string") {
++      throw new Error("Malformed daemon response");
++    }
++    if (value.kind === "pong") {
++      this.assertPong(value);
++      return value as unknown as DaemonResponse;
++    }
++    if (value.kind === "identity") {
++      if (
++        !DaemonProtocolValidator.hasExactKeys(value, [
++          "kind",
++          "instanceId",
++          "processToken",
++          "pid",
++          "startedAt",
++        ]) ||
++        !DaemonProtocolValidator.isRuntimeString(value.instanceId) ||
++        !DaemonProtocolValidator.isRuntimeString(value.processToken) ||
++        !DaemonProtocolValidator.isPositiveInteger(value.pid) ||
++        !DaemonProtocolValidator.isMetric(value.startedAt)
++      ) {
++        throw new Error("Malformed daemon identity");
++      }
++      return value as unknown as DaemonResponse;
++    }
++    if (value.kind === "terminating" || value.kind === "killing") {
++      if (
++        !DaemonProtocolValidator.hasExactKeys(value, ["kind", "instanceId", "processToken"]) ||
++        !DaemonProtocolValidator.isRuntimeString(value.instanceId) ||
++        !DaemonProtocolValidator.isRuntimeString(value.processToken)
++      ) {
++        throw new Error("Malformed daemon termination response");
++      }
++      return value as unknown as DaemonResponse;
++    }
++    if (value.kind === "stopped") {
++      if (
++        !DaemonProtocolValidator.hasExactKeys(value, ["kind", "instanceId"]) ||
++        !DaemonProtocolValidator.isRuntimeString(value.instanceId)
++      ) {
++        throw new Error("Malformed daemon stop response");
++      }
++      return value as unknown as DaemonResponse;
++    }
++    if (
++      value.kind === "accepted" ||
++      value.kind === "rejected" ||
++      value.kind === "result-manifest" ||
++      value.kind === "result-end" ||
++      value.kind === "execution-failed"
++    ) {
++      this.assertExecutionFrame(value);
++      return value as unknown as DaemonResponse;
++    }
++    if (value.kind === "execution-status") {
++      if (
++        !DaemonProtocolValidator.hasExactKeys(value, [
++          "kind",
++          "instanceId",
++          "processToken",
++          "requestId",
++          "status",
++        ]) ||
++        !DaemonProtocolValidator.isRuntimeString(value.instanceId) ||
++        !DaemonProtocolValidator.isRuntimeString(value.processToken) ||
++        !DaemonRuntimeValues.isRequestId(value.requestId) ||
++        !DaemonProtocolValidator.isExecutionStatus(value.status)
++      ) {
++        throw new Error("Malformed daemon execution status");
++      }
++      return value as unknown as DaemonResponse;
++    }
++    if (value.kind === "result-acknowledged") {
++      if (
++        !DaemonProtocolValidator.hasExactKeys(value, [
++          "kind",
++          "instanceId",
++          "processToken",
++          "requestId",
++          "transferId",
++        ]) ||
++        !DaemonProtocolValidator.isRuntimeString(value.instanceId) ||
++        !DaemonProtocolValidator.isRuntimeString(value.processToken) ||
++        !DaemonRuntimeValues.isRequestId(value.requestId) ||
++        !DaemonProtocolValidator.isRuntimeString(value.transferId)
++      ) {
++        throw new Error("Malformed daemon result acknowledgement");
++      }
++      return value as unknown as DaemonResponse;
++    }
++    throw new Error("Malformed daemon response");
++  }
++
++  private assertExecutionCoordinates(
++    request: Pick<DaemonExecuteRequest, "instanceId" | "processToken" | "requestId">,
++    response: Pick<DaemonExecutionServerFrame, "instanceId" | "processToken" | "requestId">,
++  ): void {
++    if (response.instanceId !== request.instanceId) {
++      throw new DaemonProtocolError("authentication", "Daemon execution instance does not match");
++    }
++    if (response.processToken !== request.processToken) {
++      throw new DaemonProtocolError(
++        "authentication",
++        "Daemon execution process token does not match",
++        response.instanceId,
++      );
++    }
++    if (response.requestId !== request.requestId) {
++      throw new DaemonProtocolError(
++        "corrupt",
++        "Daemon execution request identifier does not match",
++        response.instanceId,
++      );
++    }
++  }
++
++  private assertExecutionFrame(value: Record<string, unknown>): void {
++    if (
++      !DaemonProtocolValidator.isRuntimeString(value.instanceId) ||
++      !DaemonProtocolValidator.isRuntimeString(value.processToken) ||
++      !DaemonRuntimeValues.isRequestId(value.requestId)
++    ) {
++      throw new Error("Malformed daemon execution frame");
++    }
++    if (value.kind === "accepted") {
++      if (
++        !DaemonProtocolValidator.hasExactKeys(value, [
++          "kind",
++          "instanceId",
++          "processToken",
++          "requestId",
++          "acceptedAt",
++          "queuePosition",
++        ]) ||
++        !DaemonProtocolValidator.isMetric(value.acceptedAt) ||
++        !DaemonProtocolValidator.isCount(value.queuePosition)
++      ) {
++        throw new Error("Malformed daemon acceptance");
++      }
++      return;
++    }
++    if (value.kind === "rejected") {
++      if (
++        !DaemonProtocolValidator.hasExactKeys(value, [
++          "kind",
++          "instanceId",
++          "processToken",
++          "requestId",
++          "code",
++          "retrySafe",
++        ]) ||
++        typeof value.retrySafe !== "boolean"
++      ) {
++        throw new Error("Malformed daemon execution rejection");
++      }
++      try {
++        DaemonAdmissionRejections.assertConsistent(
++          value as unknown as DaemonRejectedExecutionFrame,
++        );
++      } catch {
++        throw new Error("Malformed daemon execution rejection");
++      }
++      return;
++    }
++    if (value.kind === "result-manifest") {
++      if (
++        !DaemonProtocolValidator.hasExactKeys(value, [
++          "kind",
++          "instanceId",
++          "processToken",
++          "requestId",
++          "manifest",
++        ]) ||
++        !DaemonProtocolValidator.isCompletionManifest(value.manifest) ||
++        value.manifest.instanceId !== value.instanceId ||
++        value.manifest.requestId !== value.requestId
++      ) {
++        throw new Error("Malformed daemon result manifest");
++      }
++      return;
++    }
++    if (value.kind === "result-end") {
++      if (
++        !DaemonProtocolValidator.hasExactKeys(value, [
++          "kind",
++          "instanceId",
++          "processToken",
++          "requestId",
++          "transferId",
++          "rawBytes",
++          "recordCount",
++          "sha256",
++        ]) ||
++        !DaemonProtocolValidator.isRuntimeString(value.transferId) ||
++        !DaemonProtocolValidator.isCount(value.rawBytes) ||
++        !DaemonProtocolValidator.isCount(value.recordCount) ||
++        !DaemonProtocolValidator.isDigest(value.sha256)
++      ) {
++        throw new Error("Malformed daemon result end");
++      }
++      return;
++    }
++    if (
++      !DaemonProtocolValidator.hasExactKeys(value, [
++        "kind",
++        "instanceId",
++        "processToken",
++        "requestId",
++        "code",
++      ]) ||
++      !DaemonExecutionFailures.isCode(value.code)
++    ) {
++      throw new Error("Malformed daemon execution failure");
++    }
++  }
++
++  private assertPong(value: Record<string, unknown>): void {
++    const expectedKeys = ["kind", "protocolVersion", "instanceId", "symnavVersion"];
++    for (const optionalKey of [
++      "state",
++      "startedAt",
++      "fileCount",
++      "memoryBytes",
++      "lastNavigationAt",
++      "currentCommand",
++      "currentCommandElapsedMs",
++      "queued",
++      "activity",
++    ]) {
++      if (value[optionalKey] !== undefined) expectedKeys.push(optionalKey);
++    }
++    if (
++      !DaemonProtocolValidator.hasExactKeys(value, expectedKeys) ||
++      !DaemonProtocolValidator.isProtocolVersion(value.protocolVersion) ||
++      !DaemonProtocolValidator.isRuntimeString(value.instanceId) ||
++      !DaemonProtocolValidator.isRuntimeString(value.symnavVersion) ||
++      (value.state !== undefined &&
++        value.state !== "starting" &&
++        value.state !== "ready" &&
++        value.state !== "busy") ||
++      (value.startedAt !== undefined && !DaemonProtocolValidator.isMetric(value.startedAt)) ||
++      (value.fileCount !== undefined && !DaemonProtocolValidator.isCount(value.fileCount)) ||
++      (value.memoryBytes !== undefined && !DaemonProtocolValidator.isCount(value.memoryBytes)) ||
++      (value.lastNavigationAt !== undefined &&
++        !DaemonProtocolValidator.isMetric(value.lastNavigationAt)) ||
++      (value.currentCommand !== undefined &&
++        !DaemonRuntimeValues.isCommandName(value.currentCommand)) ||
++      (value.currentCommandElapsedMs !== undefined &&
++        !DaemonProtocolValidator.isMetric(value.currentCommandElapsedMs)) ||
++      (value.queued !== undefined && !DaemonProtocolValidator.isCount(value.queued)) ||
++      (value.activity !== undefined && !DaemonProtocolValidator.isActivitySnapshot(value.activity))
++    ) {
++      throw new Error("Malformed daemon pong");
++    }
++  }
++
++  private static isExecutionRequestEnvelope(value: Record<string, unknown>): boolean {
++    if (
++      (value.kind !== "execute" &&
++        value.kind !== "execution-status" &&
++        value.kind !== "result-fetch" &&
++        value.kind !== "result-ack") ||
++      !DaemonProtocolValidator.isRuntimeString(value.processToken) ||
++      !DaemonRuntimeValues.isRequestId(value.requestId)
++    ) {
++      return false;
++    }
++    if (value.kind === "execute") {
++      return (
++        DaemonProtocolValidator.hasExactKeys(value, [
++          "kind",
++          "protocolVersion",
++          "instanceId",
++          "processToken",
++          "requestId",
++          "commandName",
++          "request",
++        ]) &&
++        DaemonRuntimeValues.isCommandName(value.commandName) &&
++        DaemonProtocolValidator.isExecutorRequest(value.request)
++      );
++    }
++    if (value.kind === "result-fetch") {
++      return (
++        DaemonProtocolValidator.hasExactKeys(value, [
++          "kind",
++          "protocolVersion",
++          "instanceId",
++          "processToken",
++          "requestId",
++          "offset",
++        ]) && DaemonProtocolValidator.isCount(value.offset)
++      );
++    }
++    if (value.kind === "result-ack") {
++      return (
++        DaemonProtocolValidator.hasExactKeys(value, [
++          "kind",
++          "protocolVersion",
++          "instanceId",
++          "processToken",
++          "requestId",
++          "transferId",
++        ]) && DaemonProtocolValidator.isRuntimeString(value.transferId)
++      );
++    }
++    return DaemonProtocolValidator.hasExactKeys(value, [
++      "kind",
++      "protocolVersion",
++      "instanceId",
++      "processToken",
++      "requestId",
++    ]);
++  }
++
++  private static isExecutorRequest(value: unknown): boolean {
++    if (!DaemonProtocolValidator.isRecord(value)) return false;
++    return (
++      DaemonProtocolValidator.hasExactKeys(value, [
++        "argv",
++        "cwd",
++        "telemetryEnabled",
++        "executionMode",
++      ]) &&
++      Array.isArray(value.argv) &&
++      value.argv.every((argument) => typeof argument === "string") &&
++      typeof value.cwd === "string" &&
++      value.cwd.length > 0 &&
++      typeof value.telemetryEnabled === "boolean" &&
++      (value.executionMode === "cold" ||
++        value.executionMode === "warm" ||
++        value.executionMode === "fallback")
++    );
++  }
++
++  private static isCompletionManifest(value: unknown): value is CompletionSpoolManifest {
++    return (
++      DaemonProtocolValidator.isRecord(value) &&
++      DaemonProtocolValidator.hasExactKeys(value, [
++        "transferId",
++        "requestId",
++        "instanceId",
++        "exitCode",
++        "rawBytes",
++        "recordCount",
++        "sha256",
++      ]) &&
++      DaemonProtocolValidator.isRuntimeString(value.transferId) &&
++      DaemonRuntimeValues.isRequestId(value.requestId) &&
++      DaemonProtocolValidator.isRuntimeString(value.instanceId) &&
++      DaemonProtocolValidator.isCount(value.exitCode) &&
++      DaemonProtocolValidator.isCount(value.rawBytes) &&
++      DaemonProtocolValidator.isCount(value.recordCount) &&
++      DaemonProtocolValidator.isDigest(value.sha256)
++    );
++  }
++
++  private static isExecutionStatus(value: unknown): value is DaemonExecutionStatus {
++    if (!DaemonProtocolValidator.isRecord(value)) return false;
++    if (value.state === "unknown" || value.state === "completed") {
++      return DaemonProtocolValidator.hasExactKeys(value, ["state"]);
++    }
++    if (value.state === "queued") {
++      return (
++        DaemonProtocolValidator.hasExactKeys(value, ["state", "queuePosition"]) &&
++        DaemonProtocolValidator.isCount(value.queuePosition)
++      );
++    }
++    if (value.state === "running") {
++      return (
++        DaemonProtocolValidator.hasExactKeys(value, ["state", "startedAt"]) &&
++        DaemonProtocolValidator.isMetric(value.startedAt)
++      );
++    }
++    return (
++      value.state === "failed" &&
++      DaemonProtocolValidator.hasExactKeys(value, ["state", "code"]) &&
++      DaemonExecutionFailures.isCode(value.code)
++    );
++  }
++
++  private static isActivitySnapshot(value: unknown): boolean {
++    if (!DaemonProtocolValidator.isRecord(value)) return false;
++    const lifecycle = value.lifecycle;
++    const current = value.current;
++    const expectedKeys = [
++      "lifecycle",
++      "pid",
++      "startedAt",
++      "startupElapsedMs",
++      "processRssBytes",
++      "hardProcessRssBytes",
++      "workerGeneration",
++      "queued",
++      "spoolBytes",
++    ];
++    if (value.workerHeapUsedBytes !== undefined) expectedKeys.push("workerHeapUsedBytes");
++    if (value.lastCompletedAgoMs !== undefined) expectedKeys.push("lastCompletedAgoMs");
++    if (
++      lifecycle === "ready" ||
++      lifecycle === "busy" ||
++      ((lifecycle === "recovering" || lifecycle === "draining") && value.fileCount !== undefined)
++    ) {
++      expectedKeys.push("fileCount");
++    }
++    if (lifecycle === "busy") expectedKeys.push("current");
++    if (lifecycle === "recovering") expectedKeys.push("recoveryDetail");
++    return (
++      (lifecycle === "starting" ||
++        lifecycle === "ready" ||
++        lifecycle === "busy" ||
++        lifecycle === "recovering" ||
++        lifecycle === "draining") &&
++      DaemonProtocolValidator.hasExactKeys(value, expectedKeys) &&
++      (lifecycle !== "recovering" ||
++        value.recoveryDetail === "resource-pressure" ||
++        value.recoveryDetail === "worker-replacement") &&
++      DaemonProtocolValidator.isPositiveInteger(value.pid) &&
++      DaemonProtocolValidator.isMetric(value.startedAt) &&
++      DaemonProtocolValidator.isMetric(value.startupElapsedMs) &&
++      (lifecycle === "ready" || lifecycle === "busy"
++        ? DaemonProtocolValidator.isCount(value.fileCount)
++        : lifecycle === "starting"
++          ? value.fileCount === undefined
++          : value.fileCount === undefined || DaemonProtocolValidator.isCount(value.fileCount)) &&
++      DaemonProtocolValidator.isCount(value.processRssBytes) &&
++      DaemonProtocolValidator.isCount(value.hardProcessRssBytes) &&
++      (value.workerHeapUsedBytes === undefined ||
++        DaemonProtocolValidator.isCount(value.workerHeapUsedBytes)) &&
++      DaemonProtocolValidator.isCount(value.workerGeneration) &&
++      (lifecycle !== "busy" ||
++        (DaemonProtocolValidator.isRecord(current) &&
++          DaemonProtocolValidator.hasExactKeys(current, ["requestId", "command", "elapsedMs"]) &&
++          DaemonRuntimeValues.isRequestId(current.requestId) &&
++          DaemonRuntimeValues.isCommandName(current.command) &&
++          DaemonProtocolValidator.isMetric(current.elapsedMs))) &&
++      DaemonProtocolValidator.isCount(value.queued) &&
++      (value.lastCompletedAgoMs === undefined ||
++        DaemonProtocolValidator.isMetric(value.lastCompletedAgoMs)) &&
++      DaemonProtocolValidator.isCount(value.spoolBytes)
++    );
++  }
++
++  private static isProtocolVersion(value: unknown): boolean {
++    return Number.isSafeInteger(value) && Number(value) >= 0;
++  }
++
++  private static isCount(value: unknown): boolean {
++    return Number.isSafeInteger(value) && Number(value) >= 0;
++  }
++
++  private static isPositiveInteger(value: unknown): boolean {
++    return Number.isSafeInteger(value) && Number(value) > 0;
++  }
++
++  private static isMetric(value: unknown): boolean {
++    return typeof value === "number" && Number.isFinite(value) && value >= 0;
++  }
++
++  private static isRuntimeString(value: unknown): value is string {
++    return typeof value === "string" && value.length > 0;
++  }
++
++  private static isDigest(value: unknown): value is string {
++    return typeof value === "string" && /^[a-f\d]{64}$/.test(value);
++  }
++
++  private static isRecord(value: unknown): value is Record<string, unknown> {
++    return typeof value === "object" && value !== null && !Array.isArray(value);
++  }
++
++  private static hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
++    const actual = Object.keys(value).sort();
++    const expected = [...keys].sort();
++    return (
++      actual.length === expected.length && actual.every((key, index) => key === expected[index])
++    );
++  }
++}
+diff --git a/apps/cli/src/daemon/daemon-record-observer.test.ts b/apps/cli/src/daemon/daemon-record-observer.test.ts
+index fe2b1ce13..076df81ba 100644
+--- a/apps/cli/src/daemon/daemon-record-observer.test.ts
++++ b/apps/cli/src/daemon/daemon-record-observer.test.ts
+@@ -8,7 +8,7 @@ import {
+   type DaemonResponse,
+ } from "./daemon-protocol.js";
+ import { DaemonRecordObserver } from "./daemon-record-observer.js";
+-import { DaemonTransportError, type LocalDaemonTransport } from "./local-daemon-transport.js";
++import { DaemonTransportError } from "./local-daemon-transport.js";
+ 
+ describe("DaemonRecordObserver", () => {
+   it("reports an unpublished starting record without probing its endpoint", async () => {
+@@ -241,10 +241,7 @@ class ObserverTerminator implements DaemonProcessTerminator {
+ }
+ 
+ function observer(transport: ObserverTransport, alive: readonly number[]): DaemonRecordObserver {
+-  return new DaemonRecordObserver(
+-    transport as unknown as LocalDaemonTransport,
+-    new ObserverTerminator(alive),
+-  );
++  return new DaemonRecordObserver(transport, new ObserverTerminator(alive));
+ }
+ 
+ function identityResponse(): DaemonResponse {
+diff --git a/apps/cli/src/daemon/daemon-record-observer.ts b/apps/cli/src/daemon/daemon-record-observer.ts
+index bab0880e0..c3399442e 100644
+--- a/apps/cli/src/daemon/daemon-record-observer.ts
++++ b/apps/cli/src/daemon/daemon-record-observer.ts
+@@ -1,6 +1,7 @@
+ import type { DaemonProcessTerminator } from "./daemon-process-launcher.js";
+ import { DAEMON_PROTOCOL_VERSION, type DaemonPong, type DaemonRecord } from "./daemon-protocol.js";
+-import { DaemonTransportError, type LocalDaemonTransport } from "./local-daemon-transport.js";
++import type { DaemonLifecycleRequestSender } from "./daemon-transport.js";
++import { DaemonTransportError } from "./local-daemon-transport.js";
+ 
+ export interface DaemonIdentityEvidence {
+   readonly instanceId: string;
+@@ -41,7 +42,7 @@ export type DaemonIdentityObservation =
+ 
+ export class DaemonRecordObserver {
+   constructor(
+-    private readonly transport: LocalDaemonTransport,
++    private readonly transport: DaemonLifecycleRequestSender,
+     private readonly processTerminator: DaemonProcessTerminator,
+     _now: () => number = Date.now,
+   ) {}
+diff --git a/apps/cli/src/daemon/daemon-registry.test.ts b/apps/cli/src/daemon/daemon-registry.test.ts
+index 499a925be..4fad8758b 100644
+--- a/apps/cli/src/daemon/daemon-registry.test.ts
++++ b/apps/cli/src/daemon/daemon-registry.test.ts
+@@ -24,7 +24,6 @@ import {
+   type DaemonRequest,
+   type DaemonResponse,
+ } from "./daemon-protocol.js";
+-import type { LocalDaemonTransport } from "./local-daemon-transport.js";
+ 
+ interface StartupMutationLeaseTestAccess {
+   beginStartupMutation(
+@@ -559,12 +558,10 @@ describe("daemon registry", () => {
+     const transport = new ControllerTransport(registry);
+     transport.live.add("beta");
+     const terminator = new ControllerTerminator([301, 302]);
+-    const controller = new DaemonController(
+-      registry,
+-      transport as unknown as LocalDaemonTransport,
+-      stateDirectory,
+-      { now: () => 100, processTerminator: terminator },
+-    );
++    const controller = new DaemonController(registry, transport, stateDirectory, {
++      now: () => 100,
++      processTerminator: terminator,
++    });
+ 
+     await expect(controller.status()).resolves.toEqual([
+       {
+@@ -593,7 +590,7 @@ describe("daemon registry", () => {
+     registry.write({ ...record(identity, "ready", "stale"), pid: 401 });
+     const controller = new DaemonController(
+       registry,
+-      new ControllerTransport(registry) as unknown as LocalDaemonTransport,
++      new ControllerTransport(registry),
+       stateDirectory,
+       { processTerminator: new ControllerTerminator([401]) },
+     );
+@@ -622,12 +619,11 @@ describe("daemon registry", () => {
+       registry.write({ ...record(identity, "ready", "replacement"), pid: 502 });
+     };
+     const terminator = new ControllerTerminator([501, 502]);
+-    const controller = new DaemonController(
+-      registry,
+-      transport as unknown as LocalDaemonTransport,
+-      stateDirectory,
+-      { processTerminator: terminator, stopTimeoutMs: 5, pollIntervalMs: 1 },
+-    );
++    const controller = new DaemonController(registry, transport, stateDirectory, {
++      processTerminator: terminator,
++      stopTimeoutMs: 5,
++      pollIntervalMs: 1,
++    });
+ 
+     await expect(controller.stop("/repo")).resolves.toEqual({
+       status: "stopped",
+@@ -650,12 +646,11 @@ describe("daemon registry", () => {
+       transport.live.delete("stuck");
+       terminator.alive.delete(601);
+     };
+-    const controller = new DaemonController(
+-      registry,
+-      transport as unknown as LocalDaemonTransport,
+-      stateDirectory,
+-      { processTerminator: terminator, stopTimeoutMs: 20, pollIntervalMs: 1 },
+-    );
++    const controller = new DaemonController(registry, transport, stateDirectory, {
++      processTerminator: terminator,
++      stopTimeoutMs: 20,
++      pollIntervalMs: 1,
++    });
+ 
+     await expect(controller.stop("/repo")).resolves.toEqual({
+       status: "killed",
+@@ -680,12 +675,11 @@ describe("daemon registry", () => {
+       throw new Error("identity changed");
+     };
+     const terminator = new ControllerTerminator([602]);
+-    const controller = new DaemonController(
+-      registry,
+-      transport as unknown as LocalDaemonTransport,
+-      stateDirectory,
+-      { processTerminator: terminator, stopTimeoutMs: 0, pollIntervalMs: 1 },
+-    );
++    const controller = new DaemonController(registry, transport, stateDirectory, {
++      processTerminator: terminator,
++      stopTimeoutMs: 0,
++      pollIntervalMs: 1,
++    });
+ 
+     await expect(controller.stop("/repo")).rejects.toThrow("authenticated kill");
+     expect(registry.readStoredInstance(identity, "replacement")).toBeDefined();
+@@ -697,7 +691,7 @@ describe("daemon registry", () => {
+     const registry = new DaemonRegistry(join(stateDirectory, "daemons"));
+     const controller = new DaemonController(
+       registry,
+-      new ControllerTransport(registry) as unknown as LocalDaemonTransport,
++      new ControllerTransport(registry),
+       stateDirectory,
+     );
+ 
+@@ -714,7 +708,7 @@ describe("daemon registry", () => {
+     registry.write({ ...record(identity, "ready", "stale-stop"), pid: 999_999_999 });
+     const controller = new DaemonController(
+       registry,
+-      new ControllerTransport(registry) as unknown as LocalDaemonTransport,
++      new ControllerTransport(registry),
+       stateDirectory,
+     );
+ 
+@@ -732,12 +726,11 @@ describe("daemon registry", () => {
+     registry.write({ ...record(identity, "ready", "silent-stop"), pid: 701 });
+     const transport = new ControllerTransport(registry);
+     const terminator = new ControllerTerminator([701]);
+-    const controller = new DaemonController(
+-      registry,
+-      transport as unknown as LocalDaemonTransport,
+-      stateDirectory,
+-      { processTerminator: terminator, stopTimeoutMs: 5, pollIntervalMs: 1 },
+-    );
++    const controller = new DaemonController(registry, transport, stateDirectory, {
++      processTerminator: terminator,
++      stopTimeoutMs: 5,
++      pollIntervalMs: 1,
++    });
+ 
+     await expect(controller.stop("/repo")).rejects.toThrow(/unresponsive/i);
+     expect(registry.readStoredInstance(identity, "silent-stop")).toBeDefined();
+@@ -754,6 +747,10 @@ class ControllerTransport {
+ 
+   constructor(private readonly registry: DaemonRegistry) {}
+ 
++  execute(): Promise<never> {
++    return Promise.reject(new Error("Registry observation must not execute"));
++  }
++
+   async request(_endpoint: string, request: DaemonRequest): Promise<DaemonResponse> {
+     const records = this.registry.list();
+     const record = records.find((candidate) => candidate.instanceId === request.instanceId);
+diff --git a/apps/cli/src/daemon/daemon-result-chunk-codec.test.ts b/apps/cli/src/daemon/daemon-result-chunk-codec.test.ts
+index 517c85718..09f765ed3 100644
+--- a/apps/cli/src/daemon/daemon-result-chunk-codec.test.ts
++++ b/apps/cli/src/daemon/daemon-result-chunk-codec.test.ts
+@@ -1,8 +1,13 @@
+ import { describe, expect, it } from "vitest";
+ import type { DaemonResultChunk } from "./daemon-protocol.js";
+-import { DaemonResultChunkCodec, DaemonTransferFrameDecoder } from "./daemon-result-chunk-codec.js";
++import { DaemonWireCodec } from "./daemon-wire-codec.js";
+ 
+ describe("DaemonResultChunkCodec", () => {
++  const codec = new DaemonWireCodec({
++    maximumJsonPayloadBytes: 8 * 1024 * 1024,
++    maximumExecutionControlPayloadBytes: 256 * 1024,
++    maximumChunkRawBytes: 64 * 1024,
++  });
+   const chunk: DaemonResultChunk = {
+     transferId: "transfer-1",
+     requestId: "request-1",
+@@ -17,8 +22,8 @@ describe("DaemonResultChunkCodec", () => {
+     const control = Buffer.alloc(4 + controlPayload.byteLength);
+     control.writeUInt32BE(controlPayload.byteLength);
+     controlPayload.copy(control, 4);
+-    const encoded = Buffer.concat([control, DaemonResultChunkCodec.encode(chunk, 64 * 1024)]);
+-    const decoder = new DaemonTransferFrameDecoder(256 * 1024, 64 * 1024);
++    const encoded = Buffer.concat([control, codec.encodeServerMessage(chunk)]);
++    const decoder = codec.transferDecoder();
+     const decoded = [];
+     for (let offset = 0; offset < encoded.byteLength; offset += 7) {
+       decoded.push(...decoder.append(encoded.subarray(offset, offset + 7)));
+@@ -42,8 +47,8 @@ describe("DaemonResultChunkCodec", () => {
+       return corrupt;
+     },
+   ])("rejects truncated, wrong-length, or corrupt binary transfer %#", (corrupt) => {
+-    const decoder = new DaemonTransferFrameDecoder(256 * 1024, 64 * 1024);
+-    const encoded = corrupt(DaemonResultChunkCodec.encode(chunk, 64 * 1024));
++    const decoder = codec.transferDecoder();
++    const encoded = corrupt(Buffer.from(codec.encodeServerMessage(chunk)));
+     expect(() => {
+       decoder.append(encoded);
+       decoder.assertComplete();
+diff --git a/apps/cli/src/daemon/daemon-result-chunk-codec.ts b/apps/cli/src/daemon/daemon-result-chunk-codec.ts
+deleted file mode 100644
+index 5eaab5594..000000000
+--- a/apps/cli/src/daemon/daemon-result-chunk-codec.ts
++++ /dev/null
+@@ -1,170 +0,0 @@
+-import { createHash } from "node:crypto";
+-import type { DaemonResultChunk } from "./daemon-protocol.js";
+-
+-const BINARY_FRAME_FLAG = 0x80000000;
+-const FRAME_LENGTH_MASK = 0x7fffffff;
+-const BINARY_HEADER_LENGTH_BYTES = 4;
+-
+-interface DaemonResultChunkHeader {
+-  readonly transferId: string;
+-  readonly requestId: string;
+-  readonly offset: number;
+-  readonly sequence: number;
+-  readonly stream: "stdout" | "stderr";
+-  readonly payloadLength: number;
+-  readonly sha256: string;
+-}
+-
+-export class DaemonResultChunkCodec {
+-  static encode(chunk: DaemonResultChunk, maximumChunkRawBytes: number): Buffer {
+-    DaemonResultChunkCodec.assertChunk(chunk, maximumChunkRawBytes);
+-    const header: DaemonResultChunkHeader = {
+-      transferId: chunk.transferId,
+-      requestId: chunk.requestId,
+-      offset: chunk.offset,
+-      sequence: chunk.sequence,
+-      stream: chunk.stream,
+-      payloadLength: chunk.bytes.byteLength,
+-      sha256: createHash("sha256").update(chunk.bytes).digest("hex"),
+-    };
+-    const headerBytes = Buffer.from(JSON.stringify(header));
+-    const payloadLength =
+-      BINARY_HEADER_LENGTH_BYTES + headerBytes.byteLength + chunk.bytes.byteLength;
+-    const encoded = Buffer.alloc(4 + payloadLength);
+-    encoded.writeUInt32BE((BINARY_FRAME_FLAG | payloadLength) >>> 0, 0);
+-    encoded.writeUInt32BE(headerBytes.byteLength, 4);
+-    headerBytes.copy(encoded, 8);
+-    Buffer.from(chunk.bytes).copy(encoded, 8 + headerBytes.byteLength);
+-    return encoded;
+-  }
+-
+-  static decode(payload: Buffer, maximumChunkRawBytes: number): DaemonResultChunk {
+-    if (payload.byteLength < BINARY_HEADER_LENGTH_BYTES) {
+-      throw new Error("Truncated daemon result chunk header");
+-    }
+-    const headerLength = payload.readUInt32BE(0);
+-    if (headerLength === 0 || headerLength > payload.byteLength - BINARY_HEADER_LENGTH_BYTES) {
+-      throw new Error("Invalid daemon result chunk header length");
+-    }
+-    let parsed: unknown;
+-    try {
+-      parsed = JSON.parse(payload.subarray(4, 4 + headerLength).toString("utf8"));
+-    } catch {
+-      throw new Error("Malformed daemon result chunk header");
+-    }
+-    const bytes = payload.subarray(4 + headerLength);
+-    if (
+-      !DaemonResultChunkCodec.isHeader(parsed, maximumChunkRawBytes) ||
+-      parsed.payloadLength !== bytes.byteLength
+-    ) {
+-      throw new Error("Invalid daemon result chunk header");
+-    }
+-    if (createHash("sha256").update(bytes).digest("hex") !== parsed.sha256) {
+-      throw new Error("Corrupt daemon result chunk payload");
+-    }
+-    const chunk: DaemonResultChunk = {
+-      transferId: parsed.transferId,
+-      requestId: parsed.requestId,
+-      offset: parsed.offset,
+-      sequence: parsed.sequence,
+-      stream: parsed.stream,
+-      bytes: Uint8Array.from(bytes),
+-    };
+-    DaemonResultChunkCodec.assertChunk(chunk, maximumChunkRawBytes);
+-    return chunk;
+-  }
+-
+-  private static assertChunk(chunk: DaemonResultChunk, maximumChunkRawBytes: number): void {
+-    if (
+-      chunk.transferId.length === 0 ||
+-      chunk.requestId.length === 0 ||
+-      !Number.isSafeInteger(chunk.offset) ||
+-      chunk.offset < 0 ||
+-      !Number.isSafeInteger(chunk.sequence) ||
+-      chunk.sequence < 0 ||
+-      (chunk.stream !== "stdout" && chunk.stream !== "stderr") ||
+-      !(chunk.bytes instanceof Uint8Array) ||
+-      chunk.bytes.byteLength > maximumChunkRawBytes
+-    ) {
+-      throw new Error("Invalid daemon result chunk");
+-    }
+-  }
+-
+-  private static isHeader(
+-    value: unknown,
+-    maximumChunkRawBytes: number,
+-  ): value is DaemonResultChunkHeader {
+-    if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+-    const header = value as Record<string, unknown>;
+-    const keys = Object.keys(header).sort();
+-    const expected = [
+-      "offset",
+-      "payloadLength",
+-      "requestId",
+-      "sequence",
+-      "sha256",
+-      "stream",
+-      "transferId",
+-    ].sort();
+-    return (
+-      keys.length === expected.length &&
+-      keys.every((key, index) => key === expected[index]) &&
+-      typeof header.transferId === "string" &&
+-      header.transferId.length > 0 &&
+-      typeof header.requestId === "string" &&
+-      header.requestId.length > 0 &&
+-      Number.isSafeInteger(header.offset) &&
+-      Number(header.offset) >= 0 &&
+-      Number.isSafeInteger(header.sequence) &&
+-      Number(header.sequence) >= 0 &&
+-      (header.stream === "stdout" || header.stream === "stderr") &&
+-      Number.isSafeInteger(header.payloadLength) &&
+-      Number(header.payloadLength) >= 0 &&
+-      Number(header.payloadLength) <= maximumChunkRawBytes &&
+-      typeof header.sha256 === "string" &&
+-      /^[a-f\d]{64}$/.test(header.sha256)
+-    );
+-  }
+-}
+-
+-export class DaemonTransferFrameDecoder {
+-  private buffered = Buffer.alloc(0);
+-
+-  constructor(
+-    private readonly maximumControlFrameBytes: number,
+-    private readonly maximumChunkRawBytes: number,
+-  ) {}
+-
+-  append(bytes: Buffer): readonly (unknown | DaemonResultChunk)[] {
+-    this.buffered = Buffer.concat([this.buffered, bytes]);
+-    const values: (unknown | DaemonResultChunk)[] = [];
+-    while (this.buffered.byteLength >= 4) {
+-      const encodedLength = this.buffered.readUInt32BE(0);
+-      const binary = (encodedLength & BINARY_FRAME_FLAG) !== 0;
+-      const payloadLength = encodedLength & FRAME_LENGTH_MASK;
+-      const maximum = binary
+-        ? this.maximumControlFrameBytes + this.maximumChunkRawBytes
+-        : this.maximumControlFrameBytes;
+-      if (payloadLength > maximum) throw new Error("Daemon result frame exceeds capacity");
+-      if (this.buffered.byteLength < payloadLength + 4) break;
+-      const payload = this.buffered.subarray(4, payloadLength + 4);
+-      this.buffered = this.buffered.subarray(payloadLength + 4);
+-      if (binary) {
+-        values.push(DaemonResultChunkCodec.decode(payload, this.maximumChunkRawBytes));
+-        continue;
+-      }
+-      try {
+-        values.push(JSON.parse(payload.toString("utf8")));
+-      } catch {
+-        throw new Error("Daemon control frame contains malformed JSON");
+-      }
+-    }
+-    return values;
+-  }
+-
+-  assertComplete(): void {
+-    if (this.buffered.byteLength !== 0) {
+-      throw new Error("Daemon result transfer ended with a truncated frame");
+-    }
+-  }
+-}
+diff --git a/apps/cli/src/daemon/daemon-startup-coordinator.test.ts b/apps/cli/src/daemon/daemon-startup-coordinator.test.ts
+index 3bf370d7c..b1983b0fd 100644
+--- a/apps/cli/src/daemon/daemon-startup-coordinator.test.ts
++++ b/apps/cli/src/daemon/daemon-startup-coordinator.test.ts
+@@ -29,7 +29,12 @@ import {
+ } from "./daemon-protocol.js";
+ import { TestDaemonRegistry as DaemonRegistry } from "../../test/helpers/daemon-registry.js";
+ import { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
+-import type { DaemonExecutionReceipt } from "./local-daemon-transport.js";
++import type {
++  DaemonExecutionReceipt,
++  DaemonExecutionRequester,
++  DaemonLifecycleRequestSender,
++  DaemonRequestServer,
++} from "./daemon-transport.js";
+ import { TestLocalDaemonTransport as LocalDaemonTransport } from "../../test/helpers/local-daemon-transport.js";
+ 
+ const STARTUP_COORDINATION_GRACE_MS =
+@@ -694,7 +699,7 @@ describe("DaemonStartupCoordinator", () => {
+       const ownerBeforeStatus = harness.registry.startupOwner(harness.identity);
+       const controller = new DaemonController(
+         harness.registry,
+-        harness.transport as unknown as LocalDaemonTransport,
++        harness.transport,
+         dirname(harness.identity.registryDirectory),
+         { processTerminator: harness.terminator },
+       );
+@@ -735,12 +740,9 @@ describe("DaemonStartupCoordinator", () => {
+       instanceId: "orphaned-mutation",
+     });
+     expect(() => process.kill(mutationOwnerPid, 0)).toThrow();
+-    const controller = new DaemonController(
+-      harness.registry,
+-      harness.transport as unknown as LocalDaemonTransport,
+-      stateDirectory,
+-      { processTerminator: harness.terminator },
+-    );
++    const controller = new DaemonController(harness.registry, harness.transport, stateDirectory, {
++      processTerminator: harness.terminator,
++    });
+ 
+     await expect(controller.status()).resolves.toEqual([]);
+     expect(harness.registry.startupOwner(harness.identity)).toBeUndefined();
+@@ -766,12 +768,9 @@ describe("DaemonStartupCoordinator", () => {
+     const markerPath = join(root, "late-publication");
+     const launcher = new DelayedMarkerLauncher(markerPath, realProcessIds);
+     const transport = new RegistryTransport(registry, identity);
+-    const coordinator = new DaemonStartupCoordinator(
+-      registry,
+-      launcher,
+-      transport as unknown as LocalDaemonTransport,
+-      { pollIntervalMs: 2 },
+-    );
++    const coordinator = new DaemonStartupCoordinator(registry, launcher, transport, {
++      pollIntervalMs: 2,
++    });
+ 
+     await expect(coordinator.ensureRunning(identity)).rejects.toThrow(/exited before readiness/i);
+ 
+@@ -851,12 +850,9 @@ describe("DaemonStartupCoordinator", () => {
+     const mutationOwnerPid = mutationOwner.ownerPid;
+     await new NodeDaemonProcessTerminator(100, 5).terminate(mutationOwnerPid);
+     mutationOwner.process.kill("SIGKILL");
+-    const controller = new DaemonController(
+-      harness.registry,
+-      harness.transport as unknown as LocalDaemonTransport,
+-      stateDirectory,
+-      { processTerminator: harness.terminator },
+-    );
++    const controller = new DaemonController(harness.registry, harness.transport, stateDirectory, {
++      processTerminator: harness.terminator,
++    });
+ 
+     await expect(controller.status()).resolves.toEqual([]);
+     const [first, second] = await Promise.all([
+@@ -931,20 +927,15 @@ class CoordinatorHarness {
+       readonly now?: () => number;
+     } = {},
+   ): DaemonStartupCoordinator {
+-    return new DaemonStartupCoordinator(
+-      this.registry,
+-      this.launcher,
+-      this.transport as unknown as LocalDaemonTransport,
+-      {
+-        ...(options.terminationTimeoutMs === undefined
+-          ? {}
+-          : { terminationTimeoutMs: options.terminationTimeoutMs }),
+-        ...(options.policy === undefined ? {} : { policy: options.policy }),
+-        pollIntervalMs: 1,
+-        processTerminator: options.processTerminator ?? this.terminator,
+-        ...(options.now === undefined ? {} : { now: options.now }),
+-      },
+-    );
++    return new DaemonStartupCoordinator(this.registry, this.launcher, this.transport, {
++      ...(options.terminationTimeoutMs === undefined
++        ? {}
++        : { terminationTimeoutMs: options.terminationTimeoutMs }),
++      ...(options.policy === undefined ? {} : { policy: options.policy }),
++      pollIntervalMs: 1,
++      processTerminator: options.processTerminator ?? this.terminator,
++      ...(options.now === undefined ? {} : { now: options.now }),
++    });
+   }
+ 
+   seedReady(instanceId: string, symnavVersion: string, pid: number): void {
+@@ -1283,7 +1274,9 @@ class InProcessReadyLauncher implements DaemonProcessLauncher {
+ 
+   constructor(
+     private readonly registry: DaemonRegistry,
+-    private readonly transport: LocalDaemonTransport,
++    private readonly transport: DaemonLifecycleRequestSender &
++      DaemonExecutionRequester &
++      DaemonRequestServer,
+   ) {}
+ 
+   async launch(
+diff --git a/apps/cli/src/daemon/daemon-startup-coordinator.ts b/apps/cli/src/daemon/daemon-startup-coordinator.ts
+index cb5ec1454..145dda980 100644
+--- a/apps/cli/src/daemon/daemon-startup-coordinator.ts
++++ b/apps/cli/src/daemon/daemon-startup-coordinator.ts
+@@ -13,7 +13,7 @@ import { DAEMON_PROTOCOL_VERSION, DAEMON_RECORD_SCHEMA_VERSION } from "./daemon-
+ import type { DaemonRegistry, StartupOwner } from "./daemon-registry.js";
+ import { DaemonRecordObserver } from "./daemon-record-observer.js";
+ import type { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
+-import type { LocalDaemonTransport } from "./local-daemon-transport.js";
++import type { DaemonExecutionRequester, DaemonLifecycleRequestSender } from "./daemon-transport.js";
+ 
+ export type DaemonWarmupTriggerResult =
+   | { readonly status: "launched"; readonly instanceId: string; readonly pid: number }
+@@ -58,7 +58,7 @@ export class DaemonStartupCoordinator {
+   constructor(
+     private readonly registry: DaemonRegistry,
+     private readonly launcher: DaemonProcessLauncher,
+-    private readonly transport: LocalDaemonTransport,
++    private readonly transport: DaemonLifecycleRequestSender & DaemonExecutionRequester,
+     options: DaemonStartupCoordinatorOptions,
+   ) {
+     const policy = options.policy;
+diff --git a/apps/cli/src/daemon/daemon-transport.test.ts b/apps/cli/src/daemon/daemon-transport.test.ts
+new file mode 100644
+index 000000000..574af2193
+--- /dev/null
++++ b/apps/cli/src/daemon/daemon-transport.test.ts
+@@ -0,0 +1,45 @@
++import { describe, expectTypeOf, it } from "vitest";
++import type {
++  DaemonCommandDispatcher,
++  DaemonDispatchRuntime,
++} from "./daemon-command-dispatcher.js";
++import type { DaemonController } from "./daemon-controller.js";
++import type { DaemonRecordObserver } from "./daemon-record-observer.js";
++import type { DaemonStartupCoordinator } from "./daemon-startup-coordinator.js";
++import type {
++  DaemonExecutionRequester,
++  DaemonLifecycleRequestSender,
++  DaemonRequestServer,
++} from "./daemon-transport.js";
++import type { WorkspaceDaemon, WorkspaceDaemonOptions } from "./workspace-daemon.js";
++
++describe("daemon transport ports", () => {
++  it("limits observers to lifecycle requests", () => {
++    expectTypeOf<
++      ConstructorParameters<typeof DaemonRecordObserver>[0]
++    >().toEqualTypeOf<DaemonLifecycleRequestSender>();
++  });
++
++  it("limits startup to lifecycle and execution requests", () => {
++    expectTypeOf<ConstructorParameters<typeof DaemonStartupCoordinator>[2]>().toEqualTypeOf<
++      DaemonLifecycleRequestSender & DaemonExecutionRequester
++    >();
++    expectTypeOf<ConstructorParameters<typeof DaemonController>[1]>().toEqualTypeOf<
++      DaemonLifecycleRequestSender & DaemonExecutionRequester
++    >();
++  });
++
++  it("limits daemon processes to request serving", () => {
++    expectTypeOf<WorkspaceDaemonOptions["transport"]>().toEqualTypeOf<DaemonRequestServer>();
++    expectTypeOf<
++      ConstructorParameters<typeof WorkspaceDaemon>[0]["transport"]
++    >().toEqualTypeOf<DaemonRequestServer>();
++  });
++
++  it("limits client execution to execution requests", () => {
++    expectTypeOf<DaemonDispatchRuntime["transport"]>().toEqualTypeOf<DaemonExecutionRequester>();
++    expectTypeOf<
++      ConstructorParameters<typeof DaemonCommandDispatcher>[0]["createDependencies"]
++    >().toBeFunction();
++  });
++});
+diff --git a/apps/cli/src/daemon/daemon-transport.ts b/apps/cli/src/daemon/daemon-transport.ts
+new file mode 100644
+index 000000000..ddb3e1906
+--- /dev/null
++++ b/apps/cli/src/daemon/daemon-transport.ts
+@@ -0,0 +1,71 @@
++import type { DaemonExecutionFailureCode } from "@symnav/daemon";
++import type {
++  DaemonExecuteRequest,
++  DaemonExecutionStatus,
++  DaemonExecutionStatusRequest,
++  DaemonLifecycleRequest,
++  DaemonLifecycleResponse,
++  DaemonRequest,
++  DaemonResponse,
++  DaemonServer,
++  DaemonServerMessage,
++} from "./daemon-protocol.js";
++import type { LocalDaemonExecutionResult } from "./local-daemon-output.js";
++
++export interface DaemonSocketConnection {
++  readonly incoming: AsyncIterable<Uint8Array>;
++  write(frame: Uint8Array): void;
++  disableTimeout(): void;
++  end(): void;
++  destroy(): void;
++}
++
++export interface DaemonSocketClient {
++  connect(endpoint: string, timeoutMs?: number): Promise<DaemonSocketConnection>;
++}
++
++export interface DaemonLifecycleRequestSender {
++  request(endpoint: string, request: DaemonLifecycleRequest): Promise<DaemonResponse>;
++}
++
++export interface DaemonLifecycleRequester extends DaemonLifecycleRequestSender {
++  request(endpoint: string, request: DaemonLifecycleRequest): Promise<DaemonLifecycleResponse>;
++  executionStatus(
++    endpoint: string,
++    request: DaemonExecutionStatusRequest,
++  ): Promise<DaemonExecutionStatus>;
++}
++
++export interface DaemonExecutionAcceptance {
++  readonly requestId: string;
++  readonly instanceId: string;
++  readonly acceptedAt: number;
++  readonly queuePosition: number;
++}
++
++export interface DaemonExecutionReceipt {
++  readonly acceptance: DaemonExecutionAcceptance;
++  readonly completion: Promise<
++    | { readonly status: "completed"; readonly result: LocalDaemonExecutionResult }
++    | { readonly status: "failed"; readonly code: DaemonExecutionFailureCode }
++  >;
++}
++
++export interface DaemonExecutionRequester {
++  execute(endpoint: string, request: DaemonExecuteRequest): Promise<DaemonExecutionReceipt>;
++}
++
++export type DaemonRequestHandler = (
++  request: DaemonRequest,
++  send: DaemonServerSend,
++) => Promise<DaemonResponse | void>;
++
++export interface DaemonRequestServer {
++  listen(endpoint: string, handler: DaemonRequestHandler): Promise<DaemonServer>;
++  removeUnavailableEndpoint(endpoint: string): Promise<boolean>;
++}
++
++export interface DaemonServerSend {
++  (message: DaemonServerMessage): Promise<void>;
++  onClose(listener: () => void): () => void;
++}
+diff --git a/apps/cli/src/daemon/daemon-wire-codec.test.ts b/apps/cli/src/daemon/daemon-wire-codec.test.ts
+new file mode 100644
+index 000000000..7c9d56055
+--- /dev/null
++++ b/apps/cli/src/daemon/daemon-wire-codec.test.ts
+@@ -0,0 +1,126 @@
++import { describe, expect, it } from "vitest";
++import type { DaemonResultChunk } from "./daemon-protocol.js";
++import { DaemonWireCodec, type DaemonWireLimits } from "./daemon-wire-codec.js";
++
++const limits: DaemonWireLimits = {
++  maximumJsonPayloadBytes: 512,
++  maximumExecutionControlPayloadBytes: 256,
++  maximumChunkRawBytes: 8,
++};
++
++describe("DaemonWireCodec", () => {
++  it("decodes fragmented and coalesced Unicode control frames", () => {
++    const codec = new DaemonWireCodec(limits);
++    const decoder = codec.controlDecoder();
++    const first = codec.encodeControl({ text: "one\n✓" });
++    const second = codec.encodeControl({ text: "two\r\n終" });
++    const encoded = Buffer.concat([first, second]);
++    const decoded: unknown[] = [];
++
++    for (let offset = 0; offset < encoded.byteLength; offset += 3) {
++      decoded.push(...decoder.append(encoded.subarray(offset, offset + 3)));
++    }
++    decoder.assertComplete();
++
++    expect(decoded).toEqual([{ text: "one\n✓" }, { text: "two\r\n終" }]);
++  });
++
++  it.each([
++    ["header", Uint8Array.from([0, 0])],
++    ["payload", Uint8Array.from([0, 0, 0, 4, 123, 125])],
++  ] as const)("rejects a truncated %s with the current control error", (_part, encoded) => {
++    const decoder = new DaemonWireCodec(limits).controlDecoder();
++    decoder.append(encoded);
++
++    expect(() => decoder.assertComplete()).toThrow(
++      "Daemon connection ended with a truncated frame",
++    );
++  });
++
++  it("rejects malformed and oversized ordinary JSON with current errors", () => {
++    const codec = new DaemonWireCodec({ ...limits, maximumJsonPayloadBytes: 4 });
++    const malformed = Uint8Array.from([0, 0, 0, 1, 123]);
++    expect(() => codec.controlDecoder().append(malformed)).toThrow(
++      "Daemon frame contains malformed JSON",
++    );
++
++    const oversized = Uint8Array.from([0, 0, 0, 5]);
++    expect(() => codec.controlDecoder().append(oversized)).toThrow("Daemon frame exceeds 4 bytes");
++    expect(() => codec.encodeControl({ value: "oversized" })).toThrow(
++      "Daemon frame exceeds 4 bytes",
++    );
++  });
++
++  it("preserves the binary flag, frame length, and four-byte header length", () => {
++    const codec = new DaemonWireCodec(limits);
++    const chunk = resultChunk(Uint8Array.from([0, 255, 1, 2]));
++    const encoded = codec.encodeServerMessage(chunk);
++    const encodedLength = Buffer.from(encoded).readUInt32BE(0);
++    const payloadLength = encodedLength & 0x7fffffff;
++
++    expect((encodedLength & 0x80000000) >>> 0).toBe(0x80000000);
++    expect(payloadLength).toBe(encoded.byteLength - 4);
++    expect(Buffer.from(encoded).readUInt32BE(4)).toBeGreaterThan(0);
++    expect(codec.transferDecoder().append(encoded)).toEqual([chunk]);
++  });
++
++  it("keeps ordinary JSON, execution control, and raw chunk caps independent", () => {
++    const codec = new DaemonWireCodec({
++      maximumJsonPayloadBytes: 64,
++      maximumExecutionControlPayloadBytes: 24,
++      maximumChunkRawBytes: 2,
++    });
++    const ordinary = codec.encodeControl({ value: "fits ordinary cap" });
++    expect(codec.controlDecoder().append(ordinary)).toEqual([{ value: "fits ordinary cap" }]);
++    expect(() => codec.transferDecoder().append(ordinary)).toThrow(
++      "Daemon result frame exceeds capacity",
++    );
++    expect(() =>
++      codec.encodeServerMessage({ ...resultChunk(), bytes: Uint8Array.from([1, 2, 3]) }),
++    ).toThrow("Invalid daemon result chunk");
++  });
++
++  it("encodes lifecycle responses against the ordinary JSON cap", () => {
++    const codec = new DaemonWireCodec({
++      maximumJsonPayloadBytes: 128,
++      maximumExecutionControlPayloadBytes: 32,
++      maximumChunkRawBytes: 8,
++    });
++    const response = {
++      kind: "pong",
++      protocolVersion: 5,
++      instanceId: "instance",
++      symnavVersion: "version-that-exceeds-the-control-cap",
++    } as const;
++
++    const encoded = codec.encodeServerMessage(response);
++
++    expect(codec.controlDecoder().append(encoded)).toEqual([response]);
++  });
++
++  it("bounds a binary header by the execution-control envelope", () => {
++    const encoded = new DaemonWireCodec({
++      maximumJsonPayloadBytes: 256,
++      maximumExecutionControlPayloadBytes: 256,
++      maximumChunkRawBytes: 256,
++    }).encodeServerMessage(resultChunk());
++    const decoder = new DaemonWireCodec({
++      maximumJsonPayloadBytes: 256,
++      maximumExecutionControlPayloadBytes: 8,
++      maximumChunkRawBytes: 256,
++    }).transferDecoder();
++
++    expect(() => decoder.append(encoded)).toThrow("Daemon result frame exceeds capacity");
++  });
++});
++
++function resultChunk(bytes = Uint8Array.from([1])): DaemonResultChunk {
++  return {
++    transferId: "transfer-1",
++    requestId: "request-1",
++    offset: 3,
++    sequence: 3,
++    stream: "stderr",
++    bytes,
++  };
++}
+diff --git a/apps/cli/src/daemon/daemon-wire-codec.ts b/apps/cli/src/daemon/daemon-wire-codec.ts
+new file mode 100644
+index 000000000..8e9dc9dca
+--- /dev/null
++++ b/apps/cli/src/daemon/daemon-wire-codec.ts
+@@ -0,0 +1,289 @@
++import { createHash } from "node:crypto";
++import type { DaemonResultChunk, DaemonServerMessage } from "./daemon-protocol.js";
++
++const BINARY_FRAME_FLAG = 0x80000000;
++const FRAME_LENGTH_MASK = 0x7fffffff;
++const FRAME_PREFIX_BYTES = 4;
++const BINARY_HEADER_LENGTH_BYTES = 4;
++
++export interface DaemonFrameDecoder<Frame> {
++  append(bytes: Uint8Array): readonly Frame[];
++  assertComplete(): void;
++}
++
++export interface DaemonWireLimits {
++  readonly maximumJsonPayloadBytes: number;
++  readonly maximumExecutionControlPayloadBytes: number;
++  readonly maximumChunkRawBytes: number;
++}
++
++interface DaemonResultChunkHeader {
++  readonly transferId: string;
++  readonly requestId: string;
++  readonly offset: number;
++  readonly sequence: number;
++  readonly stream: "stdout" | "stderr";
++  readonly payloadLength: number;
++  readonly sha256: string;
++}
++
++export class DaemonWireCodec {
++  constructor(private readonly limits: DaemonWireLimits) {}
++
++  encodeControl(value: unknown): Uint8Array {
++    return this.encodeJson(value, this.limits.maximumJsonPayloadBytes);
++  }
++
++  encodeServerMessage(message: DaemonServerMessage): Uint8Array {
++    if ("kind" in message) {
++      const maximumPayloadBytes = DaemonWireCodec.isExecutionControl(message.kind)
++        ? this.limits.maximumExecutionControlPayloadBytes
++        : this.limits.maximumJsonPayloadBytes;
++      return this.encodeJson(message, maximumPayloadBytes);
++    }
++    return DaemonResultChunkCodec.encode(message, this.limits);
++  }
++
++  controlDecoder(): DaemonFrameDecoder<unknown> {
++    return new DaemonControlFrameDecoder(this.limits.maximumJsonPayloadBytes);
++  }
++
++  transferDecoder(): DaemonFrameDecoder<unknown | DaemonResultChunk> {
++    return new DaemonTransferFrameDecoder(this.limits);
++  }
++
++  private encodeJson(value: unknown, maximumPayloadBytes: number): Uint8Array {
++    const payload = Buffer.from(JSON.stringify(value), "utf8");
++    if (payload.byteLength > maximumPayloadBytes) {
++      throw new Error(`Daemon frame exceeds ${maximumPayloadBytes} bytes`);
++    }
++    const prefix = Buffer.alloc(FRAME_PREFIX_BYTES);
++    prefix.writeUInt32BE(payload.byteLength);
++    return Buffer.concat([prefix, payload]);
++  }
++
++  private static isExecutionControl(kind: string): boolean {
++    return (
++      kind === "accepted" ||
++      kind === "rejected" ||
++      kind === "result-manifest" ||
++      kind === "result-end" ||
++      kind === "execution-failed" ||
++      kind === "execution-status" ||
++      kind === "result-acknowledged"
++    );
++  }
++}
++
++class DaemonControlFrameDecoder implements DaemonFrameDecoder<unknown> {
++  private buffered = Buffer.alloc(0);
++
++  constructor(private readonly maximumPayloadBytes: number) {}
++
++  append(bytes: Uint8Array): readonly unknown[] {
++    this.buffered = Buffer.concat([this.buffered, bytes]);
++    const values: unknown[] = [];
++    while (this.buffered.byteLength >= FRAME_PREFIX_BYTES) {
++      const payloadLength = this.buffered.readUInt32BE(0);
++      if (payloadLength > this.maximumPayloadBytes) {
++        throw new Error(`Daemon frame exceeds ${this.maximumPayloadBytes} bytes`);
++      }
++      if (this.buffered.byteLength < payloadLength + FRAME_PREFIX_BYTES) break;
++      const payload = this.buffered.subarray(
++        FRAME_PREFIX_BYTES,
++        payloadLength + FRAME_PREFIX_BYTES,
++      );
++      this.buffered = this.buffered.subarray(payloadLength + FRAME_PREFIX_BYTES);
++      try {
++        values.push(JSON.parse(payload.toString("utf8")));
++      } catch {
++        throw new Error("Daemon frame contains malformed JSON");
++      }
++    }
++    return values;
++  }
++
++  assertComplete(): void {
++    if (this.buffered.byteLength !== 0) {
++      throw new Error("Daemon connection ended with a truncated frame");
++    }
++  }
++}
++
++class DaemonTransferFrameDecoder implements DaemonFrameDecoder<unknown | DaemonResultChunk> {
++  private buffered = Buffer.alloc(0);
++
++  constructor(private readonly limits: DaemonWireLimits) {}
++
++  append(bytes: Uint8Array): readonly (unknown | DaemonResultChunk)[] {
++    this.buffered = Buffer.concat([this.buffered, bytes]);
++    const values: (unknown | DaemonResultChunk)[] = [];
++    while (this.buffered.byteLength >= FRAME_PREFIX_BYTES) {
++      const encodedLength = this.buffered.readUInt32BE(0);
++      const binary = (encodedLength & BINARY_FRAME_FLAG) !== 0;
++      const payloadLength = encodedLength & FRAME_LENGTH_MASK;
++      const maximumPayloadBytes = binary
++        ? this.limits.maximumExecutionControlPayloadBytes + this.limits.maximumChunkRawBytes
++        : this.limits.maximumExecutionControlPayloadBytes;
++      if (payloadLength > maximumPayloadBytes) {
++        throw new Error("Daemon result frame exceeds capacity");
++      }
++      if (this.buffered.byteLength < payloadLength + FRAME_PREFIX_BYTES) break;
++      const payload = this.buffered.subarray(
++        FRAME_PREFIX_BYTES,
++        payloadLength + FRAME_PREFIX_BYTES,
++      );
++      this.buffered = this.buffered.subarray(payloadLength + FRAME_PREFIX_BYTES);
++      if (binary) {
++        values.push(DaemonResultChunkCodec.decode(payload, this.limits));
++        continue;
++      }
++      try {
++        values.push(JSON.parse(payload.toString("utf8")));
++      } catch {
++        throw new Error("Daemon control frame contains malformed JSON");
++      }
++    }
++    return values;
++  }
++
++  assertComplete(): void {
++    if (this.buffered.byteLength !== 0) {
++      throw new Error("Daemon result transfer ended with a truncated frame");
++    }
++  }
++}
++
++class DaemonResultChunkCodec {
++  static encode(chunk: DaemonResultChunk, limits: DaemonWireLimits): Uint8Array {
++    DaemonResultChunkCodec.assertChunk(chunk, limits.maximumChunkRawBytes);
++    const header: DaemonResultChunkHeader = {
++      transferId: chunk.transferId,
++      requestId: chunk.requestId,
++      offset: chunk.offset,
++      sequence: chunk.sequence,
++      stream: chunk.stream,
++      payloadLength: chunk.bytes.byteLength,
++      sha256: createHash("sha256").update(chunk.bytes).digest("hex"),
++    };
++    const headerBytes = Buffer.from(JSON.stringify(header));
++    if (
++      BINARY_HEADER_LENGTH_BYTES + headerBytes.byteLength >
++      limits.maximumExecutionControlPayloadBytes
++    ) {
++      throw new Error("Daemon result frame exceeds capacity");
++    }
++    const payloadLength =
++      BINARY_HEADER_LENGTH_BYTES + headerBytes.byteLength + chunk.bytes.byteLength;
++    const encoded = Buffer.alloc(FRAME_PREFIX_BYTES + payloadLength);
++    encoded.writeUInt32BE((BINARY_FRAME_FLAG | payloadLength) >>> 0, 0);
++    encoded.writeUInt32BE(headerBytes.byteLength, FRAME_PREFIX_BYTES);
++    headerBytes.copy(encoded, FRAME_PREFIX_BYTES + BINARY_HEADER_LENGTH_BYTES);
++    Buffer.from(chunk.bytes).copy(
++      encoded,
++      FRAME_PREFIX_BYTES + BINARY_HEADER_LENGTH_BYTES + headerBytes.byteLength,
++    );
++    return encoded;
++  }
++
++  static decode(payload: Buffer, limits: DaemonWireLimits): DaemonResultChunk {
++    if (payload.byteLength < BINARY_HEADER_LENGTH_BYTES) {
++      throw new Error("Truncated daemon result chunk header");
++    }
++    const headerLength = payload.readUInt32BE(0);
++    if (headerLength === 0 || headerLength > payload.byteLength - BINARY_HEADER_LENGTH_BYTES) {
++      throw new Error("Invalid daemon result chunk header length");
++    }
++    if (BINARY_HEADER_LENGTH_BYTES + headerLength > limits.maximumExecutionControlPayloadBytes) {
++      throw new Error("Daemon result frame exceeds capacity");
++    }
++    let parsed: unknown;
++    try {
++      parsed = JSON.parse(
++        payload
++          .subarray(BINARY_HEADER_LENGTH_BYTES, BINARY_HEADER_LENGTH_BYTES + headerLength)
++          .toString("utf8"),
++      );
++    } catch {
++      throw new Error("Malformed daemon result chunk header");
++    }
++    const bytes = payload.subarray(BINARY_HEADER_LENGTH_BYTES + headerLength);
++    if (
++      !DaemonResultChunkCodec.isHeader(parsed, limits.maximumChunkRawBytes) ||
++      parsed.payloadLength !== bytes.byteLength
++    ) {
++      throw new Error("Invalid daemon result chunk header");
++    }
++    if (createHash("sha256").update(bytes).digest("hex") !== parsed.sha256) {
++      throw new Error("Corrupt daemon result chunk payload");
++    }
++    const chunk: DaemonResultChunk = {
++      transferId: parsed.transferId,
++      requestId: parsed.requestId,
++      offset: parsed.offset,
++      sequence: parsed.sequence,
++      stream: parsed.stream,
++      bytes: Uint8Array.from(bytes),
++    };
++    DaemonResultChunkCodec.assertChunk(chunk, limits.maximumChunkRawBytes);
++    return chunk;
++  }
++
++  private static assertChunk(chunk: DaemonResultChunk, maximumChunkRawBytes: number): void {
++    if (
++      chunk.transferId.length === 0 ||
++      chunk.requestId.length === 0 ||
++      !Number.isSafeInteger(chunk.offset) ||
++      chunk.offset < 0 ||
++      !Number.isSafeInteger(chunk.sequence) ||
++      chunk.sequence < 0 ||
++      (chunk.stream !== "stdout" && chunk.stream !== "stderr") ||
++      !(chunk.bytes instanceof Uint8Array) ||
++      chunk.bytes.byteLength > maximumChunkRawBytes
++    ) {
++      throw new Error("Invalid daemon result chunk");
++    }
++  }
++
++  private static isHeader(
++    value: unknown,
++    maximumChunkRawBytes: number,
++  ): value is DaemonResultChunkHeader {
++    if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
++    const header = value as Record<string, unknown>;
++    const expectedKeys = [
++      "offset",
++      "payloadLength",
++      "requestId",
++      "sequence",
++      "sha256",
++      "stream",
++      "transferId",
++    ];
++    return (
++      DaemonResultChunkCodec.hasExactKeys(header, expectedKeys) &&
++      typeof header.transferId === "string" &&
++      header.transferId.length > 0 &&
++      typeof header.requestId === "string" &&
++      header.requestId.length > 0 &&
++      Number.isSafeInteger(header.offset) &&
++      Number(header.offset) >= 0 &&
++      Number.isSafeInteger(header.sequence) &&
++      Number(header.sequence) >= 0 &&
++      (header.stream === "stdout" || header.stream === "stderr") &&
++      Number.isSafeInteger(header.payloadLength) &&
++      Number(header.payloadLength) >= 0 &&
++      Number(header.payloadLength) <= maximumChunkRawBytes &&
++      typeof header.sha256 === "string" &&
++      /^[a-f\d]{64}$/.test(header.sha256)
++    );
++  }
++
++  private static hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
++    const actual = Object.keys(value).sort();
++    const expected = [...keys].sort();
++    return (
++      actual.length === expected.length && actual.every((key, index) => key === expected[index])
++    );
++  }
++}
+diff --git a/apps/cli/src/daemon/local-daemon-transport-execution.test.ts b/apps/cli/src/daemon/local-daemon-transport-execution.test.ts
+index de0c31de0..c5eb0738d 100644
+--- a/apps/cli/src/daemon/local-daemon-transport-execution.test.ts
++++ b/apps/cli/src/daemon/local-daemon-transport-execution.test.ts
+@@ -18,9 +18,14 @@ import {
+   DaemonCompletionSpoolStore as RuntimeDaemonCompletionSpoolStore,
+   type DaemonCompletionSpoolStoreOptions,
+ } from "./completion-spool.js";
+-import { DaemonResultChunkCodec } from "./daemon-result-chunk-codec.js";
++import { DaemonWireCodec } from "./daemon-wire-codec.js";
+ 
+ const TEST_CHUNK_BYTES = 64 * 1024;
++const wireCodec = new DaemonWireCodec({
++  maximumJsonPayloadBytes: 8 * 1024 * 1024,
++  maximumExecutionControlPayloadBytes: 256 * 1024,
++  maximumChunkRawBytes: TEST_CHUNK_BYTES,
++});
+ 
+ class DaemonCompletionSpoolStore extends RuntimeDaemonCompletionSpoolStore {
+   constructor(options: Omit<DaemonCompletionSpoolStoreOptions, "policy">) {
+@@ -628,17 +633,14 @@ describe("LocalDaemonTransport execution delivery", () => {
+             socket.write(
+               Buffer.concat([
+                 encodedEnd,
+-                DaemonResultChunkCodec.encode(
+-                  {
+-                    transferId: manifest.transferId,
+-                    requestId: request.requestId,
+-                    offset: manifest.recordCount,
+-                    sequence: manifest.recordCount,
+-                    stream: "stdout",
+-                    bytes: Buffer.from("late"),
+-                  },
+-                  TEST_CHUNK_BYTES,
+-                ),
++                wireCodec.encodeServerMessage({
++                  transferId: manifest.transferId,
++                  requestId: request.requestId,
++                  offset: manifest.recordCount,
++                  sequence: manifest.recordCount,
++                  stream: "stdout",
++                  bytes: Buffer.from("late"),
++                }),
+               ]),
+             );
+           } else {
+@@ -1072,17 +1074,14 @@ async function sendRecords(
+   for await (const record of spool.read(offset)) {
+     if (record.sequence >= stopBefore || socket.destroyed || !socket.writable) return;
+     socket.write(
+-      DaemonResultChunkCodec.encode(
+-        {
+-          transferId,
+-          requestId: request.requestId,
+-          offset: record.sequence,
+-          sequence: record.sequence,
+-          stream: record.stream,
+-          bytes: record.bytes,
+-        },
+-        TEST_CHUNK_BYTES,
+-      ),
++      wireCodec.encodeServerMessage({
++        transferId,
++        requestId: request.requestId,
++        offset: record.sequence,
++        sequence: record.sequence,
++        stream: record.stream,
++        bytes: record.bytes,
++      }),
+     );
+   }
+ }
+@@ -1094,16 +1093,15 @@ async function encodedResult(
+   const chunks = [frame(accepted()), frame(resultManifest(manifest))];
+   for await (const record of spool.read(0)) {
+     chunks.push(
+-      DaemonResultChunkCodec.encode(
+-        {
++      Buffer.from(
++        wireCodec.encodeServerMessage({
+           transferId: manifest.transferId,
+           requestId: request.requestId,
+           offset: record.sequence,
+           sequence: record.sequence,
+           stream: record.stream,
+           bytes: record.bytes,
+-        },
+-        TEST_CHUNK_BYTES,
++        }),
+       ),
+     );
+   }
+@@ -1116,16 +1114,15 @@ async function firstEncodedRecord(
+   manifest: import("./completion-spool.js").CompletionSpoolManifest,
+ ): Promise<Buffer> {
+   for await (const record of spool.read(0)) {
+-    return DaemonResultChunkCodec.encode(
+-      {
++    return Buffer.from(
++      wireCodec.encodeServerMessage({
+         transferId: manifest.transferId,
+         requestId: request.requestId,
+         offset: record.sequence,
+         sequence: record.sequence,
+         stream: record.stream,
+         bytes: record.bytes,
+-      },
+-      TEST_CHUNK_BYTES,
++      }),
+     );
+   }
+   throw new Error("Expected one completion record");
+diff --git a/apps/cli/src/daemon/local-daemon-transport.ts b/apps/cli/src/daemon/local-daemon-transport.ts
+index 7ef87c788..966695983 100644
+--- a/apps/cli/src/daemon/local-daemon-transport.ts
++++ b/apps/cli/src/daemon/local-daemon-transport.ts
+@@ -3,11 +3,9 @@ import { createConnection, createServer, type Server, type Socket } from "node:n
+ import { dirname } from "node:path";
+ import {
+   DaemonAdmissionRejections,
+-  DaemonExecutionFailures,
+   type DaemonExecuteRejectionCode,
+   type DaemonExecutionFailureCode,
+   type DaemonPolicyValues,
+-  type DaemonRejectedExecutionFrame,
+ } from "@symnav/daemon";
+ import type {
+   DaemonExecuteRequest,
+@@ -19,13 +17,20 @@ import type {
+   DaemonLifecycleResponse,
+   DaemonResultAcknowledgement,
+   DaemonResultChunk,
+-  DaemonRequest,
+-  DaemonResponse,
+   DaemonServerMessage,
+   DaemonServer,
+ } from "./daemon-protocol.js";
+-import { DaemonResultChunkCodec, DaemonTransferFrameDecoder } from "./daemon-result-chunk-codec.js";
+-import { DaemonRuntimeValues } from "./daemon-runtime-values.js";
++import type {
++  DaemonExecutionAcceptance,
++  DaemonExecutionReceipt,
++  DaemonExecutionRequester,
++  DaemonLifecycleRequester,
++  DaemonRequestHandler,
++  DaemonRequestServer,
++  DaemonServerSend,
++} from "./daemon-transport.js";
++import { DaemonWireCodec } from "./daemon-wire-codec.js";
++import { DaemonProtocolError, DaemonProtocolValidator } from "./daemon-protocol-validator.js";
+ import type { CompletionSpoolManifest } from "./completion-spool.js";
+ import { LocalDaemonOutput, type LocalDaemonExecutionResult } from "./local-daemon-output.js";
+ 
+@@ -40,11 +45,6 @@ export type LocalDaemonTransportPolicy = Pick<
+   "transport" | "delivery" | "output"
+ >;
+ 
+-export interface DaemonServerSend {
+-  (response: DaemonServerMessage): Promise<void>;
+-  onClose(listener: () => void): () => void;
+-}
+-
+ export type DaemonDeliveryState = "not-submitted" | "submitted-unconfirmed" | "accepted";
+ 
+ export type DaemonTransportFailureCode =
+@@ -56,21 +56,6 @@ export type DaemonTransportFailureCode =
+   | "closed"
+   | "rejected";
+ 
+-export interface DaemonExecutionAcceptance {
+-  readonly requestId: string;
+-  readonly instanceId: string;
+-  readonly acceptedAt: number;
+-  readonly queuePosition: number;
+-}
+-
+-export interface DaemonExecutionReceipt {
+-  readonly acceptance: DaemonExecutionAcceptance;
+-  readonly completion: Promise<
+-    | { readonly status: "completed"; readonly result: LocalDaemonExecutionResult }
+-    | { readonly status: "failed"; readonly code: DaemonExecutionFailureCode }
+-  >;
+-}
+-
+ export class DaemonTransportError extends Error {
+   readonly authenticatedInstanceId?: string;
+   readonly retrySafe: boolean;
+@@ -97,51 +82,6 @@ export class DaemonTransportError extends Error {
+   }
+ }
+ 
+-class DaemonResponseError extends Error {
+-  constructor(
+-    readonly code: Extract<
+-      DaemonTransportFailureCode,
+-      "authentication" | "corrupt" | "incompatible"
+-    >,
+-    message: string,
+-    readonly authenticatedInstanceId?: string,
+-  ) {
+-    super(message);
+-  }
+-}
+-
+-class DaemonFrameDecoder {
+-  private buffered = Buffer.alloc(0);
+-
+-  constructor(private readonly maximumFrameBytes: number) {}
+-
+-  append(bytes: Buffer): readonly unknown[] {
+-    this.buffered = Buffer.concat([this.buffered, bytes]);
+-    const values: unknown[] = [];
+-    while (this.buffered.length >= 4) {
+-      const payloadLength = this.buffered.readUInt32BE(0);
+-      if (payloadLength > this.maximumFrameBytes) {
+-        throw new Error(`Daemon frame exceeds ${this.maximumFrameBytes} bytes`);
+-      }
+-      if (this.buffered.length < payloadLength + 4) break;
+-      const payload = this.buffered.subarray(4, payloadLength + 4);
+-      this.buffered = this.buffered.subarray(payloadLength + 4);
+-      try {
+-        values.push(JSON.parse(payload.toString("utf8")));
+-      } catch {
+-        throw new Error("Daemon frame contains malformed JSON");
+-      }
+-    }
+-    return values;
+-  }
+-
+-  assertComplete(): void {
+-    if (this.buffered.length !== 0) {
+-      throw new Error("Daemon connection ended with a truncated frame");
+-    }
+-  }
+-}
+-
+ class DaemonResultTransferReceiver {
+   private expectedManifest: CompletionSpoolManifest | undefined;
+   private nextRecordOffset: number;
+@@ -287,26 +227,29 @@ class ListeningDaemonServer implements DaemonServer {
+   }
+ }
+ 
+-export class LocalDaemonTransport {
+-  private readonly maximumFrameBytes: number;
++export class LocalDaemonTransport
++  implements DaemonLifecycleRequester, DaemonExecutionRequester, DaemonRequestServer
++{
+   private readonly requestTimeoutMs: number;
+   private readonly executionRequestTimeoutMs: number;
+   private readonly writeChunkSize: number | undefined;
+   private readonly outputDirectory: string | undefined;
+-  private readonly maximumControlFrameBytes: number;
+-  private readonly maximumChunkRawBytes: number;
++  private readonly codec: DaemonWireCodec;
++  private readonly validator = new DaemonProtocolValidator();
+   private readonly outputPolicy: DaemonPolicyValues["output"];
+   private readonly deliveryPolicy: DaemonPolicyValues["delivery"];
+ 
+   constructor(policy: LocalDaemonTransportPolicy, options: LocalDaemonTransportOptions = {}) {
+-    this.maximumFrameBytes = policy.transport.maximumJsonPayloadBytes;
+     this.requestTimeoutMs =
+       options.responseTimeoutPurpose === "status-observer"
+         ? policy.transport.statusResponseTimeoutMs
+         : policy.transport.singleResponseTimeoutMs;
+     this.executionRequestTimeoutMs = policy.transport.executionAdmissionTimeoutMs;
+-    this.maximumControlFrameBytes = policy.transport.maximumExecutionControlPayloadBytes;
+-    this.maximumChunkRawBytes = policy.output.maximumChunkRawBytes;
++    this.codec = new DaemonWireCodec({
++      maximumJsonPayloadBytes: policy.transport.maximumJsonPayloadBytes,
++      maximumExecutionControlPayloadBytes: policy.transport.maximumExecutionControlPayloadBytes,
++      maximumChunkRawBytes: policy.output.maximumChunkRawBytes,
++    });
+     this.outputPolicy = policy.output;
+     this.deliveryPolicy = policy.delivery;
+     this.writeChunkSize = options.writeChunkSize;
+@@ -315,7 +258,7 @@ export class LocalDaemonTransport {
+ 
+   canFrame(value: unknown): boolean {
+     try {
+-      this.encodeFrame(value);
++      this.codec.encodeControl(value);
+       return true;
+     } catch {
+       return false;
+@@ -338,9 +281,9 @@ export class LocalDaemonTransport {
+     endpoint: string,
+     request: DaemonLifecycleRequest | DaemonExecutionStatusRequest,
+   ): Promise<DaemonLifecycleResponse | DaemonExecutionStatusResponse> {
+-    LocalDaemonTransport.assertRequest(request);
++    this.validator.request(request);
+     return new Promise((resolve, reject) => {
+-      const decoder = new DaemonFrameDecoder(this.maximumFrameBytes);
++      const decoder = this.codec.controlDecoder();
+       const socket = createConnection(endpoint);
+       let settled = false;
+       let delivery: DaemonDeliveryState = "not-submitted";
+@@ -377,7 +320,10 @@ export class LocalDaemonTransport {
+           }
+           const value = values[0];
+           if (value === undefined) return;
+-          const response = LocalDaemonTransport.responseFor(request, value);
++          const response =
++            request.kind === "execution-status"
++              ? this.validator.executionStatusResponse(request, value)
++              : this.validator.lifecycleResponse(request, value);
+           delivery = "accepted";
+           settled = true;
+           socket.end();
+@@ -443,12 +389,9 @@ export class LocalDaemonTransport {
+     endpoint: string,
+     request: DaemonExecuteRequest,
+   ): Promise<DaemonExecutionReceipt> {
+-    LocalDaemonTransport.assertRequest(request);
++    this.validator.request(request);
+     return new Promise((resolve, reject) => {
+-      const decoder = new DaemonTransferFrameDecoder(
+-        this.maximumControlFrameBytes,
+-        this.maximumChunkRawBytes,
+-      );
++      const decoder = this.codec.transferDecoder();
+       const output = new LocalDaemonOutput({
+         policy: this.outputPolicy,
+         ...(this.outputDirectory === undefined ? {} : { directory: this.outputDirectory }),
+@@ -525,7 +468,7 @@ export class LocalDaemonTransport {
+       });
+       socket.once("connect", () => {
+         try {
+-          const encoded = this.encodeFrame(request);
++          const encoded = this.codec.encodeControl(request);
+           delivery = "submitted-unconfirmed";
+           this.writeEncodedFrame(socket, encoded);
+         } catch (error) {
+@@ -549,7 +492,7 @@ export class LocalDaemonTransport {
+             await transfer.acceptChunk(value);
+             continue;
+           }
+-          const frame = LocalDaemonTransport.executionFrameFor(request, value);
++          const frame = this.validator.executionFrame(request, value);
+           if (frame.kind === "rejected") {
+             if (acceptance !== undefined || terminal) {
+               throw new Error("Daemon rejected an already accepted request");
+@@ -662,10 +605,7 @@ export class LocalDaemonTransport {
+     transfer: DaemonResultTransferReceiver,
+   ): DaemonExecutionReceipt["completion"] {
+     return new Promise((resolve, reject) => {
+-      const decoder = new DaemonTransferFrameDecoder(
+-        this.maximumControlFrameBytes,
+-        this.maximumChunkRawBytes,
+-      );
++      const decoder = this.codec.transferDecoder();
+       const socket = createConnection(endpoint);
+       let ended = false;
+       let settled = false;
+@@ -702,7 +642,7 @@ export class LocalDaemonTransport {
+             await transfer.acceptChunk(value);
+             continue;
+           }
+-          const frame = LocalDaemonTransport.executionFrameFor(request, value);
++          const frame = this.validator.executionFrame(request, value);
+           if (frame.kind === "result-manifest") {
+             transfer.acceptManifest(frame);
+             continue;
+@@ -770,7 +710,7 @@ export class LocalDaemonTransport {
+       transferId: manifest.transferId,
+     };
+     await new Promise<void>((resolve, reject) => {
+-      const decoder = new DaemonFrameDecoder(this.maximumFrameBytes);
++      const decoder = this.codec.controlDecoder();
+       const socket = createConnection(endpoint);
+       let responseReceived = false;
+       let settled = false;
+@@ -811,16 +751,7 @@ export class LocalDaemonTransport {
+           const values = decoder.append(Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes));
+           for (const response of values) {
+             if (responseReceived) throw new Error("Duplicate daemon result acknowledgement");
+-            LocalDaemonTransport.assertResponse(response);
+-            if (
+-              response.kind !== "result-acknowledged" ||
+-              response.instanceId !== request.instanceId ||
+-              response.processToken !== request.processToken ||
+-              response.requestId !== request.requestId ||
+-              response.transferId !== manifest.transferId
+-            ) {
+-              throw new Error("Invalid daemon result acknowledgement");
+-            }
++            this.validator.resultAcknowledgement(request, manifest.transferId, response);
+             responseReceived = true;
+           }
+           if (responseReceived) socket.end();
+@@ -850,10 +781,7 @@ export class LocalDaemonTransport {
+     return response.status;
+   }
+ 
+-  async listen(
+-    endpoint: string,
+-    handler: (request: DaemonRequest, send: DaemonServerSend) => Promise<DaemonResponse | void>,
+-  ): Promise<DaemonServer> {
++  async listen(endpoint: string, handler: DaemonRequestHandler): Promise<DaemonServer> {
+     if (process.platform !== "win32") {
+       mkdirSync(dirname(endpoint), { recursive: true, mode: 0o700 });
+       if (existsSync(endpoint)) {
+@@ -894,11 +822,8 @@ export class LocalDaemonTransport {
+     });
+   }
+ 
+-  private serve(
+-    socket: Socket,
+-    handler: (request: DaemonRequest, send: DaemonServerSend) => Promise<DaemonResponse | void>,
+-  ): void {
+-    const decoder = new DaemonFrameDecoder(this.maximumFrameBytes);
++  private serve(socket: Socket, handler: DaemonRequestHandler): void {
++    const decoder = this.codec.controlDecoder();
+     let responses = Promise.resolve();
+     let writes = Promise.resolve();
+     const closeListeners = new Set<() => void>();
+@@ -918,10 +843,10 @@ export class LocalDaemonTransport {
+     socket.on("data", (bytes) => {
+       try {
+         for (const value of decoder.append(Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes))) {
+-          LocalDaemonTransport.assertRequest(value);
++          const request = this.validator.request(value);
+           responses = responses
+             .then(async () => {
+-              const response = await handler(value, send);
++              const response = await handler(request, send);
+               if (response !== undefined) await send(response);
+             })
+             .catch(() => {
+@@ -951,21 +876,14 @@ export class LocalDaemonTransport {
+   }
+ 
+   private writeFrame(socket: Socket, value: unknown): void {
+-    this.writeEncodedFrame(socket, this.encodeFrame(value));
++    this.writeEncodedFrame(socket, this.codec.encodeControl(value));
+   }
+ 
+   private async writeServerMessage(socket: Socket, message: DaemonServerMessage): Promise<void> {
+-    if ("kind" in message) {
+-      await this.writeEncodedServerFrame(socket, this.encodeFrame(message));
+-      return;
+-    }
+-    await this.writeEncodedServerFrame(
+-      socket,
+-      DaemonResultChunkCodec.encode(message, this.maximumChunkRawBytes),
+-    );
++    await this.writeEncodedServerFrame(socket, this.codec.encodeServerMessage(message));
+   }
+ 
+-  private async writeEncodedServerFrame(socket: Socket, frame: Buffer): Promise<void> {
++  private async writeEncodedServerFrame(socket: Socket, frame: Uint8Array): Promise<void> {
+     const chunkSize = this.writeChunkSize ?? frame.length;
+     for (let offset = 0; offset < frame.length; offset += chunkSize) {
+       if (socket.destroyed) throw new Error("Daemon socket closed during response delivery");
+@@ -999,17 +917,7 @@ export class LocalDaemonTransport {
+     });
+   }
+ 
+-  private encodeFrame(value: unknown): Buffer {
+-    const payload = Buffer.from(JSON.stringify(value), "utf8");
+-    if (payload.length > this.maximumFrameBytes) {
+-      throw new Error(`Daemon frame exceeds ${this.maximumFrameBytes} bytes`);
+-    }
+-    const prefix = Buffer.alloc(4);
+-    prefix.writeUInt32BE(payload.length);
+-    return Buffer.concat([prefix, payload]);
+-  }
+-
+-  private writeEncodedFrame(socket: Pick<Socket, "write">, frame: Buffer): void {
++  private writeEncodedFrame(socket: Pick<Socket, "write">, frame: Uint8Array): void {
+     if (this.writeChunkSize === undefined) {
+       socket.write(frame);
+       return;
+@@ -1019,198 +927,12 @@ export class LocalDaemonTransport {
+     }
+   }
+ 
+-  private static responseFor(
+-    request: DaemonLifecycleRequest | DaemonExecutionStatusRequest,
+-    value: unknown,
+-  ): DaemonLifecycleResponse | DaemonExecutionStatusResponse {
+-    LocalDaemonTransport.assertResponse(value);
+-    if (request.kind === "identify") {
+-      if (value.kind !== "identity") {
+-        throw new DaemonResponseError("corrupt", "Daemon returned a non-identity response");
+-      }
+-      if (value.instanceId !== request.instanceId || value.processToken !== request.processToken) {
+-        throw new DaemonResponseError(
+-          "authentication",
+-          "Daemon identity does not match process instance",
+-          value.instanceId === request.instanceId ? value.instanceId : undefined,
+-        );
+-      }
+-      return value;
+-    }
+-    if (request.kind === "terminate" || request.kind === "kill") {
+-      const expectedKind = request.kind === "terminate" ? "terminating" : "killing";
+-      if (value.kind !== expectedKind) {
+-        throw new DaemonResponseError("corrupt", "Daemon returned a non-termination response");
+-      }
+-      if (value.instanceId !== request.instanceId || value.processToken !== request.processToken) {
+-        throw new DaemonResponseError(
+-          "authentication",
+-          "Daemon termination does not match process instance",
+-          value.instanceId === request.instanceId ? value.instanceId : undefined,
+-        );
+-      }
+-      return value;
+-    }
+-    if (request.kind === "ping") {
+-      if (value.kind !== "pong") {
+-        throw new DaemonResponseError(
+-          "corrupt",
+-          "Daemon pong does not match request protocol and instance",
+-        );
+-      }
+-      if (value.instanceId !== request.instanceId) {
+-        throw new DaemonResponseError(
+-          "authentication",
+-          "Daemon pong does not match request instance",
+-        );
+-      }
+-      if (value.protocolVersion !== request.protocolVersion) {
+-        throw new DaemonResponseError(
+-          "incompatible",
+-          "Daemon pong does not match request protocol",
+-          value.instanceId,
+-        );
+-      }
+-      return value;
+-    }
+-    if (request.kind === "execution-status") {
+-      if (value.kind !== "execution-status") {
+-        throw new DaemonResponseError("corrupt", "Daemon returned a non-status response");
+-      }
+-      LocalDaemonTransport.assertExecutionCoordinates(request, value);
+-      return value;
+-    }
+-    if (value.kind !== "stopped") {
+-      throw new DaemonResponseError("corrupt", "Daemon returned a non-stop response");
+-    }
+-    if (value.instanceId !== request.instanceId) {
+-      throw new DaemonResponseError(
+-        "authentication",
+-        "Daemon stop response does not match instance",
+-      );
+-    }
+-    return value;
+-  }
+-
+-  private static assertRequest(value: unknown): asserts value is DaemonRequest {
+-    if (!LocalDaemonTransport.isRecord(value) || typeof value.kind !== "string") {
+-      throw new Error("Malformed daemon request");
+-    }
+-    if (value.kind === "identify" || value.kind === "terminate" || value.kind === "kill") {
+-      if (typeof value.instanceId !== "string" || typeof value.processToken !== "string") {
+-        throw new Error("Malformed daemon identity request");
+-      }
+-      return;
+-    }
+-    if (typeof value.protocolVersion !== "number" || typeof value.instanceId !== "string") {
+-      throw new Error("Malformed daemon request envelope");
+-    }
+-    if (value.kind === "ping" || value.kind === "stop") return;
+-    if (
+-      (value.kind !== "execute" &&
+-        value.kind !== "execution-status" &&
+-        value.kind !== "result-fetch" &&
+-        value.kind !== "result-ack") ||
+-      typeof value.processToken !== "string" ||
+-      !DaemonRuntimeValues.isRequestId(value.requestId) ||
+-      (value.kind === "execute" && !DaemonRuntimeValues.isCommandName(value.commandName)) ||
+-      (value.kind === "execute" && !LocalDaemonTransport.isExecutionRequest(value.request)) ||
+-      (value.kind === "result-fetch" && !LocalDaemonTransport.isCount(value.offset)) ||
+-      (value.kind === "result-ack" && typeof value.transferId !== "string")
+-    ) {
+-      throw new Error("Malformed daemon execution request");
+-    }
+-  }
+-
+-  private static assertResponse(value: unknown): asserts value is DaemonResponse {
+-    if (!LocalDaemonTransport.isRecord(value) || typeof value.kind !== "string") {
+-      throw new Error("Malformed daemon response");
+-    }
+-    if (value.kind === "pong") {
+-      if (
+-        typeof value.protocolVersion !== "number" ||
+-        typeof value.instanceId !== "string" ||
+-        typeof value.symnavVersion !== "string" ||
+-        (value.state !== undefined &&
+-          value.state !== "starting" &&
+-          value.state !== "ready" &&
+-          value.state !== "busy") ||
+-        (value.startedAt !== undefined && typeof value.startedAt !== "number") ||
+-        (value.fileCount !== undefined && typeof value.fileCount !== "number") ||
+-        (value.memoryBytes !== undefined && typeof value.memoryBytes !== "number") ||
+-        (value.lastNavigationAt !== undefined && typeof value.lastNavigationAt !== "number") ||
+-        (value.currentCommand !== undefined && typeof value.currentCommand !== "string") ||
+-        (value.currentCommandElapsedMs !== undefined &&
+-          typeof value.currentCommandElapsedMs !== "number") ||
+-        (value.queued !== undefined && typeof value.queued !== "number") ||
+-        (value.activity !== undefined && !LocalDaemonTransport.isActivitySnapshot(value.activity))
+-      ) {
+-        throw new Error("Malformed daemon pong");
+-      }
+-      return;
+-    }
+-    if (value.kind === "identity") {
+-      if (
+-        typeof value.instanceId !== "string" ||
+-        typeof value.processToken !== "string" ||
+-        !Number.isInteger(value.pid) ||
+-        typeof value.startedAt !== "number"
+-      ) {
+-        throw new Error("Malformed daemon identity");
+-      }
+-      return;
+-    }
+-    if (value.kind === "terminating" || value.kind === "killing") {
+-      if (typeof value.instanceId !== "string" || typeof value.processToken !== "string") {
+-        throw new Error("Malformed daemon termination response");
+-      }
+-      return;
+-    }
+-    if (value.kind === "stopped") {
+-      if (typeof value.instanceId !== "string") throw new Error("Malformed daemon stop response");
+-      return;
+-    }
+-    if (
+-      value.kind === "accepted" ||
+-      value.kind === "rejected" ||
+-      value.kind === "result-manifest" ||
+-      value.kind === "result-end" ||
+-      value.kind === "execution-failed"
+-    ) {
+-      LocalDaemonTransport.assertExecutionFrame(value);
+-      return;
+-    }
+-    if (value.kind === "execution-status") {
+-      if (
+-        typeof value.instanceId !== "string" ||
+-        typeof value.processToken !== "string" ||
+-        !DaemonRuntimeValues.isRequestId(value.requestId) ||
+-        !LocalDaemonTransport.isExecutionStatus(value.status)
+-      ) {
+-        throw new Error("Malformed daemon execution status");
+-      }
+-      return;
+-    }
+-    if (value.kind === "result-acknowledged") {
+-      if (
+-        typeof value.instanceId !== "string" ||
+-        typeof value.processToken !== "string" ||
+-        !DaemonRuntimeValues.isRequestId(value.requestId) ||
+-        typeof value.transferId !== "string"
+-      ) {
+-        throw new Error("Malformed daemon result acknowledgement");
+-      }
+-      return;
+-    }
+-    throw new Error("Malformed daemon response");
+-  }
+-
+   private static transportError(
+     error: unknown,
+     delivery: DaemonDeliveryState,
+   ): DaemonTransportError {
+     if (error instanceof DaemonTransportError) return error;
+-    if (error instanceof DaemonResponseError) {
++    if (error instanceof DaemonProtocolError) {
+       return new DaemonTransportError(
+         error.code,
+         "accepted",
+@@ -1222,292 +944,14 @@ export class LocalDaemonTransport {
+     return new DaemonTransportError("corrupt", delivery, message);
+   }
+ 
+-  private static executionFrameFor(
+-    request: DaemonExecuteRequest,
+-    value: unknown,
+-  ): DaemonExecutionServerFrame {
+-    LocalDaemonTransport.assertResponse(value);
+-    if (
+-      value.kind !== "accepted" &&
+-      value.kind !== "rejected" &&
+-      value.kind !== "result-manifest" &&
+-      value.kind !== "result-end" &&
+-      value.kind !== "execution-failed"
+-    ) {
+-      throw new DaemonResponseError("corrupt", "Daemon returned a non-execution frame");
+-    }
+-    LocalDaemonTransport.assertExecutionCoordinates(request, value);
+-    return value;
+-  }
+-
+-  private static assertExecutionCoordinates(
+-    request: Pick<DaemonExecuteRequest, "instanceId" | "processToken" | "requestId">,
+-    response: Pick<DaemonExecutionServerFrame, "instanceId" | "processToken" | "requestId">,
+-  ): void {
+-    if (response.instanceId !== request.instanceId) {
+-      throw new DaemonResponseError("authentication", "Daemon execution instance does not match");
+-    }
+-    if (response.processToken !== request.processToken) {
+-      throw new DaemonResponseError(
+-        "authentication",
+-        "Daemon execution process token does not match",
+-        response.instanceId,
+-      );
+-    }
+-    if (response.requestId !== request.requestId) {
+-      throw new DaemonResponseError(
+-        "corrupt",
+-        "Daemon execution request identifier does not match",
+-        response.instanceId,
+-      );
+-    }
+-  }
+-
+-  private static assertExecutionFrame(
+-    value: Record<string, unknown>,
+-  ): asserts value is DaemonExecutionServerFrame {
+-    if (
+-      typeof value.instanceId !== "string" ||
+-      typeof value.processToken !== "string" ||
+-      !DaemonRuntimeValues.isRequestId(value.requestId)
+-    ) {
+-      throw new Error("Malformed daemon execution frame");
+-    }
+-    if (value.kind === "accepted") {
+-      if (
+-        !LocalDaemonTransport.hasExactKeys(value, [
+-          "kind",
+-          "instanceId",
+-          "processToken",
+-          "requestId",
+-          "acceptedAt",
+-          "queuePosition",
+-        ]) ||
+-        !LocalDaemonTransport.isMetric(value.acceptedAt) ||
+-        !LocalDaemonTransport.isCount(value.queuePosition)
+-      ) {
+-        throw new Error("Malformed daemon acceptance");
+-      }
+-      return;
+-    }
+-    if (value.kind === "rejected") {
+-      if (
+-        !LocalDaemonTransport.hasExactKeys(value, [
+-          "kind",
+-          "instanceId",
+-          "processToken",
+-          "requestId",
+-          "code",
+-          "retrySafe",
+-        ]) ||
+-        typeof value.retrySafe !== "boolean"
+-      ) {
+-        throw new Error("Malformed daemon execution rejection");
+-      }
+-      try {
+-        DaemonAdmissionRejections.assertConsistent(
+-          value as unknown as DaemonRejectedExecutionFrame,
+-        );
+-      } catch {
+-        throw new Error("Malformed daemon execution rejection");
+-      }
+-      return;
+-    }
+-    if (value.kind === "result-manifest") {
+-      if (
+-        !LocalDaemonTransport.hasExactKeys(value, [
+-          "kind",
+-          "instanceId",
+-          "processToken",
+-          "requestId",
+-          "manifest",
+-        ]) ||
+-        !LocalDaemonTransport.isCompletionManifest(value.manifest) ||
+-        value.manifest.instanceId !== value.instanceId ||
+-        value.manifest.requestId !== value.requestId
+-      ) {
+-        throw new Error("Malformed daemon result manifest");
+-      }
+-      return;
+-    }
+-    if (value.kind === "result-end") {
+-      if (
+-        !LocalDaemonTransport.hasExactKeys(value, [
+-          "kind",
+-          "instanceId",
+-          "processToken",
+-          "requestId",
+-          "transferId",
+-          "rawBytes",
+-          "recordCount",
+-          "sha256",
+-        ]) ||
+-        typeof value.transferId !== "string" ||
+-        !LocalDaemonTransport.isCount(value.rawBytes) ||
+-        !LocalDaemonTransport.isCount(value.recordCount) ||
+-        !LocalDaemonTransport.isDigest(value.sha256)
+-      ) {
+-        throw new Error("Malformed daemon result end");
+-      }
+-      return;
+-    }
+-    if (
+-      !LocalDaemonTransport.hasExactKeys(value, [
+-        "kind",
+-        "instanceId",
+-        "processToken",
+-        "requestId",
+-        "code",
+-      ]) ||
+-      !DaemonExecutionFailures.isCode(value.code)
+-    ) {
+-      throw new Error("Malformed daemon execution failure");
+-    }
+-  }
+-
+-  private static isCompletionManifest(value: unknown): value is CompletionSpoolManifest {
+-    return (
+-      LocalDaemonTransport.isRecord(value) &&
+-      LocalDaemonTransport.hasExactKeys(value, [
+-        "transferId",
+-        "requestId",
+-        "instanceId",
+-        "exitCode",
+-        "rawBytes",
+-        "recordCount",
+-        "sha256",
+-      ]) &&
+-      typeof value.transferId === "string" &&
+-      value.transferId.length > 0 &&
+-      DaemonRuntimeValues.isRequestId(value.requestId) &&
+-      typeof value.instanceId === "string" &&
+-      value.instanceId.length > 0 &&
+-      LocalDaemonTransport.isCount(value.exitCode) &&
+-      LocalDaemonTransport.isCount(value.rawBytes) &&
+-      LocalDaemonTransport.isCount(value.recordCount) &&
+-      LocalDaemonTransport.isDigest(value.sha256)
+-    );
+-  }
+-
+-  private static isDigest(value: unknown): value is string {
+-    return typeof value === "string" && /^[a-f\d]{64}$/.test(value);
+-  }
+-
+-  private static isExecutionStatus(value: unknown): value is DaemonExecutionStatus {
+-    if (!LocalDaemonTransport.isRecord(value)) return false;
+-    if (value.state === "unknown" || value.state === "completed") return true;
+-    if (value.state === "queued") return LocalDaemonTransport.isCount(value.queuePosition);
+-    if (value.state === "running") return LocalDaemonTransport.isMetric(value.startedAt);
+-    return value.state === "failed" && DaemonExecutionFailures.isCode(value.code);
+-  }
+-
+-  private static isActivitySnapshot(value: unknown): boolean {
+-    if (!LocalDaemonTransport.isRecord(value)) return false;
+-    const lifecycle = value.lifecycle;
+-    const current = value.current;
+-    const expectedKeys = [
+-      "lifecycle",
+-      "pid",
+-      "startedAt",
+-      "startupElapsedMs",
+-      "processRssBytes",
+-      "hardProcessRssBytes",
+-      "workerGeneration",
+-      "queued",
+-      "spoolBytes",
+-    ];
+-    if (value.workerHeapUsedBytes !== undefined) expectedKeys.push("workerHeapUsedBytes");
+-    if (value.lastCompletedAgoMs !== undefined) expectedKeys.push("lastCompletedAgoMs");
+-    if (
+-      lifecycle === "ready" ||
+-      lifecycle === "busy" ||
+-      ((lifecycle === "recovering" || lifecycle === "draining") && value.fileCount !== undefined)
+-    ) {
+-      expectedKeys.push("fileCount");
+-    }
+-    if (lifecycle === "busy") expectedKeys.push("current");
+-    if (lifecycle === "recovering") expectedKeys.push("recoveryDetail");
+-    return (
+-      (lifecycle === "starting" ||
+-        lifecycle === "ready" ||
+-        lifecycle === "busy" ||
+-        lifecycle === "recovering" ||
+-        lifecycle === "draining") &&
+-      LocalDaemonTransport.hasExactKeys(value, expectedKeys) &&
+-      (lifecycle !== "recovering" ||
+-        value.recoveryDetail === "resource-pressure" ||
+-        value.recoveryDetail === "worker-replacement") &&
+-      Number.isInteger(value.pid) &&
+-      (value.pid as number) > 0 &&
+-      LocalDaemonTransport.isMetric(value.startedAt) &&
+-      LocalDaemonTransport.isMetric(value.startupElapsedMs) &&
+-      (lifecycle === "ready" || lifecycle === "busy"
+-        ? LocalDaemonTransport.isCount(value.fileCount)
+-        : lifecycle === "starting"
+-          ? value.fileCount === undefined
+-          : value.fileCount === undefined || LocalDaemonTransport.isCount(value.fileCount)) &&
+-      LocalDaemonTransport.isCount(value.processRssBytes) &&
+-      LocalDaemonTransport.isCount(value.hardProcessRssBytes) &&
+-      (value.workerHeapUsedBytes === undefined ||
+-        LocalDaemonTransport.isCount(value.workerHeapUsedBytes)) &&
+-      LocalDaemonTransport.isCount(value.workerGeneration) &&
+-      (lifecycle !== "busy" ||
+-        (LocalDaemonTransport.isRecord(current) &&
+-          LocalDaemonTransport.hasExactKeys(current, ["requestId", "command", "elapsedMs"]) &&
+-          DaemonRuntimeValues.isRequestId(current.requestId) &&
+-          DaemonRuntimeValues.isCommandName(current.command) &&
+-          LocalDaemonTransport.isMetric(current.elapsedMs))) &&
+-      LocalDaemonTransport.isCount(value.queued) &&
+-      (value.lastCompletedAgoMs === undefined ||
+-        LocalDaemonTransport.isMetric(value.lastCompletedAgoMs)) &&
+-      LocalDaemonTransport.isCount(value.spoolBytes)
+-    );
+-  }
+-
+-  private static isCount(value: unknown): boolean {
+-    return Number.isInteger(value) && (value as number) >= 0;
+-  }
+-
+-  private static isMetric(value: unknown): boolean {
+-    return typeof value === "number" && Number.isFinite(value) && value >= 0;
+-  }
+-
+-  private static isExecutionRequest(value: unknown): boolean {
+-    if (!LocalDaemonTransport.isRecord(value)) return false;
+-    return (
+-      LocalDaemonTransport.hasExactKeys(value, [
+-        "argv",
+-        "cwd",
+-        "telemetryEnabled",
+-        "executionMode",
+-      ]) &&
+-      Array.isArray(value.argv) &&
+-      value.argv.every((arg) => typeof arg === "string") &&
+-      typeof value.cwd === "string" &&
+-      typeof value.telemetryEnabled === "boolean" &&
+-      (value.executionMode === "cold" ||
+-        value.executionMode === "warm" ||
+-        value.executionMode === "fallback")
+-    );
+-  }
+-
+-  private static isRecord(value: unknown): value is Record<string, unknown> {
+-    return typeof value === "object" && value !== null && !Array.isArray(value);
+-  }
+-
+   private static isResultChunk(value: unknown): value is DaemonResultChunk {
+     return (
+-      LocalDaemonTransport.isRecord(value) &&
++      typeof value === "object" &&
++      value !== null &&
++      !Array.isArray(value) &&
+       !("kind" in value) &&
++      "bytes" in value &&
+       value.bytes instanceof Uint8Array
+     );
+   }
+-
+-  private static hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+-    const actual = Object.keys(value).sort();
+-    const expected = [...keys].sort();
+-    return (
+-      actual.length === expected.length && actual.every((key, index) => key === expected[index])
+-    );
+-  }
+ }
+diff --git a/apps/cli/src/daemon/workspace-daemon-requests.test.ts b/apps/cli/src/daemon/workspace-daemon-requests.test.ts
+index 5489c5abc..76883d5eb 100644
+--- a/apps/cli/src/daemon/workspace-daemon-requests.test.ts
++++ b/apps/cli/src/daemon/workspace-daemon-requests.test.ts
+@@ -27,7 +27,7 @@ import {
+ } from "./completion-spool.js";
+ import { TestDaemonRegistry as DaemonRegistry } from "../../test/helpers/daemon-registry.js";
+ import { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
+-import type { LocalDaemonTransport } from "./local-daemon-transport.js";
++import type { DaemonRequestServer, DaemonServerSend } from "./daemon-transport.js";
+ import type { AcceptedRequestLedger } from "./accepted-request-ledger.js";
+ import type {
+   DaemonNavigationWorker,
+@@ -1662,7 +1662,7 @@ class RequestHarness {
+       policy: daemonPolicy,
+       dependencies: createDefaultDependencies(harness.identity.stateDirectory, daemonPolicy),
+       registry: harness.registry,
+-      transport: harness.transport as unknown as LocalDaemonTransport,
++      transport: harness.transport satisfies DaemonRequestServer,
+       ...(navigationWorker === undefined ? {} : { navigationWorker }),
+       ...(options.navigationWorkerFactory === undefined
+         ? {}
+@@ -1945,10 +1945,7 @@ interface RequestHarnessOptions {
+ 
+ class RequestTransport {
+   private handler:
+-    | ((
+-        request: DaemonRequest,
+-        send: (response: DaemonServerMessage) => Promise<void>,
+-      ) => Promise<DaemonResponse | void>)
++    | ((request: DaemonRequest, send: DaemonServerSend) => Promise<DaemonResponse | void>)
+     | undefined;
+   listenError: Error | undefined;
+   closeError: Error | undefined;
+@@ -1966,12 +1963,13 @@ class RequestTransport {
+     return this.handler !== undefined;
+   }
+ 
++  removeUnavailableEndpoint(): Promise<boolean> {
++    return Promise.resolve(false);
++  }
++
+   async listen(
+     _endpoint: string,
+-    handler: (
+-      request: DaemonRequest,
+-      send: (response: DaemonServerMessage) => Promise<void>,
+-    ) => Promise<DaemonResponse | void>,
++    handler: (request: DaemonRequest, send: DaemonServerSend) => Promise<DaemonResponse | void>,
+   ): Promise<DaemonServer> {
+     if (this.listenError !== undefined) throw this.listenError;
+     this.handler = handler;
+@@ -1985,7 +1983,10 @@ class RequestTransport {
+ 
+   async receive(request: DaemonRequest): Promise<DaemonResponse> {
+     if (this.handler === undefined) return Promise.reject(new Error("Transport is not listening"));
+-    const response = await this.handler(request, async () => undefined);
++    const send: DaemonServerSend = Object.assign(async () => undefined, {
++      onClose: () => () => undefined,
++    });
++    const response = await this.handler(request, send);
+     if (response === undefined) throw new Error("Transport handler returned no response");
+     return response;
+   }
+diff --git a/apps/cli/src/daemon/workspace-daemon.test.ts b/apps/cli/src/daemon/workspace-daemon.test.ts
+index 730e4961f..f112f134c 100644
+--- a/apps/cli/src/daemon/workspace-daemon.test.ts
++++ b/apps/cli/src/daemon/workspace-daemon.test.ts
+@@ -32,7 +32,7 @@ import {
+ import { TestDaemonRegistry as DaemonRegistry } from "../../test/helpers/daemon-registry.js";
+ import { TestDaemonResourcePolicy as DaemonResourcePolicy } from "../../test/helpers/daemon-resource-policy.js";
+ import { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
+-import type { DaemonServerSend } from "./local-daemon-transport.js";
++import type { DaemonServerSend } from "./daemon-transport.js";
+ import { TestLocalDaemonTransport as LocalDaemonTransport } from "../../test/helpers/local-daemon-transport.js";
+ import { TestWorkspaceDaemon as WorkspaceDaemon } from "../../test/helpers/workspace-daemon.js";
+ 
+diff --git a/apps/cli/src/daemon/workspace-daemon.ts b/apps/cli/src/daemon/workspace-daemon.ts
+index 63fc3ab17..5fcbe3b65 100644
+--- a/apps/cli/src/daemon/workspace-daemon.ts
++++ b/apps/cli/src/daemon/workspace-daemon.ts
+@@ -45,7 +45,7 @@ import {
+ import type { DaemonNavigationWorkerResponse } from "./daemon-navigation-worker-protocol.js";
+ import type { DaemonRegistry, DaemonStartupLease } from "./daemon-registry.js";
+ import type { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
+-import type { DaemonServerSend, LocalDaemonTransport } from "./local-daemon-transport.js";
++import type { DaemonRequestServer, DaemonServerSend } from "./daemon-transport.js";
+ import { WorkspaceRequestQueue } from "./workspace-request-queue.js";
+ 
+ export interface WorkspaceDaemonOptions {
+@@ -59,7 +59,7 @@ export interface WorkspaceDaemonOptions {
+     readonly fs: { exists(path: string): Promise<boolean> };
+   };
+   readonly registry: DaemonRegistry;
+-  readonly transport: LocalDaemonTransport;
++  readonly transport: DaemonRequestServer;
+   readonly navigationWorker?: DaemonNavigationWorker;
+   readonly navigationWorkerFactory?: (generation: number) => DaemonNavigationWorker;
+   readonly now?: () => number;
+diff --git a/apps/cli/test/helpers/daemon-controller.ts b/apps/cli/test/helpers/daemon-controller.ts
+index db2df7ab3..6629b7b0b 100644
+--- a/apps/cli/test/helpers/daemon-controller.ts
++++ b/apps/cli/test/helpers/daemon-controller.ts
+@@ -6,7 +6,10 @@ import type {
+   DaemonProcessTerminator,
+ } from "../../src/daemon/daemon-process-launcher.js";
+ import type { DaemonRegistry } from "../../src/daemon/daemon-registry.js";
+-import type { LocalDaemonTransport } from "../../src/daemon/local-daemon-transport.js";
++import type {
++  DaemonExecutionRequester,
++  DaemonLifecycleRequestSender,
++} from "../../src/daemon/daemon-transport.js";
+ 
+ interface TestDaemonControllerOptions {
+   readonly policy?: Pick<DaemonPolicyValues, "startup" | "shutdown">;
+@@ -20,7 +23,7 @@ interface TestDaemonControllerOptions {
+ export class TestDaemonController extends RuntimeDaemonController {
+   constructor(
+     registry: DaemonRegistry,
+-    transport: LocalDaemonTransport,
++    transport: DaemonLifecycleRequestSender & DaemonExecutionRequester,
+     stateDirectory: string,
+     options: TestDaemonControllerOptions = {},
+   ) {
+diff --git a/apps/cli/test/helpers/daemon-startup-coordinator.ts b/apps/cli/test/helpers/daemon-startup-coordinator.ts
+index c519b12e2..1e7941812 100644
+--- a/apps/cli/test/helpers/daemon-startup-coordinator.ts
++++ b/apps/cli/test/helpers/daemon-startup-coordinator.ts
+@@ -6,7 +6,10 @@ import type {
+ } from "../../src/daemon/daemon-process-launcher.js";
+ import type { DaemonRegistry } from "../../src/daemon/daemon-registry.js";
+ import { DaemonStartupCoordinator as RuntimeDaemonStartupCoordinator } from "../../src/daemon/daemon-startup-coordinator.js";
+-import type { LocalDaemonTransport } from "../../src/daemon/local-daemon-transport.js";
++import type {
++  DaemonExecutionRequester,
++  DaemonLifecycleRequestSender,
++} from "../../src/daemon/daemon-transport.js";
+ 
+ interface TestDaemonStartupCoordinatorOptions {
+   readonly policy?: Pick<DaemonPolicyValues, "startup" | "shutdown">;
+@@ -21,7 +24,7 @@ export class TestDaemonStartupCoordinator extends RuntimeDaemonStartupCoordinato
+   constructor(
+     registry: DaemonRegistry,
+     launcher: DaemonProcessLauncher,
+-    transport: LocalDaemonTransport,
++    transport: DaemonLifecycleRequestSender & DaemonExecutionRequester,
+     options: TestDaemonStartupCoordinatorOptions = {},
+   ) {
+     const policy =

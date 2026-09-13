@@ -1,0 +1,584 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>PR #135 — pinned evidence</title>
+<style>body{background:#faf9f3;color:#182f36;font:16px system-ui;margin:3rem auto;max-width:1100px;padding:0 20px}a{color:#056b73}pre{overflow:auto;background:#eef0e9;padding:1rem;line-height:1.5;font-size:12px}pre span{display:block}pre a{text-decoration:none}h2{margin-top:3rem}</style>
+<a href="../index.html#atlas">← Return to the open briefing</a><h1>PR #135 · pinned evidence</h1>
+<p>main <code>b6801ebdd2421d0ca2e4bdd61ec0f04c24ddd73e</code> → tip <code>d07002357d3e9596bfaae910a1ac63b77981620b</code>. These are source snapshots, not a test run.</p>
+<h2>Tip · apps/cli/src/daemon-executor.ts</h2><pre><span id="L1"><a href="#L1">   1</a> import { performance } from &quot;node:perf_hooks&quot;;</span>
+<span id="L2"><a href="#L2">   2</a> import { WorkspaceSession, type BackendRefreshSummary } from &quot;@symnav/core&quot;;</span>
+<span id="L3"><a href="#L3">   3</a> import {</span>
+<span id="L4"><a href="#L4">   4</a>   DaemonPolicy,</span>
+<span id="L5"><a href="#L5">   5</a>   type DaemonDiagnostics,</span>
+<span id="L6"><a href="#L6">   6</a>   type DaemonExecutor,</span>
+<span id="L7"><a href="#L7">   7</a>   type DaemonExecutorExecutionResult,</span>
+<span id="L8"><a href="#L8">   8</a>   type DaemonExecutorFactoryOptions,</span>
+<span id="L9"><a href="#L9">   9</a>   type DaemonExecutorInitializationResult,</span>
+<span id="L10"><a href="#L10">  10</a>   type DaemonExecutorOutput,</span>
+<span id="L11"><a href="#L11">  11</a>   type DaemonExecutorRequest,</span>
+<span id="L12"><a href="#L12">  12</a>   type DaemonExecutorModuleUrl,</span>
+<span id="L13"><a href="#L13">  13</a>   type DaemonOutputRecord,</span>
+<span id="L14"><a href="#L14">  14</a> } from &quot;@symnav/daemon&quot;;</span>
+<span id="L15"><a href="#L15">  15</a> import { CliProgramExecutor } from &quot;./cli-program-executor.js&quot;;</span>
+<span id="L16"><a href="#L16">  16</a> import type { CommandOutput } from &quot;./command-execution-result.js&quot;;</span>
+<span id="L17"><a href="#L17">  17</a> import type { CommandPhaseDurations, ProgramDependencies } from &quot;./program-dependencies.js&quot;;</span>
+<span id="L18"><a href="#L18">  18</a> import { createDefaultDependencies } from &quot;./program.js&quot;;</span>
+<span id="L19"><a href="#L19">  19</a> </span>
+<span id="L20"><a href="#L20">  20</a> class CliDaemonExecutorOutput implements DaemonExecutorOutput {</span>
+<span id="L21"><a href="#L21">  21</a>   private disposal: Promise&lt;void&gt; | undefined;</span>
+<span id="L22"><a href="#L22">  22</a> </span>
+<span id="L23"><a href="#L23">  23</a>   constructor(private readonly output: CommandOutput) {}</span>
+<span id="L24"><a href="#L24">  24</a> </span>
+<span id="L25"><a href="#L25">  25</a>   async *records(): AsyncIterable&lt;DaemonOutputRecord&gt; {</span>
+<span id="L26"><a href="#L26">  26</a>     for await (const record of this.output.records()) {</span>
+<span id="L27"><a href="#L27">  27</a>       yield { stream: record.stream, bytes: record.bytes };</span>
+<span id="L28"><a href="#L28">  28</a>     }</span>
+<span id="L29"><a href="#L29">  29</a>   }</span>
+<span id="L30"><a href="#L30">  30</a> </span>
+<span id="L31"><a href="#L31">  31</a>   dispose(): Promise&lt;void&gt; {</span>
+<span id="L32"><a href="#L32">  32</a>     this.disposal ??= this.output.dispose();</span>
+<span id="L33"><a href="#L33">  33</a>     return this.disposal;</span>
+<span id="L34"><a href="#L34">  34</a>   }</span>
+<span id="L35"><a href="#L35">  35</a> }</span>
+<span id="L36"><a href="#L36">  36</a> </span>
+<span id="L37"><a href="#L37">  37</a> class CliDaemonExecutor implements DaemonExecutor {</span>
+<span id="L38"><a href="#L38">  38</a>   private readonly workspaceSession: WorkspaceSession;</span>
+<span id="L39"><a href="#L39">  39</a>   private readonly programExecutor: CliProgramExecutor;</span>
+<span id="L40"><a href="#L40">  40</a>   private initialization: Promise&lt;DaemonExecutorInitializationResult&gt; | undefined;</span>
+<span id="L41"><a href="#L41">  41</a>   private latestRefresh: BackendRefreshSummary = {</span>
+<span id="L42"><a href="#L42">  42</a>     added: 0,</span>
+<span id="L43"><a href="#L43">  43</a>     changed: 0,</span>
+<span id="L44"><a href="#L44">  44</a>     removed: 0,</span>
+<span id="L45"><a href="#L45">  45</a>     unchanged: 0,</span>
+<span id="L46"><a href="#L46">  46</a>   };</span>
+<span id="L47"><a href="#L47">  47</a>   private latestCommandDurations: CommandPhaseDurations = {</span>
+<span id="L48"><a href="#L48">  48</a>     freshnessMs: 0,</span>
+<span id="L49"><a href="#L49">  49</a>     navigationMs: 0,</span>
+<span id="L50"><a href="#L50">  50</a>     renderMs: 0,</span>
+<span id="L51"><a href="#L51">  51</a>   };</span>
+<span id="L52"><a href="#L52">  52</a> </span>
+<span id="L53"><a href="#L53">  53</a>   constructor(dependencies: ProgramDependencies, sampleResources: () =&gt; void) {</span>
+<span id="L54"><a href="#L54">  54</a>     const backends = dependencies.backends();</span>
+<span id="L55"><a href="#L55">  55</a>     this.workspaceSession = new WorkspaceSession({</span>
+<span id="L56"><a href="#L56">  56</a>       fileSystem: dependencies.fs,</span>
+<span id="L57"><a href="#L57">  57</a>       backends,</span>
+<span id="L58"><a href="#L58">  58</a>       discoveryRetention: &quot;session&quot;,</span>
+<span id="L59"><a href="#L59">  59</a>     });</span>
+<span id="L60"><a href="#L60">  60</a>     this.programExecutor = new CliProgramExecutor(</span>
+<span id="L61"><a href="#L61">  61</a>       {</span>
+<span id="L62"><a href="#L62">  62</a>         ...dependencies,</span>
+<span id="L63"><a href="#L63">  63</a>         backends: () =&gt; backends,</span>
+<span id="L64"><a href="#L64">  64</a>         backendRefreshed: (refresh) =&gt; {</span>
+<span id="L65"><a href="#L65">  65</a>           this.latestRefresh = refresh;</span>
+<span id="L66"><a href="#L66">  66</a>         },</span>
+<span id="L67"><a href="#L67">  67</a>         commandPhasesObserved: (durations) =&gt; {</span>
+<span id="L68"><a href="#L68">  68</a>           this.latestCommandDurations = durations;</span>
+<span id="L69"><a href="#L69">  69</a>           sampleResources();</span>
+<span id="L70"><a href="#L70">  70</a>         },</span>
+<span id="L71"><a href="#L71">  71</a>       },</span>
+<span id="L72"><a href="#L72">  72</a>       this.workspaceSession,</span>
+<span id="L73"><a href="#L73">  73</a>     );</span>
+<span id="L74"><a href="#L74">  74</a>   }</span>
+<span id="L75"><a href="#L75">  75</a> </span>
+<span id="L76"><a href="#L76">  76</a>   initialize(workspaceRoot: string): Promise&lt;DaemonExecutorInitializationResult&gt; {</span>
+<span id="L77"><a href="#L77">  77</a>     this.initialization ??= this.prepare(workspaceRoot);</span>
+<span id="L78"><a href="#L78">  78</a>     return this.initialization;</span>
+<span id="L79"><a href="#L79">  79</a>   }</span>
+<span id="L80"><a href="#L80">  80</a> </span>
+<span id="L81"><a href="#L81">  81</a>   async execute(request: DaemonExecutorRequest): Promise&lt;DaemonExecutorExecutionResult&gt; {</span>
+<span id="L82"><a href="#L82">  82</a>     this.latestCommandDurations = { freshnessMs: 0, navigationMs: 0, renderMs: 0 };</span>
+<span id="L83"><a href="#L83">  83</a>     const result = await this.programExecutor.execute(request);</span>
+<span id="L84"><a href="#L84">  84</a>     return {</span>
+<span id="L85"><a href="#L85">  85</a>       exitCode: result.exitCode,</span>
+<span id="L86"><a href="#L86">  86</a>       output: new CliDaemonExecutorOutput(result.output),</span>
+<span id="L87"><a href="#L87">  87</a>       diagnostics: this.executionDiagnostics(),</span>
+<span id="L88"><a href="#L88">  88</a>     };</span>
+<span id="L89"><a href="#L89">  89</a>   }</span>
+<span id="L90"><a href="#L90">  90</a> </span>
+<span id="L91"><a href="#L91">  91</a>   releaseTransientResources(): Promise&lt;void&gt; {</span>
+<span id="L92"><a href="#L92">  92</a>     return this.workspaceSession.releaseTransientResources();</span>
+<span id="L93"><a href="#L93">  93</a>   }</span>
+<span id="L94"><a href="#L94">  94</a> </span>
+<span id="L95"><a href="#L95">  95</a>   private async prepare(workspaceRoot: string): Promise&lt;DaemonExecutorInitializationResult&gt; {</span>
+<span id="L96"><a href="#L96">  96</a>     const startedAt = performance.now();</span>
+<span id="L97"><a href="#L97">  97</a>     const prepared = await this.workspaceSession.prepare(workspaceRoot);</span>
+<span id="L98"><a href="#L98">  98</a>     this.latestRefresh = prepared.refresh;</span>
+<span id="L99"><a href="#L99">  99</a>     const indexingMs = Math.max(0, performance.now() - startedAt);</span>
+<span id="L100"><a href="#L100"> 100</a>     return {</span>
+<span id="L101"><a href="#L101"> 101</a>       fileCount: prepared.refresh.added + prepared.refresh.unchanged,</span>
+<span id="L102"><a href="#L102"> 102</a>       diagnostics: {</span>
+<span id="L103"><a href="#L103"> 103</a>         refresh: this.refreshDiagnostics(),</span>
+<span id="L104"><a href="#L104"> 104</a>         durations: { discoveryMs: 0, indexingMs },</span>
+<span id="L105"><a href="#L105"> 105</a>       },</span>
+<span id="L106"><a href="#L106"> 106</a>     };</span>
+<span id="L107"><a href="#L107"> 107</a>   }</span>
+<span id="L108"><a href="#L108"> 108</a> </span>
+<span id="L109"><a href="#L109"> 109</a>   private executionDiagnostics(): DaemonDiagnostics {</span>
+<span id="L110"><a href="#L110"> 110</a>     return {</span>
+<span id="L111"><a href="#L111"> 111</a>       refresh: this.refreshDiagnostics(),</span>
+<span id="L112"><a href="#L112"> 112</a>       durations: {</span>
+<span id="L113"><a href="#L113"> 113</a>         freshnessMs: this.latestCommandDurations.freshnessMs,</span>
+<span id="L114"><a href="#L114"> 114</a>         navigationMs: this.latestCommandDurations.navigationMs,</span>
+<span id="L115"><a href="#L115"> 115</a>         renderMs: this.latestCommandDurations.renderMs,</span>
+<span id="L116"><a href="#L116"> 116</a>       },</span>
+<span id="L117"><a href="#L117"> 117</a>     };</span>
+<span id="L118"><a href="#L118"> 118</a>   }</span>
+<span id="L119"><a href="#L119"> 119</a> </span>
+<span id="L120"><a href="#L120"> 120</a>   private refreshDiagnostics(): DaemonDiagnostics {</span>
+<span id="L121"><a href="#L121"> 121</a>     return {</span>
+<span id="L122"><a href="#L122"> 122</a>       added: this.latestRefresh.added,</span>
+<span id="L123"><a href="#L123"> 123</a>       changed: this.latestRefresh.changed,</span>
+<span id="L124"><a href="#L124"> 124</a>       removed: this.latestRefresh.removed,</span>
+<span id="L125"><a href="#L125"> 125</a>       unchanged: this.latestRefresh.unchanged,</span>
+<span id="L126"><a href="#L126"> 126</a>     };</span>
+<span id="L127"><a href="#L127"> 127</a>   }</span>
+<span id="L128"><a href="#L128"> 128</a> }</span>
+<span id="L129"><a href="#L129"> 129</a> </span>
+<span id="L130"><a href="#L130"> 130</a> export function createDaemonExecutor(options: DaemonExecutorFactoryOptions): DaemonExecutor {</span>
+<span id="L131"><a href="#L131"> 131</a>   const dependencies = createDefaultDependencies(</span>
+<span id="L132"><a href="#L132"> 132</a>     options.stateDirectory,</span>
+<span id="L133"><a href="#L133"> 133</a>     DaemonPolicy.currentSystem(),</span>
+<span id="L134"><a href="#L134"> 134</a>   );</span>
+<span id="L135"><a href="#L135"> 135</a>   return createDaemonExecutorFromDependencies(options, dependencies);</span>
+<span id="L136"><a href="#L136"> 136</a> }</span>
+<span id="L137"><a href="#L137"> 137</a> </span>
+<span id="L138"><a href="#L138"> 138</a> export function createDaemonExecutorFromDependencies(</span>
+<span id="L139"><a href="#L139"> 139</a>   options: DaemonExecutorFactoryOptions,</span>
+<span id="L140"><a href="#L140"> 140</a>   dependencies: ProgramDependencies,</span>
+<span id="L141"><a href="#L141"> 141</a> ): DaemonExecutor {</span>
+<span id="L142"><a href="#L142"> 142</a>   if (dependencies.symnavVersion !== options.productVersion) {</span>
+<span id="L143"><a href="#L143"> 143</a>     throw new Error(&quot;Daemon executor version does not match host product&quot;);</span>
+<span id="L144"><a href="#L144"> 144</a>   }</span>
+<span id="L145"><a href="#L145"> 145</a>   return new CliDaemonExecutor(dependencies, options.sampleResources);</span>
+<span id="L146"><a href="#L146"> 146</a> }</span>
+<span id="L147"><a href="#L147"> 147</a> </span>
+<span id="L148"><a href="#L148"> 148</a> export function daemonExecutorModuleUrl(): DaemonExecutorModuleUrl {</span>
+<span id="L149"><a href="#L149"> 149</a>   return new URL(&quot;./daemon-executor.js&quot;, import.meta.url).href;</span>
+<span id="L150"><a href="#L150"> 150</a> }</span></pre>
+<h2>Main · apps/cli/src/daemon/daemon-navigation-worker-entry.ts</h2><pre><span id="L1"><a href="#L1">   1</a> import { performance } from &quot;node:perf_hooks&quot;;</span>
+<span id="L2"><a href="#L2">   2</a> import { parentPort, workerData } from &quot;node:worker_threads&quot;;</span>
+<span id="L3"><a href="#L3">   3</a> import { getHeapStatistics } from &quot;node:v8&quot;;</span>
+<span id="L4"><a href="#L4">   4</a> import type { BackendRefreshSummary } from &quot;@symnav/core&quot;;</span>
+<span id="L5"><a href="#L5">   5</a> import type { CommandPhaseDurations } from &quot;../program-dependencies.js&quot;;</span>
+<span id="L6"><a href="#L6">   6</a> import { createDefaultDependencies } from &quot;../program.js&quot;;</span>
+<span id="L7"><a href="#L7">   7</a> import { RetainedWorkspaceProgram } from &quot;./retained-workspace-program.js&quot;;</span>
+<span id="L8"><a href="#L8">   8</a> import {</span>
+<span id="L9"><a href="#L9">   9</a>   DaemonNavigationWorkerProtocol,</span>
+<span id="L10"><a href="#L10">  10</a>   type DaemonExecutionFailureCode,</span>
+<span id="L11"><a href="#L11">  11</a>   type DaemonNavigationWorkerRequest,</span>
+<span id="L12"><a href="#L12">  12</a>   type DaemonNavigationWorkerResponse,</span>
+<span id="L13"><a href="#L13">  13</a> } from &quot;./daemon-navigation-worker-protocol.js&quot;;</span>
+<span id="L14"><a href="#L14">  14</a> </span>
+<span id="L15"><a href="#L15">  15</a> interface NavigationWorkerData {</span>
+<span id="L16"><a href="#L16">  16</a>   readonly stateDirectory: string;</span>
+<span id="L17"><a href="#L17">  17</a>   readonly generation: number;</span>
+<span id="L18"><a href="#L18">  18</a> }</span>
+<span id="L19"><a href="#L19">  19</a> </span>
+<span id="L20"><a href="#L20">  20</a> class DaemonNavigationWorkerEntry {</span>
+<span id="L21"><a href="#L21">  21</a>   private retainedProgram: RetainedWorkspaceProgram | undefined;</span>
+<span id="L22"><a href="#L22">  22</a>   private latestRefresh: BackendRefreshSummary = {</span>
+<span id="L23"><a href="#L23">  23</a>     added: 0,</span>
+<span id="L24"><a href="#L24">  24</a>     changed: 0,</span>
+<span id="L25"><a href="#L25">  25</a>     removed: 0,</span>
+<span id="L26"><a href="#L26">  26</a>     unchanged: 0,</span>
+<span id="L27"><a href="#L27">  27</a>   };</span>
+<span id="L28"><a href="#L28">  28</a>   private tail: Promise&lt;void&gt; = Promise.resolve();</span>
+<span id="L29"><a href="#L29">  29</a>   private readonly outputAcknowledgements = new Map&lt;string, () =&gt; void&gt;();</span>
+<span id="L30"><a href="#L30">  30</a>   private activeHeapMonitor: WorkerHeapHighWater | undefined;</span>
+<span id="L31"><a href="#L31">  31</a>   private commandDurations: CommandPhaseDurations = {</span>
+<span id="L32"><a href="#L32">  32</a>     freshnessMs: 0,</span>
+<span id="L33"><a href="#L33">  33</a>     navigationMs: 0,</span>
+<span id="L34"><a href="#L34">  34</a>     renderMs: 0,</span>
+<span id="L35"><a href="#L35">  35</a>   };</span>
+<span id="L36"><a href="#L36">  36</a> </span>
+<span id="L37"><a href="#L37">  37</a>   constructor(</span>
+<span id="L38"><a href="#L38">  38</a>     private readonly port: NonNullable&lt;typeof parentPort&gt;,</span>
+<span id="L39"><a href="#L39">  39</a>     private readonly data: NavigationWorkerData,</span>
+<span id="L40"><a href="#L40">  40</a>   ) {}</span>
+<span id="L41"><a href="#L41">  41</a> </span>
+<span id="L42"><a href="#L42">  42</a>   run(): void {</span>
+<span id="L43"><a href="#L43">  43</a>     this.port.on(&quot;message&quot;, (value: unknown) =&gt; {</span>
+<span id="L44"><a href="#L44">  44</a>       if (</span>
+<span id="L45"><a href="#L45">  45</a>         typeof value === &quot;object&quot; &amp;&amp;</span>
+<span id="L46"><a href="#L46">  46</a>         value !== null &amp;&amp;</span>
+<span id="L47"><a href="#L47">  47</a>         &quot;kind&quot; in value &amp;&amp;</span>
+<span id="L48"><a href="#L48">  48</a>         value.kind === &quot;output-ack&quot;</span>
+<span id="L49"><a href="#L49">  49</a>       ) {</span>
+<span id="L50"><a href="#L50">  50</a>         try {</span>
+<span id="L51"><a href="#L51">  51</a>           const request = DaemonNavigationWorkerProtocol.request(value);</span>
+<span id="L52"><a href="#L52">  52</a>           if (request.kind !== &quot;output-ack&quot;) throw new Error(&quot;Invalid output acknowledgement&quot;);</span>
+<span id="L53"><a href="#L53">  53</a>           this.acknowledgeOutput(request.requestId, request.sequence);</span>
+<span id="L54"><a href="#L54">  54</a>           return;</span>
+<span id="L55"><a href="#L55">  55</a>         } catch (error) {</span>
+<span id="L56"><a href="#L56">  56</a>           this.fail(&quot;protocol&quot;, error);</span>
+<span id="L57"><a href="#L57">  57</a>           return;</span>
+<span id="L58"><a href="#L58">  58</a>         }</span>
+<span id="L59"><a href="#L59">  59</a>       }</span>
+<span id="L60"><a href="#L60">  60</a>       this.tail = this.tail.then(() =&gt; this.handle(value));</span>
+<span id="L61"><a href="#L61">  61</a>     });</span>
+<span id="L62"><a href="#L62">  62</a>   }</span>
+<span id="L63"><a href="#L63">  63</a> </span>
+<span id="L64"><a href="#L64">  64</a>   private async handle(value: unknown): Promise&lt;void&gt; {</span>
+<span id="L65"><a href="#L65">  65</a>     let request: DaemonNavigationWorkerRequest;</span>
+<span id="L66"><a href="#L66">  66</a>     try {</span>
+<span id="L67"><a href="#L67">  67</a>       request = DaemonNavigationWorkerProtocol.request(value);</span>
+<span id="L68"><a href="#L68">  68</a>     } catch (error) {</span>
+<span id="L69"><a href="#L69">  69</a>       this.fail(&quot;protocol&quot;, error);</span>
+<span id="L70"><a href="#L70">  70</a>       return;</span>
+<span id="L71"><a href="#L71">  71</a>     }</span>
+<span id="L72"><a href="#L72">  72</a>     if (request.generation !== this.data.generation) return;</span>
+<span id="L73"><a href="#L73">  73</a>     if (request.kind === &quot;initialize&quot;) {</span>
+<span id="L74"><a href="#L74">  74</a>       await this.initialize(request.workspaceRoot);</span>
+<span id="L75"><a href="#L75">  75</a>       return;</span>
+<span id="L76"><a href="#L76">  76</a>     }</span>
+<span id="L77"><a href="#L77">  77</a>     if (request.kind === &quot;execute&quot;) {</span>
+<span id="L78"><a href="#L78">  78</a>       await this.execute(request);</span>
+<span id="L79"><a href="#L79">  79</a>       return;</span>
+<span id="L80"><a href="#L80">  80</a>     }</span>
+<span id="L81"><a href="#L81">  81</a>     if (request.kind === &quot;release-transient&quot;) {</span>
+<span id="L82"><a href="#L82">  82</a>       await this.releaseTransientResources(request.operationId);</span>
+<span id="L83"><a href="#L83">  83</a>       return;</span>
+<span id="L84"><a href="#L84">  84</a>     }</span>
+<span id="L85"><a href="#L85">  85</a>     await this.close();</span>
+<span id="L86"><a href="#L86">  86</a>   }</span>
+<span id="L87"><a href="#L87">  87</a> </span>
+<span id="L88"><a href="#L88">  88</a>   private async initialize(workspaceRoot: string): Promise&lt;void&gt; {</span>
+<span id="L89"><a href="#L89">  89</a>     const startedAt = performance.now();</span>
+<span id="L90"><a href="#L90">  90</a>     try {</span>
+<span id="L91"><a href="#L91">  91</a>       const dependencies = createDefaultDependencies(this.data.stateDirectory);</span>
+<span id="L92"><a href="#L92">  92</a>       dependencies.commandPhasesObserved = (durations) =&gt; {</span>
+<span id="L93"><a href="#L93">  93</a>         this.commandDurations = durations;</span>
+<span id="L94"><a href="#L94">  94</a>         this.activeHeapMonitor?.sample();</span>
+<span id="L95"><a href="#L95">  95</a>       };</span>
+<span id="L96"><a href="#L96">  96</a>       this.retainedProgram = new RetainedWorkspaceProgram(dependencies, (refresh) =&gt; {</span>
+<span id="L97"><a href="#L97">  97</a>         this.latestRefresh = refresh;</span>
+<span id="L98"><a href="#L98">  98</a>       });</span>
+<span id="L99"><a href="#L99">  99</a>       const prepared = await this.retainedProgram.scopeFactory.prepare(workspaceRoot);</span>
+<span id="L100"><a href="#L100"> 100</a>       this.latestRefresh = prepared.refresh;</span>
+<span id="L101"><a href="#L101"> 101</a>       const totalMs = performance.now() - startedAt;</span>
+<span id="L102"><a href="#L102"> 102</a>       this.send({</span>
+<span id="L103"><a href="#L103"> 103</a>         kind: &quot;ready&quot;,</span>
+<span id="L104"><a href="#L104"> 104</a>         generation: this.data.generation,</span>
+<span id="L105"><a href="#L105"> 105</a>         fileCount: prepared.refresh.added + prepared.refresh.unchanged,</span>
+<span id="L106"><a href="#L106"> 106</a>         refresh: prepared.refresh,</span>
+<span id="L107"><a href="#L107"> 107</a>         startupDurations: { discoveryMs: 0, indexingMs: totalMs, totalMs },</span>
+<span id="L108"><a href="#L108"> 108</a>       });</span>
+<span id="L109"><a href="#L109"> 109</a>     } catch (error) {</span>
+<span id="L110"><a href="#L110"> 110</a>       this.fail(&quot;initialization&quot;, error);</span>
+<span id="L111"><a href="#L111"> 111</a>     }</span>
+<span id="L112"><a href="#L112"> 112</a>   }</span>
+<span id="L113"><a href="#L113"> 113</a> </span>
+<span id="L114"><a href="#L114"> 114</a>   private async execute(request: Extract&lt;DaemonNavigationWorkerRequest, { kind: &quot;execute&quot; }&gt;) {</span>
+<span id="L115"><a href="#L115"> 115</a>     const heapMonitor = new WorkerHeapHighWater();</span>
+<span id="L116"><a href="#L116"> 116</a>     this.activeHeapMonitor = heapMonitor;</span>
+<span id="L117"><a href="#L117"> 117</a>     this.commandDurations = { freshnessMs: 0, navigationMs: 0, renderMs: 0 };</span>
+<span id="L118"><a href="#L118"> 118</a>     try {</span>
+<span id="L119"><a href="#L119"> 119</a>       if (this.retainedProgram === undefined) throw new Error(&quot;Navigation worker is not ready&quot;);</span>
+<span id="L120"><a href="#L120"> 120</a>       const result = await this.retainedProgram.execute(request.request);</span>
+<span id="L121"><a href="#L121"> 121</a>       heapMonitor.sample();</span>
+<span id="L122"><a href="#L122"> 122</a>       const outputStartedAt = performance.now();</span>
+<span id="L123"><a href="#L123"> 123</a>       for await (const record of result.output?.records() ?? []) {</span>
+<span id="L124"><a href="#L124"> 124</a>         await this.sendOutput(request.requestId, record);</span>
+<span id="L125"><a href="#L125"> 125</a>         heapMonitor.sample();</span>
+<span id="L126"><a href="#L126"> 126</a>       }</span>
+<span id="L127"><a href="#L127"> 127</a>       await result.output?.dispose();</span>
+<span id="L128"><a href="#L128"> 128</a>       const outputMs = performance.now() - outputStartedAt;</span>
+<span id="L129"><a href="#L129"> 129</a>       const resources = heapMonitor.finish();</span>
+<span id="L130"><a href="#L130"> 130</a>       this.send({</span>
+<span id="L131"><a href="#L131"> 131</a>         kind: &quot;result&quot;,</span>
+<span id="L132"><a href="#L132"> 132</a>         generation: this.data.generation,</span>
+<span id="L133"><a href="#L133"> 133</a>         requestId: request.requestId,</span>
+<span id="L134"><a href="#L134"> 134</a>         result: { exitCode: result.exitCode },</span>
+<span id="L135"><a href="#L135"> 135</a>         refresh: this.latestRefresh,</span>
+<span id="L136"><a href="#L136"> 136</a>         durations: {</span>
+<span id="L137"><a href="#L137"> 137</a>           ...this.commandDurations,</span>
+<span id="L138"><a href="#L138"> 138</a>           outputMs,</span>
+<span id="L139"><a href="#L139"> 139</a>         },</span>
+<span id="L140"><a href="#L140"> 140</a>         resources,</span>
+<span id="L141"><a href="#L141"> 141</a>       });</span>
+<span id="L142"><a href="#L142"> 142</a>     } catch (error) {</span>
+<span id="L143"><a href="#L143"> 143</a>       this.fail(&quot;execution&quot;, error, { requestId: request.requestId });</span>
+<span id="L144"><a href="#L144"> 144</a>     } finally {</span>
+<span id="L145"><a href="#L145"> 145</a>       heapMonitor.close();</span>
+<span id="L146"><a href="#L146"> 146</a>       this.activeHeapMonitor = undefined;</span>
+<span id="L147"><a href="#L147"> 147</a>     }</span>
+<span id="L148"><a href="#L148"> 148</a>   }</span>
+<span id="L149"><a href="#L149"> 149</a> </span>
+<span id="L150"><a href="#L150"> 150</a>   private async releaseTransientResources(operationId: string): Promise&lt;void&gt; {</span>
+<span id="L151"><a href="#L151"> 151</a>     try {</span>
+<span id="L152"><a href="#L152"> 152</a>       await Promise.all(</span>
+<span id="L153"><a href="#L153"> 153</a>         this.retainedProgram?.backends.map((backend) =&gt; backend.releaseTransientResources()) ?? [],</span>
+<span id="L154"><a href="#L154"> 154</a>       );</span>
+<span id="L155"><a href="#L155"> 155</a>       const heap = getHeapStatistics();</span>
+<span id="L156"><a href="#L156"> 156</a>       this.send({</span>
+<span id="L157"><a href="#L157"> 157</a>         kind: &quot;heap&quot;,</span>
+<span id="L158"><a href="#L158"> 158</a>         generation: this.data.generation,</span>
+<span id="L159"><a href="#L159"> 159</a>         operationId,</span>
+<span id="L160"><a href="#L160"> 160</a>         usedHeapBytes: heap.used_heap_size,</span>
+<span id="L161"><a href="#L161"> 161</a>         heapLimitBytes: heap.heap_size_limit,</span>
+<span id="L162"><a href="#L162"> 162</a>       });</span>
+<span id="L163"><a href="#L163"> 163</a>     } catch (error) {</span>
+<span id="L164"><a href="#L164"> 164</a>       this.fail(&quot;resource&quot;, error, { operationId });</span>
+<span id="L165"><a href="#L165"> 165</a>     }</span>
+<span id="L166"><a href="#L166"> 166</a>   }</span>
+<span id="L167"><a href="#L167"> 167</a> </span>
+<span id="L168"><a href="#L168"> 168</a>   private async close(): Promise&lt;void&gt; {</span>
+<span id="L169"><a href="#L169"> 169</a>     await Promise.all(</span>
+<span id="L170"><a href="#L170"> 170</a>       this.retainedProgram?.backends.map((backend) =&gt; backend.releaseTransientResources()) ?? [],</span>
+<span id="L171"><a href="#L171"> 171</a>     );</span>
+<span id="L172"><a href="#L172"> 172</a>     this.send({ kind: &quot;closed&quot;, generation: this.data.generation });</span>
+<span id="L173"><a href="#L173"> 173</a>     this.port.close();</span>
+<span id="L174"><a href="#L174"> 174</a>   }</span>
+<span id="L175"><a href="#L175"> 175</a> </span>
+<span id="L176"><a href="#L176"> 176</a>   private fail(</span>
+<span id="L177"><a href="#L177"> 177</a>     failureCode: DaemonExecutionFailureCode,</span>
+<span id="L178"><a href="#L178"> 178</a>     error: unknown,</span>
+<span id="L179"><a href="#L179"> 179</a>     correlation:</span>
+<span id="L180"><a href="#L180"> 180</a>       | { readonly requestId: string }</span>
+<span id="L181"><a href="#L181"> 181</a>       | { readonly operationId: string }</span>
+<span id="L182"><a href="#L182"> 182</a>       | undefined = undefined,</span>
+<span id="L183"><a href="#L183"> 183</a>   ): void {</span>
+<span id="L184"><a href="#L184"> 184</a>     this.send({</span>
+<span id="L185"><a href="#L185"> 185</a>       kind: &quot;failed&quot;,</span>
+<span id="L186"><a href="#L186"> 186</a>       generation: this.data.generation,</span>
+<span id="L187"><a href="#L187"> 187</a>       ...correlation,</span>
+<span id="L188"><a href="#L188"> 188</a>       failureCode,</span>
+<span id="L189"><a href="#L189"> 189</a>       ...(error instanceof Error ? { errorName: error.name } : {}),</span>
+<span id="L190"><a href="#L190"> 190</a>     });</span>
+<span id="L191"><a href="#L191"> 191</a>   }</span>
+<span id="L192"><a href="#L192"> 192</a> </span>
+<span id="L193"><a href="#L193"> 193</a>   private send(response: DaemonNavigationWorkerResponse): void {</span>
+<span id="L194"><a href="#L194"> 194</a>     const validated = DaemonNavigationWorkerProtocol.response(response);</span>
+<span id="L195"><a href="#L195"> 195</a>     if (validated.kind === &quot;output-chunk&quot;) {</span>
+<span id="L196"><a href="#L196"> 196</a>       this.port.postMessage(validated, [validated.bytes.buffer as ArrayBuffer]);</span>
+<span id="L197"><a href="#L197"> 197</a>       return;</span>
+<span id="L198"><a href="#L198"> 198</a>     }</span>
+<span id="L199"><a href="#L199"> 199</a>     this.port.postMessage(validated);</span>
+<span id="L200"><a href="#L200"> 200</a>   }</span>
+<span id="L201"><a href="#L201"> 201</a> </span>
+<span id="L202"><a href="#L202"> 202</a>   private sendOutput(</span>
+<span id="L203"><a href="#L203"> 203</a>     requestId: string,</span>
+<span id="L204"><a href="#L204"> 204</a>     record: import(&quot;../command-execution-result.js&quot;).CommandOutputRecord,</span>
+<span id="L205"><a href="#L205"> 205</a>   ): Promise&lt;void&gt; {</span>
+<span id="L206"><a href="#L206"> 206</a>     const key = `${requestId}:${record.sequence}`;</span>
+<span id="L207"><a href="#L207"> 207</a>     if (this.outputAcknowledgements.has(key)) {</span>
+<span id="L208"><a href="#L208"> 208</a>       return Promise.reject(new Error(&quot;Duplicate worker output sequence&quot;));</span>
+<span id="L209"><a href="#L209"> 209</a>     }</span>
+<span id="L210"><a href="#L210"> 210</a>     const acknowledgement = new Promise&lt;void&gt;((resolve) =&gt; {</span>
+<span id="L211"><a href="#L211"> 211</a>       this.outputAcknowledgements.set(key, resolve);</span>
+<span id="L212"><a href="#L212"> 212</a>     });</span>
+<span id="L213"><a href="#L213"> 213</a>     const bytes = Uint8Array.from(record.bytes);</span>
+<span id="L214"><a href="#L214"> 214</a>     this.send({</span>
+<span id="L215"><a href="#L215"> 215</a>       kind: &quot;output-chunk&quot;,</span>
+<span id="L216"><a href="#L216"> 216</a>       generation: this.data.generation,</span>
+<span id="L217"><a href="#L217"> 217</a>       requestId,</span>
+<span id="L218"><a href="#L218"> 218</a>       sequence: record.sequence,</span>
+<span id="L219"><a href="#L219"> 219</a>       stream: record.stream,</span>
+<span id="L220"><a href="#L220"> 220</a>       bytes,</span>
+<span id="L221"><a href="#L221"> 221</a>     });</span>
+<span id="L222"><a href="#L222"> 222</a>     return acknowledgement;</span>
+<span id="L223"><a href="#L223"> 223</a>   }</span>
+<span id="L224"><a href="#L224"> 224</a> </span>
+<span id="L225"><a href="#L225"> 225</a>   private acknowledgeOutput(requestId: string, sequence: number): void {</span>
+<span id="L226"><a href="#L226"> 226</a>     const key = `${requestId}:${sequence}`;</span>
+<span id="L227"><a href="#L227"> 227</a>     const resolve = this.outputAcknowledgements.get(key);</span>
+<span id="L228"><a href="#L228"> 228</a>     if (resolve === undefined) throw new Error(&quot;Unexpected worker output acknowledgement&quot;);</span>
+<span id="L229"><a href="#L229"> 229</a>     this.outputAcknowledgements.delete(key);</span>
+<span id="L230"><a href="#L230"> 230</a>     resolve();</span>
+<span id="L231"><a href="#L231"> 231</a>   }</span>
+<span id="L232"><a href="#L232"> 232</a> }</span>
+<span id="L233"><a href="#L233"> 233</a> </span>
+<span id="L234"><a href="#L234"> 234</a> class WorkerHeapHighWater {</span>
+<span id="L235"><a href="#L235"> 235</a>   private currentUsedBytes = 0;</span>
+<span id="L236"><a href="#L236"> 236</a>   private peakUsedBytes = 0;</span>
+<span id="L237"><a href="#L237"> 237</a>   private heapLimitBytes = 0;</span>
+<span id="L238"><a href="#L238"> 238</a>   private readonly timer: ReturnType&lt;typeof setInterval&gt;;</span>
+<span id="L239"><a href="#L239"> 239</a> </span>
+<span id="L240"><a href="#L240"> 240</a>   constructor() {</span>
+<span id="L241"><a href="#L241"> 241</a>     this.sample();</span>
+<span id="L242"><a href="#L242"> 242</a>     this.timer = setInterval(() =&gt; this.sample(), 25);</span>
+<span id="L243"><a href="#L243"> 243</a>     this.timer.unref?.();</span>
+<span id="L244"><a href="#L244"> 244</a>   }</span>
+<span id="L245"><a href="#L245"> 245</a> </span>
+<span id="L246"><a href="#L246"> 246</a>   sample(): void {</span>
+<span id="L247"><a href="#L247"> 247</a>     const heap = getHeapStatistics();</span>
+<span id="L248"><a href="#L248"> 248</a>     this.currentUsedBytes = heap.used_heap_size;</span>
+<span id="L249"><a href="#L249"> 249</a>     this.peakUsedBytes = Math.max(this.peakUsedBytes, this.currentUsedBytes);</span>
+<span id="L250"><a href="#L250"> 250</a>     this.heapLimitBytes = heap.heap_size_limit;</span>
+<span id="L251"><a href="#L251"> 251</a>   }</span>
+<span id="L252"><a href="#L252"> 252</a> </span>
+<span id="L253"><a href="#L253"> 253</a>   finish(): {</span>
+<span id="L254"><a href="#L254"> 254</a>     readonly workerHeapUsedBytes: number;</span>
+<span id="L255"><a href="#L255"> 255</a>     readonly peakWorkerHeapUsedBytes: number;</span>
+<span id="L256"><a href="#L256"> 256</a>     readonly workerHeapLimitBytes: number;</span>
+<span id="L257"><a href="#L257"> 257</a>   } {</span>
+<span id="L258"><a href="#L258"> 258</a>     this.sample();</span>
+<span id="L259"><a href="#L259"> 259</a>     this.close();</span>
+<span id="L260"><a href="#L260"> 260</a>     return {</span>
+<span id="L261"><a href="#L261"> 261</a>       workerHeapUsedBytes: this.currentUsedBytes,</span>
+<span id="L262"><a href="#L262"> 262</a>       peakWorkerHeapUsedBytes: this.peakUsedBytes,</span>
+<span id="L263"><a href="#L263"> 263</a>       workerHeapLimitBytes: this.heapLimitBytes,</span>
+<span id="L264"><a href="#L264"> 264</a>     };</span>
+<span id="L265"><a href="#L265"> 265</a>   }</span>
+<span id="L266"><a href="#L266"> 266</a> </span>
+<span id="L267"><a href="#L267"> 267</a>   close(): void {</span>
+<span id="L268"><a href="#L268"> 268</a>     clearInterval(this.timer);</span>
+<span id="L269"><a href="#L269"> 269</a>   }</span>
+<span id="L270"><a href="#L270"> 270</a> }</span>
+<span id="L271"><a href="#L271"> 271</a> </span>
+<span id="L272"><a href="#L272"> 272</a> if (parentPort === null) throw new Error(&quot;Daemon navigation worker requires a parent port&quot;);</span>
+<span id="L273"><a href="#L273"> 273</a> const data = workerData as NavigationWorkerData;</span>
+<span id="L274"><a href="#L274"> 274</a> new DaemonNavigationWorkerEntry(parentPort, data).run();</span></pre><h2>Supplied PR body (historical stage)</h2><pre>## Context
+
+Daemon workers constructed CLI and core execution objects directly, despite `@symnav/daemon` needing to remain free of internal package dependencies. This range injects the CLI executor through an absolute module URL and preserves execution, output, diagnostics, readiness, and resource-reporting behavior.
+
+## Shape
+
+Before — worker code owned host-specific execution construction:
+
+```mermaid
+flowchart LR
+    Worker[&quot;Daemon worker&lt;br/&gt;CLI/core imports&quot;]
+    Adapter[&quot;RetainedWorkspaceProgram&quot;]
+    Session[&quot;WorkspaceSession +&lt;br/&gt;CliProgramExecutor&quot;]
+
+    Worker --&gt;|&quot;constructs&quot;| Adapter
+    Adapter --&gt;|&quot;constructs&quot;| Session
+
+    style Worker fill:#fff2cc,stroke:#bf9000
+    style Adapter fill:#ffdddd,stroke:#cc0000
+```
+
+After — CLI supplies a validated host module through process and worker configuration:
+
+```mermaid
+flowchart LR
+    Composition[&quot;CLI composition&quot;]
+    Configuration[&quot;daemon process +&lt;br/&gt;worker configuration&quot;]
+    Worker[&quot;Daemon worker&lt;br/&gt;daemon contracts only&quot;]
+    Loader[&quot;DaemonExecutorModuleLoader&quot;]
+    Executor[&quot;CLI DaemonExecutor&quot;]
+    Session[&quot;WorkspaceSession +&lt;br/&gt;CliProgramExecutor&quot;]
+
+    Composition --&gt;|&quot;absolute file URL&quot;| Configuration
+    Configuration --&gt;|&quot;worker data&quot;| Worker
+    Worker --&gt;|&quot;module URL + host options&quot;| Loader
+    Loader --&gt;|&quot;validated factory result&quot;| Executor
+    Executor --&gt;|&quot;retained session&quot;| Session
+
+    style Composition fill:#fff2cc,stroke:#bf9000
+    style Configuration fill:#fff2cc,stroke:#bf9000
+    style Worker fill:#fff2cc,stroke:#bf9000
+    style Loader fill:#ddffdd,stroke:#008800
+    style Executor fill:#ddffdd,stroke:#008800
+```
+
+Legend: green = added ownership; red = removed ownership; yellow = changed path.
+
+- Worker output is sequenced and rechunked at the daemon policy cap before each acknowledgement.
+- Recursive diagnostics remain opaque across the host boundary while known timing and refresh fields are projected defensively.
+- The final test-only commit resolves Phase 12&#x27;s material carry: deferred adapter sampling and a no-op worker callback now fail mutation-resistant request-local heap tests.
+
+## Where it lives
+
+```text
+.
+├── packages/daemon/
+│   ├── ** src/daemon-diagnostics.ts                   # validates recursive JSON-like diagnostics
+│   ├── ** src/daemon-executor.ts                      # owns host contracts and module loading
+│   ├── ** src/index.ts                                # exposes the daemon package surface
+│   └── ** ... 3 contract and public-import tests      # lock the dependency-free boundary
+└── apps/cli/
+    ├── ++ src/daemon-executor.ts                      # implements the injected host factory
+    ├── ++ src/daemon-executor.test.ts                 # proves synchronous phase sampling
+    ├── ** src/commands/daemon/register-daemon-command.ts # supplies the executor module URL
+    ├── ** src/daemon/
+    │   ├── ** daemon-navigation-worker-entry.ts       # loads, validates, executes, and samples
+    │   ├── ** daemon-navigation-worker-protocol.ts    # carries daemon-owned messages
+    │   ├── ** daemon-process-launcher.ts              # propagates strict process configuration
+    │   ├── ++ local-daemon-output.ts                  # bridges daemon output to CLI storage
+    │   ├── -- retained-workspace-program.ts           # superseded worker-local adapter
+    │   └── ** ... 20 files                            # preserve lifecycle and transport behavior
+    └── test/
+        ├── ++ helpers/injected-daemon-executor-fixture.mjs
+        ├── ++ helpers/resource-sampling-daemon-executor-fixture.mjs
+        └── ** ... 7 files                             # preserve process, parity, and lifecycle behavior
+```
+
+Legend: `++` added, `**` changed, `~~` moved, `--` removed.
+
+## Public surface
+
+Added at the `@symnav/daemon` root and CLI executor module:
+
+```ts
+export class DaemonDiagnosticValues {
+  static isDiagnostics(value: unknown): value is DaemonDiagnostics;
+}
+export interface DaemonSequencedOutputRecord extends DaemonOutputRecord { readonly sequence: number; }
+export interface DaemonOutputSink { append(record: DaemonSequencedOutputRecord): Promise&lt;void&gt;; }
+export class DaemonExecutorModuleLoader {
+  static load(moduleUrl: DaemonExecutorModuleUrl, options: DaemonExecutorFactoryOptions): Promise&lt;DaemonExecutor&gt;;
+}
+export function createDaemonExecutor(options: DaemonExecutorFactoryOptions): DaemonExecutor;
+export function daemonExecutorModuleUrl(): DaemonExecutorModuleUrl;
+```
+
+Changed:
+
+```ts
+export interface DaemonExecutorFactoryOptions {
+  readonly stateDirectory: string;
+  readonly productVersion: string;
+  readonly sampleResources: () =&gt; void;
+}
+```
+
+## Decisions
+
+- Chose an absolute injected file URL over importing CLI code from daemon mechanisms, because the daemon package must keep zero internal dependencies.
+- Chose recursive JSON-like diagnostics over a CLI refresh-summary contract, because worker telemetry can project known fields without owning host-specific diagnostics.
+- Chose worker-side rechunking and sequencing over transport metadata in executor output, because chunk limits and acknowledgement flow belong to the worker protocol.
+- Chose runtime validation over trusting dynamically imported TypeScript shapes, because invalid host modules must retain existing initialization and execution failure handling.
+- Chose a daemon-owned no-payload sampling callback over sharing CLI command-phase types, because synchronous phase boundaries must update the active request&#x27;s heap high-water without reversing dependency direction.
+
+## Look here
+
+- `packages/daemon/src/daemon-executor.ts:105`
+- `apps/cli/src/daemon/daemon-navigation-worker-entry.ts:89`
+- `apps/cli/src/daemon-executor.ts:53`
+</pre><h2>Supplied commits</h2><pre>cb7acede90ecbd049d389d2e894bcb2bc42bca3d Specify the CLI daemon executor
+
+86cbadc59091373441cb18db5a906d8ef51eca59 Implement the CLI daemon executor
+
+6bd8c92b029261cc193eb8c28b287f0f429f0d3c Specify daemon output and diagnostic contracts
+
+d384ae398714575e00b6bb11b983336d4b6b1544 Define daemon output and diagnostic contracts
+
+98595d68285a236ccfc0829e3a25f0ebc474972b Specify daemon-owned worker messages
+
+b722a4a6f16768c7ebfba1d33ee3e1a210db2c50 Use daemon-owned worker messages
+
+c139cbe94d841247c0ba16b8957af3ce50d5fc5e Specify executor module URL propagation
+
+9bfc705527257f011032c2f322deca5d5eead39a Thread the executor module URL
+
+93e93c4997ea7e7e3b97bbd3ee8eac3275ff49d6 Specify strict daemon process configuration
+
+c7a51af6fa0e23b26728e9fe4c4089eac7d4c920 Validate daemon process configuration exactly
+
+d176d50b8acbff3eb81d33d813500524f2591eef Specify executor module loading
+
+0c2c8fccd15672c8c0f018d4036eb99a888c17db Load injected daemon executor modules
+
+169115c8057f6bc441d3745be4e2e43296472494 Specify injected worker execution
+
+d5f127b6ad0cb6f1524036f0760dc050071ad896 Execute workers through injected host modules
+
+47853f2e2a32c158aaa6e0bb284f3aff140f5418 Prove injected executor readiness parity
+
+c6bea77410cedc9357663c3d95afc9ab2b6e073b Prove synchronous worker resource sampling
+
+38dfceb5548025edf0d23d37051535981c6de819 Cover encoded executor module paths
+
+0d5218023c3043ba26ecf847746861c454f89922 Load executor modules through the host runtime
+
+323888b8df93cedde4f49494c4e56c42a9410d6f Budget retained executor integration tests
+</pre></html>

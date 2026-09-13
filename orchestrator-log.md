@@ -220,3 +220,12 @@ BUILD OK stack-head
 - 2026-09-13 05:32:21 +03: COMMIT OK 28-blast-radius-tool: [main 4ce8533] Add experiment 28 blast-radius-tool
 - 2026-09-13 05:32:21 +03: START 31-method-runbook attempt 1 via codex, pid 39005
 - 2026-09-13 05:35:31 +03: FINISH 27-test-honesty via codex, exit 0, README present
+- 2026-09-13 05:35:32 +03: COMMIT OK 27-test-honesty: [main df14b42] Add experiment 27 test-honesty
+- 2026-09-13 05:35:32 +03: START 32-kit attempt 1 via claude-opus, pid 40679
+- 2026-09-13 05:35:42 +03: README MISSING 32-kit after worker exit 1
+- 2026-09-13 05:35:42 +03: REQUEUE 32-kit after attempt 1: worker exited 1 without README
+- 2026-09-13 05:35:42 +03: START 32-kit attempt 2 via claude-opus, pid 40745
+- 2026-09-13 05:35:52 +03: README MISSING 32-kit after worker exit 1
+- 2026-09-13 05:35:52 +03: REQUEUE 32-kit after attempt 2: worker exited 1 without README
+- 2026-09-13 05:35:52 +03: START 32-kit attempt 3 via codex, pid 40852
+- 2026-09-13 05:36:12 +03: FINISH 22-game-any via codex, exit 0, README present

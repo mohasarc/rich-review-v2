@@ -1,0 +1,651 @@
+diff --git a/.github/PULL_REQUEST_TEMPLATE.md b/.github/PULL_REQUEST_TEMPLATE.md
+index 360620461..4076c57ca 100644
+--- a/.github/PULL_REQUEST_TEMPLATE.md
++++ b/.github/PULL_REQUEST_TEMPLATE.md
+@@ -49,7 +49,7 @@ section, you may leave the guidance comment in place (it renders
+ invisibly on GitHub) or remove it.
+ -->
+ 
+-## Why
++## Context
+ 
+ <!--
+ 1-2 sentences. The motivation, constraint, or anchoring decision the
+@@ -116,60 +116,22 @@ move files, or introduce a new ownership boundary.
+ Skip for single-file fixes, obvious small renames, docs-only edits,
+ or when paths add no review signal.
+ 
+-Form: embedded Change Tree SVG first, then the bare Change Tree in
+-a collapsed details fallback. Do not leave the bare tree as the
+-primary content.
+-
+-Author the Change Tree as a Unicode filesystem tree anchored at repo
+-root. Use `.` as the root. Include unchanged parent directories as
+-context; annotate only nodes that matter for ownership or review.
++Form: a Change Tree — a Unicode filesystem tree in a ```text block,
++anchored at repo root. Use `.` as the root. Include unchanged parent
++directories as context; annotate only nodes that matter for
++ownership or review.
+ 
+ Legend: `++` added, `**` changed, `~~` moved, `--` removed.
+ 
+-Generate the embed with the CLI only:
+-
+-  npx change-tree-svg embed -f tree.txt
+-
+-Copy/paste the command's generated `<pre>...</pre>` output exactly as
+-the first content in this section. Do not write, edit, upload, or
+-assemble SVG/image/embed markup by hand.
++Example (illustrative paths):
+ 
+-Then add the same tree as a fallback:
+-
+-  <details>
+-  <summary>Text fallback</summary>
+-
+-  ```text
+   .
+-  ├── apps/
+-  │   └── cli/
+-  │       └── src/
+-  │           └── ** register-context-command.ts # wires history flag
+-  └── packages/
+-      └── backend-typescript/
+-          └── src/
+-              ├── ++ reference-search/
+-              │   └── ++ ... 12 files           # owns TS ref lookup
+-              └── ~~ git/
+-                  └── ~~ ... 3 files            # moved from apps/cli/src/history/
+-  ```
+-
+-  </details>
+-
+-Raw Change Tree example:
+-
+-  .
+-  ├── apps/
+-  │   └── cli/
+-  │       └── src/
+-  │           └── ** register-context-command.ts # wires history flag
+-  └── packages/
+-      └── backend-typescript/
+-          └── src/
+-              ├── ++ reference-search/
+-              │   └── ++ ... 12 files           # owns TS ref lookup
+-              └── ~~ git/
+-                  └── ~~ ... 3 files            # moved from apps/cli/src/history/
++  └── src/
++      ├── ** payment-form.ts             # wires retry flag
++      ├── ++ invoice-retry/
++      │   └── ++ ... 12 files            # owns retry scheduling
++      └── ~~ receipts/
++          └── ~~ ... 3 files             # moved from src/billing/
+ 
+ Rules:
+   - Show important changed areas, not every touched file.
+@@ -184,7 +146,6 @@ Rules:
+     the same ownership.
+   - Inline `# ...` comments should name purpose or ownership. Do not
+     restate marker status except the required moved-from note.
+-  - The fallback tree must match the rendered Change Tree.
+ -->
+ 
+ ## Public surface
+@@ -196,8 +157,9 @@ wrong interface in seconds.
+ 
+ Skip the section if the PR adds or changes no public surface.
+ 
+-Form: TypeScript signatures, no bodies. Group by added / changed /
+-removed if more than one category is present.
++Form: signatures in the project's language, no bodies. Group by
++added / changed / removed if more than one category is present.
++Example (illustrative TypeScript):
+ 
+   Added:
+     class WorkspaceIgnore {
+@@ -256,21 +218,17 @@ At least one pointer is usually honest; agents are bad at admitting
+ uncertainty, so err toward listing one when in doubt.
+ -->
+ 
+-## Reading order
+-
+-<!--
+-Commit list with one line each, placing each commit in the arc of
+-the PR. Lets the reviewer hold the global thread while walking
+-commits.
++## Visuals
+ 
+-Skip the section if the PR is a single commit.
++| Before (if any) | After     |
++| :-------------- | :-------- |
++| <img url>       | <img url> |
+ 
+-Form:
+-  1. <commit title> — role of this commit in the arc.
+-  2. <commit title> — role of this commit in the arc.
+-
+-Each caption is the commit's role in the bigger story, not a
+-restatement of the commit message. "Adds the class itself" is fine;
+-"Implements WorkspaceIgnore class with caching, matching, and path
+-normalization" is not — that's the commit message's job.
++<!--
++If changes produce visual changes, place before/after screenshots
++here. Never commit image files. Reference each by its local path
++under the artifact folder's visuals/. Publish passes each path to
++`gh pr create --attach` / `gh pr edit --attach`, which uploads the
++file and rewrites the local-path reference to the hosted URL. Skip
++the section if nothing is visual.
+ -->
+diff --git a/apps/cli/test/integration/commands/overview/overview-command.test.ts b/apps/cli/test/integration/commands/overview/overview-command.test.ts
+index 425cc5f4f..ce3a8c931 100644
+--- a/apps/cli/test/integration/commands/overview/overview-command.test.ts
++++ b/apps/cli/test/integration/commands/overview/overview-command.test.ts
+@@ -82,15 +82,24 @@ class UnexpectedSiblingDirectoryFileSystem extends InMemoryFileSystem {
+ 
+ class RetainedSiblingMetadataFileSystem extends InMemoryFileSystem {
+   siblingMetadataReads = 0;
++  readonly typescriptSourceReads: string[] = [];
+   private siblingMetadataFails = false;
+ 
++  constructor(
++    files: Record<string, string>,
++    private readonly siblingPath: string,
++  ) {
++    super(files);
++  }
++
+   failSiblingMetadata(): void {
+     this.siblingMetadataFails = true;
+     this.siblingMetadataReads = 0;
++    this.typescriptSourceReads.length = 0;
+   }
+ 
+   override async metadata(absPath: string) {
+-    if (absPath === "/repo/src/unreadable.ts") {
++    if (absPath.startsWith(this.siblingPath)) {
+       this.siblingMetadataReads += 1;
+       if (this.siblingMetadataFails) {
+         throw new Error("unrelated metadata failure");
+@@ -98,6 +107,11 @@ class RetainedSiblingMetadataFileSystem extends InMemoryFileSystem {
+     }
+     return super.metadata(absPath);
+   }
++
++  override readFileSync(absPath: string): string {
++    if (absPath.endsWith(".ts")) this.typescriptSourceReads.push(absPath);
++    return super.readFileSync(absPath);
++  }
+ }
+ 
+ describe("symnav overview happy path", () => {
+@@ -163,11 +177,14 @@ describe("symnav overview happy path", () => {
+   });
+ 
+   it("matches cold overview after an unrelated retained sibling starts failing", async () => {
+-    const fs = new RetainedSiblingMetadataFileSystem({
+-      "/repo/.git/HEAD": "ref: refs/heads/main\n",
+-      "/repo/src/a.ts": "export const accessible = true;\n",
+-      "/repo/src/unreadable.ts": "export const unreadable = true;\n",
+-    });
++    const fs = new RetainedSiblingMetadataFileSystem(
++      {
++        "/repo/.git/HEAD": "ref: refs/heads/main\n",
++        "/repo/src/a.ts": "export const accessible = true;\n",
++        "/repo/src/unreadable.ts": "export const unreadable = true;\n",
++      },
++      "/repo/src/unreadable.ts",
++    );
+     const coldBackend = new TypeScriptBackend(fs);
+     const cold = await parse(
+       ["overview", "src/a.ts"],
+@@ -188,6 +205,61 @@ describe("symnav overview happy path", () => {
+     expect(fs.siblingMetadataReads).toBe(0);
+   });
+ 
++  it.each([
++    {
++      target: "src/target.ts",
++      stdoutContains: "target",
++      stderr: "",
++      exitCodes: [] as readonly number[],
++      sourceReads: ["/repo/src/target.ts"],
++    },
++    {
++      target: "src/missing.ts",
++      stdoutContains: undefined,
++      stderr: "Cannot answer: file not found: src/missing.ts.\n",
++      exitCodes: [1] as readonly number[],
++      sourceReads: [] as readonly string[],
++    },
++  ])(
++    "keeps $target handling isolated from 4,000 retained siblings",
++    async ({ target, stdoutContains, stderr, exitCodes, sourceReads }) => {
++      const siblings = Object.fromEntries(
++        Array.from({ length: 4_000 }, (_, index) => [
++          `/repo/siblings/file-${index}.ts`,
++          `export const sibling${index} = ${index};\n`,
++        ]),
++      );
++      const fs = new RetainedSiblingMetadataFileSystem(
++        {
++          "/repo/.git/HEAD": "ref: refs/heads/main\n",
++          "/repo/src/target.ts": "export const target = true;\n",
++          ...siblings,
++        },
++        "/repo/siblings/",
++      );
++      const catalog = new WorkspaceCatalog(fs);
++      await catalog.refresh("/repo");
++      fs.failSiblingMetadata();
++      const backend = new TypeScriptBackend(fs);
++      const scopeFactory = new WorkspaceRequestScopeFactory(fs, [backend], catalog);
++
++      const result = await parse(["overview", target], {
++        ...fakeDependencies({ fs, backends: () => [backend] }),
++        scopeFactory,
++      });
++
++      if (stdoutContains === undefined) {
++        expect(result.stdout).toBe("");
++      } else {
++        expect(result.stdout).toContain(stdoutContains);
++      }
++      expect(result.stderr).toBe(stderr);
++      expect(result.exitCodes).toEqual(exitCodes);
++      expect(fs.siblingMetadataReads).toBe(0);
++      expect(fs.typescriptSourceReads).toEqual(sourceReads);
++    },
++  );
++
+   it("writes text-rendered IR to stdout with exit 0", async () => {
+     const entries: OverviewFileEntries = {
+       file: "src/a.ts",
+diff --git a/packages/backend-typescript/src/typescript-backend/typescript-backend.ts b/packages/backend-typescript/src/typescript-backend/typescript-backend.ts
+index c316495dc..549049f62 100644
+--- a/packages/backend-typescript/src/typescript-backend/typescript-backend.ts
++++ b/packages/backend-typescript/src/typescript-backend/typescript-backend.ts
+@@ -14,7 +14,7 @@ import type {
+   SymbolOverviewNode,
+   SymbolIdentity,
+ } from "@symnav/core";
+-import { FileNotFoundError } from "@symnav/core";
++import { FileNotFoundError, WorkspaceSourceCache } from "@symnav/core";
+ 
+ import { SymbolResolver } from "../resolve/resolve-symbols.js";
+ import { TypeScriptProjectGraph } from "./typescript-project-graph.js";
+@@ -25,7 +25,6 @@ import {
+   TypeScriptWorkspaceState,
+   type TypeScriptFileExtractor,
+ } from "./typescript-workspace-state.js";
+-import { WorkspaceSourceCache } from "./workspace-source-cache.js";
+ 
+ export class TypeScriptBackend implements LanguageBackend {
+   static readonly extensions: readonly string[] = [".d.ts", ".ts", ".tsx", ".mts", ".cts"];
+diff --git a/packages/backend-typescript/test/integration/typescript-backend.test.ts b/packages/backend-typescript/test/integration/typescript-backend.test.ts
+index 828b69805..417162cf0 100644
+--- a/packages/backend-typescript/test/integration/typescript-backend.test.ts
++++ b/packages/backend-typescript/test/integration/typescript-backend.test.ts
+@@ -399,6 +399,43 @@ class MutableBackendFileSystem implements FileSystem {
+ }
+ 
+ describe("TypeScriptBackend retained workspace refresh", () => {
++  it("evicts omitted source bytes while retaining selection state", async () => {
++    const inner = new InMemoryFileSystem({
++      "/repo/.git/HEAD": "ref: refs/heads/main\n",
++      "/repo/src/app.ts": [
++        'import { helper } from "./lib.js";',
++        "export const result = helper();",
++        "",
++      ].join("\n"),
++      "/repo/src/lib.ts": "export function helper(): number { return 1; }\n",
++    });
++    const counting = new CountingFileSystem(inner);
++    const backend = new TypeScriptBackend(counting);
++    const files = [workspaceFile("src/app.ts", inner), workspaceFile("src/lib.ts", inner)];
++    const helper: SymbolIdentity = { file: "src/lib.ts", segments: [{ name: "helper" }] };
++
++    await backend.refresh(refreshRequest(files));
++    const siblingEntries = await backend.fileEntries(files[1]!);
++    const initialDefinitions = await backend.findDefinitions(files, helper);
++    await backend.releaseTransientResources();
++    counting.readFileCalls.length = 0;
++
++    await backend.refresh({
++      snapshot: { root: "/repo", files: [files[0]!] },
++      coverage: "selection",
++    });
++
++    expect(await backend.fileEntries(files[1]!)).toBe(siblingEntries);
++    expect(counting.readFileCalls).toEqual([]);
++
++    const retainedDefinitions = await backend.findDefinitions([files[0]!], helper);
++
++    expect(retainedDefinitions).toEqual(initialDefinitions);
++    expect(counting.readFileCalls.filter((path) => path === "/repo/src/lib.ts")).toEqual([
++      "/repo/src/lib.ts",
++    ]);
++  });
++
+   it("answers every navigation primitive from current state after edit, add, delete, and rename", async () => {
+     const fs = new MutableBackendFileSystem({
+       "/repo/.git/HEAD": "ref: refs/heads/main\n",
+diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+index 259f5a417..de201c608 100644
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -110,6 +110,7 @@ export { splitHeaderLines } from "./intermediate-representation/split-header-lin
+ export { assignDisambiguators } from "./intermediate-representation/assign-disambiguators.js";
+ export type { FileMetadata, FileSystem } from "./workspace/file-system.js";
+ export { NodeFileSystem } from "./workspace/node-file-system.js";
++export { WorkspaceSourceCache } from "./workspace/workspace-source-cache.js";
+ export type {
+   ResolvedPath,
+   Workspace,
+diff --git a/packages/core/src/workspace/workspace-source-cache.test.ts b/packages/core/src/workspace/workspace-source-cache.test.ts
+new file mode 100644
+index 000000000..d1a173506
+--- /dev/null
++++ b/packages/core/src/workspace/workspace-source-cache.test.ts
+@@ -0,0 +1,233 @@
++import { describe, expect, it } from "vitest";
++
++import type { FileMetadata, FileSystem } from "./file-system.js";
++import type { WorkspaceFile, WorkspaceSnapshot } from "./workspace.js";
++import { WorkspaceSourceCache } from "./workspace-source-cache.js";
++
++class RecordingFileSystem implements FileSystem {
++  readonly calls: string[] = [];
++  private readonly contents = new Map<string, string>();
++
++  constructor(files: Record<string, string>) {
++    for (const [path, content] of Object.entries(files)) this.contents.set(path, content);
++  }
++
++  setFile(path: string, content: string): void {
++    this.contents.set(path, content);
++  }
++
++  resetCalls(): void {
++    this.calls.length = 0;
++  }
++
++  async readFile(absPath: string): Promise<string> {
++    this.calls.push(`readFile:${absPath}`);
++    return this.content(absPath);
++  }
++
++  async exists(absPath: string): Promise<boolean> {
++    this.calls.push(`exists:${absPath}`);
++    return this.contents.has(absPath);
++  }
++
++  async listDir(absPath: string): Promise<readonly string[]> {
++    this.calls.push(`listDir:${absPath}`);
++    return ["child.ts"];
++  }
++
++  async isDirectory(absPath: string): Promise<boolean> {
++    this.calls.push(`isDirectory:${absPath}`);
++    return absPath.endsWith("/src");
++  }
++
++  async metadata(absPath: string): Promise<FileMetadata> {
++    this.calls.push(`metadata:${absPath}`);
++    return RecordingFileSystem.metadataFor(this.content(absPath));
++  }
++
++  existsSync(absPath: string): boolean {
++    this.calls.push(`existsSync:${absPath}`);
++    return this.contents.has(absPath);
++  }
++
++  readFileSync(absPath: string): string {
++    this.calls.push(`readFileSync:${absPath}`);
++    return this.content(absPath);
++  }
++
++  listDirSync(absPath: string): readonly string[] {
++    this.calls.push(`listDirSync:${absPath}`);
++    return ["child.ts"];
++  }
++
++  isDirectorySync(absPath: string): boolean {
++    this.calls.push(`isDirectorySync:${absPath}`);
++    return absPath.endsWith("/src");
++  }
++
++  metadataSync(absPath: string): FileMetadata {
++    this.calls.push(`metadataSync:${absPath}`);
++    return RecordingFileSystem.metadataFor(this.content(absPath));
++  }
++
++  private content(absPath: string): string {
++    const content = this.contents.get(absPath);
++    if (content === undefined) throw new Error(`missing file: ${absPath}`);
++    return content;
++  }
++
++  private static metadataFor(content: string): FileMetadata {
++    return {
++      size: content.length,
++      modifiedAtMs: 1,
++      changeToken: content,
++    };
++  }
++}
++
++class WorkspaceSnapshotBuilder {
++  static snapshot(...files: WorkspaceFile[]): WorkspaceSnapshot {
++    return { root: "/repo", files };
++  }
++
++  static file(relative: string, absolute: string, changeToken: string): WorkspaceFile {
++    return {
++      relative,
++      absolute,
++      metadata: { size: 1, modifiedAtMs: 1, changeToken },
++    };
++  }
++}
++
++describe("WorkspaceSourceCache", () => {
++  it("removes omitted revisions and cached contents on every refresh", async () => {
++    const fileSystem = new RecordingFileSystem({
++      "/repo/src/a.ts": "a-before",
++      "/repo/src/b.ts": "b-before",
++    });
++    const cache = new WorkspaceSourceCache(fileSystem);
++    const a = WorkspaceSnapshotBuilder.file("src/a.ts", "/repo/src/a.ts", "a-1");
++    const b = WorkspaceSnapshotBuilder.file("src/b.ts", "/repo/src/b.ts", "b-1");
++    cache.refresh(WorkspaceSnapshotBuilder.snapshot(a, b));
++    await expect(cache.readFile(b.absolute)).resolves.toBe("b-before");
++    fileSystem.setFile(b.absolute, "b-after");
++    fileSystem.resetCalls();
++
++    cache.refresh(WorkspaceSnapshotBuilder.snapshot(a));
++
++    await expect(cache.readFile(b.absolute)).resolves.toBe("b-after");
++    expect(fileSystem.calls).toEqual(["readFile:/repo/src/b.ts"]);
++  });
++
++  it("invalidates cached contents after an incoming absolute path change", async () => {
++    const fileSystem = new RecordingFileSystem({
++      "/repo/src/a.ts": "before",
++      "/repo/src/moved-a.ts": "moved",
++    });
++    const cache = new WorkspaceSourceCache(fileSystem);
++    const initialFile = WorkspaceSnapshotBuilder.file("src/a.ts", "/repo/src/a.ts", "a-1");
++    cache.refresh(WorkspaceSnapshotBuilder.snapshot(initialFile));
++    await expect(cache.readFile(initialFile.absolute)).resolves.toBe("before");
++    fileSystem.setFile(initialFile.absolute, "after");
++    fileSystem.resetCalls();
++
++    cache.refresh(
++      WorkspaceSnapshotBuilder.snapshot(
++        WorkspaceSnapshotBuilder.file("src/a.ts", "/repo/src/moved-a.ts", "a-1"),
++      ),
++    );
++
++    await expect(cache.readFile(initialFile.absolute)).resolves.toBe("after");
++    expect(fileSystem.calls).toEqual(["readFile:/repo/src/a.ts"]);
++  });
++
++  it("invalidates cached contents after an incoming change token changes", async () => {
++    const fileSystem = new RecordingFileSystem({ "/repo/src/a.ts": "before" });
++    const cache = new WorkspaceSourceCache(fileSystem);
++    const initialFile = WorkspaceSnapshotBuilder.file("src/a.ts", "/repo/src/a.ts", "a-1");
++    cache.refresh(WorkspaceSnapshotBuilder.snapshot(initialFile));
++    await expect(cache.readFile(initialFile.absolute)).resolves.toBe("before");
++    fileSystem.setFile(initialFile.absolute, "after");
++    fileSystem.resetCalls();
++
++    cache.refresh(
++      WorkspaceSnapshotBuilder.snapshot(
++        WorkspaceSnapshotBuilder.file("src/a.ts", "/repo/src/a.ts", "a-2"),
++      ),
++    );
++
++    await expect(cache.readFile(initialFile.absolute)).resolves.toBe("after");
++    expect(fileSystem.calls).toEqual(["readFile:/repo/src/a.ts"]);
++  });
++
++  it("retains cached contents for an unchanged incoming revision", async () => {
++    const fileSystem = new RecordingFileSystem({ "/repo/src/a.ts": "before" });
++    const cache = new WorkspaceSourceCache(fileSystem);
++    const file = WorkspaceSnapshotBuilder.file("src/a.ts", "/repo/src/a.ts", "a-1");
++    const snapshot = WorkspaceSnapshotBuilder.snapshot(file);
++    cache.refresh(snapshot);
++    const initialContent = await cache.readFile(file.absolute);
++    fileSystem.setFile(file.absolute, "after");
++    fileSystem.resetCalls();
++
++    cache.refresh(snapshot);
++
++    expect(await cache.readFile(file.absolute)).toBe(initialContent);
++    expect(fileSystem.calls).toEqual([]);
++  });
++
++  it("shares cached contents between asynchronous and synchronous reads", async () => {
++    const fileSystem = new RecordingFileSystem({ "/repo/src/a.ts": "before" });
++    const cache = new WorkspaceSourceCache(fileSystem);
++    const initialFile = WorkspaceSnapshotBuilder.file("src/a.ts", "/repo/src/a.ts", "a-1");
++    cache.refresh(WorkspaceSnapshotBuilder.snapshot(initialFile));
++
++    await expect(cache.readFile(initialFile.absolute)).resolves.toBe("before");
++    expect(cache.readFileSync(initialFile.absolute)).toBe("before");
++    expect(fileSystem.calls).toEqual(["readFile:/repo/src/a.ts"]);
++
++    fileSystem.setFile(initialFile.absolute, "after");
++    cache.refresh(
++      WorkspaceSnapshotBuilder.snapshot(
++        WorkspaceSnapshotBuilder.file("src/a.ts", "/repo/src/a.ts", "a-2"),
++      ),
++    );
++    fileSystem.resetCalls();
++
++    expect(cache.readFileSync(initialFile.absolute)).toBe("after");
++    await expect(cache.readFile(initialFile.absolute)).resolves.toBe("after");
++    expect(fileSystem.calls).toEqual(["readFileSync:/repo/src/a.ts"]);
++  });
++
++  it("delegates unrelated filesystem operations unchanged", async () => {
++    const fileSystem = new RecordingFileSystem({ "/repo/src/a.ts": "source" });
++    const cache = new WorkspaceSourceCache(fileSystem);
++
++    await expect(cache.exists("/repo/src/a.ts")).resolves.toBe(true);
++    await expect(cache.listDir("/repo/src")).resolves.toEqual(["child.ts"]);
++    await expect(cache.isDirectory("/repo/src")).resolves.toBe(true);
++    await expect(cache.metadata("/repo/src/a.ts")).resolves.toEqual({
++      size: 6,
++      modifiedAtMs: 1,
++      changeToken: "source",
++    });
++    expect(cache.existsSync("/repo/src/a.ts")).toBe(true);
++    expect(cache.listDirSync("/repo/src")).toEqual(["child.ts"]);
++    expect(cache.isDirectorySync("/repo/src")).toBe(true);
++    expect(cache.metadataSync("/repo/src/a.ts")).toEqual({
++      size: 6,
++      modifiedAtMs: 1,
++      changeToken: "source",
++    });
++    expect(fileSystem.calls).toEqual([
++      "exists:/repo/src/a.ts",
++      "listDir:/repo/src",
++      "isDirectory:/repo/src",
++      "metadata:/repo/src/a.ts",
++      "existsSync:/repo/src/a.ts",
++      "listDirSync:/repo/src",
++      "isDirectorySync:/repo/src",
++      "metadataSync:/repo/src/a.ts",
++    ]);
++  });
++});
+diff --git a/packages/backend-typescript/src/typescript-backend/workspace-source-cache.ts b/packages/core/src/workspace/workspace-source-cache.ts
+similarity index 94%
+rename from packages/backend-typescript/src/typescript-backend/workspace-source-cache.ts
+rename to packages/core/src/workspace/workspace-source-cache.ts
+index 9fb528496..90cae0604 100644
+--- a/packages/backend-typescript/src/typescript-backend/workspace-source-cache.ts
++++ b/packages/core/src/workspace/workspace-source-cache.ts
+@@ -1,4 +1,5 @@
+-import type { FileMetadata, FileSystem, WorkspaceSnapshot } from "@symnav/core";
++import type { FileMetadata, FileSystem } from "./file-system.js";
++import type { WorkspaceSnapshot } from "./workspace.js";
+ 
+ export class WorkspaceSourceCache implements FileSystem {
+   private revisions = new Map<string, string>();
+diff --git a/plans/005/daemon-follow-ups-functional-spec.md b/plans/005/daemon-follow-ups-functional-spec.md
+index 286c17eee..76c177f16 100644
+--- a/plans/005/daemon-follow-ups-functional-spec.md
++++ b/plans/005/daemon-follow-ups-functional-spec.md
+@@ -2,11 +2,11 @@
+ 
+ ## Goal
+ 
+-Five behavior changes to the daemon surfaced by the architecture reviews and deferred until after the daemon restructuring in `daemon-architecture-functional-spec.md`. Each amends `daemon-functional-spec.md`; that document stays the source of truth for everything not named here. This is not a rewrite of routing, admission, or delivery, and not a change to any navigation command's output. This spec defines product behavior only; implementation choices live in the phased plans.
++Six behavior changes surfaced by the architecture reviews and deferred until after the daemon restructuring in `daemon-architecture-functional-spec.md`. Each amends `daemon-functional-spec.md`; that document stays the source of truth for everything not named here. This is not a rewrite of routing, admission, or delivery, and not a change to any navigation command's output. This spec defines product behavior only; implementation choices live in the phased plans.
+ 
+ ## Primary User
+ 
+-Same as `daemon-functional-spec.md`: an AI coding agent issuing `symnav` commands, plus the human running `daemon start|status|stop`. Default experience is unchanged; the changes below remove four ways a daemon can degrade silently and evaluate one simpler election mechanism.
++Same as `daemon-functional-spec.md`: an AI coding agent issuing `symnav` commands, plus the human running `daemon start|status|stop`. Default experience is unchanged; the changes below remove five ways a daemon can degrade silently and evaluate one simpler election mechanism.
+ 
+ ## Core Guarantees
+ 
+@@ -41,6 +41,7 @@ There is no unbounded-retention override.
+ - Startup silence bound.
+ - `daemon start` readiness proved on the control plane.
+ - Endpoints under the state directory.
++- Selection-aware source-cache retention.
+ - Election by socket bind (evaluation; adopted only if it passes the existing daemon suites).
+ 
+ ### Excluded
+@@ -153,6 +154,22 @@ Endpoint relocation and the election evaluation change how a daemon is found and
+ 
+ **Outcome.** If the evaluation fails a suite or violates a guarantee, the file lease stays and this section is withdrawn.
+ 
++## Selection-Aware Source-Cache Retention
++
++**Purpose.** Avoid discarding unchanged sibling source bytes when a retained command refreshes only its selected file.
++
++**Produces.** A selection refresh updates cached revisions for supplied files without evicting omitted files from the last authoritative workspace refresh. A later workspace refresh still replaces the authoritative revision set, invalidates changed bytes, and removes deleted files before a whole-workspace semantic query runs.
++
++**Does not produce.** Eager metadata or source reads for omitted siblings during a selection command. A stale navigation answer. Cache ownership of workspace discovery or project membership.
++
++**Examples.**
++
++- A full refresh caches `src/a.ts` and `src/b.ts`; an `overview src/a.ts` selection retains cached bytes for `src/b.ts` without statting or reading it.
++- A later `refs` turn finds `src/b.ts` unchanged during its workspace refresh and reuses the retained bytes.
++- A later workspace refresh finds `src/b.ts` changed or deleted and invalidates its old bytes before navigation starts.
++
++**Edge cases.** A selection with a changed absolute path or change token invalidates the prior bytes for that supplied file. Omitted entries remain bounded by the most recent authoritative workspace snapshot.
++
+ ## Summary
+ 
+ | Change                        | One line                                                                    |
+@@ -161,4 +178,5 @@ Endpoint relocation and the election evaluation change how a daemon is found and
+ | Startup silence bound         | A starting daemon silent for `6 hours` is abandoned and replaced             |
+ | Control-plane readiness       | `daemon start` returns when admission opens, not after queued navigation     |
+ | Endpoints under state dir     | Removing a state directory removes its endpoints                             |
++| Selection-aware source cache  | Selection refreshes retain unchanged omitted bytes without eager sibling reads |
+ | Election by socket bind       | Evaluate OS-enforced single owner in place of file lease; adopt only if suites pass |

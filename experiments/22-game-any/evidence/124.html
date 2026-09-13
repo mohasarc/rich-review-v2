@@ -1,0 +1,878 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>PR #124 — pinned evidence</title>
+<style>body{background:#faf9f3;color:#182f36;font:16px system-ui;margin:3rem auto;max-width:1100px;padding:0 20px}a{color:#056b73}pre{overflow:auto;background:#eef0e9;padding:1rem;line-height:1.5;font-size:12px}pre span{display:block}pre a{text-decoration:none}h2{margin-top:3rem}</style>
+<a href="../index.html#atlas">← Return to the open briefing</a><h1>PR #124 · pinned evidence</h1>
+<p>main <code>b6801ebdd2421d0ca2e4bdd61ec0f04c24ddd73e</code> → tip <code>d07002357d3e9596bfaae910a1ac63b77981620b</code>. These are source snapshots, not a test run.</p>
+<h2>Tip · packages/core/src/backend/revisioned-backend-state.ts</h2><pre><span id="L1"><a href="#L1">   1</a> import type { NavigationDiagnostic } from &quot;../diagnostics/navigation-diagnostic.js&quot;;</span>
+<span id="L2"><a href="#L2">   2</a> import { formatSymbolIdentity } from &quot;../intermediate-representation/canonical-identity.js&quot;;</span>
+<span id="L3"><a href="#L3">   3</a> import type { SymbolIdentity } from &quot;../intermediate-representation/symbol-identity.js&quot;;</span>
+<span id="L4"><a href="#L4">   4</a> import type {</span>
+<span id="L5"><a href="#L5">   5</a>   OverviewFileEntries,</span>
+<span id="L6"><a href="#L6">   6</a>   SymbolOverviewNode,</span>
+<span id="L7"><a href="#L7">   7</a> } from &quot;../intermediate-representation/overview-tree.js&quot;;</span>
+<span id="L8"><a href="#L8">   8</a> import { OverviewTree } from &quot;../intermediate-representation/overview-tree.js&quot;;</span>
+<span id="L9"><a href="#L9">   9</a> import { FileNotFoundError } from &quot;../workspace/errors.js&quot;;</span>
+<span id="L10"><a href="#L10">  10</a> import type { FileSystem } from &quot;../workspace/file-system.js&quot;;</span>
+<span id="L11"><a href="#L11">  11</a> import type { ResolvedPath, WorkspaceFile } from &quot;../workspace/workspace.js&quot;;</span>
+<span id="L12"><a href="#L12">  12</a> import type { BackendRefreshCoverage, BackendRefreshSummary } from &quot;./language-backend.js&quot;;</span>
+<span id="L13"><a href="#L13">  13</a> </span>
+<span id="L14"><a href="#L14">  14</a> export interface RevisionedBackendPreparedFile&lt;PreparedDetails&gt; {</span>
+<span id="L15"><a href="#L15">  15</a>   readonly file: WorkspaceFile;</span>
+<span id="L16"><a href="#L16">  16</a>   readonly entries: OverviewFileEntries;</span>
+<span id="L17"><a href="#L17">  17</a>   readonly details: PreparedDetails;</span>
+<span id="L18"><a href="#L18">  18</a> }</span>
+<span id="L19"><a href="#L19">  19</a> </span>
+<span id="L20"><a href="#L20">  20</a> export type RevisionedBackendFileChange&lt;PreparedDetails&gt; =</span>
+<span id="L21"><a href="#L21">  21</a>   | { readonly kind: &quot;added&quot;; readonly file: WorkspaceFile }</span>
+<span id="L22"><a href="#L22">  22</a>   | {</span>
+<span id="L23"><a href="#L23">  23</a>       readonly kind: &quot;changed&quot;;</span>
+<span id="L24"><a href="#L24">  24</a>       readonly file: WorkspaceFile;</span>
+<span id="L25"><a href="#L25">  25</a>       readonly previous: RevisionedBackendPreparedFile&lt;PreparedDetails&gt;;</span>
+<span id="L26"><a href="#L26">  26</a>     };</span>
+<span id="L27"><a href="#L27">  27</a> </span>
+<span id="L28"><a href="#L28">  28</a> export interface RevisionedBackendPreparationRequest&lt;PreparedDetails&gt; {</span>
+<span id="L29"><a href="#L29">  29</a>   readonly coverage: BackendRefreshCoverage;</span>
+<span id="L30"><a href="#L30">  30</a>   readonly changes: readonly RevisionedBackendFileChange&lt;PreparedDetails&gt;[];</span>
+<span id="L31"><a href="#L31">  31</a>   readonly removedFiles: readonly RevisionedBackendPreparedFile&lt;PreparedDetails&gt;[];</span>
+<span id="L32"><a href="#L32">  32</a>   readonly effectiveFiles: readonly WorkspaceFile[];</span>
+<span id="L33"><a href="#L33">  33</a> }</span>
+<span id="L34"><a href="#L34">  34</a> </span>
+<span id="L35"><a href="#L35">  35</a> export abstract class RevisionedBackendPreparation&lt;PreparedDetails&gt; {</span>
+<span id="L36"><a href="#L36">  36</a>   abstract prepare(): Promise&lt;readonly RevisionedBackendPreparedFile&lt;PreparedDetails&gt;[]&gt;;</span>
+<span id="L37"><a href="#L37">  37</a>   abstract commit(): Promise&lt;void&gt;;</span>
+<span id="L38"><a href="#L38">  38</a>   abstract rollback(): Promise&lt;void&gt;;</span>
+<span id="L39"><a href="#L39">  39</a> }</span>
+<span id="L40"><a href="#L40">  40</a> </span>
+<span id="L41"><a href="#L41">  41</a> export interface IndexedBackendDeclaration {</span>
+<span id="L42"><a href="#L42">  42</a>   readonly declaration: SymbolOverviewNode;</span>
+<span id="L43"><a href="#L43">  43</a>   readonly file: ResolvedPath;</span>
+<span id="L44"><a href="#L44">  44</a> }</span>
+<span id="L45"><a href="#L45">  45</a> </span>
+<span id="L46"><a href="#L46">  46</a> interface RevisionedBackendIndex&lt;PreparedDetails&gt; {</span>
+<span id="L47"><a href="#L47">  47</a>   readonly byRelativePath: ReadonlyMap&lt;string, RevisionedBackendPreparedFile&lt;PreparedDetails&gt;&gt;;</span>
+<span id="L48"><a href="#L48">  48</a>   readonly declarationsByIdentity: ReadonlyMap&lt;string, readonly SymbolOverviewNode[]&gt;;</span>
+<span id="L49"><a href="#L49">  49</a>   readonly declarationsByRelativePath: ReadonlyMap&lt;string, readonly SymbolOverviewNode[]&gt;;</span>
+<span id="L50"><a href="#L50">  50</a>   readonly diagnosticsByRelativePath: ReadonlyMap&lt;string, readonly NavigationDiagnostic[]&gt;;</span>
+<span id="L51"><a href="#L51">  51</a>   readonly relativePathByAbsolute: ReadonlyMap&lt;string, string&gt;;</span>
+<span id="L52"><a href="#L52">  52</a> }</span>
+<span id="L53"><a href="#L53">  53</a> </span>
+<span id="L54"><a href="#L54">  54</a> export abstract class RevisionedBackendState&lt;PreparedDetails&gt; {</span>
+<span id="L55"><a href="#L55">  55</a>   private index: RevisionedBackendIndex&lt;PreparedDetails&gt; = {</span>
+<span id="L56"><a href="#L56">  56</a>     byRelativePath: new Map(),</span>
+<span id="L57"><a href="#L57">  57</a>     declarationsByIdentity: new Map(),</span>
+<span id="L58"><a href="#L58">  58</a>     declarationsByRelativePath: new Map(),</span>
+<span id="L59"><a href="#L59">  59</a>     diagnosticsByRelativePath: new Map(),</span>
+<span id="L60"><a href="#L60">  60</a>     relativePathByAbsolute: new Map(),</span>
+<span id="L61"><a href="#L61">  61</a>   };</span>
+<span id="L62"><a href="#L62">  62</a> </span>
+<span id="L63"><a href="#L63">  63</a>   protected constructor(private readonly fileSystem: FileSystem) {}</span>
+<span id="L64"><a href="#L64">  64</a> </span>
+<span id="L65"><a href="#L65">  65</a>   async refresh(</span>
+<span id="L66"><a href="#L66">  66</a>     files: readonly WorkspaceFile[],</span>
+<span id="L67"><a href="#L67">  67</a>     coverage: BackendRefreshCoverage = &quot;workspace&quot;,</span>
+<span id="L68"><a href="#L68">  68</a>   ): Promise&lt;BackendRefreshSummary&gt; {</span>
+<span id="L69"><a href="#L69">  69</a>     const request = this.preparationRequest(files, coverage);</span>
+<span id="L70"><a href="#L70">  70</a>     const preparation = this.createPreparation(request);</span>
+<span id="L71"><a href="#L71">  71</a>     try {</span>
+<span id="L72"><a href="#L72">  72</a>       const preparedFiles = await preparation.prepare();</span>
+<span id="L73"><a href="#L73">  73</a>       const candidate = this.candidateIndex(request, preparedFiles);</span>
+<span id="L74"><a href="#L74">  74</a>       await preparation.commit();</span>
+<span id="L75"><a href="#L75">  75</a>       this.index = candidate;</span>
+<span id="L76"><a href="#L76">  76</a>     } catch (error) {</span>
+<span id="L77"><a href="#L77">  77</a>       await preparation.rollback();</span>
+<span id="L78"><a href="#L78">  78</a>       throw error;</span>
+<span id="L79"><a href="#L79">  79</a>     }</span>
+<span id="L80"><a href="#L80">  80</a>     return this.refreshSummary(request, files);</span>
+<span id="L81"><a href="#L81">  81</a>   }</span>
+<span id="L82"><a href="#L82">  82</a> </span>
+<span id="L83"><a href="#L83">  83</a>   async ensureFiles(files: readonly ResolvedPath[]): Promise&lt;void&gt; {</span>
+<span id="L84"><a href="#L84">  84</a>     for (const file of files) {</span>
+<span id="L85"><a href="#L85">  85</a>       if (this.index.byRelativePath.has(file.relative)) continue;</span>
+<span id="L86"><a href="#L86">  86</a>       const metadata = await this.fileSystem.metadata(file.absolute);</span>
+<span id="L87"><a href="#L87">  87</a>       await this.refresh([{ ...file, metadata }], &quot;selection&quot;);</span>
+<span id="L88"><a href="#L88">  88</a>     }</span>
+<span id="L89"><a href="#L89">  89</a>   }</span>
+<span id="L90"><a href="#L90">  90</a> </span>
+<span id="L91"><a href="#L91">  91</a>   async fileEntries(file: ResolvedPath): Promise&lt;OverviewFileEntries&gt; {</span>
+<span id="L92"><a href="#L92">  92</a>     await this.ensureFiles([file]);</span>
+<span id="L93"><a href="#L93">  93</a>     const prepared = this.index.byRelativePath.get(file.relative);</span>
+<span id="L94"><a href="#L94">  94</a>     if (!prepared) throw new FileNotFoundError(file.relative);</span>
+<span id="L95"><a href="#L95">  95</a>     return prepared.entries;</span>
+<span id="L96"><a href="#L96">  96</a>   }</span>
+<span id="L97"><a href="#L97">  97</a> </span>
+<span id="L98"><a href="#L98">  98</a>   async declarations(files: readonly ResolvedPath[]): Promise&lt;readonly SymbolOverviewNode[]&gt; {</span>
+<span id="L99"><a href="#L99">  99</a>     await this.ensureFiles(files);</span>
+<span id="L100"><a href="#L100"> 100</a>     return files.flatMap((file) =&gt; this.index.declarationsByRelativePath.get(file.relative) ?? []);</span>
+<span id="L101"><a href="#L101"> 101</a>   }</span>
+<span id="L102"><a href="#L102"> 102</a> </span>
+<span id="L103"><a href="#L103"> 103</a>   diagnostics(file: ResolvedPath): readonly NavigationDiagnostic[] {</span>
+<span id="L104"><a href="#L104"> 104</a>     return this.index.diagnosticsByRelativePath.get(file.relative) ?? [];</span>
+<span id="L105"><a href="#L105"> 105</a>   }</span>
+<span id="L106"><a href="#L106"> 106</a> </span>
+<span id="L107"><a href="#L107"> 107</a>   declarationsIn(relativePath: string): readonly SymbolOverviewNode[] | undefined {</span>
+<span id="L108"><a href="#L108"> 108</a>     return this.index.declarationsByRelativePath.get(relativePath);</span>
+<span id="L109"><a href="#L109"> 109</a>   }</span>
+<span id="L110"><a href="#L110"> 110</a> </span>
+<span id="L111"><a href="#L111"> 111</a>   declarationForIdentity(identity: SymbolIdentity): IndexedBackendDeclaration | undefined {</span>
+<span id="L112"><a href="#L112"> 112</a>     const declaration = this.index.declarationsByIdentity.get(formatSymbolIdentity(identity))?.[0];</span>
+<span id="L113"><a href="#L113"> 113</a>     if (!declaration) return undefined;</span>
+<span id="L114"><a href="#L114"> 114</a>     const prepared = this.index.byRelativePath.get(declaration.identity.file);</span>
+<span id="L115"><a href="#L115"> 115</a>     if (!prepared) return undefined;</span>
+<span id="L116"><a href="#L116"> 116</a>     return {</span>
+<span id="L117"><a href="#L117"> 117</a>       declaration,</span>
+<span id="L118"><a href="#L118"> 118</a>       file: { relative: prepared.file.relative, absolute: prepared.file.absolute },</span>
+<span id="L119"><a href="#L119"> 119</a>     };</span>
+<span id="L120"><a href="#L120"> 120</a>   }</span>
+<span id="L121"><a href="#L121"> 121</a> </span>
+<span id="L122"><a href="#L122"> 122</a>   currentFileCount(): number {</span>
+<span id="L123"><a href="#L123"> 123</a>     return this.index.byRelativePath.size;</span>
+<span id="L124"><a href="#L124"> 124</a>   }</span>
+<span id="L125"><a href="#L125"> 125</a> </span>
+<span id="L126"><a href="#L126"> 126</a>   protected preparedFile(</span>
+<span id="L127"><a href="#L127"> 127</a>     relativePath: string,</span>
+<span id="L128"><a href="#L128"> 128</a>   ): RevisionedBackendPreparedFile&lt;PreparedDetails&gt; | undefined {</span>
+<span id="L129"><a href="#L129"> 129</a>     return this.index.byRelativePath.get(relativePath);</span>
+<span id="L130"><a href="#L130"> 130</a>   }</span>
+<span id="L131"><a href="#L131"> 131</a> </span>
+<span id="L132"><a href="#L132"> 132</a>   protected preparedFiles(): readonly RevisionedBackendPreparedFile&lt;PreparedDetails&gt;[] {</span>
+<span id="L133"><a href="#L133"> 133</a>     return [...this.index.byRelativePath.values()];</span>
+<span id="L134"><a href="#L134"> 134</a>   }</span>
+<span id="L135"><a href="#L135"> 135</a> </span>
+<span id="L136"><a href="#L136"> 136</a>   protected relativePathForAbsolute(absolutePath: string): string | undefined {</span>
+<span id="L137"><a href="#L137"> 137</a>     return this.index.relativePathByAbsolute.get(absolutePath);</span>
+<span id="L138"><a href="#L138"> 138</a>   }</span>
+<span id="L139"><a href="#L139"> 139</a> </span>
+<span id="L140"><a href="#L140"> 140</a>   protected abstract createPreparation(</span>
+<span id="L141"><a href="#L141"> 141</a>     request: RevisionedBackendPreparationRequest&lt;PreparedDetails&gt;,</span>
+<span id="L142"><a href="#L142"> 142</a>   ): RevisionedBackendPreparation&lt;PreparedDetails&gt;;</span>
+<span id="L143"><a href="#L143"> 143</a> </span>
+<span id="L144"><a href="#L144"> 144</a>   private preparationRequest(</span>
+<span id="L145"><a href="#L145"> 145</a>     files: readonly WorkspaceFile[],</span>
+<span id="L146"><a href="#L146"> 146</a>     coverage: BackendRefreshCoverage,</span>
+<span id="L147"><a href="#L147"> 147</a>   ): RevisionedBackendPreparationRequest&lt;PreparedDetails&gt; {</span>
+<span id="L148"><a href="#L148"> 148</a>     const incomingByRelativePath = new Map(files.map((file) =&gt; [file.relative, file]));</span>
+<span id="L149"><a href="#L149"> 149</a>     const changes = files.flatMap((file): RevisionedBackendFileChange&lt;PreparedDetails&gt;[] =&gt; {</span>
+<span id="L150"><a href="#L150"> 150</a>       const previous = this.index.byRelativePath.get(file.relative);</span>
+<span id="L151"><a href="#L151"> 151</a>       if (!previous) return [{ kind: &quot;added&quot;, file }];</span>
+<span id="L152"><a href="#L152"> 152</a>       if (RevisionedBackendState.sameRevision(previous.file, file)) return [];</span>
+<span id="L153"><a href="#L153"> 153</a>       return [{ kind: &quot;changed&quot;, file, previous }];</span>
+<span id="L154"><a href="#L154"> 154</a>     });</span>
+<span id="L155"><a href="#L155"> 155</a>     const removedFiles =</span>
+<span id="L156"><a href="#L156"> 156</a>       coverage === &quot;workspace&quot;</span>
+<span id="L157"><a href="#L157"> 157</a>         ? [...this.index.byRelativePath.values()].filter(</span>
+<span id="L158"><a href="#L158"> 158</a>             (prepared) =&gt; !incomingByRelativePath.has(prepared.file.relative),</span>
+<span id="L159"><a href="#L159"> 159</a>           )</span>
+<span id="L160"><a href="#L160"> 160</a>         : [];</span>
+<span id="L161"><a href="#L161"> 161</a>     const effectiveByRelativePath =</span>
+<span id="L162"><a href="#L162"> 162</a>       coverage === &quot;workspace&quot;</span>
+<span id="L163"><a href="#L163"> 163</a>         ? new Map&lt;string, WorkspaceFile&gt;()</span>
+<span id="L164"><a href="#L164"> 164</a>         : new Map(</span>
+<span id="L165"><a href="#L165"> 165</a>             [...this.index.byRelativePath.values()].map((prepared) =&gt; [</span>
+<span id="L166"><a href="#L166"> 166</a>               prepared.file.relative,</span>
+<span id="L167"><a href="#L167"> 167</a>               prepared.file,</span>
+<span id="L168"><a href="#L168"> 168</a>             ]),</span>
+<span id="L169"><a href="#L169"> 169</a>           );</span>
+<span id="L170"><a href="#L170"> 170</a>     for (const file of files) {</span>
+<span id="L171"><a href="#L171"> 171</a>       effectiveByRelativePath.set(file.relative, file);</span>
+<span id="L172"><a href="#L172"> 172</a>     }</span>
+<span id="L173"><a href="#L173"> 173</a>     return {</span>
+<span id="L174"><a href="#L174"> 174</a>       coverage,</span>
+<span id="L175"><a href="#L175"> 175</a>       changes,</span>
+<span id="L176"><a href="#L176"> 176</a>       removedFiles,</span>
+<span id="L177"><a href="#L177"> 177</a>       effectiveFiles: [...effectiveByRelativePath.values()],</span>
+<span id="L178"><a href="#L178"> 178</a>     };</span>
+<span id="L179"><a href="#L179"> 179</a>   }</span>
+<span id="L180"><a href="#L180"> 180</a> </span>
+<span id="L181"><a href="#L181"> 181</a>   private candidateIndex(</span>
+<span id="L182"><a href="#L182"> 182</a>     request: RevisionedBackendPreparationRequest&lt;PreparedDetails&gt;,</span>
+<span id="L183"><a href="#L183"> 183</a>     preparedFiles: readonly RevisionedBackendPreparedFile&lt;PreparedDetails&gt;[],</span>
+<span id="L184"><a href="#L184"> 184</a>   ): RevisionedBackendIndex&lt;PreparedDetails&gt; {</span>
+<span id="L185"><a href="#L185"> 185</a>     const effectiveByRelativePath = new Map(</span>
+<span id="L186"><a href="#L186"> 186</a>       request.effectiveFiles.map((file) =&gt; [file.relative, file]),</span>
+<span id="L187"><a href="#L187"> 187</a>     );</span>
+<span id="L188"><a href="#L188"> 188</a>     if (effectiveByRelativePath.size !== request.effectiveFiles.length) {</span>
+<span id="L189"><a href="#L189"> 189</a>       throw new Error(&quot;Revisioned backend preparation has an incomplete final key set&quot;);</span>
+<span id="L190"><a href="#L190"> 190</a>     }</span>
+<span id="L191"><a href="#L191"> 191</a>     const preparedByRelativePath = new Map&lt;</span>
+<span id="L192"><a href="#L192"> 192</a>       string,</span>
+<span id="L193"><a href="#L193"> 193</a>       RevisionedBackendPreparedFile&lt;PreparedDetails&gt;</span>
+<span id="L194"><a href="#L194"> 194</a>     &gt;();</span>
+<span id="L195"><a href="#L195"> 195</a>     for (const prepared of preparedFiles) {</span>
+<span id="L196"><a href="#L196"> 196</a>       if (preparedByRelativePath.has(prepared.file.relative)) {</span>
+<span id="L197"><a href="#L197"> 197</a>         throw new Error(`Revisioned backend preparation duplicated ${prepared.file.relative}`);</span>
+<span id="L198"><a href="#L198"> 198</a>       }</span>
+<span id="L199"><a href="#L199"> 199</a>       const effective = effectiveByRelativePath.get(prepared.file.relative);</span>
+<span id="L200"><a href="#L200"> 200</a>       if (!effective) {</span>
+<span id="L201"><a href="#L201"> 201</a>         throw new Error(</span>
+<span id="L202"><a href="#L202"> 202</a>           `Revisioned backend preparation returned outside path ${prepared.file.relative}`,</span>
+<span id="L203"><a href="#L203"> 203</a>         );</span>
+<span id="L204"><a href="#L204"> 204</a>       }</span>
+<span id="L205"><a href="#L205"> 205</a>       if (!RevisionedBackendState.sameRevision(prepared.file, effective)) {</span>
+<span id="L206"><a href="#L206"> 206</a>         throw new Error(</span>
+<span id="L207"><a href="#L207"> 207</a>           `Revisioned backend preparation returned wrong revision for ${prepared.file.relative}`,</span>
+<span id="L208"><a href="#L208"> 208</a>         );</span>
+<span id="L209"><a href="#L209"> 209</a>       }</span>
+<span id="L210"><a href="#L210"> 210</a>       preparedByRelativePath.set(prepared.file.relative, prepared);</span>
+<span id="L211"><a href="#L211"> 211</a>     }</span>
+<span id="L212"><a href="#L212"> 212</a>     for (const change of request.changes) {</span>
+<span id="L213"><a href="#L213"> 213</a>       if (!preparedByRelativePath.has(change.file.relative)) {</span>
+<span id="L214"><a href="#L214"> 214</a>         throw new Error(</span>
+<span id="L215"><a href="#L215"> 215</a>           `Revisioned backend preparation omitted changed path ${change.file.relative}`,</span>
+<span id="L216"><a href="#L216"> 216</a>         );</span>
+<span id="L217"><a href="#L217"> 217</a>       }</span>
+<span id="L218"><a href="#L218"> 218</a>     }</span>
+<span id="L219"><a href="#L219"> 219</a>     const candidateByRelativePath = new Map(this.index.byRelativePath);</span>
+<span id="L220"><a href="#L220"> 220</a>     for (const removed of request.removedFiles) {</span>
+<span id="L221"><a href="#L221"> 221</a>       candidateByRelativePath.delete(removed.file.relative);</span>
+<span id="L222"><a href="#L222"> 222</a>     }</span>
+<span id="L223"><a href="#L223"> 223</a>     for (const prepared of preparedFiles) {</span>
+<span id="L224"><a href="#L224"> 224</a>       candidateByRelativePath.set(prepared.file.relative, prepared);</span>
+<span id="L225"><a href="#L225"> 225</a>     }</span>
+<span id="L226"><a href="#L226"> 226</a>     if (</span>
+<span id="L227"><a href="#L227"> 227</a>       candidateByRelativePath.size !== effectiveByRelativePath.size ||</span>
+<span id="L228"><a href="#L228"> 228</a>       [...candidateByRelativePath.keys()].some((path) =&gt; !effectiveByRelativePath.has(path))</span>
+<span id="L229"><a href="#L229"> 229</a>     ) {</span>
+<span id="L230"><a href="#L230"> 230</a>       throw new Error(&quot;Revisioned backend preparation has an incomplete final key set&quot;);</span>
+<span id="L231"><a href="#L231"> 231</a>     }</span>
+<span id="L232"><a href="#L232"> 232</a>     return RevisionedBackendState.buildIndex(candidateByRelativePath, this.index);</span>
+<span id="L233"><a href="#L233"> 233</a>   }</span>
+<span id="L234"><a href="#L234"> 234</a> </span>
+<span id="L235"><a href="#L235"> 235</a>   private refreshSummary(</span>
+<span id="L236"><a href="#L236"> 236</a>     request: RevisionedBackendPreparationRequest&lt;PreparedDetails&gt;,</span>
+<span id="L237"><a href="#L237"> 237</a>     files: readonly WorkspaceFile[],</span>
+<span id="L238"><a href="#L238"> 238</a>   ): BackendRefreshSummary {</span>
+<span id="L239"><a href="#L239"> 239</a>     const added = request.changes.filter((change) =&gt; change.kind === &quot;added&quot;).length;</span>
+<span id="L240"><a href="#L240"> 240</a>     return {</span>
+<span id="L241"><a href="#L241"> 241</a>       added,</span>
+<span id="L242"><a href="#L242"> 242</a>       changed: request.changes.length - added,</span>
+<span id="L243"><a href="#L243"> 243</a>       removed: request.removedFiles.length,</span>
+<span id="L244"><a href="#L244"> 244</a>       unchanged: files.length - request.changes.length,</span>
+<span id="L245"><a href="#L245"> 245</a>     };</span>
+<span id="L246"><a href="#L246"> 246</a>   }</span>
+<span id="L247"><a href="#L247"> 247</a> </span>
+<span id="L248"><a href="#L248"> 248</a>   private static buildIndex&lt;PreparedDetails&gt;(</span>
+<span id="L249"><a href="#L249"> 249</a>     byRelativePath: ReadonlyMap&lt;string, RevisionedBackendPreparedFile&lt;PreparedDetails&gt;&gt;,</span>
+<span id="L250"><a href="#L250"> 250</a>     previous: RevisionedBackendIndex&lt;PreparedDetails&gt;,</span>
+<span id="L251"><a href="#L251"> 251</a>   ): RevisionedBackendIndex&lt;PreparedDetails&gt; {</span>
+<span id="L252"><a href="#L252"> 252</a>     const declarationsByIdentity = new Map&lt;string, SymbolOverviewNode[]&gt;();</span>
+<span id="L253"><a href="#L253"> 253</a>     const declarationsByRelativePath = new Map&lt;string, readonly SymbolOverviewNode[]&gt;();</span>
+<span id="L254"><a href="#L254"> 254</a>     const diagnosticsByRelativePath = new Map&lt;string, readonly NavigationDiagnostic[]&gt;();</span>
+<span id="L255"><a href="#L255"> 255</a>     const relativePathByAbsolute = new Map&lt;string, string&gt;();</span>
+<span id="L256"><a href="#L256"> 256</a>     for (const prepared of byRelativePath.values()) {</span>
+<span id="L257"><a href="#L257"> 257</a>       const previousPrepared = previous.byRelativePath.get(prepared.file.relative);</span>
+<span id="L258"><a href="#L258"> 258</a>       const unchanged = previousPrepared === prepared;</span>
+<span id="L259"><a href="#L259"> 259</a>       const declarations = unchanged</span>
+<span id="L260"><a href="#L260"> 260</a>         ? (previous.declarationsByRelativePath.get(prepared.file.relative) ?? [])</span>
+<span id="L261"><a href="#L261"> 261</a>         : OverviewTree.walkSymbols(prepared.entries.entries);</span>
+<span id="L262"><a href="#L262"> 262</a>       declarationsByRelativePath.set(prepared.file.relative, declarations);</span>
+<span id="L263"><a href="#L263"> 263</a>       diagnosticsByRelativePath.set(</span>
+<span id="L264"><a href="#L264"> 264</a>         prepared.file.relative,</span>
+<span id="L265"><a href="#L265"> 265</a>         unchanged</span>
+<span id="L266"><a href="#L266"> 266</a>           ? (previous.diagnosticsByRelativePath.get(prepared.file.relative) ?? [])</span>
+<span id="L267"><a href="#L267"> 267</a>           : (prepared.entries.diagnostics ?? []),</span>
+<span id="L268"><a href="#L268"> 268</a>       );</span>
+<span id="L269"><a href="#L269"> 269</a>       relativePathByAbsolute.set(prepared.file.absolute, prepared.file.relative);</span>
+<span id="L270"><a href="#L270"> 270</a>       for (const declaration of declarations) {</span>
+<span id="L271"><a href="#L271"> 271</a>         const key = formatSymbolIdentity(declaration.identity);</span>
+<span id="L272"><a href="#L272"> 272</a>         const matches = declarationsByIdentity.get(key) ?? [];</span>
+<span id="L273"><a href="#L273"> 273</a>         matches.push(declaration);</span>
+<span id="L274"><a href="#L274"> 274</a>         declarationsByIdentity.set(key, matches);</span>
+<span id="L275"><a href="#L275"> 275</a>       }</span>
+<span id="L276"><a href="#L276"> 276</a>     }</span>
+<span id="L277"><a href="#L277"> 277</a>     return {</span>
+<span id="L278"><a href="#L278"> 278</a>       byRelativePath,</span>
+<span id="L279"><a href="#L279"> 279</a>       declarationsByIdentity,</span>
+<span id="L280"><a href="#L280"> 280</a>       declarationsByRelativePath,</span>
+<span id="L281"><a href="#L281"> 281</a>       diagnosticsByRelativePath,</span>
+<span id="L282"><a href="#L282"> 282</a>       relativePathByAbsolute,</span>
+<span id="L283"><a href="#L283"> 283</a>     };</span>
+<span id="L284"><a href="#L284"> 284</a>   }</span>
+<span id="L285"><a href="#L285"> 285</a> </span>
+<span id="L286"><a href="#L286"> 286</a>   private static sameRevision(current: WorkspaceFile, incoming: WorkspaceFile): boolean {</span>
+<span id="L287"><a href="#L287"> 287</a>     return (</span>
+<span id="L288"><a href="#L288"> 288</a>       current.relative === incoming.relative &amp;&amp;</span>
+<span id="L289"><a href="#L289"> 289</a>       current.absolute === incoming.absolute &amp;&amp;</span>
+<span id="L290"><a href="#L290"> 290</a>       current.metadata.changeToken === incoming.metadata.changeToken</span>
+<span id="L291"><a href="#L291"> 291</a>     );</span>
+<span id="L292"><a href="#L292"> 292</a>   }</span>
+<span id="L293"><a href="#L293"> 293</a> }</span></pre>
+<h2>Main · packages/backend-typescript/src/typescript-backend/typescript-workspace-state.ts</h2><pre><span id="L1"><a href="#L1">   1</a> import {</span>
+<span id="L2"><a href="#L2">   2</a>   CollectingDiagnosticSink,</span>
+<span id="L3"><a href="#L3">   3</a>   FileNotFoundError,</span>
+<span id="L4"><a href="#L4">   4</a>   OverviewTree,</span>
+<span id="L5"><a href="#L5">   5</a>   type BackendRefreshCoverage,</span>
+<span id="L6"><a href="#L6">   6</a>   type BackendRefreshSummary,</span>
+<span id="L7"><a href="#L7">   7</a>   type DiagnosticSink,</span>
+<span id="L8"><a href="#L8">   8</a>   type FileSystem,</span>
+<span id="L9"><a href="#L9">   9</a>   type OverviewFileEntries,</span>
+<span id="L10"><a href="#L10">  10</a>   type NavigationDiagnostic,</span>
+<span id="L11"><a href="#L11">  11</a>   type ResolvedPath,</span>
+<span id="L12"><a href="#L12">  12</a>   type SymbolIdentity,</span>
+<span id="L13"><a href="#L13">  13</a>   type SymbolOverviewNode,</span>
+<span id="L14"><a href="#L14">  14</a>   type WorkspaceFile,</span>
+<span id="L15"><a href="#L15">  15</a> } from &quot;@symnav/core&quot;;</span>
+<span id="L16"><a href="#L16">  16</a> import { Project, type Node, type SourceFile } from &quot;ts-morph&quot;;</span>
+<span id="L17"><a href="#L17">  17</a> </span>
+<span id="L18"><a href="#L18">  18</a> import { extractFileEntries } from &quot;../extract/extract-file-entries.js&quot;;</span>
+<span id="L19"><a href="#L19">  19</a> import { DeclarationLocator, type LocatedDeclaration } from &quot;../identity/locate-declarations.js&quot;;</span>
+<span id="L20"><a href="#L20">  20</a> import { WorkspaceFileSystemHost } from &quot;./workspace-file-system-host.js&quot;;</span>
+<span id="L21"><a href="#L21">  21</a> </span>
+<span id="L22"><a href="#L22">  22</a> export interface IndexedDeclaration {</span>
+<span id="L23"><a href="#L23">  23</a>   readonly declaration: SymbolOverviewNode;</span>
+<span id="L24"><a href="#L24">  24</a>   readonly file: ResolvedPath;</span>
+<span id="L25"><a href="#L25">  25</a> }</span>
+<span id="L26"><a href="#L26">  26</a> </span>
+<span id="L27"><a href="#L27">  27</a> export interface TypeScriptFileRevision {</span>
+<span id="L28"><a href="#L28">  28</a>   readonly relativePath: string;</span>
+<span id="L29"><a href="#L29">  29</a>   readonly absolutePath: string;</span>
+<span id="L30"><a href="#L30">  30</a>   readonly size: number;</span>
+<span id="L31"><a href="#L31">  31</a>   readonly modifiedAtMs: number;</span>
+<span id="L32"><a href="#L32">  32</a>   readonly changeToken: string;</span>
+<span id="L33"><a href="#L33">  33</a> }</span>
+<span id="L34"><a href="#L34">  34</a> </span>
+<span id="L35"><a href="#L35">  35</a> export interface TypeScriptFileExtractionRequest {</span>
+<span id="L36"><a href="#L36">  36</a>   readonly sourceFile: SourceFile;</span>
+<span id="L37"><a href="#L37">  37</a>   readonly filePath: string;</span>
+<span id="L38"><a href="#L38">  38</a>   readonly diagnostics?: DiagnosticSink;</span>
+<span id="L39"><a href="#L39">  39</a> }</span>
+<span id="L40"><a href="#L40">  40</a> </span>
+<span id="L41"><a href="#L41">  41</a> export interface TypeScriptFileExtractor {</span>
+<span id="L42"><a href="#L42">  42</a>   extract(request: TypeScriptFileExtractionRequest): OverviewFileEntries;</span>
+<span id="L43"><a href="#L43">  43</a> }</span>
+<span id="L44"><a href="#L44">  44</a> </span>
+<span id="L45"><a href="#L45">  45</a> export interface TypeScriptSemanticSourceProvider {</span>
+<span id="L46"><a href="#L46">  46</a>   sourceFileFor(relativePath: string): SourceFile | undefined;</span>
+<span id="L47"><a href="#L47">  47</a>   sourceFilesFor(relativePath: string): readonly SourceFile[];</span>
+<span id="L48"><a href="#L48">  48</a> }</span>
+<span id="L49"><a href="#L49">  49</a> </span>
+<span id="L50"><a href="#L50">  50</a> export class TypeScriptFileEntryExtractor implements TypeScriptFileExtractor {</span>
+<span id="L51"><a href="#L51">  51</a>   extract(request: TypeScriptFileExtractionRequest): OverviewFileEntries {</span>
+<span id="L52"><a href="#L52">  52</a>     return extractFileEntries(request);</span>
+<span id="L53"><a href="#L53">  53</a>   }</span>
+<span id="L54"><a href="#L54">  54</a> }</span>
+<span id="L55"><a href="#L55">  55</a> </span>
+<span id="L56"><a href="#L56">  56</a> export interface PreparedFileRevision {</span>
+<span id="L57"><a href="#L57">  57</a>   readonly file: WorkspaceFile;</span>
+<span id="L58"><a href="#L58">  58</a>   readonly entries: OverviewFileEntries;</span>
+<span id="L59"><a href="#L59">  59</a>   readonly diagnostics: readonly NavigationDiagnostic[];</span>
+<span id="L60"><a href="#L60">  60</a> }</span>
+<span id="L61"><a href="#L61">  61</a> </span>
+<span id="L62"><a href="#L62">  62</a> export interface PreparedFileIndex {</span>
+<span id="L63"><a href="#L63">  63</a>   readonly byRelativePath: ReadonlyMap&lt;string, PreparedFileRevision&gt;;</span>
+<span id="L64"><a href="#L64">  64</a>   readonly declarationsByIdentity: ReadonlyMap&lt;string, readonly SymbolOverviewNode[]&gt;;</span>
+<span id="L65"><a href="#L65">  65</a> }</span>
+<span id="L66"><a href="#L66">  66</a> </span>
+<span id="L67"><a href="#L67">  67</a> interface PreparedFileState extends PreparedFileRevision {</span>
+<span id="L68"><a href="#L68">  68</a>   readonly revision: TypeScriptFileRevision;</span>
+<span id="L69"><a href="#L69">  69</a>   readonly declarations: readonly SymbolOverviewNode[];</span>
+<span id="L70"><a href="#L70">  70</a>   readonly declarationsByPosition: ReadonlyMap&lt;number, SymbolOverviewNode&gt;;</span>
+<span id="L71"><a href="#L71">  71</a> }</span>
+<span id="L72"><a href="#L72">  72</a> </span>
+<span id="L73"><a href="#L73">  73</a> interface WorkspacePreparedFileIndex extends PreparedFileIndex {</span>
+<span id="L74"><a href="#L74">  74</a>   readonly byRelativePath: ReadonlyMap&lt;string, PreparedFileState&gt;;</span>
+<span id="L75"><a href="#L75">  75</a>   readonly declarationsByPosition: ReadonlyMap&lt;string, ReadonlyMap&lt;number, SymbolOverviewNode&gt;&gt;;</span>
+<span id="L76"><a href="#L76">  76</a>   readonly relativePathByAbsolute: ReadonlyMap&lt;string, string&gt;;</span>
+<span id="L77"><a href="#L77">  77</a> }</span>
+<span id="L78"><a href="#L78">  78</a> </span>
+<span id="L79"><a href="#L79">  79</a> interface ProjectMutation {</span>
+<span id="L80"><a href="#L80">  80</a>   rollback(): void;</span>
+<span id="L81"><a href="#L81">  81</a> }</span>
+<span id="L82"><a href="#L82">  82</a> </span>
+<span id="L83"><a href="#L83">  83</a> export class TypeScriptWorkspaceState {</span>
+<span id="L84"><a href="#L84">  84</a>   private readonly project: Project;</span>
+<span id="L85"><a href="#L85">  85</a>   private preparedIndex: WorkspacePreparedFileIndex = {</span>
+<span id="L86"><a href="#L86">  86</a>     byRelativePath: new Map(),</span>
+<span id="L87"><a href="#L87">  87</a>     declarationsByIdentity: new Map(),</span>
+<span id="L88"><a href="#L88">  88</a>     declarationsByPosition: new Map(),</span>
+<span id="L89"><a href="#L89">  89</a>     relativePathByAbsolute: new Map(),</span>
+<span id="L90"><a href="#L90">  90</a>   };</span>
+<span id="L91"><a href="#L91">  91</a> </span>
+<span id="L92"><a href="#L92">  92</a>   constructor(</span>
+<span id="L93"><a href="#L93">  93</a>     private readonly fs: FileSystem,</span>
+<span id="L94"><a href="#L94">  94</a>     private readonly extractor: TypeScriptFileExtractor = new TypeScriptFileEntryExtractor(),</span>
+<span id="L95"><a href="#L95">  95</a>     private readonly semanticSources?: TypeScriptSemanticSourceProvider,</span>
+<span id="L96"><a href="#L96">  96</a>   ) {</span>
+<span id="L97"><a href="#L97">  97</a>     this.project = new Project({ fileSystem: new WorkspaceFileSystemHost(fs) });</span>
+<span id="L98"><a href="#L98">  98</a>   }</span>
+<span id="L99"><a href="#L99">  99</a> </span>
+<span id="L100"><a href="#L100"> 100</a>   refresh(</span>
+<span id="L101"><a href="#L101"> 101</a>     files: readonly WorkspaceFile[],</span>
+<span id="L102"><a href="#L102"> 102</a>     coverage: BackendRefreshCoverage = &quot;workspace&quot;,</span>
+<span id="L103"><a href="#L103"> 103</a>   ): BackendRefreshSummary {</span>
+<span id="L104"><a href="#L104"> 104</a>     const incomingRevisions = files.map((file) =&gt; TypeScriptWorkspaceState.revisionFor(file));</span>
+<span id="L105"><a href="#L105"> 105</a>     const incomingPaths = new Set(incomingRevisions.map((revision) =&gt; revision.relativePath));</span>
+<span id="L106"><a href="#L106"> 106</a>     const added: TypeScriptFileRevision[] = [];</span>
+<span id="L107"><a href="#L107"> 107</a>     const changed: TypeScriptFileRevision[] = [];</span>
+<span id="L108"><a href="#L108"> 108</a>     const revisionsToPrepare: TypeScriptFileRevision[] = [];</span>
+<span id="L109"><a href="#L109"> 109</a>     let unchanged = 0;</span>
+<span id="L110"><a href="#L110"> 110</a> </span>
+<span id="L111"><a href="#L111"> 111</a>     for (const revision of incomingRevisions) {</span>
+<span id="L112"><a href="#L112"> 112</a>       const current = this.preparedIndex.byRelativePath.get(revision.relativePath)?.revision;</span>
+<span id="L113"><a href="#L113"> 113</a>       if (!current) {</span>
+<span id="L114"><a href="#L114"> 114</a>         added.push(revision);</span>
+<span id="L115"><a href="#L115"> 115</a>         revisionsToPrepare.push(revision);</span>
+<span id="L116"><a href="#L116"> 116</a>         continue;</span>
+<span id="L117"><a href="#L117"> 117</a>       }</span>
+<span id="L118"><a href="#L118"> 118</a>       if (TypeScriptWorkspaceState.sameRevision(current, revision)) {</span>
+<span id="L119"><a href="#L119"> 119</a>         unchanged += 1;</span>
+<span id="L120"><a href="#L120"> 120</a>         continue;</span>
+<span id="L121"><a href="#L121"> 121</a>       }</span>
+<span id="L122"><a href="#L122"> 122</a>       changed.push(revision);</span>
+<span id="L123"><a href="#L123"> 123</a>       revisionsToPrepare.push(revision);</span>
+<span id="L124"><a href="#L124"> 124</a>     }</span>
+<span id="L125"><a href="#L125"> 125</a> </span>
+<span id="L126"><a href="#L126"> 126</a>     const removed =</span>
+<span id="L127"><a href="#L127"> 127</a>       coverage === &quot;workspace&quot;</span>
+<span id="L128"><a href="#L128"> 128</a>         ? [...this.preparedIndex.byRelativePath.keys()].filter(</span>
+<span id="L129"><a href="#L129"> 129</a>             (relativePath) =&gt; !incomingPaths.has(relativePath),</span>
+<span id="L130"><a href="#L130"> 130</a>           )</span>
+<span id="L131"><a href="#L131"> 131</a>         : [];</span>
+<span id="L132"><a href="#L132"> 132</a>     const prepared = this.prepareFiles(revisionsToPrepare);</span>
+<span id="L133"><a href="#L133"> 133</a>     const nextIndex = this.buildPreparedIndex(prepared, removed);</span>
+<span id="L134"><a href="#L134"> 134</a>     this.publishProjectRemovals(prepared, removed);</span>
+<span id="L135"><a href="#L135"> 135</a>     this.preparedIndex = nextIndex;</span>
+<span id="L136"><a href="#L136"> 136</a> </span>
+<span id="L137"><a href="#L137"> 137</a>     return {</span>
+<span id="L138"><a href="#L138"> 138</a>       added: added.length,</span>
+<span id="L139"><a href="#L139"> 139</a>       changed: changed.length,</span>
+<span id="L140"><a href="#L140"> 140</a>       removed: removed.length,</span>
+<span id="L141"><a href="#L141"> 141</a>       unchanged,</span>
+<span id="L142"><a href="#L142"> 142</a>     };</span>
+<span id="L143"><a href="#L143"> 143</a>   }</span>
+<span id="L144"><a href="#L144"> 144</a> </span>
+<span id="L145"><a href="#L145"> 145</a>   currentFileCount(): number {</span>
+<span id="L146"><a href="#L146"> 146</a>     return this.preparedIndex.byRelativePath.size;</span>
+<span id="L147"><a href="#L147"> 147</a>   }</span>
+<span id="L148"><a href="#L148"> 148</a> </span>
+<span id="L149"><a href="#L149"> 149</a>   ensureFiles(files: readonly ResolvedPath[]): void {</span>
+<span id="L150"><a href="#L150"> 150</a>     for (const file of files) {</span>
+<span id="L151"><a href="#L151"> 151</a>       if (!this.preparedIndex.byRelativePath.has(file.relative)) {</span>
+<span id="L152"><a href="#L152"> 152</a>         this.addFile(file);</span>
+<span id="L153"><a href="#L153"> 153</a>       }</span>
+<span id="L154"><a href="#L154"> 154</a>     }</span>
+<span id="L155"><a href="#L155"> 155</a>   }</span>
+<span id="L156"><a href="#L156"> 156</a> </span>
+<span id="L157"><a href="#L157"> 157</a>   fileEntries(file: ResolvedPath, diagnostics?: DiagnosticSink): OverviewFileEntries {</span>
+<span id="L158"><a href="#L158"> 158</a>     this.ensureFiles([file]);</span>
+<span id="L159"><a href="#L159"> 159</a>     const prepared = this.preparedIndex.byRelativePath.get(file.relative);</span>
+<span id="L160"><a href="#L160"> 160</a>     if (!prepared) {</span>
+<span id="L161"><a href="#L161"> 161</a>       throw new FileNotFoundError(file.relative);</span>
+<span id="L162"><a href="#L162"> 162</a>     }</span>
+<span id="L163"><a href="#L163"> 163</a>     for (const diagnostic of prepared.diagnostics) {</span>
+<span id="L164"><a href="#L164"> 164</a>       diagnostics?.report(diagnostic);</span>
+<span id="L165"><a href="#L165"> 165</a>     }</span>
+<span id="L166"><a href="#L166"> 166</a>     return prepared.entries;</span>
+<span id="L167"><a href="#L167"> 167</a>   }</span>
+<span id="L168"><a href="#L168"> 168</a> </span>
+<span id="L169"><a href="#L169"> 169</a>   diagnostics(file: ResolvedPath): readonly NavigationDiagnostic[] {</span>
+<span id="L170"><a href="#L170"> 170</a>     return this.preparedIndex.byRelativePath.get(file.relative)?.diagnostics ?? [];</span>
+<span id="L171"><a href="#L171"> 171</a>   }</span>
+<span id="L172"><a href="#L172"> 172</a> </span>
+<span id="L173"><a href="#L173"> 173</a>   declarationsIn(relativePath: string): readonly SymbolOverviewNode[] | undefined {</span>
+<span id="L174"><a href="#L174"> 174</a>     return this.preparedIndex.byRelativePath.get(relativePath)?.declarations;</span>
+<span id="L175"><a href="#L175"> 175</a>   }</span>
+<span id="L176"><a href="#L176"> 176</a> </span>
+<span id="L177"><a href="#L177"> 177</a>   allDeclarations(files: readonly ResolvedPath[]): readonly SymbolOverviewNode[] {</span>
+<span id="L178"><a href="#L178"> 178</a>     this.ensureFiles(files);</span>
+<span id="L179"><a href="#L179"> 179</a>     return files.flatMap((file) =&gt; this.declarationsIn(file.relative) ?? []);</span>
+<span id="L180"><a href="#L180"> 180</a>   }</span>
+<span id="L181"><a href="#L181"> 181</a> </span>
+<span id="L182"><a href="#L182"> 182</a>   sourceFile(relativePath: string): SourceFile | undefined {</span>
+<span id="L183"><a href="#L183"> 183</a>     const prepared = this.preparedIndex.byRelativePath.get(relativePath);</span>
+<span id="L184"><a href="#L184"> 184</a>     if (!prepared) return undefined;</span>
+<span id="L185"><a href="#L185"> 185</a>     const semanticSource = this.semanticSources?.sourceFileFor(relativePath);</span>
+<span id="L186"><a href="#L186"> 186</a>     if (semanticSource) return semanticSource;</span>
+<span id="L187"><a href="#L187"> 187</a>     return this.project.getSourceFile(prepared.file.absolute);</span>
+<span id="L188"><a href="#L188"> 188</a>   }</span>
+<span id="L189"><a href="#L189"> 189</a> </span>
+<span id="L190"><a href="#L190"> 190</a>   locate(identity: SymbolIdentity): readonly LocatedDeclaration[] {</span>
+<span id="L191"><a href="#L191"> 191</a>     const semanticSource = this.semanticSources?.sourceFileFor(identity.file);</span>
+<span id="L192"><a href="#L192"> 192</a>     return this.locateIn(identity, semanticSource ? [semanticSource] : undefined);</span>
+<span id="L193"><a href="#L193"> 193</a>   }</span>
+<span id="L194"><a href="#L194"> 194</a> </span>
+<span id="L195"><a href="#L195"> 195</a>   locateSemanticCopies(identity: SymbolIdentity): readonly LocatedDeclaration[] {</span>
+<span id="L196"><a href="#L196"> 196</a>     const semanticSources = this.semanticSources?.sourceFilesFor(identity.file);</span>
+<span id="L197"><a href="#L197"> 197</a>     return this.locateIn(identity, semanticSources);</span>
+<span id="L198"><a href="#L198"> 198</a>   }</span>
+<span id="L199"><a href="#L199"> 199</a> </span>
+<span id="L200"><a href="#L200"> 200</a>   private locateIn(</span>
+<span id="L201"><a href="#L201"> 201</a>     identity: SymbolIdentity,</span>
+<span id="L202"><a href="#L202"> 202</a>     semanticSources: readonly SourceFile[] | undefined,</span>
+<span id="L203"><a href="#L203"> 203</a>   ): readonly LocatedDeclaration[] {</span>
+<span id="L204"><a href="#L204"> 204</a>     const prepared = this.preparedIndex.byRelativePath.get(identity.file);</span>
+<span id="L205"><a href="#L205"> 205</a>     if (!prepared) return [];</span>
+<span id="L206"><a href="#L206"> 206</a>     const sourceFiles =</span>
+<span id="L207"><a href="#L207"> 207</a>       semanticSources &amp;&amp; semanticSources.length &gt; 0</span>
+<span id="L208"><a href="#L208"> 208</a>         ? semanticSources</span>
+<span id="L209"><a href="#L209"> 209</a>         : [this.project.getSourceFile(prepared.file.absolute)].filter(</span>
+<span id="L210"><a href="#L210"> 210</a>             (sourceFile): sourceFile is SourceFile =&gt; sourceFile !== undefined,</span>
+<span id="L211"><a href="#L211"> 211</a>           );</span>
+<span id="L212"><a href="#L212"> 212</a>     return sourceFiles.flatMap((sourceFile) =&gt;</span>
+<span id="L213"><a href="#L213"> 213</a>       new DeclarationLocator(sourceFile).locate(identity, prepared.entries.entries),</span>
+<span id="L214"><a href="#L214"> 214</a>     );</span>
+<span id="L215"><a href="#L215"> 215</a>   }</span>
+<span id="L216"><a href="#L216"> 216</a> </span>
+<span id="L217"><a href="#L217"> 217</a>   declarationAt(node: Node): SymbolOverviewNode | undefined {</span>
+<span id="L218"><a href="#L218"> 218</a>     const relative = this.relativePathOf(node.getSourceFile());</span>
+<span id="L219"><a href="#L219"> 219</a>     if (!relative) return undefined;</span>
+<span id="L220"><a href="#L220"> 220</a>     return this.preparedIndex.declarationsByPosition.get(relative)?.get(node.getStart());</span>
+<span id="L221"><a href="#L221"> 221</a>   }</span>
+<span id="L222"><a href="#L222"> 222</a> </span>
+<span id="L223"><a href="#L223"> 223</a>   nodeAt(relativePath: string, start: number): Node | undefined {</span>
+<span id="L224"><a href="#L224"> 224</a>     const prepared = this.preparedIndex.byRelativePath.get(relativePath);</span>
+<span id="L225"><a href="#L225"> 225</a>     if (!prepared) return undefined;</span>
+<span id="L226"><a href="#L226"> 226</a>     return this.project.getSourceFile(prepared.file.absolute)?.getDescendantAtPos(start);</span>
+<span id="L227"><a href="#L227"> 227</a>   }</span>
+<span id="L228"><a href="#L228"> 228</a> </span>
+<span id="L229"><a href="#L229"> 229</a>   declarationForIdentity(identity: SymbolIdentity): IndexedDeclaration | undefined {</span>
+<span id="L230"><a href="#L230"> 230</a>     const declaration = this.preparedIndex.declarationsByIdentity.get(</span>
+<span id="L231"><a href="#L231"> 231</a>       DeclarationLocator.identityKey(identity),</span>
+<span id="L232"><a href="#L232"> 232</a>     )?.[0];</span>
+<span id="L233"><a href="#L233"> 233</a>     if (!declaration) return undefined;</span>
+<span id="L234"><a href="#L234"> 234</a>     const prepared = this.preparedIndex.byRelativePath.get(declaration.identity.file);</span>
+<span id="L235"><a href="#L235"> 235</a>     if (!prepared) return undefined;</span>
+<span id="L236"><a href="#L236"> 236</a>     return {</span>
+<span id="L237"><a href="#L237"> 237</a>       declaration,</span>
+<span id="L238"><a href="#L238"> 238</a>       file: { relative: prepared.file.relative, absolute: prepared.file.absolute },</span>
+<span id="L239"><a href="#L239"> 239</a>     };</span>
+<span id="L240"><a href="#L240"> 240</a>   }</span>
+<span id="L241"><a href="#L241"> 241</a> </span>
+<span id="L242"><a href="#L242"> 242</a>   relativePathOf(sourceFile: SourceFile): string | undefined {</span>
+<span id="L243"><a href="#L243"> 243</a>     return this.preparedIndex.relativePathByAbsolute.get(sourceFile.getFilePath());</span>
+<span id="L244"><a href="#L244"> 244</a>   }</span>
+<span id="L245"><a href="#L245"> 245</a> </span>
+<span id="L246"><a href="#L246"> 246</a>   private addFile(path: ResolvedPath): void {</span>
+<span id="L247"><a href="#L247"> 247</a>     const metadata = this.fs.metadataSync(path.absolute);</span>
+<span id="L248"><a href="#L248"> 248</a>     const prepared = this.prepareFiles([</span>
+<span id="L249"><a href="#L249"> 249</a>       {</span>
+<span id="L250"><a href="#L250"> 250</a>         relativePath: path.relative,</span>
+<span id="L251"><a href="#L251"> 251</a>         absolutePath: path.absolute,</span>
+<span id="L252"><a href="#L252"> 252</a>         size: metadata.size,</span>
+<span id="L253"><a href="#L253"> 253</a>         modifiedAtMs: metadata.modifiedAtMs,</span>
+<span id="L254"><a href="#L254"> 254</a>         changeToken: metadata.changeToken,</span>
+<span id="L255"><a href="#L255"> 255</a>       },</span>
+<span id="L256"><a href="#L256"> 256</a>     ]);</span>
+<span id="L257"><a href="#L257"> 257</a>     const preparedFile = prepared[0];</span>
+<span id="L258"><a href="#L258"> 258</a>     if (preparedFile) {</span>
+<span id="L259"><a href="#L259"> 259</a>       this.preparedIndex = this.buildPreparedIndex([preparedFile], []);</span>
+<span id="L260"><a href="#L260"> 260</a>     }</span>
+<span id="L261"><a href="#L261"> 261</a>   }</span>
+<span id="L262"><a href="#L262"> 262</a> </span>
+<span id="L263"><a href="#L263"> 263</a>   private prepareFiles(revisions: readonly TypeScriptFileRevision[]): readonly PreparedFileState[] {</span>
+<span id="L264"><a href="#L264"> 264</a>     const candidates = revisions.map((revision) =&gt; {</span>
+<span id="L265"><a href="#L265"> 265</a>       const existingPath = this.preparedIndex.byRelativePath.get(revision.relativePath)?.file;</span>
+<span id="L266"><a href="#L266"> 266</a>       const existingSourceFile =</span>
+<span id="L267"><a href="#L267"> 267</a>         existingPath === undefined || existingPath.absolute === revision.absolutePath</span>
+<span id="L268"><a href="#L268"> 268</a>           ? this.project.getSourceFile(revision.absolutePath)</span>
+<span id="L269"><a href="#L269"> 269</a>           : undefined;</span>
+<span id="L270"><a href="#L270"> 270</a>       return {</span>
+<span id="L271"><a href="#L271"> 271</a>         revision,</span>
+<span id="L272"><a href="#L272"> 272</a>         existingSourceFile,</span>
+<span id="L273"><a href="#L273"> 273</a>         content:</span>
+<span id="L274"><a href="#L274"> 274</a>           existingSourceFile &amp;&amp; existingPath</span>
+<span id="L275"><a href="#L275"> 275</a>             ? this.fs.readFileSync(revision.absolutePath)</span>
+<span id="L276"><a href="#L276"> 276</a>             : undefined,</span>
+<span id="L277"><a href="#L277"> 277</a>       };</span>
+<span id="L278"><a href="#L278"> 278</a>     });</span>
+<span id="L279"><a href="#L279"> 279</a>     const mutations: ProjectMutation[] = [];</span>
+<span id="L280"><a href="#L280"> 280</a> </span>
+<span id="L281"><a href="#L281"> 281</a>     try {</span>
+<span id="L282"><a href="#L282"> 282</a>       return candidates.map(({ revision, existingSourceFile, content }) =&gt; {</span>
+<span id="L283"><a href="#L283"> 283</a>         const path: ResolvedPath = {</span>
+<span id="L284"><a href="#L284"> 284</a>           relative: revision.relativePath,</span>
+<span id="L285"><a href="#L285"> 285</a>           absolute: revision.absolutePath,</span>
+<span id="L286"><a href="#L286"> 286</a>         };</span>
+<span id="L287"><a href="#L287"> 287</a>         let sourceFile: SourceFile;</span>
+<span id="L288"><a href="#L288"> 288</a> </span>
+<span id="L289"><a href="#L289"> 289</a>         if (existingSourceFile &amp;&amp; content !== undefined) {</span>
+<span id="L290"><a href="#L290"> 290</a>           const previousText = existingSourceFile.getFullText();</span>
+<span id="L291"><a href="#L291"> 291</a>           existingSourceFile.replaceWithText(content);</span>
+<span id="L292"><a href="#L292"> 292</a>           mutations.push({ rollback: () =&gt; existingSourceFile.replaceWithText(previousText) });</span>
+<span id="L293"><a href="#L293"> 293</a>           sourceFile = existingSourceFile;</span>
+<span id="L294"><a href="#L294"> 294</a>         } else if (existingSourceFile) {</span>
+<span id="L295"><a href="#L295"> 295</a>           sourceFile = existingSourceFile;</span>
+<span id="L296"><a href="#L296"> 296</a>         } else {</span>
+<span id="L297"><a href="#L297"> 297</a>           sourceFile = this.project.addSourceFileAtPath(revision.absolutePath);</span>
+<span id="L298"><a href="#L298"> 298</a>           mutations.push({ rollback: () =&gt; this.project.removeSourceFile(sourceFile) });</span>
+<span id="L299"><a href="#L299"> 299</a>         }</span>
+<span id="L300"><a href="#L300"> 300</a> </span>
+<span id="L301"><a href="#L301"> 301</a>         return this.buildFileIndex(sourceFile, path, revision);</span>
+<span id="L302"><a href="#L302"> 302</a>       });</span>
+<span id="L303"><a href="#L303"> 303</a>     } catch (error) {</span>
+<span id="L304"><a href="#L304"> 304</a>       for (const mutation of mutations.reverse()) {</span>
+<span id="L305"><a href="#L305"> 305</a>         mutation.rollback();</span>
+<span id="L306"><a href="#L306"> 306</a>       }</span>
+<span id="L307"><a href="#L307"> 307</a>       throw error;</span>
+<span id="L308"><a href="#L308"> 308</a>     }</span>
+<span id="L309"><a href="#L309"> 309</a>   }</span>
+<span id="L310"><a href="#L310"> 310</a> </span>
+<span id="L311"><a href="#L311"> 311</a>   private buildFileIndex(</span>
+<span id="L312"><a href="#L312"> 312</a>     sourceFile: SourceFile,</span>
+<span id="L313"><a href="#L313"> 313</a>     path: ResolvedPath,</span>
+<span id="L314"><a href="#L314"> 314</a>     revision: TypeScriptFileRevision,</span>
+<span id="L315"><a href="#L315"> 315</a>   ): PreparedFileState {</span>
+<span id="L316"><a href="#L316"> 316</a>     const byPosition = new Map&lt;number, SymbolOverviewNode&gt;();</span>
+<span id="L317"><a href="#L317"> 317</a>     const declarations: SymbolOverviewNode[] = [];</span>
+<span id="L318"><a href="#L318"> 318</a>     const diagnosticSink = new CollectingDiagnosticSink();</span>
+<span id="L319"><a href="#L319"> 319</a>     const extracted = this.extractor.extract({</span>
+<span id="L320"><a href="#L320"> 320</a>       sourceFile,</span>
+<span id="L321"><a href="#L321"> 321</a>       filePath: path.relative,</span>
+<span id="L322"><a href="#L322"> 322</a>       diagnostics: diagnosticSink,</span>
+<span id="L323"><a href="#L323"> 323</a>     });</span>
+<span id="L324"><a href="#L324"> 324</a>     const diagnostics = diagnosticSink.diagnostics();</span>
+<span id="L325"><a href="#L325"> 325</a>     const entries = diagnostics.length === 0 ? extracted : { ...extracted, diagnostics };</span>
+<span id="L326"><a href="#L326"> 326</a>     for (const declaration of OverviewTree.walkSymbols(entries.entries)) {</span>
+<span id="L327"><a href="#L327"> 327</a>       declarations.push(declaration);</span>
+<span id="L328"><a href="#L328"> 328</a>     }</span>
+<span id="L329"><a href="#L329"> 329</a>     for (const { declaration, node } of new DeclarationLocator(sourceFile).locateAll(</span>
+<span id="L330"><a href="#L330"> 330</a>       entries.entries,</span>
+<span id="L331"><a href="#L331"> 331</a>     )) {</span>
+<span id="L332"><a href="#L332"> 332</a>       byPosition.set(node.getStart(), declaration);</span>
+<span id="L333"><a href="#L333"> 333</a>     }</span>
+<span id="L334"><a href="#L334"> 334</a>     return {</span>
+<span id="L335"><a href="#L335"> 335</a>       revision,</span>
+<span id="L336"><a href="#L336"> 336</a>       file: {</span>
+<span id="L337"><a href="#L337"> 337</a>         ...path,</span>
+<span id="L338"><a href="#L338"> 338</a>         metadata: {</span>
+<span id="L339"><a href="#L339"> 339</a>           size: revision.size,</span>
+<span id="L340"><a href="#L340"> 340</a>           modifiedAtMs: revision.modifiedAtMs,</span>
+<span id="L341"><a href="#L341"> 341</a>           changeToken: revision.changeToken,</span>
+<span id="L342"><a href="#L342"> 342</a>         },</span>
+<span id="L343"><a href="#L343"> 343</a>       },</span>
+<span id="L344"><a href="#L344"> 344</a>       entries,</span>
+<span id="L345"><a href="#L345"> 345</a>       diagnostics,</span>
+<span id="L346"><a href="#L346"> 346</a>       declarations,</span>
+<span id="L347"><a href="#L347"> 347</a>       declarationsByPosition: byPosition,</span>
+<span id="L348"><a href="#L348"> 348</a>     };</span>
+<span id="L349"><a href="#L349"> 349</a>   }</span>
+<span id="L350"><a href="#L350"> 350</a> </span>
+<span id="L351"><a href="#L351"> 351</a>   private buildPreparedIndex(</span>
+<span id="L352"><a href="#L352"> 352</a>     preparedFiles: readonly PreparedFileState[],</span>
+<span id="L353"><a href="#L353"> 353</a>     removedRelativePaths: readonly string[],</span>
+<span id="L354"><a href="#L354"> 354</a>   ): WorkspacePreparedFileIndex {</span>
+<span id="L355"><a href="#L355"> 355</a>     if (preparedFiles.length === 0 &amp;&amp; removedRelativePaths.length === 0) {</span>
+<span id="L356"><a href="#L356"> 356</a>       return this.preparedIndex;</span>
+<span id="L357"><a href="#L357"> 357</a>     }</span>
+<span id="L358"><a href="#L358"> 358</a>     const byRelativePath = new Map(this.preparedIndex.byRelativePath);</span>
+<span id="L359"><a href="#L359"> 359</a>     for (const relativePath of removedRelativePaths) {</span>
+<span id="L360"><a href="#L360"> 360</a>       byRelativePath.delete(relativePath);</span>
+<span id="L361"><a href="#L361"> 361</a>     }</span>
+<span id="L362"><a href="#L362"> 362</a>     for (const prepared of preparedFiles) {</span>
+<span id="L363"><a href="#L363"> 363</a>       byRelativePath.set(prepared.file.relative, prepared);</span>
+<span id="L364"><a href="#L364"> 364</a>     }</span>
+<span id="L365"><a href="#L365"> 365</a> </span>
+<span id="L366"><a href="#L366"> 366</a>     const declarationsByIdentity = new Map&lt;string, SymbolOverviewNode[]&gt;();</span>
+<span id="L367"><a href="#L367"> 367</a>     const declarationsByPosition = new Map&lt;string, ReadonlyMap&lt;number, SymbolOverviewNode&gt;&gt;();</span>
+<span id="L368"><a href="#L368"> 368</a>     const relativePathByAbsolute = new Map&lt;string, string&gt;();</span>
+<span id="L369"><a href="#L369"> 369</a>     for (const prepared of byRelativePath.values()) {</span>
+<span id="L370"><a href="#L370"> 370</a>       for (const declaration of prepared.declarations) {</span>
+<span id="L371"><a href="#L371"> 371</a>         const identity = DeclarationLocator.identityKey(declaration.identity);</span>
+<span id="L372"><a href="#L372"> 372</a>         const declarations = declarationsByIdentity.get(identity) ?? [];</span>
+<span id="L373"><a href="#L373"> 373</a>         declarations.push(declaration);</span>
+<span id="L374"><a href="#L374"> 374</a>         declarationsByIdentity.set(identity, declarations);</span>
+<span id="L375"><a href="#L375"> 375</a>       }</span>
+<span id="L376"><a href="#L376"> 376</a>       declarationsByPosition.set(prepared.file.relative, prepared.declarationsByPosition);</span>
+<span id="L377"><a href="#L377"> 377</a>       relativePathByAbsolute.set(prepared.file.absolute, prepared.file.relative);</span>
+<span id="L378"><a href="#L378"> 378</a>     }</span>
+<span id="L379"><a href="#L379"> 379</a>     return {</span>
+<span id="L380"><a href="#L380"> 380</a>       byRelativePath,</span>
+<span id="L381"><a href="#L381"> 381</a>       declarationsByIdentity,</span>
+<span id="L382"><a href="#L382"> 382</a>       declarationsByPosition,</span>
+<span id="L383"><a href="#L383"> 383</a>       relativePathByAbsolute,</span>
+<span id="L384"><a href="#L384"> 384</a>     };</span>
+<span id="L385"><a href="#L385"> 385</a>   }</span>
+<span id="L386"><a href="#L386"> 386</a> </span>
+<span id="L387"><a href="#L387"> 387</a>   private publishProjectRemovals(</span>
+<span id="L388"><a href="#L388"> 388</a>     preparedFiles: readonly PreparedFileState[],</span>
+<span id="L389"><a href="#L389"> 389</a>     removedRelativePaths: readonly string[],</span>
+<span id="L390"><a href="#L390"> 390</a>   ): void {</span>
+<span id="L391"><a href="#L391"> 391</a>     const obsoleteAbsolutePaths = removedRelativePaths.flatMap((relativePath) =&gt; {</span>
+<span id="L392"><a href="#L392"> 392</a>       const prepared = this.preparedIndex.byRelativePath.get(relativePath);</span>
+<span id="L393"><a href="#L393"> 393</a>       return prepared ? [prepared.file.absolute] : [];</span>
+<span id="L394"><a href="#L394"> 394</a>     });</span>
+<span id="L395"><a href="#L395"> 395</a>     for (const prepared of preparedFiles) {</span>
+<span id="L396"><a href="#L396"> 396</a>       const previous = this.preparedIndex.byRelativePath.get(prepared.file.relative);</span>
+<span id="L397"><a href="#L397"> 397</a>       if (previous &amp;&amp; previous.file.absolute !== prepared.file.absolute) {</span>
+<span id="L398"><a href="#L398"> 398</a>         obsoleteAbsolutePaths.push(previous.file.absolute);</span>
+<span id="L399"><a href="#L399"> 399</a>       }</span>
+<span id="L400"><a href="#L400"> 400</a>     }</span>
+<span id="L401"><a href="#L401"> 401</a>     for (const absolutePath of obsoleteAbsolutePaths) {</span>
+<span id="L402"><a href="#L402"> 402</a>       const sourceFile = this.project.getSourceFile(absolutePath);</span>
+<span id="L403"><a href="#L403"> 403</a>       if (sourceFile) {</span>
+<span id="L404"><a href="#L404"> 404</a>         this.project.removeSourceFile(sourceFile);</span>
+<span id="L405"><a href="#L405"> 405</a>       }</span>
+<span id="L406"><a href="#L406"> 406</a>     }</span>
+<span id="L407"><a href="#L407"> 407</a>   }</span>
+<span id="L408"><a href="#L408"> 408</a> </span>
+<span id="L409"><a href="#L409"> 409</a>   private static revisionFor(file: WorkspaceFile): TypeScriptFileRevision {</span>
+<span id="L410"><a href="#L410"> 410</a>     return {</span>
+<span id="L411"><a href="#L411"> 411</a>       relativePath: file.relative,</span>
+<span id="L412"><a href="#L412"> 412</a>       absolutePath: file.absolute,</span>
+<span id="L413"><a href="#L413"> 413</a>       size: file.metadata.size,</span>
+<span id="L414"><a href="#L414"> 414</a>       modifiedAtMs: file.metadata.modifiedAtMs,</span>
+<span id="L415"><a href="#L415"> 415</a>       changeToken: file.metadata.changeToken,</span>
+<span id="L416"><a href="#L416"> 416</a>     };</span>
+<span id="L417"><a href="#L417"> 417</a>   }</span>
+<span id="L418"><a href="#L418"> 418</a> </span>
+<span id="L419"><a href="#L419"> 419</a>   private static sameRevision(</span>
+<span id="L420"><a href="#L420"> 420</a>     current: TypeScriptFileRevision,</span>
+<span id="L421"><a href="#L421"> 421</a>     incoming: TypeScriptFileRevision,</span>
+<span id="L422"><a href="#L422"> 422</a>   ): boolean {</span>
+<span id="L423"><a href="#L423"> 423</a>     return (</span>
+<span id="L424"><a href="#L424"> 424</a>       current.relativePath === incoming.relativePath &amp;&amp;</span>
+<span id="L425"><a href="#L425"> 425</a>       current.absolutePath === incoming.absolutePath &amp;&amp;</span>
+<span id="L426"><a href="#L426"> 426</a>       current.changeToken === incoming.changeToken</span>
+<span id="L427"><a href="#L427"> 427</a>     );</span>
+<span id="L428"><a href="#L428"> 428</a>   }</span>
+<span id="L429"><a href="#L429"> 429</a> }</span></pre><h2>Supplied PR body (historical stage)</h2><pre>## Context
+
+The daemon architecture spec assigns reusable revision comparison, prepared-file indexing, and publication to core, but TypeScript still owned them after #123 moved source caching. This layer moves those mechanics into core while preserving selection retention, TypeScript source/node identity, and `LanguageBackend` results and errors.
+
+## Shape
+
+Before — TypeScript state mixed portable indexes with toolchain mutation:
+
+```mermaid
+flowchart LR
+    Backend[&quot;TypeScriptBackend&lt;br/&gt;async LanguageBackend&quot;] --&gt;|uses| State[&quot;TypeScriptWorkspaceState&lt;br/&gt;revision diff + indexes + ts-morph&quot;]
+    State --&gt;|uses| Project[&quot;ts-morph Project&lt;br/&gt;source/node owner&quot;]
+    style State fill:#ffdddd,stroke:#cc0000
+```
+
+After — core publishes portable candidate state; TypeScript supplies one mutation transaction:
+
+```mermaid
+flowchart LR
+    Backend[&quot;TypeScriptBackend&lt;br/&gt;async LanguageBackend&quot;] --&gt;|uses| State[&quot;TypeScriptWorkspaceState&lt;br/&gt;TypeScript lookup adapter&quot;]
+    State --&gt;|extends| CoreState[&quot;RevisionedBackendState&lt;br/&gt;diff + validate + publish&quot;]
+    State --&gt;|creates| Preparation[&quot;TypeScriptWorkspacePreparation&lt;br/&gt;&amp;lt;&amp;lt;unexported&amp;gt;&amp;gt;&quot;]
+    Preparation --&gt;|uses| Project[&quot;ts-morph Project&lt;br/&gt;source/node owner&quot;]
+    style State fill:#fff2cc,stroke:#bf9000
+    style CoreState fill:#ddffdd,stroke:#008800
+    style Preparation fill:#ddffdd,stroke:#008800
+```
+
+Legend: green = added ownership; red = removed ownership; yellow = changed responsibility.
+
+## Where it lives
+
+```text
+.
+└── packages/
+    ├── core/src/
+    │   ├── ** index.ts
+    │   └── backend/
+    │       ├── ++ revisioned-backend-state.ts       # owns revision/index transactions
+    │       └── ++ revisioned-backend-state.test.ts  # fake incremental/full backends
+    └── backend-typescript/src/
+        ├── ** index.ts                               # removes backend-owned revision exports
+        ├── ** ... 4 query/index consumer files      # await on-demand preparation
+        └── typescript-backend/
+            ├── ** typescript-backend.ts              # awaits state publication
+            ├── ** typescript-workspace-state.ts      # owns ts-morph mutation journal
+            └── ** ... 2 colocated tests              # async adoption and rollback boundaries
+```
+
+## Public surface
+
+Added to `@symnav/core`:
+
+```ts
+export interface RevisionedBackendPreparedFile&lt;PreparedDetails&gt; {
+  readonly file: WorkspaceFile;
+  readonly entries: OverviewFileEntries;
+  readonly details: PreparedDetails;
+}
+
+export type RevisionedBackendFileChange&lt;PreparedDetails&gt; =
+  | { readonly kind: &quot;added&quot;; readonly file: WorkspaceFile }
+  | {
+      readonly kind: &quot;changed&quot;;
+      readonly file: WorkspaceFile;
+      readonly previous: RevisionedBackendPreparedFile&lt;PreparedDetails&gt;;
+    };
+
+export interface RevisionedBackendPreparationRequest&lt;PreparedDetails&gt; {
+  readonly coverage: BackendRefreshCoverage;
+  readonly changes: readonly RevisionedBackendFileChange&lt;PreparedDetails&gt;[];
+  readonly removedFiles: readonly RevisionedBackendPreparedFile&lt;PreparedDetails&gt;[];
+  readonly effectiveFiles: readonly WorkspaceFile[];
+}
+
+export abstract class RevisionedBackendPreparation&lt;PreparedDetails&gt; {
+  abstract prepare(): Promise&lt;readonly RevisionedBackendPreparedFile&lt;PreparedDetails&gt;[]&gt;;
+  abstract commit(): Promise&lt;void&gt;;
+  abstract rollback(): Promise&lt;void&gt;;
+}
+
+export interface IndexedBackendDeclaration {
+  readonly declaration: SymbolOverviewNode;
+  readonly file: ResolvedPath;
+}
+
+export abstract class RevisionedBackendState&lt;PreparedDetails&gt; {
+  protected constructor(fileSystem: FileSystem);
+  refresh(files: readonly WorkspaceFile[], coverage?: BackendRefreshCoverage): Promise&lt;BackendRefreshSummary&gt;;
+  ensureFiles(files: readonly ResolvedPath[]): Promise&lt;void&gt;;
+  fileEntries(file: ResolvedPath): Promise&lt;OverviewFileEntries&gt;;
+  declarations(files: readonly ResolvedPath[]): Promise&lt;readonly SymbolOverviewNode[]&gt;;
+  diagnostics(file: ResolvedPath): readonly NavigationDiagnostic[];
+  declarationsIn(relativePath: string): readonly SymbolOverviewNode[] | undefined;
+  declarationForIdentity(identity: SymbolIdentity): IndexedBackendDeclaration | undefined;
+  currentFileCount(): number;
+  protected preparedFile(relativePath: string): RevisionedBackendPreparedFile&lt;PreparedDetails&gt; | undefined;
+  protected preparedFiles(): readonly RevisionedBackendPreparedFile&lt;PreparedDetails&gt;[];
+  protected relativePathForAbsolute(absolutePath: string): string | undefined;
+  protected abstract createPreparation(request: RevisionedBackendPreparationRequest&lt;PreparedDetails&gt;): RevisionedBackendPreparation&lt;PreparedDetails&gt;;
+}
+```
+
+Changed in `@symnav/backend-typescript`:
+
+```ts
+export class TypeScriptWorkspaceState extends RevisionedBackendState&lt;TypeScriptPreparedFileDetails&gt; {
+  // before: fileEntries(file: ResolvedPath, diagnostics?: DiagnosticSink): OverviewFileEntries
+  fileEntries(file: ResolvedPath, diagnostics?: DiagnosticSink): Promise&lt;OverviewFileEntries&gt;;
+}
+```
+
+Removed from `@symnav/backend-typescript` root:
+
+```ts
+type PreparedFileIndex;
+type PreparedFileRevision;
+type TypeScriptFileRevision;
+```
+
+## Decisions
+
+- Chose an incremental overlay candidate over requiring complete preparation output, because another language backend may prepare only changed files.
+- Chose candidate validation before subclass commit over post-commit validation, because malformed output must leave portable and toolchain state unpublished.
+- Chose one-file selection transactions for `ensureFiles` over one aggregate transaction, because existing behavior retains earlier progress when a later file fails.
+- Chose a TypeScript-owned mutation journal over core mutation callbacks, because source files and node restoration are `ts-morph` concerns.
+- Chose reversible path staging before source removal over recreating removed sources, because published lookups retain exact `SourceFile` handles.
+
+## Look here
+
+- `packages/core/src/backend/revisioned-backend-state.ts:65`
+- `packages/core/src/backend/revisioned-backend-state.ts:181`
+- `packages/backend-typescript/src/typescript-backend/typescript-workspace-state.ts:159`
+</pre><h2>Supplied commits</h2><pre>b0fa20d750a702a12a9a33710c0ec65ebff13532 Define revisioned backend state contracts
+
+294ca79f667a56153e4243f60b899cc3e922a314 Diff revisioned backend files
+
+0ae50165bd23f731a10d0fc962039087968fece6 Validate revisioned backend candidates
+
+a1a9a2a9aafff6b5decbe71ef04ac7da6df6fb69 Roll back failed backend preparations
+
+144f7746166f2603be23f8770d77b80060e7a252 Accept full backend preparation results
+
+f142e0bb231f75f20663314320826d6f669330d2 Ensure missing backend files sequentially
+
+4a70bcc87ce15d26e10c8aab18499fbed806b5d9 Adopt revisioned TypeScript state preparation
+
+23edd420ba9c024bc300641a17a6b49ab3e16547 Preserve sequential TypeScript preparation progress
+
+cf0107c1fed07bb532cbf28edf0fd71f17c8c002 Verify TypeScript source mutation rollback
+
+9643fac8f3e138fea0cc66ddd28a92611ab5b7d6 Make obsolete TypeScript removals transactional
+</pre></html>

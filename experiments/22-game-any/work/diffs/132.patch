@@ -1,0 +1,1572 @@
+diff --git a/apps/cli/src/daemon/accepted-request-ledger.test.ts b/apps/cli/src/daemon/accepted-request-ledger.test.ts
+index 9a4e8e7f6..0f4dfbc52 100644
+--- a/apps/cli/src/daemon/accepted-request-ledger.test.ts
++++ b/apps/cli/src/daemon/accepted-request-ledger.test.ts
+@@ -17,12 +17,16 @@ describe("AcceptedRequestLedger", () => {
+   it("atomically inserts one queued owner and attaches an identical duplicate", () => {
+     const ledger = new AcceptedRequestLedger(() => 10);
+ 
+-    const accepted = ledger.accept("request", request);
+-    const duplicate = ledger.accept("request", { ...request, argv: [...request.argv] });
++    const accepted = ledger.accept("request", "overview", request);
++    const duplicate = ledger.accept("request", "overview", {
++      ...request,
++      argv: [...request.argv],
++    });
+ 
+     expect(accepted).toBe(duplicate);
+     expect(accepted).toMatchObject({
+       requestId: "request",
++      commandName: "overview",
+       request,
+       state: { state: "queued", acceptedAt: 10, queuePosition: 0 },
+     });
+@@ -31,17 +35,18 @@ describe("AcceptedRequestLedger", () => {
+ 
+   it("reports request identifier corruption for a different payload", () => {
+     const ledger = new AcceptedRequestLedger(() => 10);
+-    ledger.accept("request", request);
++    ledger.accept("request", "overview", request);
+ 
+-    expect(() => ledger.accept("request", { ...request, argv: ["overview", "src/b.ts"] })).toThrow(
+-      AcceptedRequestCorruptionError,
+-    );
++    expect(() =>
++      ledger.accept("request", "overview", { ...request, argv: ["overview", "src/b.ts"] }),
++    ).toThrow(AcceptedRequestCorruptionError);
++    expect(() => ledger.accept("request", "refs", request)).toThrow(AcceptedRequestCorruptionError);
+     expect(ledger.size).toBe(1);
+   });
+ 
+   it("transitions queued through running to completed", () => {
+     const ledger = new AcceptedRequestLedger(() => 10);
+-    ledger.accept("request", request);
++    ledger.accept("request", "overview", request);
+ 
+     expect(ledger.markRunning("request", 20).state).toEqual({
+       state: "running",
+@@ -61,7 +66,7 @@ describe("AcceptedRequestLedger", () => {
+ 
+   it("transitions queued or running requests to a typed failure", () => {
+     const queued = new AcceptedRequestLedger(() => 10);
+-    queued.accept("queued", request);
++    queued.accept("queued", "overview", request);
+     expect(queued.fail("queued", "stopping", 20).state).toEqual({
+       state: "failed",
+       completedAt: 20,
+@@ -69,7 +74,7 @@ describe("AcceptedRequestLedger", () => {
+     });
+ 
+     const running = new AcceptedRequestLedger(() => 10);
+-    running.accept("running", request);
++    running.accept("running", "overview", request);
+     running.markRunning("running", 15);
+     expect(running.fail("running", "worker-exit", 20).state).toEqual({
+       state: "failed",
+@@ -80,7 +85,7 @@ describe("AcceptedRequestLedger", () => {
+ 
+   it("publishes the current entry and each transition to subscribers", () => {
+     const ledger = new AcceptedRequestLedger(() => 10);
+-    ledger.accept("request", request);
++    ledger.accept("request", "overview", request);
+     const subscriber = vi.fn<(entry: AcceptedRequestEntry) => void>();
+ 
+     const unsubscribe = ledger.subscribe("request", subscriber);
+@@ -98,7 +103,7 @@ describe("AcceptedRequestLedger", () => {
+   it("reports every status and unknown identifiers", () => {
+     const ledger = new AcceptedRequestLedger(() => 10);
+     expect(ledger.status("missing")).toEqual({ state: "unknown" });
+-    ledger.accept("request", request);
++    ledger.accept("request", "overview", request);
+     expect(ledger.status("request")).toEqual({ state: "queued", queuePosition: 0 });
+     ledger.markRunning("request", 20);
+     expect(ledger.status("request")).toEqual({ state: "running", startedAt: 20 });
+@@ -111,13 +116,13 @@ describe("AcceptedRequestLedger", () => {
+ 
+   it("retains acknowledged terminal tombstones for the daemon lifetime", () => {
+     const ledger = new AcceptedRequestLedger(() => 10);
+-    ledger.accept("request", request);
++    ledger.accept("request", "overview", request);
+     ledger.complete("request", "result", 20);
+ 
+     ledger.acknowledge("request");
+ 
+     expect(ledger.status("request")).toEqual({ state: "completed" });
+-    expect(ledger.accept("request", request).state.state).toBe("completed");
++    expect(ledger.accept("request", "overview", request).state.state).toBe("completed");
+     expect(ledger.isAcknowledged("request")).toBe(true);
+     expect(ledger.size).toBe(1);
+   });
+@@ -125,7 +130,7 @@ describe("AcceptedRequestLedger", () => {
+   it("rejects missing, repeated, and regressive transitions", () => {
+     const ledger = new AcceptedRequestLedger(() => 10);
+     expect(() => ledger.markRunning("missing", 20)).toThrow(/not accepted/);
+-    ledger.accept("request", request);
++    ledger.accept("request", "overview", request);
+     ledger.complete("request", "result", 20);
+ 
+     expect(() => ledger.markRunning("request", 30)).toThrow(/completed/);
+diff --git a/apps/cli/src/daemon/accepted-request-ledger.ts b/apps/cli/src/daemon/accepted-request-ledger.ts
+index 1b98b3dcc..57872994e 100644
+--- a/apps/cli/src/daemon/accepted-request-ledger.ts
++++ b/apps/cli/src/daemon/accepted-request-ledger.ts
+@@ -1,5 +1,6 @@
+ import { createHash } from "node:crypto";
+ import type { CliExecutionRequest } from "../command-execution-result.js";
++import type { DaemonCommandName } from "@symnav/daemon";
+ import type { DaemonExecutionFailureCode, DaemonExecutionStatus } from "./daemon-protocol.js";
+ 
+ export type AcceptedRequestState =
+@@ -15,6 +16,7 @@ export type AcceptedRequestState =
+ export interface AcceptedRequestEntry {
+   readonly requestId: string;
+   readonly requestFingerprint: string;
++  readonly commandName: DaemonCommandName;
+   readonly request: CliExecutionRequest;
+   readonly state: AcceptedRequestState;
+   readonly deliveryTerminated: boolean;
+@@ -47,8 +49,12 @@ export class AcceptedRequestLedger {
+     return false;
+   }
+ 
+-  accept(requestId: string, request: CliExecutionRequest): AcceptedRequestEntry {
+-    const requestFingerprint = AcceptedRequestLedger.fingerprint(request);
++  accept(
++    requestId: string,
++    commandName: DaemonCommandName,
++    request: CliExecutionRequest,
++  ): AcceptedRequestEntry {
++    const requestFingerprint = AcceptedRequestLedger.fingerprint(commandName, request);
+     const existing = this.entries.get(requestId);
+     if (existing !== undefined) {
+       if (existing.requestFingerprint !== requestFingerprint) {
+@@ -59,6 +65,7 @@ export class AcceptedRequestLedger {
+     const entry: AcceptedRequestEntry = {
+       requestId,
+       requestFingerprint,
++      commandName,
+       request,
+       deliveryTerminated: false,
+       state: {
+@@ -199,8 +206,8 @@ export class AcceptedRequestLedger {
+     return entry;
+   }
+ 
+-  private static fingerprint(request: CliExecutionRequest): string {
+-    const canonical = AcceptedRequestLedger.canonicalValue(request);
++  private static fingerprint(commandName: DaemonCommandName, request: CliExecutionRequest): string {
++    const canonical = AcceptedRequestLedger.canonicalValue({ commandName, request });
+     return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+   }
+ 
+diff --git a/apps/cli/src/daemon/daemon-command-dispatcher.test.ts b/apps/cli/src/daemon/daemon-command-dispatcher.test.ts
+index 6e4d07438..c756e601c 100644
+--- a/apps/cli/src/daemon/daemon-command-dispatcher.test.ts
++++ b/apps/cli/src/daemon/daemon-command-dispatcher.test.ts
+@@ -206,6 +206,7 @@ describe("DaemonCommandDispatcher", () => {
+ 
+     expect(harness.executeRequests()).toEqual([
+       expect.objectContaining({
++        commandName: "overview",
+         request: expect.objectContaining({ argv: ["--cwd", workspaceRoot, ...request.argv] }),
+       }),
+     ]);
+diff --git a/apps/cli/src/daemon/daemon-command-dispatcher.ts b/apps/cli/src/daemon/daemon-command-dispatcher.ts
+index fbb50f181..2fff4822b 100644
+--- a/apps/cli/src/daemon/daemon-command-dispatcher.ts
++++ b/apps/cli/src/daemon/daemon-command-dispatcher.ts
+@@ -1,6 +1,6 @@
+ import { randomUUID } from "node:crypto";
+ import { createWorkspace } from "@symnav/core";
+-import type { DaemonPolicy } from "@symnav/daemon";
++import type { DaemonCommandName, DaemonPolicy } from "@symnav/daemon";
+ import { CliProgramExecutor } from "../cli-program-executor.js";
+ import type {
+   CliExecutionRequest,
+@@ -149,7 +149,12 @@ export class DaemonCommandDispatcher {
+       workspaceDependencies.symnavVersion,
+     );
+     if (routeSnapshot.kind === "warm") {
+-      return this.executeWarm(runtime, routeSnapshot.record, workspaceRequest);
++      return this.executeWarm(
++        runtime,
++        routeSnapshot.record,
++        selected.commandName,
++        workspaceRequest,
++      );
+     }
+     if (
+       (routeSnapshot.kind === "cold" && routeSnapshot.reason === "absent") ||
+@@ -205,6 +210,7 @@ export class DaemonCommandDispatcher {
+   private async executeWarm(
+     runtime: DaemonDispatchRuntime,
+     record: DaemonRecord,
++    commandName: DaemonCommandName,
+     request: CliExecutionRequest,
+   ): Promise<DispatchedCommandResult> {
+     let receipt: DaemonExecutionReceipt;
+@@ -215,6 +221,7 @@ export class DaemonCommandDispatcher {
+         instanceId: record.instanceId,
+         processToken: record.processToken,
+         requestId: this.requestId(),
++        commandName,
+         request: { ...request, executionMode: "warm" },
+       });
+     } catch (error) {
+diff --git a/apps/cli/src/daemon/daemon-controller.ts b/apps/cli/src/daemon/daemon-controller.ts
+index 44330a85c..ac7294b73 100644
+--- a/apps/cli/src/daemon/daemon-controller.ts
++++ b/apps/cli/src/daemon/daemon-controller.ts
+@@ -15,6 +15,7 @@ import type { DaemonRegistry } from "./daemon-registry.js";
+ import { DaemonRecordObserver, type DaemonObservation } from "./daemon-record-observer.js";
+ import { DaemonStartupCoordinator } from "./daemon-startup-coordinator.js";
+ import { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
++import { DaemonRuntimeValues } from "./daemon-runtime-values.js";
+ import type { LocalDaemonTransport } from "./local-daemon-transport.js";
+ 
+ interface DaemonControllerOptions {
+@@ -289,7 +290,9 @@ export class DaemonController {
+         state: "busy",
+         pid: record.pid,
+         uptimeMs: Math.max(0, this.now() - record.startedAt),
+-        command: DaemonController.commandName(observation.pong.currentCommand),
++        command: DaemonRuntimeValues.isCommandName(observation.pong.currentCommand)
++          ? observation.pong.currentCommand
++          : "unknown",
+         elapsedMs: observation.pong.currentCommandElapsedMs,
+         queued: observation.pong.queued,
+         memoryBytes,
+@@ -373,24 +376,6 @@ export class DaemonController {
+     };
+   }
+ 
+-  private static commandName(command: string): import("./daemon-protocol.js").DaemonCommandName {
+-    const names: readonly import("./daemon-protocol.js").DaemonCommandName[] = [
+-      "overview",
+-      "resolve",
+-      "def",
+-      "refs",
+-      "context",
+-      "graph",
+-      "stats",
+-      "help",
+-      "version",
+-      "unknown",
+-    ];
+-    return names.includes(command as import("./daemon-protocol.js").DaemonCommandName)
+-      ? (command as import("./daemon-protocol.js").DaemonCommandName)
+-      : "unknown";
+-  }
+-
+   private async killIdentified(record: DaemonRecord, deadline: number): Promise<boolean> {
+     try {
+       const response = await Promise.race([
+diff --git a/apps/cli/src/daemon/daemon-logger.ts b/apps/cli/src/daemon/daemon-logger.ts
+index 2d90d7a8e..2552ba0d9 100644
+--- a/apps/cli/src/daemon/daemon-logger.ts
++++ b/apps/cli/src/daemon/daemon-logger.ts
+@@ -5,10 +5,10 @@ import type { DaemonPolicyValues } from "@symnav/daemon";
+ import type { DaemonClock } from "./daemon-clock.js";
+ import {
+   DAEMON_DIAGNOSTIC_SCHEMA_VERSION,
+-  type DaemonCommandName,
+   type DaemonDiagnosticErrorName,
+   type DaemonDiagnosticEvent,
+ } from "./daemon-protocol.js";
++import { DaemonRuntimeValues } from "./daemon-runtime-values.js";
+ import type { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
+ 
+ const DIAGNOSTIC_FIELDS = [
+@@ -86,19 +86,6 @@ const DIAGNOSTIC_KINDS = new Set([
+   "process-termination",
+ ]);
+ 
+-const COMMAND_NAMES = new Set<DaemonCommandName>([
+-  "overview",
+-  "resolve",
+-  "def",
+-  "refs",
+-  "context",
+-  "graph",
+-  "stats",
+-  "help",
+-  "version",
+-  "unknown",
+-]);
+-
+ const ERROR_NAMES = new Set<DaemonDiagnosticErrorName>([
+   "Error",
+   "TypeError",
+@@ -318,7 +305,7 @@ export class DaemonLogger {
+     const diagnostic = event as unknown as Record<string, unknown>;
+     if (!DIAGNOSTIC_KINDS.has(String(diagnostic.kind))) return undefined;
+     const closed: Record<string, unknown> = { ...diagnostic };
+-    if ("command" in closed && !COMMAND_NAMES.has(closed.command as DaemonCommandName)) {
++    if ("command" in closed && !DaemonRuntimeValues.isCommandName(closed.command)) {
+       closed.command = "unknown";
+     }
+     if ("errorName" in closed && !ERROR_NAMES.has(closed.errorName as DaemonDiagnosticErrorName)) {
+diff --git a/apps/cli/src/daemon/daemon-navigation-worker-protocol.test.ts b/apps/cli/src/daemon/daemon-navigation-worker-protocol.test.ts
+index 602bfce7d..9b8cceae6 100644
+--- a/apps/cli/src/daemon/daemon-navigation-worker-protocol.test.ts
++++ b/apps/cli/src/daemon/daemon-navigation-worker-protocol.test.ts
+@@ -16,7 +16,13 @@ const refresh = { added: 1, changed: 0, removed: 0, unchanged: 2 } as const;
+ describe("DaemonNavigationWorkerProtocol", () => {
+   it.each<DaemonNavigationWorkerRequest>([
+     { kind: "initialize", generation: 4, workspaceRoot: "/repo" },
+-    { kind: "execute", generation: 4, requestId: "request-1", request },
++    {
++      kind: "execute",
++      generation: 4,
++      requestId: "request-1",
++      commandName: "overview",
++      request,
++    },
+     { kind: "output-ack", generation: 4, requestId: "request-1", sequence: 7 },
+     { kind: "release-transient", generation: 4, operationId: "release-1" },
+     { kind: "close", generation: 4 },
+@@ -78,6 +84,13 @@ describe("DaemonNavigationWorkerProtocol", () => {
+     {},
+     { kind: "initialize", generation: -1, workspaceRoot: "/repo" },
+     { kind: "execute", generation: 1, requestId: "", request },
++    {
++      kind: "execute",
++      generation: 1,
++      requestId: "one",
++      commandName: "not-a-command",
++      request,
++    },
+     { kind: "output-ack", generation: 1, requestId: "one", sequence: -1 },
+     { kind: "execute", generation: 1, requestId: "one", request: { argv: "overview" } },
+     { kind: "unknown", generation: 1 },
+diff --git a/apps/cli/src/daemon/daemon-navigation-worker-protocol.ts b/apps/cli/src/daemon/daemon-navigation-worker-protocol.ts
+index 2f8e55fa5..a1caf3e6f 100644
+--- a/apps/cli/src/daemon/daemon-navigation-worker-protocol.ts
++++ b/apps/cli/src/daemon/daemon-navigation-worker-protocol.ts
+@@ -1,5 +1,7 @@
+ import type { BackendRefreshSummary } from "@symnav/core";
++import type { DaemonCommandName } from "@symnav/daemon";
+ import type { CliExecutionRequest, CommandOutputStream } from "../command-execution-result.js";
++import { DaemonRuntimeValues } from "./daemon-runtime-values.js";
+ 
+ export type DaemonExecutionFailureCode = "initialization" | "execution" | "protocol" | "resource";
+ 
+@@ -22,6 +24,7 @@ export type DaemonNavigationWorkerRequest =
+       readonly kind: "execute";
+       readonly generation: number;
+       readonly requestId: string;
++      readonly commandName: DaemonCommandName;
+       readonly request: CliExecutionRequest;
+     }
+   | {
+@@ -97,8 +100,9 @@ export class DaemonNavigationWorkerProtocol {
+     }
+     if (
+       value.kind === "execute" &&
+-      this.hasKeys(value, ["kind", "generation", "requestId", "request"]) &&
++      this.hasKeys(value, ["kind", "generation", "requestId", "commandName", "request"]) &&
+       this.isNonEmptyString(value.requestId) &&
++      DaemonRuntimeValues.isCommandName(value.commandName) &&
+       this.isExecutionRequest(value.request)
+     ) {
+       return value as unknown as DaemonNavigationWorkerRequest;
+diff --git a/apps/cli/src/daemon/daemon-navigation-worker.test.ts b/apps/cli/src/daemon/daemon-navigation-worker.test.ts
+index aec53c149..88396b67f 100644
+--- a/apps/cli/src/daemon/daemon-navigation-worker.test.ts
++++ b/apps/cli/src/daemon/daemon-navigation-worker.test.ts
+@@ -56,7 +56,7 @@ describe("NodeDaemonNavigationWorker", () => {
+ 
+     const executionTimer = timerTurn();
+     const chunks: Uint8Array[] = [];
+-    const response = await worker.execute("request-1", request, {
++    const response = await worker.execute("request-1", "version", request, {
+       append: (record) => {
+         chunks.push(record.bytes);
+         return Promise.resolve();
+@@ -77,7 +77,9 @@ describe("NodeDaemonNavigationWorker", () => {
+     const worker = createWorker("duplicate");
+     await worker.start("/repo");
+ 
+-    await expect(worker.execute("request-1", request, outputSink())).resolves.toMatchObject({
++    await expect(
++      worker.execute("request-1", "version", request, outputSink()),
++    ).resolves.toMatchObject({
+       kind: "result",
+     });
+     await expect(worker.exited).resolves.toMatchObject({ generation: 7, cause: "error" });
+@@ -91,7 +93,7 @@ describe("NodeDaemonNavigationWorker", () => {
+       releaseAppend = resolve;
+     });
+     let appended = false;
+-    const execution = worker.execute("request-1", request, {
++    const execution = worker.execute("request-1", "version", request, {
+       append: async () => {
+         appended = true;
+         await appendAllowed;
+@@ -129,7 +131,7 @@ describe("NodeDaemonNavigationWorker", () => {
+   it("reports controlled forced termination", async () => {
+     const worker = createWorker("block-execution");
+     await worker.start("/repo");
+-    void worker.execute("request-1", request, outputSink()).catch(() => undefined);
++    void worker.execute("request-1", "version", request, outputSink()).catch(() => undefined);
+ 
+     await worker.terminate();
+ 
+diff --git a/apps/cli/src/daemon/daemon-navigation-worker.ts b/apps/cli/src/daemon/daemon-navigation-worker.ts
+index 47233f3d2..4cd77d526 100644
+--- a/apps/cli/src/daemon/daemon-navigation-worker.ts
++++ b/apps/cli/src/daemon/daemon-navigation-worker.ts
+@@ -1,5 +1,5 @@
+ import { Worker } from "node:worker_threads";
+-import { DaemonPolicy } from "@symnav/daemon";
++import { DaemonPolicy, type DaemonCommandName } from "@symnav/daemon";
+ import type { CliExecutionRequest, CommandOutputRecord } from "../command-execution-result.js";
+ import {
+   DaemonNavigationWorkerProtocol,
+@@ -29,6 +29,7 @@ export interface DaemonNavigationWorker {
+   start(workspaceRoot: string): Promise<DaemonNavigationWorkerResponse>;
+   execute(
+     requestId: string,
++    commandName: DaemonCommandName,
+     request: CliExecutionRequest,
+     output: { append(record: CommandOutputRecord): Promise<void> },
+   ): Promise<DaemonNavigationWorkerResponse>;
+@@ -110,6 +111,7 @@ export class NodeDaemonNavigationWorker implements DaemonNavigationWorker {
+ 
+   execute(
+     requestId: string,
++    commandName: DaemonCommandName,
+     request: CliExecutionRequest,
+     output: { append(record: CommandOutputRecord): Promise<void> },
+   ): Promise<DaemonNavigationWorkerResponse> {
+@@ -119,6 +121,7 @@ export class NodeDaemonNavigationWorker implements DaemonNavigationWorker {
+         kind: "execute",
+         generation: this.generation,
+         requestId,
++        commandName,
+         request,
+       },
+       output.append.bind(output),
+diff --git a/apps/cli/src/daemon/daemon-operation-observer.ts b/apps/cli/src/daemon/daemon-operation-observer.ts
+index a3f2ab9c1..0b4d84fd3 100644
+--- a/apps/cli/src/daemon/daemon-operation-observer.ts
++++ b/apps/cli/src/daemon/daemon-operation-observer.ts
+@@ -1,8 +1,8 @@
+ import type { CompletionSpoolManifest } from "./completion-spool.js";
+ import type { DaemonClock } from "./daemon-clock.js";
+ import type { BackendRefreshSummary } from "@symnav/core";
++import type { DaemonCommandName } from "@symnav/daemon";
+ import type {
+-  DaemonCommandName,
+   DaemonDiagnosticEvent,
+   DaemonDeliveryOutcome,
+   DaemonExecutionOutcome,
+diff --git a/apps/cli/src/daemon/daemon-protocol.ts b/apps/cli/src/daemon/daemon-protocol.ts
+index 575f4498c..aaecfa307 100644
+--- a/apps/cli/src/daemon/daemon-protocol.ts
++++ b/apps/cli/src/daemon/daemon-protocol.ts
+@@ -1,24 +1,13 @@
+ import type { CliExecutionRequest } from "../command-execution-result.js";
++import type { DaemonCommandName } from "@symnav/daemon";
+ import type { CompletionSpoolManifest } from "./completion-spool.js";
+ import type { CommandOutputStream } from "../command-execution-result.js";
+ import type { BackendRefreshSummary } from "@symnav/core";
+ 
+-export const DAEMON_PROTOCOL_VERSION = 4;
++export const DAEMON_PROTOCOL_VERSION = 5;
+ export const DAEMON_RECORD_SCHEMA_VERSION = 2;
+ export const DAEMON_DIAGNOSTIC_SCHEMA_VERSION = 1;
+ 
+-export type DaemonCommandName =
+-  | "overview"
+-  | "resolve"
+-  | "def"
+-  | "refs"
+-  | "context"
+-  | "graph"
+-  | "stats"
+-  | "help"
+-  | "version"
+-  | "unknown";
+-
+ export interface DaemonIdentityCoordinates {
+   readonly workspaceRoot: string;
+   readonly workspaceKey: string;
+@@ -142,6 +131,7 @@ export interface DaemonExecuteRequest {
+   readonly instanceId: string;
+   readonly processToken: string;
+   readonly requestId: string;
++  readonly commandName: DaemonCommandName;
+   readonly request: CliExecutionRequest;
+ }
+ 
+diff --git a/apps/cli/src/daemon/daemon-registry.test.ts b/apps/cli/src/daemon/daemon-registry.test.ts
+index 1530846e9..499a925be 100644
+--- a/apps/cli/src/daemon/daemon-registry.test.ts
++++ b/apps/cli/src/daemon/daemon-registry.test.ts
+@@ -51,7 +51,7 @@ describe("daemon registry", () => {
+ 
+   it("uses current records with chunked-result transport coordinates", () => {
+     expect(DAEMON_RECORD_SCHEMA_VERSION).toBe(2);
+-    expect(DAEMON_PROTOCOL_VERSION).toBe(4);
++    expect(DAEMON_PROTOCOL_VERSION).toBe(5);
+   });
+ 
+   it("keys repositories, worktrees, and submodules by exact workspace root", () => {
+diff --git a/apps/cli/src/daemon/daemon-runtime-values.ts b/apps/cli/src/daemon/daemon-runtime-values.ts
+index 5de02a605..1b39d62be 100644
+--- a/apps/cli/src/daemon/daemon-runtime-values.ts
++++ b/apps/cli/src/daemon/daemon-runtime-values.ts
+@@ -1,21 +1,8 @@
+-import type { DaemonCommandName } from "./daemon-protocol.js";
++import { DAEMON_COMMAND_NAMES, type DaemonCommandName } from "@symnav/daemon";
+ 
+ export class DaemonRuntimeValues {
+-  private static readonly commandNames = new Set<DaemonCommandName>([
+-    "overview",
+-    "resolve",
+-    "def",
+-    "refs",
+-    "context",
+-    "graph",
+-    "stats",
+-    "help",
+-    "version",
+-    "unknown",
+-  ]);
+-
+   static isCommandName(value: unknown): value is DaemonCommandName {
+-    return this.commandNames.has(value as DaemonCommandName);
++    return DAEMON_COMMAND_NAMES.includes(value as DaemonCommandName);
+   }
+ 
+   static isRequestId(value: unknown): value is string {
+diff --git a/apps/cli/src/daemon/daemon-startup-coordinator.test.ts b/apps/cli/src/daemon/daemon-startup-coordinator.test.ts
+index 4ec5fae3e..830e82bb9 100644
+--- a/apps/cli/src/daemon/daemon-startup-coordinator.test.ts
++++ b/apps/cli/src/daemon/daemon-startup-coordinator.test.ts
+@@ -49,6 +49,25 @@ describe("DaemonStartupCoordinator", () => {
+     roots.length = 0;
+   });
+ 
++  it("uses the explicit version readiness probe", async () => {
++    const harness = new CoordinatorHarness(roots);
++
++    await expect(harness.coordinator().ensureRunning(harness.identity)).resolves.toMatchObject({
++      status: "ready",
++    });
++
++    expect(harness.transport.executionRequests).toEqual([
++      expect.objectContaining({
++        commandName: "version",
++        request: {
++          argv: ["--version"],
++          cwd: harness.identity.workspaceRoot,
++          telemetryEnabled: false,
++        },
++      }),
++    ]);
++  });
++
+   it("returns concurrent warm-up triggers after electing one detached child", async () => {
+     const readinessGate = new ReadinessPublicationGate();
+     const harness = new CoordinatorHarness(roots, { readinessPublicationGate: readinessGate });
+@@ -292,7 +311,7 @@ describe("DaemonStartupCoordinator", () => {
+     expect(runtime.registry.readStored(runtime.identity)?.instanceId).toBe("old");
+   });
+ 
+-  it.each(["schema", "protocol", "symnav"] as const)(
++  it.each(["schema", "prior-protocol", "future-protocol", "symnav"] as const)(
+     "proves and replaces a real daemon for $mismatch mismatch",
+     async (mismatch) => {
+       const runtime = socketBackedCoordinator(roots);
+@@ -309,7 +328,11 @@ describe("DaemonStartupCoordinator", () => {
+         schemaVersion:
+           mismatch === "schema" ? DAEMON_RECORD_SCHEMA_VERSION + 1 : oldRecord.schemaVersion,
+         protocolVersion:
+-          mismatch === "protocol" ? DAEMON_PROTOCOL_VERSION + 1 : oldRecord.protocolVersion,
++          mismatch === "prior-protocol"
++            ? 4
++            : mismatch === "future-protocol"
++              ? DAEMON_PROTOCOL_VERSION + 1
++              : oldRecord.protocolVersion,
+         symnavVersion: mismatch === "symnav" ? "0.0.9" : "0.1.0",
+       };
+       runtime.registry.write(incompatibleRecord);
+@@ -1023,6 +1046,7 @@ class ReadyTestLauncher implements DaemonProcessLauncher {
+ 
+ class RegistryTransport {
+   terminationCount = 0;
++  readonly executionRequests: Extract<DaemonRequest, { kind: "execute" }>[] = [];
+   private readonly terminatedInstances = new Set<string>();
+   private remainingReadyAuthenticationFailures: number;
+ 
+@@ -1083,6 +1107,7 @@ class RegistryTransport {
+     _endpoint: string,
+     request: Extract<DaemonRequest, { kind: "execute" }>,
+   ): Promise<DaemonExecutionReceipt> {
++    this.executionRequests.push(request);
+     return {
+       acceptance: {
+         requestId: request.requestId,
+diff --git a/apps/cli/src/daemon/daemon-startup-coordinator.ts b/apps/cli/src/daemon/daemon-startup-coordinator.ts
+index 25cb6c065..64a6543cc 100644
+--- a/apps/cli/src/daemon/daemon-startup-coordinator.ts
++++ b/apps/cli/src/daemon/daemon-startup-coordinator.ts
+@@ -478,6 +478,7 @@ export class DaemonStartupCoordinator {
+       instanceId: record.instanceId,
+       processToken: record.processToken,
+       requestId: randomUUID(),
++      commandName: "version",
+       request: {
+         argv: ["--version"],
+         cwd: record.workspaceRoot,
+diff --git a/apps/cli/src/daemon/invocation-route.ts b/apps/cli/src/daemon/invocation-route.ts
+index 9b26f1e37..afe0e9821 100644
+--- a/apps/cli/src/daemon/invocation-route.ts
++++ b/apps/cli/src/daemon/invocation-route.ts
+@@ -1,3 +1,5 @@
++import type { DaemonCommandName } from "@symnav/daemon";
++
+ export type InvocationRoute =
+   | { readonly kind: "local" }
+   | { readonly kind: "daemon-control"; readonly action: "start" | "status" | "stop" }
+@@ -5,5 +7,6 @@ export type InvocationRoute =
+ 
+ export interface SelectedInvocation {
+   readonly route: InvocationRoute;
++  readonly commandName: DaemonCommandName;
+   readonly argv: readonly string[];
+ }
+diff --git a/apps/cli/src/daemon/invocation-workspace-selector.test.ts b/apps/cli/src/daemon/invocation-workspace-selector.test.ts
+index 31319b834..6348fc9b9 100644
+--- a/apps/cli/src/daemon/invocation-workspace-selector.test.ts
++++ b/apps/cli/src/daemon/invocation-workspace-selector.test.ts
+@@ -1,5 +1,6 @@
+ import { join, resolve } from "node:path";
+ import { describe, expect, it } from "vitest";
++import type { DaemonCommandName } from "@symnav/daemon";
+ import { InvocationWorkspaceSelector } from "./invocation-workspace-selector.js";
+ 
+ describe("InvocationWorkspaceSelector", () => {
+@@ -9,29 +10,38 @@ describe("InvocationWorkspaceSelector", () => {
+   const clientWorkspaceDirectory = join(workspaceRoot, "client");
+   const otherWorkspaceRoot = resolve("other-synthetic-workspace");
+ 
+-  it("routes navigation commands through the selected workspace", () => {
+-    expect(selector.classify(["overview", "src/a.ts"], workspaceRoot)).toEqual({
+-      kind: "workspace",
+-      startDir: workspaceRoot,
+-    });
+-    expect(
+-      selector.classify(["--cwd", otherWorkspaceRoot, "refs", "target"], workspaceRoot),
+-    ).toEqual({
+-      kind: "workspace",
+-      startDir: otherWorkspaceRoot,
+-    });
+-    expect(selector.classify(["--cwd", "..", "refs", "target"], nestedWorkspaceDirectory)).toEqual({
+-      kind: "workspace",
+-      startDir: workspaceRoot,
+-    });
++  it.each([
++    "overview",
++    "resolve",
++    "def",
++    "refs",
++    "context",
++    "graph",
++    "stats",
++  ] satisfies readonly DaemonCommandName[])(
++    "maps workspace command %s to its daemon name",
++    (commandName) => {
++      expect(selector.select([commandName, "target"], workspaceRoot)).toEqual({
++        route: { kind: "workspace", startDir: workspaceRoot },
++        commandName,
++        argv: [commandName, "target"],
++      });
++    },
++  );
++
++  it("routes cwd overrides through the selected workspace", () => {
++    expect(selector.select(["--cwd", otherWorkspaceRoot, "refs", "target"], workspaceRoot)).toEqual(
++      {
++        route: { kind: "workspace", startDir: otherWorkspaceRoot },
++        commandName: "refs",
++        argv: ["--cwd", otherWorkspaceRoot, "refs", "target"],
++      },
++    );
+     expect(selector.select(["--cwd", "..", "refs", "target"], nestedWorkspaceDirectory)).toEqual({
+       route: { kind: "workspace", startDir: workspaceRoot },
++      commandName: "refs",
+       argv: ["--cwd", workspaceRoot, "refs", "target"],
+     });
+-    expect(selector.classify(["stats", "--json"], workspaceRoot)).toEqual({
+-      kind: "workspace",
+-      startDir: workspaceRoot,
+-    });
+   });
+ 
+   it("rewrites only the effective cwd option before the separator", () => {
+@@ -43,6 +53,7 @@ describe("InvocationWorkspaceSelector", () => {
+       ),
+     ).toEqual({
+       route: { kind: "workspace", startDir: effectiveWorkspaceDirectory },
++      commandName: "resolve",
+       argv: ["--cwd=first", "--cwd", effectiveWorkspaceDirectory, "resolve", "--", "--cwd=target"],
+     });
+   });
+@@ -52,6 +63,7 @@ describe("InvocationWorkspaceSelector", () => {
+     (target) => {
+       expect(selector.select(["resolve", "--", target], workspaceRoot)).toEqual({
+         route: { kind: "workspace", startDir: workspaceRoot },
++        commandName: "resolve",
+         argv: ["resolve", "--", target],
+       });
+     },
+@@ -64,13 +76,31 @@ describe("InvocationWorkspaceSelector", () => {
+         kind: "daemon-control",
+         action,
+       });
++      expect(selector.select(["daemon", action], workspaceRoot)).toEqual({
++        route: { kind: "daemon-control", action },
++        commandName: "unknown",
++        argv: ["daemon", action],
++      });
+     },
+   );
+ 
+-  it.each([[[]], [["--help"]], [["--version"]], [["overview", "--help"]], [["unknown"]]])(
+-    "keeps non-workspace invocation %j local",
+-    (argv) => {
+-      expect(selector.classify(argv, workspaceRoot)).toEqual({ kind: "local" });
+-    },
+-  );
++  it.each([
++    { argv: ["--help"], commandName: "help" },
++    { argv: ["-h"], commandName: "help" },
++    { argv: ["overview", "--help"], commandName: "help" },
++    { argv: ["--version"], commandName: "version" },
++    { argv: ["-v"], commandName: "version" },
++    { argv: [], commandName: "unknown" },
++    { argv: ["unknown"], commandName: "unknown" },
++    { argv: ["daemon", "unknown"], commandName: "unknown" },
++  ] satisfies readonly {
++    readonly argv: readonly string[];
++    readonly commandName: DaemonCommandName;
++  }[])("maps local invocation $argv to $commandName", ({ argv, commandName }) => {
++    expect(selector.select(argv, workspaceRoot)).toEqual({
++      route: { kind: "local" },
++      commandName,
++      argv,
++    });
++  });
+ });
+diff --git a/apps/cli/src/daemon/invocation-workspace-selector.ts b/apps/cli/src/daemon/invocation-workspace-selector.ts
+index c7b74c334..d57a6a6b3 100644
+--- a/apps/cli/src/daemon/invocation-workspace-selector.ts
++++ b/apps/cli/src/daemon/invocation-workspace-selector.ts
+@@ -1,16 +1,20 @@
+ import { Command as CommanderCommand } from "commander";
+ import { resolve } from "node:path";
++import type { DaemonCommandName } from "@symnav/daemon";
+ import type { InvocationRoute, SelectedInvocation } from "./invocation-route.js";
+ 
+-const workspaceCommands = new Set([
+-  "overview",
+-  "resolve",
+-  "def",
+-  "refs",
+-  "context",
+-  "graph",
+-  "stats",
+-]);
++type WorkspaceCommandName = Exclude<DaemonCommandName, "help" | "version" | "unknown">;
++
++const workspaceCommandNames = {
++  overview: "overview",
++  resolve: "resolve",
++  def: "def",
++  refs: "refs",
++  context: "context",
++  graph: "graph",
++  stats: "stats",
++} as const satisfies Readonly<Record<WorkspaceCommandName, WorkspaceCommandName>>;
++
+ export class InvocationWorkspaceSelector {
+   classify(argv: readonly string[], cwd: string): InvocationRoute {
+     return this.select(argv, cwd).route;
+@@ -34,19 +38,24 @@ export class InvocationWorkspaceSelector {
+       version?: boolean;
+     }>();
+ 
+-    if (options.help === true || options.version === true) {
+-      return { route: { kind: "local" }, argv };
++    if (options.help === true) {
++      return { route: { kind: "local" }, commandName: "help", argv };
++    }
++    if (options.version === true) {
++      return { route: { kind: "local" }, commandName: "version", argv };
+     }
+     if (command === "daemon" && (action === "start" || action === "status" || action === "stop")) {
+-      return { route: { kind: "daemon-control", action }, argv };
++      return { route: { kind: "daemon-control", action }, commandName: "unknown", argv };
+     }
+-    if (command === undefined || !workspaceCommands.has(command)) {
+-      return { route: { kind: "local" }, argv };
++    const commandName = InvocationWorkspaceSelector.workspaceCommandName(command);
++    if (commandName === undefined) {
++      return { route: { kind: "local" }, commandName: "unknown", argv };
+     }
+     const cwdOverride = options.cwd;
+     const startDir = cwdOverride === undefined ? cwd : resolve(cwd, cwdOverride);
+     return {
+       route: { kind: "workspace", startDir },
++      commandName,
+       argv:
+         cwdOverride === undefined
+           ? argv
+@@ -54,6 +63,13 @@ export class InvocationWorkspaceSelector {
+     };
+   }
+ 
++  private static workspaceCommandName(
++    command: string | undefined,
++  ): WorkspaceCommandName | undefined {
++    if (command === undefined || !Object.hasOwn(workspaceCommandNames, command)) return undefined;
++    return workspaceCommandNames[command as WorkspaceCommandName];
++  }
++
+   private static rewriteEffectiveCwd(argv: readonly string[], startDir: string): readonly string[] {
+     const separatorIndex = argv.indexOf("--");
+     const optionsEnd = separatorIndex === -1 ? argv.length : separatorIndex;
+diff --git a/apps/cli/src/daemon/local-daemon-transport-execution.test.ts b/apps/cli/src/daemon/local-daemon-transport-execution.test.ts
+index 6cc9ec45d..ad334c752 100644
+--- a/apps/cli/src/daemon/local-daemon-transport-execution.test.ts
++++ b/apps/cli/src/daemon/local-daemon-transport-execution.test.ts
+@@ -34,6 +34,7 @@ const request: DaemonExecuteRequest = {
+   instanceId: "instance",
+   processToken: "token",
+   requestId: "request",
++  commandName: "overview",
+   request: { argv: ["overview", "src/a.ts"], cwd: "/repo", telemetryEnabled: false },
+ };
+ 
+@@ -55,7 +56,7 @@ describe("LocalDaemonTransport execution delivery", () => {
+   });
+ 
+   it("uses the accepted-request protocol generation", () => {
+-    expect(DAEMON_PROTOCOL_VERSION).toBe(4);
++    expect(DAEMON_PROTOCOL_VERSION).toBe(5);
+   });
+ 
+   it("classifies connection refusal before any write as retry-safe", async () => {
+diff --git a/apps/cli/src/daemon/local-daemon-transport-validation.test.ts b/apps/cli/src/daemon/local-daemon-transport-validation.test.ts
+index c7c7f020c..6d0b31b29 100644
+--- a/apps/cli/src/daemon/local-daemon-transport-validation.test.ts
++++ b/apps/cli/src/daemon/local-daemon-transport-validation.test.ts
+@@ -675,6 +675,18 @@ describe("LocalDaemonTransport validation", () => {
+     );
+   });
+ 
++  it("rejects an unknown caller-supplied daemon command name", async () => {
++    const transport = new LocalDaemonTransport({ requestTimeoutMs: 100 });
++    const request = {
++      ...executionRequest(),
++      commandName: "not-a-command",
++    } as unknown as DaemonExecuteRequest;
++
++    await expect(
++      Promise.resolve().then(() => transport.execute("/missing-daemon-endpoint", request)),
++    ).rejects.toThrow("Malformed daemon execution request");
++  });
++
+   it("rejects legacy embedded completion results", async () => {
+     const endpoint = await rawServer(servers, sockets, directories, (socket) => {
+       socket.end(
+@@ -713,6 +725,7 @@ function executionRequest(): DaemonExecuteRequest {
+     instanceId: "instance",
+     processToken: "token",
+     requestId: "request",
++    commandName: "version",
+     request: { argv: ["--version"], cwd: "/repo", telemetryEnabled: false },
+   };
+ }
+diff --git a/apps/cli/src/daemon/local-daemon-transport.test.ts b/apps/cli/src/daemon/local-daemon-transport.test.ts
+index 1c5fed5ac..79937f700 100644
+--- a/apps/cli/src/daemon/local-daemon-transport.test.ts
++++ b/apps/cli/src/daemon/local-daemon-transport.test.ts
+@@ -155,6 +155,7 @@ describe("LocalDaemonTransport", () => {
+         instanceId: "instance",
+         processToken: "token",
+         requestId: "request",
++        commandName: "resolve",
+         request: { argv: ["resolve", "\n✓"], cwd: "/repo", telemetryEnabled: false },
+       })
+     ).completion;
+@@ -284,6 +285,7 @@ describe("LocalDaemonTransport", () => {
+         instanceId: "instance",
+         processToken: "token",
+         requestId: "expected-request",
++        commandName: "version",
+         request: { argv: ["--version"], cwd: "/repo", telemetryEnabled: false },
+       }),
+     ).rejects.toThrow(/request identifier/);
+diff --git a/apps/cli/src/daemon/local-daemon-transport.ts b/apps/cli/src/daemon/local-daemon-transport.ts
+index 7bb56a4cb..29d34be56 100644
+--- a/apps/cli/src/daemon/local-daemon-transport.ts
++++ b/apps/cli/src/daemon/local-daemon-transport.ts
+@@ -1101,6 +1101,7 @@ export class LocalDaemonTransport {
+         value.kind !== "result-ack") ||
+       typeof value.processToken !== "string" ||
+       !DaemonRuntimeValues.isRequestId(value.requestId) ||
++      (value.kind === "execute" && !DaemonRuntimeValues.isCommandName(value.commandName)) ||
+       (value.kind === "execute" && !LocalDaemonTransport.isExecutionRequest(value.request)) ||
+       (value.kind === "result-fetch" && !LocalDaemonTransport.isCount(value.offset)) ||
+       (value.kind === "result-ack" && typeof value.transferId !== "string")
+diff --git a/apps/cli/src/daemon/workspace-daemon-requests.test.ts b/apps/cli/src/daemon/workspace-daemon-requests.test.ts
+index 4d93e010b..405275016 100644
+--- a/apps/cli/src/daemon/workspace-daemon-requests.test.ts
++++ b/apps/cli/src/daemon/workspace-daemon-requests.test.ts
+@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import { afterEach, describe, expect, it, vi } from "vitest";
+-import { DaemonPolicy } from "@symnav/daemon";
++import { DaemonPolicy, type DaemonCommandName } from "@symnav/daemon";
+ import {
+   CommandOutputSnapshot,
+   type CliExecutionRequest,
+@@ -10,6 +10,7 @@ import {
+   type CommandOutputRecord,
+ } from "../command-execution-result.js";
+ import { createDefaultDependencies } from "../program.js";
++import { InvocationWorkspaceSelector } from "./invocation-workspace-selector.js";
+ import type {
+   DaemonExecutionServerFrame,
+   DaemonExecutionStatusResponse,
+@@ -256,6 +257,15 @@ describe("WorkspaceDaemon requests", () => {
+     expect(executor.requests).toHaveLength(1);
+   });
+ 
++  it("rejects the prior execute-envelope generation before command execution", async () => {
++    const executor = new RecordingExecutor();
++    const harness = await RequestHarness.start(executor);
++    harnesses.push(harness);
++
++    await expect(harness.executeAtProtocol("prior-generation", 4)).rejects.toThrow("protocol");
++    expect(executor.requests).toEqual([]);
++  });
++
+   it("timestamps daemon requests when they are accepted", async () => {
+     const harness = await RequestHarness.start(new ImmediateExecutor(), { now: () => 1_234 });
+     harnesses.push(harness);
+@@ -461,7 +471,7 @@ describe("WorkspaceDaemon requests", () => {
+     const executor = new SerializedExecutor();
+     const harness = await RequestHarness.start(executor);
+     harnesses.push(harness);
+-    const first = harness.execute("first", ["refs", "input"]);
++    const first = harness.execute("first", ["--cwd", "/repo", "overview", "input"], "refs");
+     await executor.started(1);
+     const second = harness.execute("second", ["overview", "input.ts"]);
+ 
+@@ -481,6 +491,7 @@ describe("WorkspaceDaemon requests", () => {
+         queued: 1,
+       },
+     });
++    expect(executor.requests[0]?.argv).toEqual(["--cwd", "/repo", "overview", "input"]);
+     expect(Date.now() - pingStartedAt).toBeLessThan(1_000);
+ 
+     executor.complete(0);
+@@ -1575,21 +1586,48 @@ class RequestHarness {
+     });
+   }
+ 
+-  execute(requestId: string, argv: readonly string[] = ["--version"]): Promise<DaemonResponse> {
+-    return this.admit(requestId, argv).then((connection) => connection.terminal);
++  execute(
++    requestId: string,
++    argv: readonly string[] = ["--version"],
++    commandName: DaemonCommandName = this.commandName(argv),
++  ): Promise<DaemonResponse> {
++    return this.admit(requestId, argv, commandName).then((connection) => connection.terminal);
++  }
++
++  executeAtProtocol(requestId: string, protocolVersion: number): Promise<DaemonResponse> {
++    return this.transport
++      .connect({
++        kind: "execute",
++        protocolVersion,
++        instanceId: this.instanceId,
++        processToken: this.processToken,
++        requestId,
++        commandName: "version",
++        request: { argv: ["--version"], cwd: this.workspaceRoot, telemetryEnabled: false },
++      })
++      .then((connection) => connection.terminal);
+   }
+ 
+-  admit(requestId: string, argv: readonly string[] = ["--version"]): Promise<RequestConnection> {
++  admit(
++    requestId: string,
++    argv: readonly string[] = ["--version"],
++    commandName: DaemonCommandName = this.commandName(argv),
++  ): Promise<RequestConnection> {
+     return this.transport.connect({
+       kind: "execute",
+       protocolVersion: DAEMON_PROTOCOL_VERSION,
+       instanceId: this.instanceId,
+       processToken: this.processToken,
+       requestId,
++      commandName,
+       request: { argv, cwd: this.workspaceRoot, telemetryEnabled: false },
+     });
+   }
+ 
++  private commandName(argv: readonly string[]): DaemonCommandName {
++    return new InvocationWorkspaceSelector().select(argv, this.workspaceRoot).commandName;
++  }
++
+   status(requestId: string): Promise<DaemonExecutionStatusResponse> {
+     return this.transport.receive({
+       kind: "execution-status",
+@@ -1982,8 +2020,9 @@ class ExecutorNavigationWorker implements DaemonNavigationWorker {
+ 
+   async execute(
+     requestId: string,
++    _commandName: DaemonCommandName,
+     request: CliExecutionRequest,
+-    output: Parameters<DaemonNavigationWorker["execute"]>[2],
++    output: Parameters<DaemonNavigationWorker["execute"]>[3],
+   ): Promise<DaemonNavigationWorkerResponse> {
+     const result = await Promise.race([this.executor.execute(request), this.termination]);
+     for await (const record of result.output.records()) await output.append(record);
+diff --git a/apps/cli/src/daemon/workspace-daemon.test.ts b/apps/cli/src/daemon/workspace-daemon.test.ts
+index 759eb53f2..26d0044c8 100644
+--- a/apps/cli/src/daemon/workspace-daemon.test.ts
++++ b/apps/cli/src/daemon/workspace-daemon.test.ts
+@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import { fileURLToPath } from "node:url";
+ import { afterEach, describe, expect, it, vi } from "vitest";
+-import { DaemonPolicy } from "@symnav/daemon";
++import { DaemonPolicy, type DaemonCommandName } from "@symnav/daemon";
+ import {
+   CommandOutputSnapshot,
+   type CliExecutionRequest,
+@@ -240,6 +240,7 @@ describe("WorkspaceDaemon runtime lifecycle", () => {
+         instanceId,
+         processToken,
+         requestId: "stuck-child-request",
++        commandName: "version",
+         request: { argv: ["--version"], cwd: workspaceRoot, telemetryEnabled: false },
+       })
+       .then((receipt) => receipt.completion.catch(() => undefined))
+@@ -508,6 +509,7 @@ class WorkspaceDaemonHarness {
+         instanceId: this.instanceId,
+         processToken: "runtime-token",
+         requestId,
++        commandName: "version",
+         request: { argv: ["--version"], cwd: this.workspaceRoot, telemetryEnabled: false },
+       })
+       .then((receipt) => receipt.completion);
+@@ -640,8 +642,9 @@ class ExecutorNavigationWorker implements DaemonNavigationWorker {
+ 
+   async execute(
+     requestId: string,
++    _commandName: DaemonCommandName,
+     request: CliExecutionRequest,
+-    output: Parameters<DaemonNavigationWorker["execute"]>[2],
++    output: Parameters<DaemonNavigationWorker["execute"]>[3],
+   ): Promise<DaemonNavigationWorkerResponse> {
+     const result = await Promise.race([this.executor.execute(request), this.termination]);
+     for await (const record of result.output.records()) await output.append(record);
+diff --git a/apps/cli/src/daemon/workspace-daemon.ts b/apps/cli/src/daemon/workspace-daemon.ts
+index 5dd8d99fa..d44a09dc3 100644
+--- a/apps/cli/src/daemon/workspace-daemon.ts
++++ b/apps/cli/src/daemon/workspace-daemon.ts
+@@ -41,7 +41,7 @@ import type { DaemonNavigationWorkerResponse } from "./daemon-navigation-worker-
+ import type { DaemonRegistry, DaemonStartupLease } from "./daemon-registry.js";
+ import type { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
+ import type { DaemonServerSend, LocalDaemonTransport } from "./local-daemon-transport.js";
+-import { WorkspaceRequestQueue, type DaemonCommandName } from "./workspace-request-queue.js";
++import { WorkspaceRequestQueue } from "./workspace-request-queue.js";
+ 
+ export interface WorkspaceDaemonOptions {
+   readonly identity: DaemonWorkspaceIdentity;
+@@ -486,7 +486,7 @@ export class WorkspaceDaemon {
+     const existing = this.acceptedRequests.entryFor(request.requestId);
+     let entry;
+     try {
+-      entry = this.acceptedRequests.accept(request.requestId, request.request);
++      entry = this.acceptedRequests.accept(request.requestId, request.commandName, request.request);
+     } catch (error) {
+       if (error instanceof AcceptedRequestCorruptionError) {
+         return this.rejection(request, "incompatible", false);
+@@ -499,10 +499,7 @@ export class WorkspaceDaemon {
+         queuePosition: entry.state.queuePosition,
+       });
+       if (existing === undefined) {
+-        const trace = this.operationObserver.start(
+-          request.requestId,
+-          WorkspaceDaemon.commandName(request.request.argv),
+-        );
++        const trace = this.operationObserver.start(request.requestId, request.commandName);
+         this.operationTraces.set(request.requestId, trace);
+         trace.accepted(entry.state.queuePosition, this.resourceSupervisor.snapshot.generation);
+       }
+@@ -573,7 +570,7 @@ export class WorkspaceDaemon {
+       await this.requestQueue.enqueue(
+         {
+           requestId: request.requestId,
+-          command: WorkspaceDaemon.commandName(request.request.argv),
++          command: request.commandName,
+           acceptedAt: this.clock.monotonicNowMs(),
+         },
+         async () => {
+@@ -589,6 +586,7 @@ export class WorkspaceDaemon {
+             if (ready.kind !== "ready") throw new Error("Navigation worker did not become ready");
+             const response = await generation.worker.execute(
+               request.requestId,
++              request.commandName,
+               request.request,
+               spool,
+             );
+@@ -1161,23 +1159,4 @@ export class WorkspaceDaemon {
+       spoolBytes: resources.spoolBytes,
+     });
+   }
+-
+-  private static commandName(argv: readonly string[]): DaemonCommandName {
+-    const commands: readonly DaemonCommandName[] = [
+-      "overview",
+-      "resolve",
+-      "def",
+-      "refs",
+-      "context",
+-      "graph",
+-      "stats",
+-    ];
+-    const command = argv.find((argument): argument is DaemonCommandName =>
+-      commands.includes(argument as DaemonCommandName),
+-    );
+-    if (command !== undefined) return command;
+-    if (argv.includes("--version") || argv.includes("-v")) return "version";
+-    if (argv.includes("--help") || argv.includes("-h")) return "help";
+-    return "unknown";
+-  }
+ }
+diff --git a/apps/cli/src/daemon/workspace-request-queue.ts b/apps/cli/src/daemon/workspace-request-queue.ts
+index 770ab7115..f3885149c 100644
+--- a/apps/cli/src/daemon/workspace-request-queue.ts
++++ b/apps/cli/src/daemon/workspace-request-queue.ts
+@@ -1,6 +1,5 @@
+-import type { DaemonCommandName, WorkspaceRequestQueueState } from "./daemon-protocol.js";
+-
+-export type { DaemonCommandName } from "./daemon-protocol.js";
++import type { DaemonCommandName } from "@symnav/daemon";
++import type { WorkspaceRequestQueueState } from "./daemon-protocol.js";
+ 
+ export interface WorkspaceQueuedRequest {
+   readonly requestId: string;
+diff --git a/apps/cli/test/benchmark/daemon-benchmark-gate.ts b/apps/cli/test/benchmark/daemon-benchmark-gate.ts
+index 8b366ae3a..5a99ab0da 100644
+--- a/apps/cli/test/benchmark/daemon-benchmark-gate.ts
++++ b/apps/cli/test/benchmark/daemon-benchmark-gate.ts
+@@ -1,4 +1,4 @@
+-import type { DaemonCommandName } from "../../src/daemon/daemon-protocol.js";
++import type { DaemonCommandName } from "@symnav/daemon";
+ import type { DaemonBenchmarkScale } from "./daemon-workspace-generator.js";
+ 
+ export interface DaemonBenchmarkSample {
+diff --git a/apps/cli/test/benchmark/daemon-scale-benchmark-harness.ts b/apps/cli/test/benchmark/daemon-scale-benchmark-harness.ts
+index 39e2de350..d6a471cf0 100644
+--- a/apps/cli/test/benchmark/daemon-scale-benchmark-harness.ts
++++ b/apps/cli/test/benchmark/daemon-scale-benchmark-harness.ts
+@@ -20,10 +20,12 @@ import { join } from "node:path";
+ import { performance } from "node:perf_hooks";
+ import { fileURLToPath } from "node:url";
+ import { runSymnavBinary, type RunSymnavBinaryResult } from "@symnav/testing";
++import type { DaemonCommandName } from "@symnav/daemon";
+ import { TestDaemonRegistry as DaemonRegistry } from "../helpers/daemon-registry.js";
+-import type { DaemonCommandName } from "../../src/daemon/daemon-protocol.js";
+ import { TestDaemonResourcePolicy as DaemonResourcePolicy } from "../helpers/daemon-resource-policy.js";
+ import { DaemonWorkspaceIdentity } from "../../src/daemon/daemon-workspace-identity.js";
++import { DaemonRuntimeValues } from "../../src/daemon/daemon-runtime-values.js";
++import { InvocationWorkspaceSelector } from "../../src/daemon/invocation-workspace-selector.js";
+ import { StateDirectoryResolver } from "../../src/state-directory-resolver.js";
+ import { canonicalWorkspaceRoot } from "../helpers/canonical-workspace-root.js";
+ import type {
+@@ -456,7 +458,7 @@ export class DaemonScaleBenchmarkHarness {
+       telemetryMatched: BenchmarkInvocationTelemetry.matches({
+         before: telemetryBefore,
+         after: telemetryAfter,
+-        command: argv[0] as DaemonCommandName,
++        command: new InvocationWorkspaceSelector().select(argv, root).commandName,
+       }),
+     };
+   }
+@@ -596,7 +598,8 @@ export class DaemonScaleBenchmarkHarness {
+   private warmTelemetryCommands(stateDirectory: string): DaemonCommandName[] {
+     return this.telemetryEvents(stateDirectory)
+       .filter((event) => event.executionMode === "warm")
+-      .map((event) => event.command as DaemonCommandName);
++      .map((event) => event.command)
++      .filter(DaemonRuntimeValues.isCommandName);
+   }
+ 
+   private fallbackTelemetryCount(stateDirectory: string): number {
+diff --git a/apps/cli/test/e2e/daemon/parity.test.ts b/apps/cli/test/e2e/daemon/parity.test.ts
+index e83d6c91d..719b0326e 100644
+--- a/apps/cli/test/e2e/daemon/parity.test.ts
++++ b/apps/cli/test/e2e/daemon/parity.test.ts
+@@ -248,6 +248,7 @@ describe("symnav daemon parity", () => {
+       instanceId: controlled.record.instanceId,
+       processToken: controlled.record.processToken,
+       requestId: "fifo-first",
++      commandName: "overview",
+       request: {
+         argv: ["--version"],
+         cwd: controlled.record.workspaceRoot,
+@@ -390,6 +391,7 @@ describe("symnav daemon parity", () => {
+       instanceId: controlled.record.instanceId,
+       processToken: controlled.record.processToken,
+       requestId,
++      commandName: "overview",
+       request: acceptedRequest,
+     });
+     writeFileSync(controlled.workerExitReleasePath, "release");
+diff --git a/apps/cli/test/e2e/daemon/status.test.ts b/apps/cli/test/e2e/daemon/status.test.ts
+index a30dc3cde..254e109e2 100644
+--- a/apps/cli/test/e2e/daemon/status.test.ts
++++ b/apps/cli/test/e2e/daemon/status.test.ts
+@@ -381,6 +381,7 @@ describe("symnav daemon status", () => {
+         instanceId,
+         processToken,
+         requestId: "stuck-navigation",
++        commandName: "overview",
+         request: {
+           argv: ["overview", "input.ts"],
+           cwd: workspaceRoot,
+@@ -557,6 +558,7 @@ describe("symnav daemon status", () => {
+         instanceId: record!.instanceId,
+         processToken: record!.processToken,
+         requestId: "deleted-workspace",
++        commandName: "version",
+         request: {
+           argv: ["overview", "input.ts"],
+           cwd: workspaceRoot,
+diff --git a/apps/cli/test/e2e/daemon/stop.test.ts b/apps/cli/test/e2e/daemon/stop.test.ts
+index 59b40a7bc..db952857f 100644
+--- a/apps/cli/test/e2e/daemon/stop.test.ts
++++ b/apps/cli/test/e2e/daemon/stop.test.ts
+@@ -161,6 +161,7 @@ describe("symnav daemon stop", () => {
+       instanceId: runtime.record.instanceId,
+       processToken: runtime.record.processToken,
+       requestId: "built-drain",
++      commandName: "version",
+       request: { argv: ["--version"], cwd, telemetryEnabled: false },
+     });
+     await waitUntil(() => existsSync(runtime.requestStartedPath));
+@@ -196,6 +197,7 @@ describe("symnav daemon stop", () => {
+       instanceId: runtime.record.instanceId,
+       processToken: runtime.record.processToken,
+       requestId: "built-force",
++      commandName: "version",
+       request: { argv: ["--version"], cwd, telemetryEnabled: false },
+     });
+     await waitUntil(() => existsSync(runtime.requestStartedPath));
+diff --git a/apps/cli/test/helpers/daemon-accepted-caller.ts b/apps/cli/test/helpers/daemon-accepted-caller.ts
+index fc3aa3e5b..aa27cd98f 100644
+--- a/apps/cli/test/helpers/daemon-accepted-caller.ts
++++ b/apps/cli/test/helpers/daemon-accepted-caller.ts
+@@ -19,6 +19,7 @@ const receipt = await new LocalDaemonTransport({ requestTimeoutMs: 5_000 }).exec
+   instanceId,
+   processToken,
+   requestId: "accepted-disconnect",
++  commandName: "version",
+   request: {
+     argv: ["overview", "input.ts"],
+     cwd: workspaceRoot,
+diff --git a/apps/cli/test/helpers/daemon-startup-caller-exit.ts b/apps/cli/test/helpers/daemon-startup-caller-exit.ts
+index bba18d8d5..142b71239 100644
+--- a/apps/cli/test/helpers/daemon-startup-caller-exit.ts
++++ b/apps/cli/test/helpers/daemon-startup-caller-exit.ts
+@@ -206,10 +206,11 @@ class StartupBarrierNavigationWorker implements DaemonNavigationWorker {
+ 
+   execute(
+     requestId: string,
++    commandName: Parameters<DaemonNavigationWorker["execute"]>[1],
+     request: CliExecutionRequest,
+-    output: Parameters<DaemonNavigationWorker["execute"]>[2],
++    output: Parameters<DaemonNavigationWorker["execute"]>[3],
+   ): Promise<DaemonNavigationWorkerResponse> {
+-    return this.worker.execute(requestId, request, output);
++    return this.worker.execute(requestId, commandName, request, output);
+   }
+ 
+   releaseTransientResources(): Promise<DaemonNavigationWorkerResponse> {
+diff --git a/apps/cli/test/helpers/workspace-daemon-persistent-pressure.ts b/apps/cli/test/helpers/workspace-daemon-persistent-pressure.ts
+index 23d402b81..7eef8e576 100644
+--- a/apps/cli/test/helpers/workspace-daemon-persistent-pressure.ts
++++ b/apps/cli/test/helpers/workspace-daemon-persistent-pressure.ts
+@@ -75,6 +75,7 @@ class PressureNavigationWorker implements DaemonNavigationWorker {
+ 
+   async execute(
+     requestId: string,
++    _commandName: Parameters<DaemonNavigationWorker["execute"]>[1],
+     request: CliExecutionRequest,
+     output: { append(record: CommandOutputRecord): Promise<void> },
+   ): Promise<DaemonNavigationWorkerResponse> {
+diff --git a/apps/cli/test/helpers/workspace-daemon-stuck.ts b/apps/cli/test/helpers/workspace-daemon-stuck.ts
+index 694d5a977..e281a5f3d 100644
+--- a/apps/cli/test/helpers/workspace-daemon-stuck.ts
++++ b/apps/cli/test/helpers/workspace-daemon-stuck.ts
+@@ -116,6 +116,7 @@ class ControlledNavigationWorker implements DaemonNavigationWorker {
+ 
+   async execute(
+     requestId: string,
++    _commandName: Parameters<DaemonNavigationWorker["execute"]>[1],
+     request: CliExecutionRequest,
+     output: { append(record: CommandOutputRecord): Promise<void> },
+   ): Promise<DaemonNavigationWorkerResponse> {
+diff --git a/packages/daemon/src/daemon-command-name.test.ts b/packages/daemon/src/daemon-command-name.test.ts
+new file mode 100644
+index 000000000..3223d6371
+--- /dev/null
++++ b/packages/daemon/src/daemon-command-name.test.ts
+@@ -0,0 +1,43 @@
++import { describe, expect, it } from "vitest";
++
++import {
++  DAEMON_COMMAND_NAMES,
++  DaemonCommandNames,
++  type DaemonCommandName,
++} from "./daemon-command-name.js";
++
++describe("DaemonCommandNames", () => {
++  it("accepts exactly the closed command vocabulary", () => {
++    expect(DAEMON_COMMAND_NAMES).toEqual([
++      "overview",
++      "resolve",
++      "def",
++      "refs",
++      "context",
++      "graph",
++      "stats",
++      "help",
++      "version",
++      "unknown",
++    ]);
++    for (const commandName of DAEMON_COMMAND_NAMES) {
++      expect(DaemonCommandNames.is(commandName)).toBe(true);
++      expect(DaemonCommandNames.parse(commandName)).toBe(commandName);
++    }
++  });
++
++  it.each([undefined, null, 1, "", "daemon", "start", "Overview"])(
++    "rejects the value %j",
++    (value) => {
++      expect(DaemonCommandNames.is(value)).toBe(false);
++      expect(() => DaemonCommandNames.parse(value)).toThrow("Invalid daemon command name");
++    },
++  );
++
++  it("publishes an immutable tuple", () => {
++    expect(Object.isFrozen(DAEMON_COMMAND_NAMES)).toBe(true);
++    expect(() => (DAEMON_COMMAND_NAMES as unknown as DaemonCommandName[]).push("unknown")).toThrow(
++      TypeError,
++    );
++  });
++});
+diff --git a/packages/daemon/src/daemon-command-name.ts b/packages/daemon/src/daemon-command-name.ts
+index c9c0939b0..2fbfd2812 100644
+--- a/packages/daemon/src/daemon-command-name.ts
++++ b/packages/daemon/src/daemon-command-name.ts
+@@ -1,11 +1,32 @@
+-export type DaemonCommandName =
+-  | "overview"
+-  | "resolve"
+-  | "def"
+-  | "refs"
+-  | "context"
+-  | "graph"
+-  | "stats"
+-  | "help"
+-  | "version"
+-  | "unknown";
++const commandNames = [
++  "overview",
++  "resolve",
++  "def",
++  "refs",
++  "context",
++  "graph",
++  "stats",
++  "help",
++  "version",
++  "unknown",
++] as const;
++
++export type DaemonCommandName = (typeof commandNames)[number];
++
++export class DaemonCommandNames {
++  static is(value: unknown): value is DaemonCommandName {
++    return commandNames.includes(value as DaemonCommandName);
++  }
++
++  static parse(value: unknown): DaemonCommandName {
++    if (!this.is(value)) throw new Error("Invalid daemon command name");
++    return value;
++  }
++}
++
++export const DAEMON_COMMAND_NAMES = Object.freeze(commandNames);
++
++export interface DaemonReadinessProbe {
++  readonly commandName: DaemonCommandName;
++  readonly argv: readonly string[];
++}
+diff --git a/packages/daemon/src/host-contract.test.ts b/packages/daemon/src/host-contract.test.ts
+index 24979e03c..114e14d83 100644
+--- a/packages/daemon/src/host-contract.test.ts
++++ b/packages/daemon/src/host-contract.test.ts
+@@ -26,13 +26,14 @@ import type {
+   DaemonOutputRecord,
+   DaemonOutputStream,
+   DaemonPolicyValues,
++  DaemonReadinessProbe,
+   DaemonSystemMemory,
+   DaemonStartResult,
+   DaemonStatusEnvelope,
+   DaemonStopResult,
+   RunningDaemonStatus,
+ } from "./index.js";
+-import { DaemonPolicy } from "./index.js";
++import { DAEMON_COMMAND_NAMES, DaemonPolicy } from "./index.js";
+ 
+ type ExportKind = "runtime" | "type";
+ 
+@@ -54,6 +55,7 @@ class DaemonContractSourcePath {
+ 
+ class DaemonContractExpectation {
+   public static readonly exports: readonly ExportedSymbol[] = [
++    { kind: "runtime", name: "DAEMON_COMMAND_NAMES" },
+     { kind: "runtime", name: "DaemonPolicy" },
+     { kind: "type", name: "DaemonActivitySnapshot" },
+     { kind: "type", name: "DaemonCommandName" },
+@@ -72,6 +74,7 @@ class DaemonContractExpectation {
+     { kind: "type", name: "DaemonOutputRecord" },
+     { kind: "type", name: "DaemonOutputStream" },
+     { kind: "type", name: "DaemonPolicyValues" },
++    { kind: "type", name: "DaemonReadinessProbe" },
+     { kind: "type", name: "DaemonStartResult" },
+     { kind: "type", name: "DaemonStatusEnvelope" },
+     { kind: "type", name: "DaemonStopResult" },
+@@ -87,6 +90,8 @@ class DaemonContractExpectation {
+     "static:fromSystemMemory",
+   ];
+ 
++  public static readonly commandNameMembers = ["static:is", "static:parse"];
++
+   public static readonly policyTestingExports: readonly ExportedSymbol[] = [
+     { kind: "runtime", name: "DaemonPolicyTestFactory" },
+   ];
+@@ -311,6 +316,47 @@ describe("daemon host contract", () => {
+     expect(DaemonContractSourcePath.root(pathToFileURL(sourcePath).href)).toBe(dirname(sourcePath));
+   });
+ 
++  it("defines the exact command vocabulary and readiness probe", () => {
++    expectTypeOf<typeof DAEMON_COMMAND_NAMES>().toEqualTypeOf<
++      readonly [
++        "overview",
++        "resolve",
++        "def",
++        "refs",
++        "context",
++        "graph",
++        "stats",
++        "help",
++        "version",
++        "unknown",
++      ]
++    >();
++    expectTypeOf<DaemonCommandName>().toEqualTypeOf<(typeof DAEMON_COMMAND_NAMES)[number]>();
++    expectTypeOf<DaemonReadinessProbe>().toEqualTypeOf<{
++      readonly commandName: DaemonCommandName;
++      readonly argv: readonly string[];
++    }>();
++
++    const sourceRoot = DaemonContractSourcePath.root(import.meta.url);
++    const commandNameSource = ts.sys.readFile(join(sourceRoot, "daemon-command-name.ts"));
++    expect(commandNameSource).toBeDefined();
++    expect(
++      TypeScriptClassMemberInventory.read(commandNameSource ?? "", "DaemonCommandNames"),
++    ).toEqual(DaemonContractExpectation.commandNameMembers);
++
++    const compilation = NodeFreeDeclarationCompiler.compile([
++      join(sourceRoot, "daemon-command-name.ts"),
++    ]);
++    expect(compilation.diagnostics).toEqual([]);
++    const declaration = [...compilation.outputs].find(([path]) =>
++      path.endsWith("/daemon-command-name.d.ts"),
++    );
++    expect(declaration).toBeDefined();
++    expect(
++      TypeScriptClassMemberInventory.read(declaration?.[1] ?? "", "DaemonCommandNames"),
++    ).toEqual(DaemonContractExpectation.commandNameMembers);
++  });
++
+   it("defines the exact daemon policy static and instance API", () => {
+     expectTypeOf<keyof typeof DaemonPolicy>().toEqualTypeOf<
+       "prototype" | "currentSystem" | "fromSystemMemory" | "fromSerialized"
+@@ -541,7 +587,7 @@ describe("daemon host contract", () => {
+     expect(TypeScriptExportInventory.read(indexSource ?? "")).toEqual(
+       DaemonContractExpectation.exports,
+     );
+-    expect(Object.keys(daemonRuntime)).toEqual(["DaemonPolicy"]);
++    expect(Object.keys(daemonRuntime)).toEqual(["DAEMON_COMMAND_NAMES", "DaemonPolicy"]);
+   });
+ 
+   it("detects a public member added to DaemonPolicy", () => {
+diff --git a/packages/daemon/src/index.ts b/packages/daemon/src/index.ts
+index 0289fc305..554df3c03 100644
+--- a/packages/daemon/src/index.ts
++++ b/packages/daemon/src/index.ts
+@@ -1,4 +1,5 @@
+-export type { DaemonCommandName } from "./daemon-command-name.js";
++export { DAEMON_COMMAND_NAMES } from "./daemon-command-name.js";
++export type { DaemonCommandName, DaemonReadinessProbe } from "./daemon-command-name.js";
+ export type { DaemonDiagnosticValue, DaemonDiagnostics } from "./daemon-diagnostics.js";
+ export type {
+   DaemonExecutionMode,
+diff --git a/packages/daemon/test/public-import.test.ts b/packages/daemon/test/public-import.test.ts
+index 74e9eef5a..ac072f8f0 100644
+--- a/packages/daemon/test/public-import.test.ts
++++ b/packages/daemon/test/public-import.test.ts
+@@ -5,11 +5,12 @@ import type {
+   DaemonActivitySnapshot,
+   DaemonExecutor,
+   DaemonPolicyValues,
++  DaemonReadinessProbe,
+   DaemonStartResult,
+   DaemonStatusEnvelope,
+   DaemonStopResult,
+ } from "@symnav/daemon";
+-import { DaemonPolicy } from "@symnav/daemon";
++import { DAEMON_COMMAND_NAMES, DaemonPolicy } from "@symnav/daemon";
+ 
+ describe("@symnav/daemon public package import", () => {
+   it("resolves the root contract with only the policy runtime", () => {
+@@ -19,9 +20,11 @@ describe("@symnav/daemon public package import", () => {
+     expectTypeOf<DaemonStartResult>().not.toBeNever();
+     expectTypeOf<DaemonStopResult>().not.toBeNever();
+     expectTypeOf<DaemonPolicyValues>().toBeObject();
++    expectTypeOf<DaemonReadinessProbe>().toBeObject();
++    expect(DAEMON_COMMAND_NAMES).toHaveLength(10);
+     expect(DaemonPolicy.fromSystemMemory({ totalBytes: 1024 * 1024 * 1024 })).toBeInstanceOf(
+       DaemonPolicy,
+     );
+-    expect(Object.keys(daemonRuntime)).toEqual(["DaemonPolicy"]);
++    expect(Object.keys(daemonRuntime)).toEqual(["DAEMON_COMMAND_NAMES", "DaemonPolicy"]);
+   });
+ });

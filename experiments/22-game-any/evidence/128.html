@@ -1,0 +1,305 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>PR #128 — pinned evidence</title>
+<style>body{background:#faf9f3;color:#182f36;font:16px system-ui;margin:3rem auto;max-width:1100px;padding:0 20px}a{color:#056b73}pre{overflow:auto;background:#eef0e9;padding:1rem;line-height:1.5;font-size:12px}pre span{display:block}pre a{text-decoration:none}h2{margin-top:3rem}</style>
+<a href="../index.html#atlas">← Return to the open briefing</a><h1>PR #128 · pinned evidence</h1>
+<p>main <code>b6801ebdd2421d0ca2e4bdd61ec0f04c24ddd73e</code> → tip <code>d07002357d3e9596bfaae910a1ac63b77981620b</code>. These are source snapshots, not a test run.</p>
+<h2>Tip · packages/core/src/workspace/workspace-session.ts</h2><pre><span id="L1"><a href="#L1">   1</a> import { BackendRouter } from &quot;../backend/backend-router.js&quot;;</span>
+<span id="L2"><a href="#L2">   2</a> import type {</span>
+<span id="L3"><a href="#L3">   3</a>   BackendRefreshCoverage,</span>
+<span id="L4"><a href="#L4">   4</a>   BackendRefreshSummary,</span>
+<span id="L5"><a href="#L5">   5</a>   LanguageBackend,</span>
+<span id="L6"><a href="#L6">   6</a> } from &quot;../backend/language-backend.js&quot;;</span>
+<span id="L7"><a href="#L7">   7</a> import type { FileSystem } from &quot;./file-system.js&quot;;</span>
+<span id="L8"><a href="#L8">   8</a> import { WorkspaceCatalog } from &quot;./workspace-catalog.js&quot;;</span>
+<span id="L9"><a href="#L9">   9</a> import { createWorkspace, type Workspace, type WorkspaceSnapshot } from &quot;./workspace.js&quot;;</span>
+<span id="L10"><a href="#L10">  10</a> </span>
+<span id="L11"><a href="#L11">  11</a> export type WorkspaceDiscoveryRetention = &quot;request&quot; | &quot;session&quot;;</span>
+<span id="L12"><a href="#L12">  12</a> </span>
+<span id="L13"><a href="#L13">  13</a> export type WorkspaceSnapshotSelector = (</span>
+<span id="L14"><a href="#L14">  14</a>   workspace: Workspace,</span>
+<span id="L15"><a href="#L15">  15</a>   router: BackendRouter,</span>
+<span id="L16"><a href="#L16">  16</a> ) =&gt; Promise&lt;WorkspaceSnapshot&gt;;</span>
+<span id="L17"><a href="#L17">  17</a> </span>
+<span id="L18"><a href="#L18">  18</a> export type WorkspacePreparation =</span>
+<span id="L19"><a href="#L19">  19</a>   | { readonly coverage: &quot;workspace&quot; }</span>
+<span id="L20"><a href="#L20">  20</a>   | {</span>
+<span id="L21"><a href="#L21">  21</a>       readonly coverage: &quot;selection&quot;;</span>
+<span id="L22"><a href="#L22">  22</a>       readonly selectSnapshot: WorkspaceSnapshotSelector;</span>
+<span id="L23"><a href="#L23">  23</a>     };</span>
+<span id="L24"><a href="#L24">  24</a> </span>
+<span id="L25"><a href="#L25">  25</a> export interface PreparedWorkspaceScope {</span>
+<span id="L26"><a href="#L26">  26</a>   readonly workspace: Workspace;</span>
+<span id="L27"><a href="#L27">  27</a>   readonly snapshot: WorkspaceSnapshot;</span>
+<span id="L28"><a href="#L28">  28</a>   readonly router: BackendRouter;</span>
+<span id="L29"><a href="#L29">  29</a>   readonly refresh: BackendRefreshSummary;</span>
+<span id="L30"><a href="#L30">  30</a> }</span>
+<span id="L31"><a href="#L31">  31</a> </span>
+<span id="L32"><a href="#L32">  32</a> export class WorkspaceSession {</span>
+<span id="L33"><a href="#L33">  33</a>   readonly #fileSystem: FileSystem;</span>
+<span id="L34"><a href="#L34">  34</a>   readonly #backends: readonly LanguageBackend[];</span>
+<span id="L35"><a href="#L35">  35</a>   readonly #catalog: WorkspaceCatalog | undefined;</span>
+<span id="L36"><a href="#L36">  36</a> </span>
+<span id="L37"><a href="#L37">  37</a>   constructor(options: {</span>
+<span id="L38"><a href="#L38">  38</a>     readonly fileSystem: FileSystem;</span>
+<span id="L39"><a href="#L39">  39</a>     readonly backends: readonly LanguageBackend[];</span>
+<span id="L40"><a href="#L40">  40</a>     readonly discoveryRetention: WorkspaceDiscoveryRetention;</span>
+<span id="L41"><a href="#L41">  41</a>   }) {</span>
+<span id="L42"><a href="#L42">  42</a>     this.#fileSystem = options.fileSystem;</span>
+<span id="L43"><a href="#L43">  43</a>     this.#backends = Object.freeze([...options.backends]);</span>
+<span id="L44"><a href="#L44">  44</a>     this.#catalog =</span>
+<span id="L45"><a href="#L45">  45</a>       options.discoveryRetention === &quot;session&quot;</span>
+<span id="L46"><a href="#L46">  46</a>         ? new WorkspaceCatalog(options.fileSystem)</span>
+<span id="L47"><a href="#L47">  47</a>         : undefined;</span>
+<span id="L48"><a href="#L48">  48</a>   }</span>
+<span id="L49"><a href="#L49">  49</a> </span>
+<span id="L50"><a href="#L50">  50</a>   async prepare(</span>
+<span id="L51"><a href="#L51">  51</a>     startDirectory: string,</span>
+<span id="L52"><a href="#L52">  52</a>     preparation: WorkspacePreparation = { coverage: &quot;workspace&quot; },</span>
+<span id="L53"><a href="#L53">  53</a>   ): Promise&lt;PreparedWorkspaceScope&gt; {</span>
+<span id="L54"><a href="#L54">  54</a>     const workspace = await this.openWorkspace(startDirectory, preparation.coverage);</span>
+<span id="L55"><a href="#L55">  55</a>     return this.prepareWorkspace(workspace, preparation);</span>
+<span id="L56"><a href="#L56">  56</a>   }</span>
+<span id="L57"><a href="#L57">  57</a> </span>
+<span id="L58"><a href="#L58">  58</a>   openWorkspace(startDirectory: string, coverage: BackendRefreshCoverage): Promise&lt;Workspace&gt; {</span>
+<span id="L59"><a href="#L59">  59</a>     if (coverage === &quot;selection&quot; || this.#catalog === undefined) {</span>
+<span id="L60"><a href="#L60">  60</a>       return createWorkspace({ startDir: startDirectory, fs: this.#fileSystem });</span>
+<span id="L61"><a href="#L61">  61</a>     }</span>
+<span id="L62"><a href="#L62">  62</a>     return this.#catalog.refresh(startDirectory);</span>
+<span id="L63"><a href="#L63">  63</a>   }</span>
+<span id="L64"><a href="#L64">  64</a> </span>
+<span id="L65"><a href="#L65">  65</a>   async prepareWorkspace(</span>
+<span id="L66"><a href="#L66">  66</a>     workspace: Workspace,</span>
+<span id="L67"><a href="#L67">  67</a>     preparation: WorkspacePreparation,</span>
+<span id="L68"><a href="#L68">  68</a>   ): Promise&lt;PreparedWorkspaceScope&gt; {</span>
+<span id="L69"><a href="#L69">  69</a>     const router = new BackendRouter(this.#backends);</span>
+<span id="L70"><a href="#L70">  70</a>     const snapshot =</span>
+<span id="L71"><a href="#L71">  71</a>       preparation.coverage === &quot;selection&quot;</span>
+<span id="L72"><a href="#L72">  72</a>         ? await preparation.selectSnapshot(workspace, router)</span>
+<span id="L73"><a href="#L73">  73</a>         : await workspace.snapshot();</span>
+<span id="L74"><a href="#L74">  74</a>     const refresh = await router.refresh(snapshot, preparation.coverage);</span>
+<span id="L75"><a href="#L75">  75</a>     return { workspace, snapshot, router, refresh };</span>
+<span id="L76"><a href="#L76">  76</a>   }</span>
+<span id="L77"><a href="#L77">  77</a> </span>
+<span id="L78"><a href="#L78">  78</a>   async releaseTransientResources(): Promise&lt;void&gt; {</span>
+<span id="L79"><a href="#L79">  79</a>     await Promise.all(this.#backends.map((backend) =&gt; backend.releaseTransientResources()));</span>
+<span id="L80"><a href="#L80">  80</a>   }</span>
+<span id="L81"><a href="#L81">  81</a> }</span></pre>
+<h2>Main · apps/cli/src/workspace-request-scope.ts</h2><pre><span id="L1"><a href="#L1">   1</a> import {</span>
+<span id="L2"><a href="#L2">   2</a>   BackendRouter,</span>
+<span id="L3"><a href="#L3">   3</a>   createWorkspace,</span>
+<span id="L4"><a href="#L4">   4</a>   type BackendRefreshCoverage,</span>
+<span id="L5"><a href="#L5">   5</a>   type BackendRefreshSummary,</span>
+<span id="L6"><a href="#L6">   6</a>   type FileSystem,</span>
+<span id="L7"><a href="#L7">   7</a>   type LanguageBackend,</span>
+<span id="L8"><a href="#L8">   8</a>   type Workspace,</span>
+<span id="L9"><a href="#L9">   9</a>   type WorkspaceSnapshot,</span>
+<span id="L10"><a href="#L10">  10</a>   WorkspaceCatalog,</span>
+<span id="L11"><a href="#L11">  11</a> } from &quot;@symnav/core&quot;;</span>
+<span id="L12"><a href="#L12">  12</a> </span>
+<span id="L13"><a href="#L13">  13</a> export interface PreparedCommandScope {</span>
+<span id="L14"><a href="#L14">  14</a>   readonly workspace: Workspace;</span>
+<span id="L15"><a href="#L15">  15</a>   readonly snapshot: WorkspaceSnapshot;</span>
+<span id="L16"><a href="#L16">  16</a>   readonly router: BackendRouter;</span>
+<span id="L17"><a href="#L17">  17</a>   readonly refresh: BackendRefreshSummary;</span>
+<span id="L18"><a href="#L18">  18</a> }</span>
+<span id="L19"><a href="#L19">  19</a> </span>
+<span id="L20"><a href="#L20">  20</a> export class WorkspaceRequestScopeFactory {</span>
+<span id="L21"><a href="#L21">  21</a>   constructor(</span>
+<span id="L22"><a href="#L22">  22</a>     private readonly fs: FileSystem,</span>
+<span id="L23"><a href="#L23">  23</a>     private readonly backends: readonly LanguageBackend[],</span>
+<span id="L24"><a href="#L24">  24</a>     private readonly catalog?: WorkspaceCatalog,</span>
+<span id="L25"><a href="#L25">  25</a>   ) {}</span>
+<span id="L26"><a href="#L26">  26</a> </span>
+<span id="L27"><a href="#L27">  27</a>   async prepare(</span>
+<span id="L28"><a href="#L28">  28</a>     startDir: string,</span>
+<span id="L29"><a href="#L29">  29</a>     selectSnapshot?: (workspace: Workspace, router: BackendRouter) =&gt; Promise&lt;WorkspaceSnapshot&gt;,</span>
+<span id="L30"><a href="#L30">  30</a>   ): Promise&lt;PreparedCommandScope&gt; {</span>
+<span id="L31"><a href="#L31">  31</a>     const workspace = selectSnapshot</span>
+<span id="L32"><a href="#L32">  32</a>       ? await createWorkspace({ startDir, fs: this.fs })</span>
+<span id="L33"><a href="#L33">  33</a>       : await this.openWorkspace(startDir);</span>
+<span id="L34"><a href="#L34">  34</a>     return this.prepareWorkspace(workspace, selectSnapshot);</span>
+<span id="L35"><a href="#L35">  35</a>   }</span>
+<span id="L36"><a href="#L36">  36</a> </span>
+<span id="L37"><a href="#L37">  37</a>   openWorkspace(startDir: string): Promise&lt;Workspace&gt; {</span>
+<span id="L38"><a href="#L38">  38</a>     return this.catalog</span>
+<span id="L39"><a href="#L39">  39</a>       ? this.catalog.refresh(startDir)</span>
+<span id="L40"><a href="#L40">  40</a>       : createWorkspace({ startDir, fs: this.fs });</span>
+<span id="L41"><a href="#L41">  41</a>   }</span>
+<span id="L42"><a href="#L42">  42</a> </span>
+<span id="L43"><a href="#L43">  43</a>   async prepareWorkspace(</span>
+<span id="L44"><a href="#L44">  44</a>     workspace: Workspace,</span>
+<span id="L45"><a href="#L45">  45</a>     selectSnapshot?: (workspace: Workspace, router: BackendRouter) =&gt; Promise&lt;WorkspaceSnapshot&gt;,</span>
+<span id="L46"><a href="#L46">  46</a>   ): Promise&lt;PreparedCommandScope&gt; {</span>
+<span id="L47"><a href="#L47">  47</a>     const router = new BackendRouter(this.backends);</span>
+<span id="L48"><a href="#L48">  48</a>     const snapshot = selectSnapshot</span>
+<span id="L49"><a href="#L49">  49</a>       ? await selectSnapshot(workspace, router)</span>
+<span id="L50"><a href="#L50">  50</a>       : await workspace.snapshot();</span>
+<span id="L51"><a href="#L51">  51</a>     const coverage: BackendRefreshCoverage = selectSnapshot ? &quot;selection&quot; : &quot;workspace&quot;;</span>
+<span id="L52"><a href="#L52">  52</a>     const refresh = await router.refresh(snapshot, coverage);</span>
+<span id="L53"><a href="#L53">  53</a>     return { workspace, snapshot, router, refresh };</span>
+<span id="L54"><a href="#L54">  54</a>   }</span>
+<span id="L55"><a href="#L55">  55</a> }</span></pre><h2>Supplied PR body (historical stage)</h2><pre>## Context
+
+The [daemon architecture spec](https://github.com/mohasarc/symnav/blob/main/plans/005/daemon-architecture-functional-spec.md) assigns language-independent workspace retention and backend lifetime to core. Building on #127, this layer removes CLI-owned request scopes while preserving cold discovery, retained daemon turns, selection isolation, command ordering, and output behavior.
+
+## Shape
+
+Before — CLI-owned scopes split workspace preparation from worker resource lifetime:
+
+```mermaid
+flowchart LR
+    Command[&quot;runCommand&quot;] --&gt;|uses| Factory[&quot;WorkspaceRequestScopeFactory&lt;br/&gt;discovery + snapshot + refresh&quot;]
+    Retained[&quot;RetainedWorkspaceProgram&lt;br/&gt;owns backends&quot;] --&gt;|uses| Factory
+    Factory --&gt;|uses| Catalog[&quot;WorkspaceCatalog&lt;br/&gt;optional retention&quot;]
+    Factory --&gt;|uses| Router[&quot;BackendRouter&lt;br/&gt;per turn&quot;]
+    Worker[&quot;daemon worker&lt;br/&gt;releases raw backends&quot;] --&gt;|uses| Retained
+    style Command fill:#fff2cc,stroke:#bf9000
+    style Factory fill:#ffdddd,stroke:#cc0000
+    style Retained fill:#fff2cc,stroke:#bf9000
+    style Worker fill:#fff2cc,stroke:#bf9000
+```
+
+After — core sessions own request and retained preparation through one lifecycle boundary:
+
+```mermaid
+flowchart LR
+    Command[&quot;runCommand&quot;] --&gt;|uses| Request[&quot;WorkspaceSession&lt;br/&gt;request discovery&quot;]
+    Retained[&quot;RetainedWorkspaceProgram&lt;br/&gt;composition only&quot;] --&gt;|uses| Session[&quot;WorkspaceSession&lt;br/&gt;session discovery&quot;]
+    Worker[&quot;daemon worker&quot;] --&gt;|uses| Session
+    Request --&gt;|uses| Router[&quot;fresh BackendRouter&lt;br/&gt;per turn&quot;]
+    Session --&gt;|uses| Router
+    Session --&gt;|uses| Catalog[&quot;retained WorkspaceCatalog&lt;br/&gt;per root&quot;]
+    style Command fill:#fff2cc,stroke:#bf9000
+    style Request fill:#ddffdd,stroke:#008800
+    style Retained fill:#fff2cc,stroke:#bf9000
+    style Session fill:#ddffdd,stroke:#008800
+    style Worker fill:#fff2cc,stroke:#bf9000
+```
+
+Legend: green = added ownership; red = removed ownership; yellow = changed responsibility; default = pre-existing and unchanged.
+
+## Where it lives
+
+```text
+.
+├── packages/core/src/
+│   ├── ** index.ts
+│   └── workspace/
+│       ├── ++ workspace-session.ts       # owns discovery, preparation, routing, and release
+│       └── ++ workspace-session.test.ts  # locks retention and lifecycle contracts
+└── apps/cli/
+    ├── src/
+    │   ├── ** command.ts                           # preserves discovery and validation order
+    │   ├── ** cli-program-executor.ts              # accepts an injected session
+    │   ├── ** program-dependencies.ts              # replaces scope factory dependency
+    │   ├── daemon/
+    │   │   ├── ** retained-workspace-program.ts  # composes one retained session
+    │   │   └── ** daemon-navigation-worker-entry.ts
+    │   ├── -- workspace-request-scope.ts           # superseded CLI ownership
+    │   └── -- workspace-request-scope.test.ts
+    └── test/integration/commands/
+        └── ** ... 3 files  # session injection and retained-selection coverage
+```
+
+## Public surface
+
+Added to `@symnav/core`:
+
+```ts
+export type WorkspaceDiscoveryRetention = &quot;request&quot; | &quot;session&quot;;
+export type WorkspaceSnapshotSelector = (
+  workspace: Workspace,
+  router: BackendRouter,
+) =&gt; Promise&lt;WorkspaceSnapshot&gt;;
+export type WorkspacePreparation =
+  | { readonly coverage: &quot;workspace&quot; }
+  | { readonly coverage: &quot;selection&quot;; readonly selectSnapshot: WorkspaceSnapshotSelector };
+export interface PreparedWorkspaceScope {
+  readonly workspace: Workspace;
+  readonly snapshot: WorkspaceSnapshot;
+  readonly router: BackendRouter;
+  readonly refresh: BackendRefreshSummary;
+}
+export class WorkspaceSession {
+  constructor(options: {
+    readonly fileSystem: FileSystem;
+    readonly backends: readonly LanguageBackend[];
+    readonly discoveryRetention: WorkspaceDiscoveryRetention;
+  });
+  prepare(startDirectory: string, preparation?: WorkspacePreparation): Promise&lt;PreparedWorkspaceScope&gt;;
+  openWorkspace(startDirectory: string, coverage: BackendRefreshCoverage): Promise&lt;Workspace&gt;;
+  prepareWorkspace(workspace: Workspace, preparation: WorkspacePreparation): Promise&lt;PreparedWorkspaceScope&gt;;
+  releaseTransientResources(): Promise&lt;void&gt;;
+}
+```
+
+Changed in CLI composition:
+
+```ts
+// before: scopeFactory?: WorkspaceRequestScopeFactory
+readonly workspaceSession?: WorkspaceSession;
+
+// before: constructor(dependencies, scopeFactory?, outputOptions?)
+constructor(
+  dependencies: ProgramDependencies,
+  workspaceSession?: WorkspaceSession,
+  outputOptions?: OrderedCommandOutputOptions,
+);
+```
+
+## Decisions
+
+- Chose explicit request/session discovery retention over one cached strategy, because cold commands must not retain a catalog while daemon turns must reuse unchanged file identity.
+- Chose fresh selection discovery over retained-catalog reconciliation, because a selected file must not enumerate or fail on unrelated retained siblings.
+- Chose a copied backend array and fresh router per turn over a persistent router, because backend order is session state while routing results are turn state.
+- Chose explicit workspace opening before validation and preparation after validation over one combined call, because existing error and source-read ordering is observable.
+- Chose repeatable concurrent release over permanent session closure, because backend cleanup must retain state and retry every backend on later calls.
+
+## Look here
+
+- `packages/core/src/workspace/workspace-session.ts:32`
+- `apps/cli/src/command.ts:59`
+- `apps/cli/src/daemon/retained-workspace-program.ts:6`
+</pre><h2>Supplied commits</h2><pre>4da5bf21e6ddd09e213b36687cad9fe927560479 Define workspace session contracts
+
+5b6ab20896decbc90f00a5e7e49e45c1c88272f7 Add the workspace session boundary
+
+de7b0d90c68b1c8bbe3ebebe8e27715860ae33d8 Specify request and retained workspace turns
+
+dee58943a94cc62e8a69ef71c87e5f03885583f1 Prepare request and retained workspace turns
+
+99cbd3a581eb5574c289fdce35e1664d165f6e59 Specify selection discovery and coverage
+
+cc2bbd7e3f30f238a2ae2a1123881e0c18c09819 Prepare selection-scoped workspace turns
+
+678ee343ab48f175ea8f4b1a45684ff203d68fa0 Specify workspace session failure boundaries
+
+76672237c8530d24c66119a2e794b48fe0869672 Propagate workspace preparation failures
+
+5411dd869155a4be8d4b294601ecb9f8d59e1978 Specify stable backend routing order
+
+d8b8c719c2e97a4e0c88d543aa2c8f01df4afdbe Stabilize backend routing order
+
+06f9a977e870a7d9f4f4f95486a562d0084d7286 Specify multiple-root session retention
+
+90b09c0af8b208ad868798245d916672eef1c7fd Retain independent workspace roots
+
+2d8ac0b2a629f77759bcae071cb7b9fdd1427d83 Specify workspace session release lifecycle
+
+bb8b6404a61765619952d0d2d5b6597c46ab3c98 Release workspace session resources concurrently
+
+385ada10b7056870cff70a4ab4cdccede1ae707e Specify command workspace session injection
+
+1818c93a30dccbc23b4c86a247de4fb55fa2028c Prepare commands through workspace sessions
+
+08f697b98bfc63cc133b19738d09892259ac56bb Specify retained executor session reuse
+
+65e58d0ed313a8fc57e05a8f0bd93092a264733c Retain one workspace session in daemon workers
+
+03cc3f2d1b51188d822cc17ab2055d1b5318dfe2 Characterize lazy help execution
+
+144e1e7518cca4f42298d3d4ac10fb084ac059ad Characterize cold session construction
+
+ca0002b01f141f5d7d730c0be44d556954c77b60 Migrate retained overview sessions
+
+ccad044c3a85334947bbc0f0b5ac757485df7e4c Remove CLI workspace scope ownership
+</pre></html>

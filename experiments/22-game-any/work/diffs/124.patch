@@ -1,0 +1,2038 @@
+diff --git a/packages/backend-typescript/src/call-graph/find-callees.ts b/packages/backend-typescript/src/call-graph/find-callees.ts
+index 122d3a4e1..fd29d9054 100644
+--- a/packages/backend-typescript/src/call-graph/find-callees.ts
++++ b/packages/backend-typescript/src/call-graph/find-callees.ts
+@@ -33,7 +33,7 @@ export interface PositionDefinitionResolver {
+ }
+ 
+ export async function findCallees(args: FindCalleesArgs): Promise<readonly CallEdge[]> {
+-  args.workspaceState.ensureFiles(args.files);
++  await args.workspaceState.ensureFiles(args.files);
+   return new CalleeFinder(args).find();
+ }
+ 
+diff --git a/packages/backend-typescript/src/definition/find-definitions.ts b/packages/backend-typescript/src/definition/find-definitions.ts
+index 712d59228..9fccf3eba 100644
+--- a/packages/backend-typescript/src/definition/find-definitions.ts
++++ b/packages/backend-typescript/src/definition/find-definitions.ts
+@@ -21,7 +21,7 @@ export interface FindDefinitionsArgs {
+ export async function findDefinitions(
+   args: FindDefinitionsArgs,
+ ): Promise<readonly SymbolOverviewNode[]> {
+-  args.workspaceState.ensureFiles(args.files);
++  await args.workspaceState.ensureFiles(args.files);
+   return new DefinitionFinder(args).find();
+ }
+ 
+diff --git a/packages/backend-typescript/src/identity/workspace-declaration-index.test.ts b/packages/backend-typescript/src/identity/workspace-declaration-index.test.ts
+index 2adbbe2c9..47366b76f 100644
+--- a/packages/backend-typescript/src/identity/workspace-declaration-index.test.ts
++++ b/packages/backend-typescript/src/identity/workspace-declaration-index.test.ts
+@@ -46,9 +46,11 @@ const DEFAULT_EXPORT: ResolvedPath = {
+   absolute: "/repo/src/default-export.ts",
+ };
+ 
+-function index(files: readonly ResolvedPath[] = [SERVICE]): WorkspaceDeclarationIndex {
++async function index(
++  files: readonly ResolvedPath[] = [SERVICE],
++): Promise<WorkspaceDeclarationIndex> {
+   const indexed = new WorkspaceDeclarationIndex(new InMemoryFileSystem(FIXTURE));
+-  indexed.ensureFiles(files);
++  await indexed.ensureFiles(files);
+   return indexed;
+ }
+ 
+@@ -61,8 +63,8 @@ function leafNames(
+ }
+ 
+ describe("WorkspaceDeclarationIndex", () => {
+-  it("locates nested declarations by symbol identity", () => {
+-    const declarations = index().locate({
++  it("locates nested declarations by symbol identity", async () => {
++    const declarations = (await index()).locate({
+       file: "src/service.ts",
+       segments: [{ name: "Service" }, { name: "run" }],
+     });
+@@ -71,8 +73,8 @@ describe("WorkspaceDeclarationIndex", () => {
+     ]);
+   });
+ 
+-  it("finds workspace symbols by declaration node location", () => {
+-    const indexed = index();
++  it("finds workspace symbols by declaration node location", async () => {
++    const indexed = await index();
+     const sourceFile = indexed.sourceFile("src/service.ts");
+     const helperNode = sourceFile?.getFunctions().find((node) => node.getName() === "helper");
+     expect(helperNode).toBeDefined();
+@@ -83,15 +85,15 @@ describe("WorkspaceDeclarationIndex", () => {
+     });
+   });
+ 
+-  it("returns the workspace-relative path for indexed source files", () => {
++  it("returns the workspace-relative path for indexed source files", async () => {
+     const fs = new InMemoryFileSystem(FIXTURE);
+     const project = new Project({ fileSystem: new WorkspaceFileSystemHost(fs) });
+     const sourceFile = project.addSourceFileAtPath("/repo/src/service.ts");
+ 
+-    expect(index().relativePathOf(sourceFile)).toBe("src/service.ts");
++    expect((await index()).relativePathOf(sourceFile)).toBe("src/service.ts");
+   });
+ 
+-  it("ignores declaration nodes from files outside the workspace index", () => {
++  it("ignores declaration nodes from files outside the workspace index", async () => {
+     const fs = new InMemoryFileSystem({
+       ...FIXTURE,
+       "/repo/src/outside.ts": "export function outside(): void {}\n",
+@@ -101,26 +103,26 @@ describe("WorkspaceDeclarationIndex", () => {
+       .addSourceFileAtPath("/repo/src/outside.ts")
+       .getFunctionOrThrow("outside");
+ 
+-    expect(index().declarationAt(outside)).toBeUndefined();
++    expect((await index()).declarationAt(outside)).toBeUndefined();
+   });
+ 
+-  it("returns the flattened declaration list for an ensured file", () => {
+-    expect(leafNames(index().declarationsIn("src/service.ts")!)).toEqual([
++  it("returns the flattened declaration list for an ensured file", async () => {
++    expect(leafNames((await index()).declarationsIn("src/service.ts")!)).toEqual([
+       "Service",
+       "run",
+       "helper",
+     ]);
+   });
+ 
+-  it("returns undefined for a never-ensured file", () => {
+-    expect(index().declarationsIn("src/extra.ts")).toBeUndefined();
++  it("returns undefined for a never-ensured file", async () => {
++    expect((await index()).declarationsIn("src/extra.ts")).toBeUndefined();
+   });
+ 
+-  it("adds only new files on a second ensureFiles call and preserves existing lookups", () => {
+-    const indexed = index([SERVICE]);
++  it("adds only new files on a second ensureFiles call and preserves existing lookups", async () => {
++    const indexed = await index([SERVICE]);
+     const serviceDeclarations = indexed.declarationsIn("src/service.ts");
+ 
+-    indexed.ensureFiles([SERVICE, EXTRA]);
++    await indexed.ensureFiles([SERVICE, EXTRA]);
+ 
+     expect(indexed.declarationsIn("src/service.ts")).toBe(serviceDeclarations);
+     expect(leafNames(indexed.declarationsIn("src/extra.ts")!)).toEqual(["extra"]);
+@@ -130,23 +132,23 @@ describe("WorkspaceDeclarationIndex", () => {
+     expect(indexed.locate({ file: "src/extra.ts", segments: [{ name: "extra" }] })).toHaveLength(1);
+   });
+ 
+-  it("keeps both declarations that start on the same line", () => {
+-    expect(leafNames(index([SAME_LINE]).declarationsIn("src/same-line.ts")!)).toEqual([
++  it("keeps both declarations that start on the same line", async () => {
++    expect(leafNames((await index([SAME_LINE])).declarationsIn("src/same-line.ts")!)).toEqual([
+       "first",
+       "second",
+     ]);
+   });
+ 
+-  it("finds each declaration node when two declarations start on the same line", () => {
+-    const indexed = index([SAME_LINE]);
++  it("finds each declaration node when two declarations start on the same line", async () => {
++    const indexed = await index([SAME_LINE]);
+     const functions = indexed.sourceFile("src/same-line.ts")!.getFunctions();
+ 
+     expect(indexed.declarationAt(functions[0]!)?.identity.segments).toEqual([{ name: "first" }]);
+     expect(indexed.declarationAt(functions[1]!)?.identity.segments).toEqual([{ name: "second" }]);
+   });
+ 
+-  it("finds getter and setter symbols by their exact declaration nodes", () => {
+-    const indexed = index([ACCESSORS]);
++  it("finds getter and setter symbols by their exact declaration nodes", async () => {
++    const indexed = await index([ACCESSORS]);
+     const host = indexed.sourceFile("src/accessors.ts")!.getClassOrThrow("Host");
+ 
+     expect(indexed.declarationAt(host.getGetAccessorOrThrow("value"))?.kind.nativeLabel).toBe(
+@@ -157,8 +159,8 @@ describe("WorkspaceDeclarationIndex", () => {
+     );
+   });
+ 
+-  it("finds a default export assignment by its declaration node", () => {
+-    const indexed = index([DEFAULT_EXPORT]);
++  it("finds a default export assignment by its declaration node", async () => {
++    const indexed = await index([DEFAULT_EXPORT]);
+     const exportAssignment = indexed
+       .sourceFile("src/default-export.ts")!
+       .getExportAssignmentOrThrow(() => true);
+diff --git a/packages/backend-typescript/src/index.ts b/packages/backend-typescript/src/index.ts
+index 53721d0ea..17d9eb3b5 100644
+--- a/packages/backend-typescript/src/index.ts
++++ b/packages/backend-typescript/src/index.ts
+@@ -6,11 +6,8 @@ export {
+ export {
+   TypeScriptFileEntryExtractor,
+   TypeScriptWorkspaceState,
+-  type PreparedFileIndex,
+-  type PreparedFileRevision,
+   type TypeScriptFileExtractionRequest,
+   type TypeScriptFileExtractor,
+-  type TypeScriptFileRevision,
+ } from "./typescript-backend/typescript-workspace-state.js";
+ export type { TypeScriptSemanticQueryObserver } from "./typescript-backend/typescript-semantic-query-observer.js";
+ export {
+diff --git a/packages/backend-typescript/src/resolve/resolve-symbols.ts b/packages/backend-typescript/src/resolve/resolve-symbols.ts
+index 9de0eeb2b..da7c7e155 100644
+--- a/packages/backend-typescript/src/resolve/resolve-symbols.ts
++++ b/packages/backend-typescript/src/resolve/resolve-symbols.ts
+@@ -13,7 +13,7 @@ export interface ResolveSymbolsArgs {
+ 
+ export class SymbolResolver {
+   static async resolveSymbols(args: ResolveSymbolsArgs): Promise<readonly SymbolOverviewNode[]> {
+-    const candidates = args.state.allDeclarations(args.files);
++    const candidates = await args.state.declarations(args.files);
+     if (args.options.mode === "fuzzy") {
+       return SymbolResolver.fuzzyMatch(candidates, args.query);
+     }
+diff --git a/packages/backend-typescript/src/typescript-backend/typescript-backend.ts b/packages/backend-typescript/src/typescript-backend/typescript-backend.ts
+index 549049f62..2e236cd73 100644
+--- a/packages/backend-typescript/src/typescript-backend/typescript-backend.ts
++++ b/packages/backend-typescript/src/typescript-backend/typescript-backend.ts
+@@ -79,7 +79,7 @@ export class TypeScriptBackend implements LanguageBackend {
+   async refresh(request: BackendRefreshRequest): Promise<BackendRefreshSummary> {
+     this.sourceCache?.refresh(request.snapshot);
+     if (request.coverage === "workspace") await this.projectGraph?.refresh(request.snapshot);
+-    const summary = this.state.refresh(request.snapshot.files, request.coverage);
++    const summary = await this.state.refresh(request.snapshot.files, request.coverage);
+     this.semanticQueries.beginTurn(request.snapshot);
+     return summary;
+   }
+@@ -92,7 +92,7 @@ export class TypeScriptBackend implements LanguageBackend {
+     if (!this.fs.existsSync(file.absolute) || this.fs.isDirectorySync(file.absolute)) {
+       throw new FileNotFoundError(file.relative);
+     }
+-    return this.state.fileEntries(file);
++    return await this.state.fileEntries(file);
+   }
+ 
+   async resolveSymbols(
+@@ -104,14 +104,14 @@ export class TypeScriptBackend implements LanguageBackend {
+   }
+ 
+   async declarations(files: readonly ResolvedPath[]): Promise<readonly SymbolOverviewNode[]> {
+-    return this.state.allDeclarations(files);
++    return await this.state.declarations(files);
+   }
+ 
+   async findDefinitions(
+     files: readonly ResolvedPath[],
+     identity: SymbolIdentity,
+   ): Promise<readonly SymbolOverviewNode[]> {
+-    this.state.ensureFiles(files);
++    await this.state.ensureFiles(files);
+     return this.semanticQueries.findDefinitions(identity);
+   }
+ 
+@@ -119,7 +119,7 @@ export class TypeScriptBackend implements LanguageBackend {
+     files: readonly ResolvedPath[],
+     identity: SymbolIdentity,
+   ): Promise<readonly SymbolReference[]> {
+-    this.state.ensureFiles(files);
++    await this.state.ensureFiles(files);
+     return this.semanticQueries.findReferences(identity);
+   }
+ 
+@@ -127,7 +127,7 @@ export class TypeScriptBackend implements LanguageBackend {
+     files: readonly ResolvedPath[],
+     identity: SymbolIdentity,
+   ): Promise<CallTargetResolution> {
+-    this.state.ensureFiles(files);
++    await this.state.ensureFiles(files);
+     return this.semanticQueries.findCallTarget(identity);
+   }
+ 
+@@ -135,7 +135,7 @@ export class TypeScriptBackend implements LanguageBackend {
+     files: readonly ResolvedPath[],
+     identity: SymbolIdentity,
+   ): Promise<readonly CallEdge[]> {
+-    this.state.ensureFiles(files);
++    await this.state.ensureFiles(files);
+     return this.semanticQueries.findCallees(identity);
+   }
+ 
+@@ -143,7 +143,7 @@ export class TypeScriptBackend implements LanguageBackend {
+     files: readonly ResolvedPath[],
+     identity: SymbolIdentity,
+   ): Promise<readonly CallEdge[]> {
+-    this.state.ensureFiles(files);
++    await this.state.ensureFiles(files);
+     return this.semanticQueries.findCallers(identity);
+   }
+ }
+diff --git a/packages/backend-typescript/src/typescript-backend/typescript-project-graph.test.ts b/packages/backend-typescript/src/typescript-backend/typescript-project-graph.test.ts
+index c21bb503c..b49962089 100644
+--- a/packages/backend-typescript/src/typescript-backend/typescript-project-graph.test.ts
++++ b/packages/backend-typescript/src/typescript-backend/typescript-project-graph.test.ts
+@@ -144,7 +144,7 @@ describe("TypeScriptProjectGraph", () => {
+     const snapshot = await projectFixture.snapshot();
+     await graph.refresh(snapshot);
+     const state = new TypeScriptWorkspaceState(projectFixture.fileSystem, undefined, graph);
+-    state.refresh(snapshot.files);
++    await state.refresh(snapshot.files);
+ 
+     expect(
+       state.locate(symbolIdentity("packages/domain/src/index.ts", "workspaceTarget")),
+diff --git a/packages/backend-typescript/src/typescript-backend/typescript-workspace-state.test.ts b/packages/backend-typescript/src/typescript-backend/typescript-workspace-state.test.ts
+index b502c8f39..f7d909456 100644
+--- a/packages/backend-typescript/src/typescript-backend/typescript-workspace-state.test.ts
++++ b/packages/backend-typescript/src/typescript-backend/typescript-workspace-state.test.ts
+@@ -1,4 +1,5 @@
+ import { describe, expect, it, vi } from "vitest";
++import { Project, SourceFile } from "ts-morph";
+ 
+ import {
+   InMemoryFileSystem,
+@@ -149,17 +150,17 @@ class MutableWorkspaceFileSystem implements FileSystem {
+   }
+ }
+ 
+-function declarationNames(
++async function declarationNames(
+   state: TypeScriptWorkspaceState,
+   files: readonly WorkspaceFile[],
+-): readonly string[] {
+-  return state
+-    .allDeclarations(files)
+-    .map((declaration) => declaration.identity.segments.at(-1)?.name ?? "");
++): Promise<readonly string[]> {
++  return (await state.declarations(files)).map(
++    (declaration) => declaration.identity.segments.at(-1)?.name ?? "",
++  );
+ }
+ 
+ describe("TypeScriptWorkspaceState.refresh", () => {
+-  it("extracts each file revision once across prepared lookups and no-change refresh", () => {
++  it("extracts each file revision once across prepared lookups and no-change refresh", async () => {
+     const fs = new MutableWorkspaceFileSystem({
+       "/repo/src/a.ts": "export const before = 1;\n",
+     });
+@@ -167,19 +168,19 @@ describe("TypeScriptWorkspaceState.refresh", () => {
+     const state = new TypeScriptWorkspaceState(fs, extractor);
+     const firstRevision = fs.workspaceFiles("src/a.ts");
+ 
+-    state.refresh(firstRevision);
+-    const firstEntries = state.fileEntries(firstRevision[0]!);
+-    expect(state.fileEntries(firstRevision[0]!)).toBe(firstEntries);
+-    expect(state.allDeclarations(firstRevision)).toHaveLength(1);
+-    state.refresh(firstRevision);
+-    expect(state.fileEntries(firstRevision[0]!)).toBe(firstEntries);
++    await state.refresh(firstRevision);
++    const firstEntries = await state.fileEntries(firstRevision[0]!);
++    expect(await state.fileEntries(firstRevision[0]!)).toBe(firstEntries);
++    expect(await state.declarations(firstRevision)).toHaveLength(1);
++    await state.refresh(firstRevision);
++    expect(await state.fileEntries(firstRevision[0]!)).toBe(firstEntries);
+     expect(extractor.calls).toEqual(["src/a.ts"]);
+ 
+     fs.setFile("/repo/src/a.ts", "export const afterx = 2;\n");
+     const secondRevision = fs.workspaceFiles("src/a.ts");
+-    state.refresh(secondRevision);
++    await state.refresh(secondRevision);
+ 
+-    expect(state.fileEntries(secondRevision[0]!)).not.toBe(firstEntries);
++    expect(await state.fileEntries(secondRevision[0]!)).not.toBe(firstEntries);
+     expect(extractor.calls).toEqual(["src/a.ts", "src/a.ts"]);
+   });
+ 
+@@ -215,7 +216,7 @@ describe("TypeScriptWorkspaceState.refresh", () => {
+     extraction.mockRestore();
+   });
+ 
+-  it("publishes changed declarations and diagnostics only after every extraction succeeds", () => {
++  it("publishes changed declarations and diagnostics only after every extraction succeeds", async () => {
+     const fs = new MutableWorkspaceFileSystem({
+       "/repo/src/a.ts": "export const beforeA = 1;\n@orphaned\n",
+       "/repo/src/b.ts": "export const beforeB = 1;\n",
+@@ -223,8 +224,8 @@ describe("TypeScriptWorkspaceState.refresh", () => {
+     const extractor = new CountingTypeScriptFileExtractor();
+     const state = new TypeScriptWorkspaceState(fs, extractor);
+     const beforeFiles = fs.workspaceFiles("src/a.ts", "src/b.ts");
+-    state.refresh(beforeFiles);
+-    const beforeEntries = state.fileEntries(beforeFiles[0]!);
++    await state.refresh(beforeFiles);
++    const beforeEntries = await state.fileEntries(beforeFiles[0]!);
+     const beforeDiagnostics = state.diagnostics(beforeFiles[0]!);
+ 
+     fs.setFile("/repo/src/a.ts", "export const afterA = 2;\n");
+@@ -232,43 +233,48 @@ describe("TypeScriptWorkspaceState.refresh", () => {
+     const afterFiles = fs.workspaceFiles("src/a.ts", "src/b.ts");
+     extractor.failFor("src/b.ts");
+ 
+-    expect(() => state.refresh(afterFiles)).toThrow("extraction failed: src/b.ts");
+-    expect(state.fileEntries(beforeFiles[0]!)).toBe(beforeEntries);
++    await expect(state.refresh(afterFiles)).rejects.toThrow("extraction failed: src/b.ts");
++    expect(await state.fileEntries(beforeFiles[0]!)).toBe(beforeEntries);
+     expect(state.diagnostics(beforeFiles[0]!)).toBe(beforeDiagnostics);
+-    expect(declarationNames(state, beforeFiles)).toEqual(["beforeA", "beforeB"]);
++    expect(await declarationNames(state, beforeFiles)).toEqual(["beforeA", "beforeB"]);
+ 
+     extractor.restore("src/b.ts");
+-    state.refresh(afterFiles);
++    await state.refresh(afterFiles);
+ 
+-    expect(state.fileEntries(afterFiles[0]!)).not.toBe(beforeEntries);
++    expect(await state.fileEntries(afterFiles[0]!)).not.toBe(beforeEntries);
+     expect(state.diagnostics(afterFiles[0]!)).toEqual([]);
+-    expect(declarationNames(state, afterFiles)).toEqual(["afterA", "afterB"]);
++    expect(await declarationNames(state, afterFiles)).toEqual(["afterA", "afterB"]);
+   });
+ 
+-  it("retains unselected diagnostics and purges removed diagnostics", () => {
++  it("retains unselected diagnostics and purges removed diagnostics", async () => {
+     const fs = new MutableWorkspaceFileSystem({
+       "/repo/src/a.ts": "export const a = 1;\n",
+       "/repo/src/b.ts": "export const b = 1;\n@orphaned\n",
+     });
+     const state = new TypeScriptWorkspaceState(fs);
+     const files = fs.workspaceFiles("src/a.ts", "src/b.ts");
+-    state.refresh(files);
++    await state.refresh(files);
+     const siblingDiagnostics = state.diagnostics(files[1]!);
++    const siblingEntries = await state.fileEntries(files[1]!);
++    const siblingDeclarations = state.declarationsIn("src/b.ts");
++    const siblingSource = state.sourceFile("src/b.ts");
+ 
+     fs.setFile("/repo/src/a.ts", "export const changedA = 2;\n");
+-    state.refresh(fs.workspaceFiles("src/a.ts"), "selection");
++    await state.refresh(fs.workspaceFiles("src/a.ts"), "selection");
+ 
+     expect(state.diagnostics(files[1]!)).toBe(siblingDiagnostics);
+-    expect(state.declarationsIn("src/b.ts")).toBeDefined();
++    expect(await state.fileEntries(files[1]!)).toBe(siblingEntries);
++    expect(state.declarationsIn("src/b.ts")).toBe(siblingDeclarations);
++    expect(state.sourceFile("src/b.ts")).toBe(siblingSource);
+ 
+     fs.deleteFile("/repo/src/b.ts");
+-    state.refresh(fs.workspaceFiles("src/a.ts"));
++    await state.refresh(fs.workspaceFiles("src/a.ts"));
+ 
+     expect(state.diagnostics(files[1]!)).toEqual([]);
+     expect(state.declarationsIn("src/b.ts")).toBeUndefined();
+   });
+ 
+-  it("keeps an unchanged source object while sibling deltas are applied", () => {
++  it("keeps an unchanged source object while sibling deltas are applied", async () => {
+     const fs = new MutableWorkspaceFileSystem({
+       "/repo/src/stable.ts": "export const stable = 1;\n",
+       "/repo/src/sibling.ts": "export const sibling = 1;\n",
+@@ -276,28 +282,53 @@ describe("TypeScriptWorkspaceState.refresh", () => {
+     const state = new TypeScriptWorkspaceState(fs);
+     let files = fs.workspaceFiles("src/sibling.ts", "src/stable.ts");
+ 
+-    expect(state.refresh(files)).toEqual({ added: 2, changed: 0, removed: 0, unchanged: 0 });
++    await expect(state.refresh(files)).resolves.toEqual({
++      added: 2,
++      changed: 0,
++      removed: 0,
++      unchanged: 0,
++    });
+     const stableSourceFile = state.sourceFile("src/stable.ts");
+ 
+     fs.setFile("/repo/src/sibling.ts", "export const editedSibling = 2;\n");
+     files = fs.workspaceFiles("src/sibling.ts", "src/stable.ts");
+-    expect(state.refresh(files)).toEqual({ added: 0, changed: 1, removed: 0, unchanged: 1 });
++    await expect(state.refresh(files)).resolves.toEqual({
++      added: 0,
++      changed: 1,
++      removed: 0,
++      unchanged: 1,
++    });
+     expect(state.sourceFile("src/stable.ts")).toBe(stableSourceFile);
+ 
+     fs.setFile("/repo/src/added.ts", "export const added = 3;\n");
+     files = fs.workspaceFiles("src/added.ts", "src/sibling.ts", "src/stable.ts");
+-    expect(state.refresh(files)).toEqual({ added: 1, changed: 0, removed: 0, unchanged: 2 });
++    await expect(state.refresh(files)).resolves.toEqual({
++      added: 1,
++      changed: 0,
++      removed: 0,
++      unchanged: 2,
++    });
+     expect(state.sourceFile("src/stable.ts")).toBe(stableSourceFile);
+ 
+     fs.deleteFile("/repo/src/added.ts");
+     files = fs.workspaceFiles("src/sibling.ts", "src/stable.ts");
+-    expect(state.refresh(files)).toEqual({ added: 0, changed: 0, removed: 1, unchanged: 2 });
++    await expect(state.refresh(files)).resolves.toEqual({
++      added: 0,
++      changed: 0,
++      removed: 1,
++      unchanged: 2,
++    });
+     expect(state.sourceFile("src/stable.ts")).toBe(stableSourceFile);
+ 
+     fs.deleteFile("/repo/src/sibling.ts");
+     fs.setFile("/repo/src/renamed.ts", "export const editedSibling = 2;\n");
+     files = fs.workspaceFiles("src/renamed.ts", "src/stable.ts");
+-    expect(state.refresh(files)).toEqual({ added: 1, changed: 0, removed: 1, unchanged: 1 });
++    await expect(state.refresh(files)).resolves.toEqual({
++      added: 1,
++      changed: 0,
++      removed: 1,
++      unchanged: 1,
++    });
+     expect(state.currentFileCount()).toBe(2);
+     expect(state.sourceFile("src/stable.ts")).toBe(stableSourceFile);
+   });
+@@ -317,31 +348,36 @@ describe("TypeScriptWorkspaceState.refresh", () => {
+     },
+   ])(
+     "reloads and reindexes one file after a $trigger change",
+-    ({ source, metadata, expectedName }) => {
++    async ({ source, metadata, expectedName }) => {
+       const fs = new MutableWorkspaceFileSystem({
+         "/repo/src/a.ts": "export const a = 1;\n",
+       });
+       const state = new TypeScriptWorkspaceState(fs);
+-      state.refresh(fs.workspaceFiles("src/a.ts"));
++      await state.refresh(fs.workspaceFiles("src/a.ts"));
+ 
+       fs.setFile("/repo/src/a.ts", source, metadata);
+       const files = fs.workspaceFiles("src/a.ts");
+ 
+-      expect(state.refresh(files)).toEqual({ added: 0, changed: 1, removed: 0, unchanged: 0 });
+-      expect(declarationNames(state, files)).toEqual([expectedName]);
++      await expect(state.refresh(files)).resolves.toEqual({
++        added: 0,
++        changed: 1,
++        removed: 0,
++        unchanged: 0,
++      });
++      expect(await declarationNames(state, files)).toEqual([expectedName]);
+     },
+   );
+ 
+-  it("adds, removes, and renames files while purging every old lookup", () => {
++  it("adds, removes, and renames files while purging every old lookup", async () => {
+     const fs = new MutableWorkspaceFileSystem({
+       "/repo/src/old.ts": "export function oldName(): void {}\n",
+     });
+     const state = new TypeScriptWorkspaceState(fs);
+     const oldIdentity: SymbolIdentity = { file: "src/old.ts", segments: [{ name: "oldName" }] };
+-    state.refresh(fs.workspaceFiles("src/old.ts"));
++    await state.refresh(fs.workspaceFiles("src/old.ts"));
+ 
+     fs.setFile("/repo/src/added.ts", "export const added = true;\n");
+-    expect(state.refresh(fs.workspaceFiles("src/added.ts", "src/old.ts"))).toEqual({
++    await expect(state.refresh(fs.workspaceFiles("src/added.ts", "src/old.ts"))).resolves.toEqual({
+       added: 1,
+       changed: 0,
+       removed: 0,
+@@ -351,7 +387,7 @@ describe("TypeScriptWorkspaceState.refresh", () => {
+     fs.deleteFile("/repo/src/old.ts");
+     fs.setFile("/repo/src/renamed.ts", "export function renamed(): void {}\n");
+     const renamedFiles = fs.workspaceFiles("src/added.ts", "src/renamed.ts");
+-    expect(state.refresh(renamedFiles)).toEqual({
++    await expect(state.refresh(renamedFiles)).resolves.toEqual({
+       added: 1,
+       changed: 0,
+       removed: 1,
+@@ -362,7 +398,7 @@ describe("TypeScriptWorkspaceState.refresh", () => {
+     expect(state.declarationsIn("src/old.ts")).toBeUndefined();
+     expect(state.declarationForIdentity(oldIdentity)).toBeUndefined();
+     expect(state.locate(oldIdentity)).toEqual([]);
+-    expect(declarationNames(state, renamedFiles)).toEqual(["added", "renamed"]);
++    expect(await declarationNames(state, renamedFiles)).toEqual(["added", "renamed"]);
+   });
+ 
+   it("updates declaration, reference, and call lookups after edits and deletion", async () => {
+@@ -411,12 +447,12 @@ describe("TypeScriptWorkspaceState.refresh", () => {
+     expect(state.sourceFile("src/lib.ts")).toBeUndefined();
+   });
+ 
+-  it("rolls back project mutations and derived state across repeated refresh failures", () => {
++  it("rolls back project mutations and derived state across repeated refresh failures", async () => {
+     const fs = new MutableWorkspaceFileSystem({
+       "/repo/src/a.ts": "export const beforeA = 1;\n",
+     });
+     const state = new TypeScriptWorkspaceState(fs);
+-    state.refresh(fs.workspaceFiles("src/a.ts"));
++    await state.refresh(fs.workspaceFiles("src/a.ts"));
+     const sourceTextDuringFailure: string[] = [];
+     const beforeIdentity: SymbolIdentity = {
+       file: "src/a.ts",
+@@ -438,7 +474,7 @@ describe("TypeScriptWorkspaceState.refresh", () => {
+     });
+     const changedFiles = fs.workspaceFiles("src/a.ts", "src/b.ts");
+ 
+-    expect(() => state.refresh(changedFiles)).toThrow("read failed: /repo/src/b.ts");
++    await expect(state.refresh(changedFiles)).rejects.toThrow("read failed: /repo/src/b.ts");
+     expect(sourceTextDuringFailure).toEqual(["export const afterA = 2;\n"]);
+     expect(state.sourceFile("src/a.ts")?.getFullText()).toBe("export const beforeA = 1;\n");
+     expect(state.declarationsIn("src/a.ts")?.map((entry) => entry.identity)).toEqual([
+@@ -452,7 +488,7 @@ describe("TypeScriptWorkspaceState.refresh", () => {
+     expect(state.declarationsIn("src/b.ts")).toBeUndefined();
+     expect(state.declarationForIdentity(addedIdentity)).toBeUndefined();
+ 
+-    expect(() => state.refresh(changedFiles)).toThrow("read failed: /repo/src/b.ts");
++    await expect(state.refresh(changedFiles)).rejects.toThrow("read failed: /repo/src/b.ts");
+     expect(sourceTextDuringFailure).toEqual([
+       "export const afterA = 2;\n",
+       "export const afterA = 2;\n",
+@@ -470,23 +506,28 @@ describe("TypeScriptWorkspaceState.refresh", () => {
+     expect(state.declarationForIdentity(addedIdentity)).toBeUndefined();
+ 
+     fs.restoreReadsFor("/repo/src/b.ts");
+-    expect(state.refresh(changedFiles)).toEqual({ added: 1, changed: 1, removed: 0, unchanged: 0 });
++    await expect(state.refresh(changedFiles)).resolves.toEqual({
++      added: 1,
++      changed: 1,
++      removed: 0,
++      unchanged: 0,
++    });
+     expect(state.currentFileCount()).toBe(2);
+     expect(state.sourceFile("src/a.ts")?.getFullText()).toBe("export const afterA = 2;\n");
+     expect(state.sourceFile("src/b.ts")?.getFullText()).toBe("export const addedB = 2;\n");
+-    expect(declarationNames(state, changedFiles)).toEqual(["afterA", "addedB"]);
++    expect(await declarationNames(state, changedFiles)).toEqual(["afterA", "addedB"]);
+     expect(state.declarationForIdentity(beforeIdentity)).toBeUndefined();
+     expect(state.declarationForIdentity(afterIdentity)).toBeDefined();
+     expect(state.declarationForIdentity(addedIdentity)).toBeDefined();
+   });
+ 
+-  it("reloads content when only the filesystem change token changes", () => {
++  it("reloads content when only the filesystem change token changes", async () => {
+     const fs = new MutableWorkspaceFileSystem({
+       "/repo/src/a.ts": "export const before = 1;\n",
+     });
+     const state = new TypeScriptWorkspaceState(fs);
+     const files = fs.workspaceFiles("src/a.ts");
+-    state.refresh(files);
++    await state.refresh(files);
+     const metadata = files[0]!.metadata;
+ 
+     fs.setFile("/repo/src/a.ts", "export const afterx = 2;\n", {
+@@ -495,12 +536,197 @@ describe("TypeScriptWorkspaceState.refresh", () => {
+     });
+     const changedRevision = fs.workspaceFiles("src/a.ts");
+ 
+-    expect(state.refresh(changedRevision)).toEqual({
++    await expect(state.refresh(changedRevision)).resolves.toEqual({
+       added: 0,
+       changed: 1,
+       removed: 0,
+       unchanged: 0,
+     });
+-    expect(declarationNames(state, changedRevision)).toEqual(["afterx"]);
++    expect(await declarationNames(state, changedRevision)).toEqual(["afterx"]);
++  });
++
++  it("publishes earlier ensureFiles progress when a later file fails", async () => {
++    const fs = new MutableWorkspaceFileSystem({
++      "/repo/src/a.ts": "export const a = 1;\n",
++      "/repo/src/b.ts": "export const b = 1;\n",
++    });
++    const state = new TypeScriptWorkspaceState(fs);
++    fs.failReadsFor("/repo/src/b.ts");
++
++    await expect(
++      state.ensureFiles([
++        { relative: "src/a.ts", absolute: "/repo/src/a.ts" },
++        { relative: "src/b.ts", absolute: "/repo/src/b.ts" },
++      ]),
++    ).rejects.toThrow("read failed: /repo/src/b.ts");
++    expect(state.declarationsIn("src/a.ts")).toBeDefined();
++    expect(state.declarationsIn("src/b.ts")).toBeUndefined();
++  });
++
++  it("rolls back added and replaced sources in LIFO order", async () => {
++    const fs = new MutableWorkspaceFileSystem({
++      "/repo/src/a.ts": "export const beforeA = 1;\n",
++      "/repo/src/b.ts": "export const addedB = 1;\n",
++      "/repo/src/c.ts": "export const addedC = 1;\n",
++    });
++    const extractor = new CountingTypeScriptFileExtractor();
++    const state = new TypeScriptWorkspaceState(fs, extractor);
++    await state.refresh(fs.workspaceFiles("src/a.ts"));
++    const beforeA = state.sourceFile("src/a.ts");
++    fs.setFile("/repo/src/a.ts", "export const afterA = 2;\n");
++    extractor.failFor("src/c.ts");
++    const originalRemove = Project.prototype.removeSourceFile;
++    const rollbackOrder: string[] = [];
++    const removeSpy = vi.spyOn(Project.prototype, "removeSourceFile").mockImplementation(function (
++      this: Project,
++      sourceFile,
++    ) {
++      rollbackOrder.push(
++        `${sourceFile.getFilePath()}:${state.sourceFile("src/a.ts")?.getFullText()}`,
++      );
++      return originalRemove.call(this, sourceFile);
++    });
++
++    await expect(
++      state.refresh(fs.workspaceFiles("src/a.ts", "src/b.ts", "src/c.ts")),
++    ).rejects.toThrow("extraction failed: src/c.ts");
++    expect(rollbackOrder).toEqual([
++      "/repo/src/c.ts:export const afterA = 2;\n",
++      "/repo/src/b.ts:export const afterA = 2;\n",
++    ]);
++    expect(state.sourceFile("src/a.ts")).toBe(beforeA);
++    expect(state.sourceFile("src/a.ts")?.getFullText()).toBe("export const beforeA = 1;\n");
++    expect(state.sourceFile("src/b.ts")).toBeUndefined();
++    expect(state.sourceFile("src/c.ts")).toBeUndefined();
++
++    removeSpy.mockRestore();
++  });
++
++  it("keeps the old source published until path replacement commits", async () => {
++    const fs = new MutableWorkspaceFileSystem({
++      "/repo/src/a.ts": "export const before = 1;\n",
++      "/moved/src/a.ts": "export const after = 2;\n",
++    });
++    const extractor = new CountingTypeScriptFileExtractor();
++    const state = new TypeScriptWorkspaceState(fs, extractor);
++    await state.refresh(fs.workspaceFiles("src/a.ts"));
++    const oldSource = state.sourceFile("src/a.ts");
++    extractor.failFor("src/a.ts");
++
++    await expect(
++      state.refresh([
++        {
++          relative: "src/a.ts",
++          absolute: "/moved/src/a.ts",
++          metadata: fs.metadataSync("/moved/src/a.ts"),
++        },
++      ]),
++    ).rejects.toThrow("extraction failed: src/a.ts");
++    expect(state.sourceFile("src/a.ts")).toBe(oldSource);
++    expect(state.relativePathOf(oldSource!)).toBe("src/a.ts");
++    expect(state.declarationsIn("src/a.ts")?.[0]?.identity.segments).toEqual([{ name: "before" }]);
++
++    extractor.restore("src/a.ts");
++    await state.refresh([
++      {
++        relative: "src/a.ts",
++        absolute: "/moved/src/a.ts",
++        metadata: fs.metadataSync("/moved/src/a.ts"),
++      },
++    ]);
++    expect(state.sourceFile("src/a.ts")?.getFilePath()).toBe("/moved/src/a.ts");
++    expect(oldSource?.wasForgotten()).toBe(true);
++  });
++
++  it("rolls back prepared mutations when obsolete-source staging fails", async () => {
++    const fs = new MutableWorkspaceFileSystem({
++      "/repo/src/a.ts": "export const beforeA = 1;\n",
++      "/repo/src/b.ts": "export const addedB = 1;\n",
++      "/repo/src/removed.ts": "export const removed = 1;\n",
++    });
++    const state = new TypeScriptWorkspaceState(fs);
++    await state.refresh(fs.workspaceFiles("src/a.ts", "src/removed.ts"));
++    const beforeA = state.sourceFile("src/a.ts");
++    fs.setFile("/repo/src/a.ts", "export const afterA = 2;\n");
++    fs.deleteFile("/repo/src/removed.ts");
++    const originalRemove = Project.prototype.removeSourceFile;
++    const originalMove = SourceFile.prototype.move;
++    const rollbackObservations: string[] = [];
++    const removeSpy = vi.spyOn(Project.prototype, "removeSourceFile").mockImplementation(function (
++      this: Project,
++      sourceFile,
++    ) {
++      if (sourceFile.getFilePath() === "/repo/src/b.ts") {
++        rollbackObservations.push(state.sourceFile("src/a.ts")?.getFullText() ?? "");
++      }
++      return originalRemove.call(this, sourceFile);
++    });
++    const moveSpy = vi.spyOn(SourceFile.prototype, "move").mockImplementation(function (
++      this: SourceFile,
++      filePath,
++      options,
++    ) {
++      if (this.getFilePath() === "/repo/src/removed.ts" && filePath.includes(".symnav-obsolete-")) {
++        throw new Error("commit removal failed");
++      }
++      return originalMove.call(this, filePath, options);
++    });
++
++    await expect(state.refresh(fs.workspaceFiles("src/a.ts", "src/b.ts"))).rejects.toThrow(
++      "commit removal failed",
++    );
++    expect(rollbackObservations).toEqual(["export const afterA = 2;\n"]);
++    expect(state.sourceFile("src/a.ts")).toBe(beforeA);
++    expect(state.sourceFile("src/a.ts")?.getFullText()).toBe("export const beforeA = 1;\n");
++    expect(state.sourceFile("src/b.ts")).toBeUndefined();
++    expect(state.sourceFile("src/removed.ts")).toBeDefined();
++
++    removeSpy.mockRestore();
++    moveSpy.mockRestore();
++  });
++
++  it("restores published source handles when a later obsolete-source staging fails", async () => {
++    const fs = new MutableWorkspaceFileSystem({
++      "/repo/src/first.ts": "export const first = 1;\n",
++      "/repo/src/second.ts": "export const second = 2;\n",
++    });
++    const state = new TypeScriptWorkspaceState(fs);
++    await state.refresh(fs.workspaceFiles("src/first.ts", "src/second.ts"));
++    const firstSource = state.sourceFile("src/first.ts");
++    const secondSource = state.sourceFile("src/second.ts");
++    const firstIdentity: SymbolIdentity = {
++      file: "src/first.ts",
++      segments: [{ name: "first" }],
++    };
++    const firstDeclaration = state.declarationForIdentity(firstIdentity)?.declaration;
++    const originalMove = SourceFile.prototype.move;
++    let stagedRemovalCount = 0;
++    const moveSpy = vi.spyOn(SourceFile.prototype, "move").mockImplementation(function (
++      this: SourceFile,
++      filePath,
++      options,
++    ) {
++      if (filePath.includes(".symnav-obsolete-")) {
++        stagedRemovalCount += 1;
++        if (stagedRemovalCount === 2) throw new Error("obsolete-source removal failed");
++      }
++      return originalMove.call(this, filePath, options);
++    });
++
++    await expect(state.refresh([])).rejects.toThrow("obsolete-source removal failed");
++    expect(stagedRemovalCount).toBe(2);
++    expect(state.sourceFile("src/first.ts")).toBe(firstSource);
++    expect(state.sourceFile("src/second.ts")).toBe(secondSource);
++    expect(firstSource?.wasForgotten()).toBe(false);
++    expect(secondSource?.wasForgotten()).toBe(false);
++    expect(firstSource?.getFullText()).toBe("export const first = 1;\n");
++    expect(secondSource?.getFullText()).toBe("export const second = 2;\n");
++    expect(state.relativePathOf(firstSource!)).toBe("src/first.ts");
++    const located = state.locate(firstIdentity)[0];
++    expect(located?.declaration).toBe(firstDeclaration);
++    expect(located?.node.getText()).toBe("first = 1");
++    expect(state.declarationAt(located!.node)).toBe(firstDeclaration);
++
++    moveSpy.mockRestore();
+   });
+ });
+diff --git a/packages/backend-typescript/src/typescript-backend/typescript-workspace-state.ts b/packages/backend-typescript/src/typescript-backend/typescript-workspace-state.ts
+index b2767ba2d..b471b95fc 100644
+--- a/packages/backend-typescript/src/typescript-backend/typescript-workspace-state.ts
++++ b/packages/backend-typescript/src/typescript-backend/typescript-workspace-state.ts
+@@ -1,17 +1,16 @@
+ import {
+   CollectingDiagnosticSink,
+-  FileNotFoundError,
+-  OverviewTree,
+-  type BackendRefreshCoverage,
+-  type BackendRefreshSummary,
++  RevisionedBackendPreparation,
++  RevisionedBackendState,
+   type DiagnosticSink,
+   type FileSystem,
++  type IndexedBackendDeclaration,
+   type OverviewFileEntries,
+-  type NavigationDiagnostic,
+   type ResolvedPath,
++  type RevisionedBackendPreparationRequest,
++  type RevisionedBackendPreparedFile,
+   type SymbolIdentity,
+   type SymbolOverviewNode,
+-  type WorkspaceFile,
+ } from "@symnav/core";
+ import { Project, type Node, type SourceFile } from "ts-morph";
+ 
+@@ -19,18 +18,7 @@ import { extractFileEntries } from "../extract/extract-file-entries.js";
+ import { DeclarationLocator, type LocatedDeclaration } from "../identity/locate-declarations.js";
+ import { WorkspaceFileSystemHost } from "./workspace-file-system-host.js";
+ 
+-export interface IndexedDeclaration {
+-  readonly declaration: SymbolOverviewNode;
+-  readonly file: ResolvedPath;
+-}
+-
+-export interface TypeScriptFileRevision {
+-  readonly relativePath: string;
+-  readonly absolutePath: string;
+-  readonly size: number;
+-  readonly modifiedAtMs: number;
+-  readonly changeToken: string;
+-}
++export type IndexedDeclaration = IndexedBackendDeclaration;
+ 
+ export interface TypeScriptFileExtractionRequest {
+   readonly sourceFile: SourceFile;
+@@ -53,138 +41,44 @@ export class TypeScriptFileEntryExtractor implements TypeScriptFileExtractor {
+   }
+ }
+ 
+-export interface PreparedFileRevision {
+-  readonly file: WorkspaceFile;
+-  readonly entries: OverviewFileEntries;
+-  readonly diagnostics: readonly NavigationDiagnostic[];
+-}
+-
+-export interface PreparedFileIndex {
+-  readonly byRelativePath: ReadonlyMap<string, PreparedFileRevision>;
+-  readonly declarationsByIdentity: ReadonlyMap<string, readonly SymbolOverviewNode[]>;
+-}
+-
+-interface PreparedFileState extends PreparedFileRevision {
+-  readonly revision: TypeScriptFileRevision;
+-  readonly declarations: readonly SymbolOverviewNode[];
++export interface TypeScriptPreparedFileDetails {
++  readonly sourceFile: SourceFile;
+   readonly declarationsByPosition: ReadonlyMap<number, SymbolOverviewNode>;
+ }
+ 
+-interface WorkspacePreparedFileIndex extends PreparedFileIndex {
+-  readonly byRelativePath: ReadonlyMap<string, PreparedFileState>;
+-  readonly declarationsByPosition: ReadonlyMap<string, ReadonlyMap<number, SymbolOverviewNode>>;
+-  readonly relativePathByAbsolute: ReadonlyMap<string, string>;
+-}
+-
+ interface ProjectMutation {
+   rollback(): void;
+ }
+ 
+-export class TypeScriptWorkspaceState {
++export class TypeScriptWorkspaceState extends RevisionedBackendState<TypeScriptPreparedFileDetails> {
+   private readonly project: Project;
+-  private preparedIndex: WorkspacePreparedFileIndex = {
+-    byRelativePath: new Map(),
+-    declarationsByIdentity: new Map(),
+-    declarationsByPosition: new Map(),
+-    relativePathByAbsolute: new Map(),
+-  };
+ 
+   constructor(
+-    private readonly fs: FileSystem,
++    fileSystem: FileSystem,
+     private readonly extractor: TypeScriptFileExtractor = new TypeScriptFileEntryExtractor(),
+     private readonly semanticSources?: TypeScriptSemanticSourceProvider,
+   ) {
+-    this.project = new Project({ fileSystem: new WorkspaceFileSystemHost(fs) });
++    super(fileSystem);
++    this.project = new Project({ fileSystem: new WorkspaceFileSystemHost(fileSystem) });
+   }
+ 
+-  refresh(
+-    files: readonly WorkspaceFile[],
+-    coverage: BackendRefreshCoverage = "workspace",
+-  ): BackendRefreshSummary {
+-    const incomingRevisions = files.map((file) => TypeScriptWorkspaceState.revisionFor(file));
+-    const incomingPaths = new Set(incomingRevisions.map((revision) => revision.relativePath));
+-    const added: TypeScriptFileRevision[] = [];
+-    const changed: TypeScriptFileRevision[] = [];
+-    const revisionsToPrepare: TypeScriptFileRevision[] = [];
+-    let unchanged = 0;
+-
+-    for (const revision of incomingRevisions) {
+-      const current = this.preparedIndex.byRelativePath.get(revision.relativePath)?.revision;
+-      if (!current) {
+-        added.push(revision);
+-        revisionsToPrepare.push(revision);
+-        continue;
+-      }
+-      if (TypeScriptWorkspaceState.sameRevision(current, revision)) {
+-        unchanged += 1;
+-        continue;
+-      }
+-      changed.push(revision);
+-      revisionsToPrepare.push(revision);
+-    }
+-
+-    const removed =
+-      coverage === "workspace"
+-        ? [...this.preparedIndex.byRelativePath.keys()].filter(
+-            (relativePath) => !incomingPaths.has(relativePath),
+-          )
+-        : [];
+-    const prepared = this.prepareFiles(revisionsToPrepare);
+-    const nextIndex = this.buildPreparedIndex(prepared, removed);
+-    this.publishProjectRemovals(prepared, removed);
+-    this.preparedIndex = nextIndex;
+-
+-    return {
+-      added: added.length,
+-      changed: changed.length,
+-      removed: removed.length,
+-      unchanged,
+-    };
+-  }
+-
+-  currentFileCount(): number {
+-    return this.preparedIndex.byRelativePath.size;
+-  }
+-
+-  ensureFiles(files: readonly ResolvedPath[]): void {
+-    for (const file of files) {
+-      if (!this.preparedIndex.byRelativePath.has(file.relative)) {
+-        this.addFile(file);
+-      }
+-    }
+-  }
+-
+-  fileEntries(file: ResolvedPath, diagnostics?: DiagnosticSink): OverviewFileEntries {
+-    this.ensureFiles([file]);
+-    const prepared = this.preparedIndex.byRelativePath.get(file.relative);
+-    if (!prepared) {
+-      throw new FileNotFoundError(file.relative);
+-    }
+-    for (const diagnostic of prepared.diagnostics) {
++  async fileEntries(
++    file: ResolvedPath,
++    diagnostics?: DiagnosticSink,
++  ): Promise<OverviewFileEntries> {
++    const entries = await super.fileEntries(file);
++    for (const diagnostic of this.diagnostics(file)) {
+       diagnostics?.report(diagnostic);
+     }
+-    return prepared.entries;
+-  }
+-
+-  diagnostics(file: ResolvedPath): readonly NavigationDiagnostic[] {
+-    return this.preparedIndex.byRelativePath.get(file.relative)?.diagnostics ?? [];
+-  }
+-
+-  declarationsIn(relativePath: string): readonly SymbolOverviewNode[] | undefined {
+-    return this.preparedIndex.byRelativePath.get(relativePath)?.declarations;
+-  }
+-
+-  allDeclarations(files: readonly ResolvedPath[]): readonly SymbolOverviewNode[] {
+-    this.ensureFiles(files);
+-    return files.flatMap((file) => this.declarationsIn(file.relative) ?? []);
++    return entries;
+   }
+ 
+   sourceFile(relativePath: string): SourceFile | undefined {
+-    const prepared = this.preparedIndex.byRelativePath.get(relativePath);
++    const prepared = this.preparedFile(relativePath);
+     if (!prepared) return undefined;
+     const semanticSource = this.semanticSources?.sourceFileFor(relativePath);
+     if (semanticSource) return semanticSource;
+-    return this.project.getSourceFile(prepared.file.absolute);
++    return prepared.details.sourceFile;
+   }
+ 
+   locate(identity: SymbolIdentity): readonly LocatedDeclaration[] {
+@@ -197,11 +91,33 @@ export class TypeScriptWorkspaceState {
+     return this.locateIn(identity, semanticSources);
+   }
+ 
++  declarationAt(node: Node): SymbolOverviewNode | undefined {
++    const relative = this.relativePathOf(node.getSourceFile());
++    if (!relative) return undefined;
++    return this.preparedFile(relative)?.details.declarationsByPosition.get(node.getStart());
++  }
++
++  nodeAt(relativePath: string, start: number): Node | undefined {
++    const prepared = this.preparedFile(relativePath);
++    if (!prepared) return undefined;
++    return prepared.details.sourceFile.getDescendantAtPos(start);
++  }
++
++  relativePathOf(sourceFile: SourceFile): string | undefined {
++    return this.relativePathForAbsolute(sourceFile.getFilePath());
++  }
++
++  protected createPreparation(
++    request: RevisionedBackendPreparationRequest<TypeScriptPreparedFileDetails>,
++  ): RevisionedBackendPreparation<TypeScriptPreparedFileDetails> {
++    return new TypeScriptWorkspacePreparation(this.project, this.extractor, request);
++  }
++
+   private locateIn(
+     identity: SymbolIdentity,
+     semanticSources: readonly SourceFile[] | undefined,
+   ): readonly LocatedDeclaration[] {
+-    const prepared = this.preparedIndex.byRelativePath.get(identity.file);
++    const prepared = this.preparedFile(identity.file);
+     if (!prepared) return [];
+     const sourceFiles =
+       semanticSources && semanticSources.length > 0
+@@ -213,217 +129,133 @@ export class TypeScriptWorkspaceState {
+       new DeclarationLocator(sourceFile).locate(identity, prepared.entries.entries),
+     );
+   }
++}
+ 
+-  declarationAt(node: Node): SymbolOverviewNode | undefined {
+-    const relative = this.relativePathOf(node.getSourceFile());
+-    if (!relative) return undefined;
+-    return this.preparedIndex.declarationsByPosition.get(relative)?.get(node.getStart());
+-  }
++class TypeScriptWorkspacePreparation extends RevisionedBackendPreparation<TypeScriptPreparedFileDetails> {
++  private readonly mutations: ProjectMutation[] = [];
++  private rolledBack = false;
+ 
+-  nodeAt(relativePath: string, start: number): Node | undefined {
+-    const prepared = this.preparedIndex.byRelativePath.get(relativePath);
+-    if (!prepared) return undefined;
+-    return this.project.getSourceFile(prepared.file.absolute)?.getDescendantAtPos(start);
++  constructor(
++    private readonly project: Project,
++    private readonly extractor: TypeScriptFileExtractor,
++    private readonly request: RevisionedBackendPreparationRequest<TypeScriptPreparedFileDetails>,
++  ) {
++    super();
+   }
+ 
+-  declarationForIdentity(identity: SymbolIdentity): IndexedDeclaration | undefined {
+-    const declaration = this.preparedIndex.declarationsByIdentity.get(
+-      DeclarationLocator.identityKey(identity),
+-    )?.[0];
+-    if (!declaration) return undefined;
+-    const prepared = this.preparedIndex.byRelativePath.get(declaration.identity.file);
+-    if (!prepared) return undefined;
+-    return {
+-      declaration,
+-      file: { relative: prepared.file.relative, absolute: prepared.file.absolute },
+-    };
++  async prepare(): Promise<
++    readonly RevisionedBackendPreparedFile<TypeScriptPreparedFileDetails>[]
++  > {
++    return this.request.changes.map((change) => {
++      const previous = change.kind === "changed" ? change.previous : undefined;
++      const existingSourceFile =
++        previous === undefined || previous.file.absolute === change.file.absolute
++          ? this.project.getSourceFile(change.file.absolute)
++          : undefined;
++      return this.prepareFile(change.file, existingSourceFile, previous !== undefined);
++    });
+   }
+ 
+-  relativePathOf(sourceFile: SourceFile): string | undefined {
+-    return this.preparedIndex.relativePathByAbsolute.get(sourceFile.getFilePath());
++  async commit(): Promise<void> {
++    const obsoleteSourceFiles = this.obsoleteAbsolutePaths().flatMap((absolutePath) => {
++      const sourceFile = this.project.getSourceFile(absolutePath);
++      return sourceFile ? [sourceFile] : [];
++    });
++    for (const [index, sourceFile] of obsoleteSourceFiles.entries()) {
++      const absolutePath = sourceFile.getFilePath();
++      const stagingPath = this.obsoleteStagingPath(absolutePath, index);
++      sourceFile.move(stagingPath);
++      this.mutations.push({
++        rollback: () => {
++          sourceFile.move(absolutePath, { overwrite: true });
++        },
++      });
++    }
++    for (const sourceFile of obsoleteSourceFiles) {
++      this.tryForgetObsoleteSource(sourceFile);
++    }
+   }
+ 
+-  private addFile(path: ResolvedPath): void {
+-    const metadata = this.fs.metadataSync(path.absolute);
+-    const prepared = this.prepareFiles([
+-      {
+-        relativePath: path.relative,
+-        absolutePath: path.absolute,
+-        size: metadata.size,
+-        modifiedAtMs: metadata.modifiedAtMs,
+-        changeToken: metadata.changeToken,
+-      },
+-    ]);
+-    const preparedFile = prepared[0];
+-    if (preparedFile) {
+-      this.preparedIndex = this.buildPreparedIndex([preparedFile], []);
++  async rollback(): Promise<void> {
++    if (this.rolledBack) return;
++    this.rolledBack = true;
++    for (const mutation of [...this.mutations].reverse()) {
++      mutation.rollback();
+     }
+   }
+ 
+-  private prepareFiles(revisions: readonly TypeScriptFileRevision[]): readonly PreparedFileState[] {
+-    const candidates = revisions.map((revision) => {
+-      const existingPath = this.preparedIndex.byRelativePath.get(revision.relativePath)?.file;
+-      const existingSourceFile =
+-        existingPath === undefined || existingPath.absolute === revision.absolutePath
+-          ? this.project.getSourceFile(revision.absolutePath)
+-          : undefined;
+-      return {
+-        revision,
+-        existingSourceFile,
+-        content:
+-          existingSourceFile && existingPath
+-            ? this.fs.readFileSync(revision.absolutePath)
+-            : undefined,
+-      };
+-    });
+-    const mutations: ProjectMutation[] = [];
+-
+-    try {
+-      return candidates.map(({ revision, existingSourceFile, content }) => {
+-        const path: ResolvedPath = {
+-          relative: revision.relativePath,
+-          absolute: revision.absolutePath,
+-        };
+-        let sourceFile: SourceFile;
+-
+-        if (existingSourceFile && content !== undefined) {
+-          const previousText = existingSourceFile.getFullText();
+-          existingSourceFile.replaceWithText(content);
+-          mutations.push({ rollback: () => existingSourceFile.replaceWithText(previousText) });
+-          sourceFile = existingSourceFile;
+-        } else if (existingSourceFile) {
+-          sourceFile = existingSourceFile;
+-        } else {
+-          sourceFile = this.project.addSourceFileAtPath(revision.absolutePath);
+-          mutations.push({ rollback: () => this.project.removeSourceFile(sourceFile) });
+-        }
+-
+-        return this.buildFileIndex(sourceFile, path, revision);
+-      });
+-    } catch (error) {
+-      for (const mutation of mutations.reverse()) {
+-        mutation.rollback();
+-      }
+-      throw error;
++  private prepareFile(
++    file: RevisionedBackendPreparedFile<TypeScriptPreparedFileDetails>["file"],
++    existingSourceFile: SourceFile | undefined,
++    readChangedSource: boolean,
++  ): RevisionedBackendPreparedFile<TypeScriptPreparedFileDetails> {
++    let sourceFile: SourceFile;
++    if (existingSourceFile && readChangedSource) {
++      const previousText = existingSourceFile.getFullText();
++      const content = this.project.getFileSystem().readFileSync(file.absolute);
++      existingSourceFile.replaceWithText(content);
++      this.mutations.push({ rollback: () => existingSourceFile.replaceWithText(previousText) });
++      sourceFile = existingSourceFile;
++    } else if (existingSourceFile) {
++      sourceFile = existingSourceFile;
++    } else {
++      sourceFile = this.project.addSourceFileAtPath(file.absolute);
++      this.mutations.push({ rollback: () => this.project.removeSourceFile(sourceFile) });
+     }
++    return this.buildPreparedFile(sourceFile, file);
+   }
+ 
+-  private buildFileIndex(
++  private buildPreparedFile(
+     sourceFile: SourceFile,
+-    path: ResolvedPath,
+-    revision: TypeScriptFileRevision,
+-  ): PreparedFileState {
+-    const byPosition = new Map<number, SymbolOverviewNode>();
+-    const declarations: SymbolOverviewNode[] = [];
++    file: RevisionedBackendPreparedFile<TypeScriptPreparedFileDetails>["file"],
++  ): RevisionedBackendPreparedFile<TypeScriptPreparedFileDetails> {
++    const declarationsByPosition = new Map<number, SymbolOverviewNode>();
+     const diagnosticSink = new CollectingDiagnosticSink();
+     const extracted = this.extractor.extract({
+       sourceFile,
+-      filePath: path.relative,
++      filePath: file.relative,
+       diagnostics: diagnosticSink,
+     });
+     const diagnostics = diagnosticSink.diagnostics();
+     const entries = diagnostics.length === 0 ? extracted : { ...extracted, diagnostics };
+-    for (const declaration of OverviewTree.walkSymbols(entries.entries)) {
+-      declarations.push(declaration);
+-    }
+     for (const { declaration, node } of new DeclarationLocator(sourceFile).locateAll(
+       entries.entries,
+     )) {
+-      byPosition.set(node.getStart(), declaration);
++      declarationsByPosition.set(node.getStart(), declaration);
+     }
+     return {
+-      revision,
+-      file: {
+-        ...path,
+-        metadata: {
+-          size: revision.size,
+-          modifiedAtMs: revision.modifiedAtMs,
+-          changeToken: revision.changeToken,
+-        },
+-      },
++      file,
+       entries,
+-      diagnostics,
+-      declarations,
+-      declarationsByPosition: byPosition,
++      details: { sourceFile, declarationsByPosition },
+     };
+   }
+ 
+-  private buildPreparedIndex(
+-    preparedFiles: readonly PreparedFileState[],
+-    removedRelativePaths: readonly string[],
+-  ): WorkspacePreparedFileIndex {
+-    if (preparedFiles.length === 0 && removedRelativePaths.length === 0) {
+-      return this.preparedIndex;
+-    }
+-    const byRelativePath = new Map(this.preparedIndex.byRelativePath);
+-    for (const relativePath of removedRelativePaths) {
+-      byRelativePath.delete(relativePath);
+-    }
+-    for (const prepared of preparedFiles) {
+-      byRelativePath.set(prepared.file.relative, prepared);
+-    }
+-
+-    const declarationsByIdentity = new Map<string, SymbolOverviewNode[]>();
+-    const declarationsByPosition = new Map<string, ReadonlyMap<number, SymbolOverviewNode>>();
+-    const relativePathByAbsolute = new Map<string, string>();
+-    for (const prepared of byRelativePath.values()) {
+-      for (const declaration of prepared.declarations) {
+-        const identity = DeclarationLocator.identityKey(declaration.identity);
+-        const declarations = declarationsByIdentity.get(identity) ?? [];
+-        declarations.push(declaration);
+-        declarationsByIdentity.set(identity, declarations);
++  private obsoleteAbsolutePaths(): readonly string[] {
++    const paths = this.request.removedFiles.map((prepared) => prepared.file.absolute);
++    for (const change of this.request.changes) {
++      if (change.kind === "changed" && change.previous.file.absolute !== change.file.absolute) {
++        paths.push(change.previous.file.absolute);
+       }
+-      declarationsByPosition.set(prepared.file.relative, prepared.declarationsByPosition);
+-      relativePathByAbsolute.set(prepared.file.absolute, prepared.file.relative);
+     }
+-    return {
+-      byRelativePath,
+-      declarationsByIdentity,
+-      declarationsByPosition,
+-      relativePathByAbsolute,
+-    };
++    return paths;
+   }
+ 
+-  private publishProjectRemovals(
+-    preparedFiles: readonly PreparedFileState[],
+-    removedRelativePaths: readonly string[],
+-  ): void {
+-    const obsoleteAbsolutePaths = removedRelativePaths.flatMap((relativePath) => {
+-      const prepared = this.preparedIndex.byRelativePath.get(relativePath);
+-      return prepared ? [prepared.file.absolute] : [];
+-    });
+-    for (const prepared of preparedFiles) {
+-      const previous = this.preparedIndex.byRelativePath.get(prepared.file.relative);
+-      if (previous && previous.file.absolute !== prepared.file.absolute) {
+-        obsoleteAbsolutePaths.push(previous.file.absolute);
+-      }
+-    }
+-    for (const absolutePath of obsoleteAbsolutePaths) {
+-      const sourceFile = this.project.getSourceFile(absolutePath);
+-      if (sourceFile) {
+-        this.project.removeSourceFile(sourceFile);
+-      }
++  private obsoleteStagingPath(absolutePath: string, initialSuffix: number): string {
++    let suffix = initialSuffix;
++    while (true) {
++      const candidate = `${absolutePath}.symnav-obsolete-${suffix}`;
++      const sourceExists = this.project.getSourceFile(candidate) !== undefined;
++      const fileExists = this.project.getFileSystem().fileExistsSync(candidate);
++      if (!sourceExists && !fileExists) return candidate;
++      suffix += 1;
+     }
+   }
+ 
+-  private static revisionFor(file: WorkspaceFile): TypeScriptFileRevision {
+-    return {
+-      relativePath: file.relative,
+-      absolutePath: file.absolute,
+-      size: file.metadata.size,
+-      modifiedAtMs: file.metadata.modifiedAtMs,
+-      changeToken: file.metadata.changeToken,
+-    };
+-  }
+-
+-  private static sameRevision(
+-    current: TypeScriptFileRevision,
+-    incoming: TypeScriptFileRevision,
+-  ): boolean {
+-    return (
+-      current.relativePath === incoming.relativePath &&
+-      current.absolutePath === incoming.absolutePath &&
+-      current.changeToken === incoming.changeToken
+-    );
++  private tryForgetObsoleteSource(sourceFile: SourceFile): void {
++    try {
++      this.project.removeSourceFile(sourceFile);
++    } catch {
++      return;
++    }
+   }
+ }
+diff --git a/packages/core/src/backend/revisioned-backend-state.test.ts b/packages/core/src/backend/revisioned-backend-state.test.ts
+new file mode 100644
+index 000000000..36197346d
+--- /dev/null
++++ b/packages/core/src/backend/revisioned-backend-state.test.ts
+@@ -0,0 +1,360 @@
++import { describe, expect, it } from "vitest";
++
++import type { FileMetadata, FileSystem } from "../workspace/file-system.js";
++import { InMemoryFileSystem } from "../workspace/in-memory/in-memory-file-system.js";
++import type { ResolvedPath, WorkspaceFile } from "../workspace/workspace.js";
++import type { SymbolIdentity } from "../intermediate-representation/symbol-identity.js";
++import {
++  RevisionedBackendPreparation,
++  RevisionedBackendState,
++  type RevisionedBackendPreparationRequest,
++  type RevisionedBackendPreparedFile,
++} from "./revisioned-backend-state.js";
++
++interface PreparedDetails {
++  readonly content: string;
++}
++
++type CandidateFault = "duplicate" | "outside" | "wrong-revision" | "missing-change";
++type FailureStage = "prepare" | "commit";
++
++class TrackingFileSystem implements FileSystem {
++  readonly reads: string[] = [];
++  readonly metadataReads: string[] = [];
++  private readonly delegate: InMemoryFileSystem;
++
++  constructor(files: Record<string, string>) {
++    this.delegate = new InMemoryFileSystem(files);
++  }
++
++  readFile(absPath: string): Promise<string> {
++    this.reads.push(absPath);
++    return this.delegate.readFile(absPath);
++  }
++
++  exists(absPath: string): Promise<boolean> {
++    return this.delegate.exists(absPath);
++  }
++
++  listDir(absPath: string): Promise<readonly string[]> {
++    return this.delegate.listDir(absPath);
++  }
++
++  isDirectory(absPath: string): Promise<boolean> {
++    return this.delegate.isDirectory(absPath);
++  }
++
++  metadata(absPath: string): Promise<FileMetadata> {
++    this.metadataReads.push(absPath);
++    return this.delegate.metadata(absPath);
++  }
++
++  existsSync(absPath: string): boolean {
++    return this.delegate.existsSync(absPath);
++  }
++
++  readFileSync(absPath: string): string {
++    this.reads.push(absPath);
++    return this.delegate.readFileSync(absPath);
++  }
++
++  listDirSync(absPath: string): readonly string[] {
++    return this.delegate.listDirSync(absPath);
++  }
++
++  isDirectorySync(absPath: string): boolean {
++    return this.delegate.isDirectorySync(absPath);
++  }
++
++  metadataSync(absPath: string): FileMetadata {
++    this.metadataReads.push(absPath);
++    return this.delegate.metadataSync(absPath);
++  }
++}
++
++class FakeRevisionedBackendState extends RevisionedBackendState<PreparedDetails> {
++  readonly requests: RevisionedBackendPreparationRequest<PreparedDetails>[] = [];
++  candidateFault: CandidateFault | undefined;
++  failureStage: FailureStage | undefined;
++  rollbackCalls = 0;
++  commitCalls = 0;
++  preparationMode: "incremental" | "full" = "incremental";
++  failPreparationNumber: number | undefined;
++  private preparationCount = 0;
++
++  constructor(private readonly trackingFileSystem: TrackingFileSystem) {
++    super(trackingFileSystem);
++  }
++
++  prepared(relativePath: string): RevisionedBackendPreparedFile<PreparedDetails> | undefined {
++    return this.preparedFile(relativePath);
++  }
++
++  allPrepared(): readonly RevisionedBackendPreparedFile<PreparedDetails>[] {
++    return this.preparedFiles();
++  }
++
++  relativeFor(absolutePath: string): string | undefined {
++    return this.relativePathForAbsolute(absolutePath);
++  }
++
++  protected createPreparation(
++    request: RevisionedBackendPreparationRequest<PreparedDetails>,
++  ): RevisionedBackendPreparation<PreparedDetails> {
++    this.requests.push(request);
++    this.preparationCount += 1;
++    return new FakeRevisionedBackendPreparation(
++      this,
++      this.trackingFileSystem,
++      request,
++      this.preparationCount === this.failPreparationNumber,
++    );
++  }
++}
++
++class FakeRevisionedBackendPreparation extends RevisionedBackendPreparation<PreparedDetails> {
++  private rolledBack = false;
++
++  constructor(
++    private readonly state: FakeRevisionedBackendState,
++    private readonly fileSystem: TrackingFileSystem,
++    private readonly request: RevisionedBackendPreparationRequest<PreparedDetails>,
++    private readonly prepareFailure: boolean,
++  ) {
++    super();
++  }
++
++  async prepare(): Promise<readonly RevisionedBackendPreparedFile<PreparedDetails>[]> {
++    if (this.state.failureStage === "prepare" || this.prepareFailure) {
++      throw new Error("prepare failed");
++    }
++    const files =
++      this.state.preparationMode === "full"
++        ? this.request.effectiveFiles
++        : this.request.changes.map((change) => change.file);
++    const prepared: RevisionedBackendPreparedFile<PreparedDetails>[] = [];
++    for (const file of files) {
++      const content = await this.fileSystem.readFile(file.absolute);
++      prepared.push(preparedFile(file, content));
++    }
++    return this.withFault(prepared);
++  }
++
++  async commit(): Promise<void> {
++    this.state.commitCalls += 1;
++    if (this.state.failureStage === "commit") throw new Error("commit failed");
++  }
++
++  async rollback(): Promise<void> {
++    if (this.rolledBack) return;
++    this.rolledBack = true;
++    this.state.rollbackCalls += 1;
++  }
++
++  private withFault(
++    prepared: readonly RevisionedBackendPreparedFile<PreparedDetails>[],
++  ): readonly RevisionedBackendPreparedFile<PreparedDetails>[] {
++    const first = prepared[0];
++    if (!first) return prepared;
++    switch (this.state.candidateFault) {
++      case "duplicate":
++        return [first, first];
++      case "outside":
++        return [{ ...first, file: workspaceFile("outside.ts", "outside") }];
++      case "wrong-revision":
++        return [{ ...first, file: { ...first.file, metadata: metadata("wrong") } }];
++      case "missing-change":
++        return [];
++      case undefined:
++        return prepared;
++    }
++  }
++}
++
++function preparedFile(
++  file: WorkspaceFile,
++  content: string,
++): RevisionedBackendPreparedFile<PreparedDetails> {
++  return {
++    file,
++    entries: {
++      file: file.relative,
++      entries: [
++        {
++          type: "symbol",
++          identity: { file: file.relative, segments: [{ name: content }] },
++          kind: { role: "value", nativeLabel: "const" },
++          range: { startLine: 1, endLine: 1 },
++          header: { startLine: 1, lines: [content] },
++          children: [],
++        },
++      ],
++      diagnostics: [
++        { severity: "warning", message: content, dedupeKey: `${file.relative}:${content}` },
++      ],
++    },
++    details: { content },
++  };
++}
++
++function metadata(changeToken: string): FileMetadata {
++  return { size: changeToken.length, modifiedAtMs: 1, changeToken };
++}
++
++function workspaceFile(
++  relative: string,
++  changeToken: string,
++  absolute = `/repo/${relative}`,
++): WorkspaceFile {
++  return { relative, absolute, metadata: metadata(changeToken) };
++}
++
++function paths(...relativePaths: string[]): readonly ResolvedPath[] {
++  return relativePaths.map((relative) => ({ relative, absolute: `/repo/${relative}` }));
++}
++
++describe("RevisionedBackendState", () => {
++  it("diffs authoritative revisions while retaining omitted selection entries", async () => {
++    const fileSystem = new TrackingFileSystem({
++      "/repo/a.ts": "a",
++      "/repo/b.ts": "b",
++      "/renamed/a.ts": "renamed-a",
++    });
++    const state = new FakeRevisionedBackendState(fileSystem);
++    const firstA = workspaceFile("a.ts", "a");
++    const firstB = workspaceFile("b.ts", "b");
++
++    await expect(state.refresh([firstA, firstB])).resolves.toEqual({
++      added: 2,
++      changed: 0,
++      removed: 0,
++      unchanged: 0,
++    });
++    const retainedB = state.prepared("b.ts");
++    await expect(
++      state.refresh([workspaceFile("a.ts", "renamed-a", "/renamed/a.ts")], "selection"),
++    ).resolves.toEqual({ added: 0, changed: 1, removed: 0, unchanged: 0 });
++    expect(state.prepared("b.ts")).toBe(retainedB);
++    expect(state.currentFileCount()).toBe(2);
++
++    await expect(
++      state.refresh([workspaceFile("a.ts", "renamed-a", "/renamed/a.ts")]),
++    ).resolves.toEqual({ added: 0, changed: 0, removed: 1, unchanged: 1 });
++    expect(state.currentFileCount()).toBe(1);
++
++    await expect(
++      state.refresh([workspaceFile("renamed.ts", "renamed-a", "/renamed/a.ts")]),
++    ).resolves.toEqual({ added: 1, changed: 0, removed: 1, unchanged: 0 });
++    expect(state.requests[1]?.changes[0]?.kind).toBe("changed");
++    expect(state.requests[1]?.removedFiles).toEqual([]);
++  });
++
++  it("retains unchanged prepared identity without filesystem work", async () => {
++    const fileSystem = new TrackingFileSystem({ "/repo/a.ts": "a" });
++    const state = new FakeRevisionedBackendState(fileSystem);
++    const file = workspaceFile("a.ts", "a");
++    await state.refresh([file]);
++    const prepared = state.prepared("a.ts");
++    const entries = await state.fileEntries(file);
++    const diagnostics = state.diagnostics(file);
++    const declarations = state.declarationsIn("a.ts");
++    fileSystem.reads.length = 0;
++    fileSystem.metadataReads.length = 0;
++
++    await expect(
++      state.refresh([{ ...file, metadata: { ...file.metadata, size: 999 } }]),
++    ).resolves.toEqual({ added: 0, changed: 0, removed: 0, unchanged: 1 });
++    expect(state.prepared("a.ts")).toBe(prepared);
++    expect(await state.fileEntries(file)).toBe(entries);
++    expect(state.diagnostics(file)).toBe(diagnostics);
++    expect(state.declarationsIn("a.ts")).toBe(declarations);
++    expect(fileSystem.reads).toEqual([]);
++    expect(fileSystem.metadataReads).toEqual([]);
++  });
++
++  it.each<CandidateFault>(["missing-change", "duplicate", "outside", "wrong-revision"])(
++    "rejects a %s preparation result without publishing it",
++    async (candidateFault) => {
++      const fileSystem = new TrackingFileSystem({ "/repo/a.ts": "a" });
++      const state = new FakeRevisionedBackendState(fileSystem);
++      state.candidateFault = candidateFault;
++
++      await expect(state.refresh([workspaceFile("a.ts", "a")])).rejects.toThrow();
++      expect(state.currentFileCount()).toBe(0);
++      expect(state.rollbackCalls).toBe(1);
++    },
++  );
++
++  it("rejects an incomplete final key set", async () => {
++    const fileSystem = new TrackingFileSystem({ "/repo/a.ts": "a" });
++    const state = new FakeRevisionedBackendState(fileSystem);
++
++    await expect(
++      state.refresh([workspaceFile("a.ts", "a"), workspaceFile("a.ts", "a")]),
++    ).rejects.toThrow();
++    expect(state.currentFileCount()).toBe(0);
++    expect(state.rollbackCalls).toBe(1);
++  });
++
++  it.each<FailureStage>(["prepare", "commit"])(
++    "rolls back once and preserves every index when %s fails",
++    async (failureStage) => {
++      const fileSystem = new TrackingFileSystem({
++        "/repo/a.ts": "a",
++        "/repo/b.ts": "b",
++      });
++      const state = new FakeRevisionedBackendState(fileSystem);
++      const first = workspaceFile("a.ts", "a");
++      await state.refresh([first]);
++      const priorPrepared = state.prepared("a.ts");
++      const priorEntries = await state.fileEntries(first);
++      const priorDiagnostics = state.diagnostics(first);
++      const identity: SymbolIdentity = { file: "a.ts", segments: [{ name: "a" }] };
++      const priorDeclaration = state.declarationForIdentity(identity);
++      state.failureStage = failureStage;
++
++      await expect(
++        state.refresh([workspaceFile("a.ts", "changed"), workspaceFile("b.ts", "b")]),
++      ).rejects.toThrow(`${failureStage} failed`);
++      expect(state.prepared("a.ts")).toBe(priorPrepared);
++      await expect(state.fileEntries(first)).resolves.toBe(priorEntries);
++      expect(state.diagnostics(first)).toBe(priorDiagnostics);
++      await expect(state.declarations([first])).resolves.toEqual([priorDeclaration?.declaration]);
++      expect(state.declarationForIdentity(identity)?.declaration).toBe(
++        priorDeclaration?.declaration,
++      );
++      expect(state.declarationForIdentity(identity)?.file).toEqual(priorDeclaration?.file);
++      expect(state.relativeFor("/repo/a.ts")).toBe("a.ts");
++      expect(state.currentFileCount()).toBe(1);
++      expect(state.rollbackCalls).toBe(1);
++    },
++  );
++
++  it("accepts incremental and full-rebuild preparation results", async () => {
++    const fileSystem = new TrackingFileSystem({ "/repo/a.ts": "a", "/repo/b.ts": "b" });
++    const state = new FakeRevisionedBackendState(fileSystem);
++    const files = [workspaceFile("a.ts", "a"), workspaceFile("b.ts", "b")];
++    await state.refresh(files);
++    const retainedA = state.prepared("a.ts");
++
++    state.preparationMode = "full";
++    await state.refresh(files);
++    expect(state.prepared("a.ts")).not.toBe(retainedA);
++    expect(state.allPrepared()).toHaveLength(2);
++  });
++
++  it("ensures absent files sequentially and retains earlier progress after failure", async () => {
++    const fileSystem = new TrackingFileSystem({ "/repo/a.ts": "a", "/repo/b.ts": "b" });
++    const state = new FakeRevisionedBackendState(fileSystem);
++    state.failPreparationNumber = 2;
++
++    await expect(state.ensureFiles(paths("a.ts", "b.ts"))).rejects.toThrow("prepare failed");
++    expect(state.prepared("a.ts")).toBeDefined();
++    expect(state.prepared("b.ts")).toBeUndefined();
++    expect(state.requests.map((request) => request.coverage)).toEqual(["selection", "selection"]);
++
++    fileSystem.metadataReads.length = 0;
++    await state.ensureFiles(paths("a.ts"));
++    expect(fileSystem.metadataReads).toEqual([]);
++  });
++});
+diff --git a/packages/core/src/backend/revisioned-backend-state.ts b/packages/core/src/backend/revisioned-backend-state.ts
+new file mode 100644
+index 000000000..04aace5ad
+--- /dev/null
++++ b/packages/core/src/backend/revisioned-backend-state.ts
+@@ -0,0 +1,293 @@
++import type { NavigationDiagnostic } from "../diagnostics/navigation-diagnostic.js";
++import { formatSymbolIdentity } from "../intermediate-representation/canonical-identity.js";
++import type { SymbolIdentity } from "../intermediate-representation/symbol-identity.js";
++import type {
++  OverviewFileEntries,
++  SymbolOverviewNode,
++} from "../intermediate-representation/overview-tree.js";
++import { OverviewTree } from "../intermediate-representation/overview-tree.js";
++import { FileNotFoundError } from "../workspace/errors.js";
++import type { FileSystem } from "../workspace/file-system.js";
++import type { ResolvedPath, WorkspaceFile } from "../workspace/workspace.js";
++import type { BackendRefreshCoverage, BackendRefreshSummary } from "./language-backend.js";
++
++export interface RevisionedBackendPreparedFile<PreparedDetails> {
++  readonly file: WorkspaceFile;
++  readonly entries: OverviewFileEntries;
++  readonly details: PreparedDetails;
++}
++
++export type RevisionedBackendFileChange<PreparedDetails> =
++  | { readonly kind: "added"; readonly file: WorkspaceFile }
++  | {
++      readonly kind: "changed";
++      readonly file: WorkspaceFile;
++      readonly previous: RevisionedBackendPreparedFile<PreparedDetails>;
++    };
++
++export interface RevisionedBackendPreparationRequest<PreparedDetails> {
++  readonly coverage: BackendRefreshCoverage;
++  readonly changes: readonly RevisionedBackendFileChange<PreparedDetails>[];
++  readonly removedFiles: readonly RevisionedBackendPreparedFile<PreparedDetails>[];
++  readonly effectiveFiles: readonly WorkspaceFile[];
++}
++
++export abstract class RevisionedBackendPreparation<PreparedDetails> {
++  abstract prepare(): Promise<readonly RevisionedBackendPreparedFile<PreparedDetails>[]>;
++  abstract commit(): Promise<void>;
++  abstract rollback(): Promise<void>;
++}
++
++export interface IndexedBackendDeclaration {
++  readonly declaration: SymbolOverviewNode;
++  readonly file: ResolvedPath;
++}
++
++interface RevisionedBackendIndex<PreparedDetails> {
++  readonly byRelativePath: ReadonlyMap<string, RevisionedBackendPreparedFile<PreparedDetails>>;
++  readonly declarationsByIdentity: ReadonlyMap<string, readonly SymbolOverviewNode[]>;
++  readonly declarationsByRelativePath: ReadonlyMap<string, readonly SymbolOverviewNode[]>;
++  readonly diagnosticsByRelativePath: ReadonlyMap<string, readonly NavigationDiagnostic[]>;
++  readonly relativePathByAbsolute: ReadonlyMap<string, string>;
++}
++
++export abstract class RevisionedBackendState<PreparedDetails> {
++  private index: RevisionedBackendIndex<PreparedDetails> = {
++    byRelativePath: new Map(),
++    declarationsByIdentity: new Map(),
++    declarationsByRelativePath: new Map(),
++    diagnosticsByRelativePath: new Map(),
++    relativePathByAbsolute: new Map(),
++  };
++
++  protected constructor(private readonly fileSystem: FileSystem) {}
++
++  async refresh(
++    files: readonly WorkspaceFile[],
++    coverage: BackendRefreshCoverage = "workspace",
++  ): Promise<BackendRefreshSummary> {
++    const request = this.preparationRequest(files, coverage);
++    const preparation = this.createPreparation(request);
++    try {
++      const preparedFiles = await preparation.prepare();
++      const candidate = this.candidateIndex(request, preparedFiles);
++      await preparation.commit();
++      this.index = candidate;
++    } catch (error) {
++      await preparation.rollback();
++      throw error;
++    }
++    return this.refreshSummary(request, files);
++  }
++
++  async ensureFiles(files: readonly ResolvedPath[]): Promise<void> {
++    for (const file of files) {
++      if (this.index.byRelativePath.has(file.relative)) continue;
++      const metadata = await this.fileSystem.metadata(file.absolute);
++      await this.refresh([{ ...file, metadata }], "selection");
++    }
++  }
++
++  async fileEntries(file: ResolvedPath): Promise<OverviewFileEntries> {
++    await this.ensureFiles([file]);
++    const prepared = this.index.byRelativePath.get(file.relative);
++    if (!prepared) throw new FileNotFoundError(file.relative);
++    return prepared.entries;
++  }
++
++  async declarations(files: readonly ResolvedPath[]): Promise<readonly SymbolOverviewNode[]> {
++    await this.ensureFiles(files);
++    return files.flatMap((file) => this.index.declarationsByRelativePath.get(file.relative) ?? []);
++  }
++
++  diagnostics(file: ResolvedPath): readonly NavigationDiagnostic[] {
++    return this.index.diagnosticsByRelativePath.get(file.relative) ?? [];
++  }
++
++  declarationsIn(relativePath: string): readonly SymbolOverviewNode[] | undefined {
++    return this.index.declarationsByRelativePath.get(relativePath);
++  }
++
++  declarationForIdentity(identity: SymbolIdentity): IndexedBackendDeclaration | undefined {
++    const declaration = this.index.declarationsByIdentity.get(formatSymbolIdentity(identity))?.[0];
++    if (!declaration) return undefined;
++    const prepared = this.index.byRelativePath.get(declaration.identity.file);
++    if (!prepared) return undefined;
++    return {
++      declaration,
++      file: { relative: prepared.file.relative, absolute: prepared.file.absolute },
++    };
++  }
++
++  currentFileCount(): number {
++    return this.index.byRelativePath.size;
++  }
++
++  protected preparedFile(
++    relativePath: string,
++  ): RevisionedBackendPreparedFile<PreparedDetails> | undefined {
++    return this.index.byRelativePath.get(relativePath);
++  }
++
++  protected preparedFiles(): readonly RevisionedBackendPreparedFile<PreparedDetails>[] {
++    return [...this.index.byRelativePath.values()];
++  }
++
++  protected relativePathForAbsolute(absolutePath: string): string | undefined {
++    return this.index.relativePathByAbsolute.get(absolutePath);
++  }
++
++  protected abstract createPreparation(
++    request: RevisionedBackendPreparationRequest<PreparedDetails>,
++  ): RevisionedBackendPreparation<PreparedDetails>;
++
++  private preparationRequest(
++    files: readonly WorkspaceFile[],
++    coverage: BackendRefreshCoverage,
++  ): RevisionedBackendPreparationRequest<PreparedDetails> {
++    const incomingByRelativePath = new Map(files.map((file) => [file.relative, file]));
++    const changes = files.flatMap((file): RevisionedBackendFileChange<PreparedDetails>[] => {
++      const previous = this.index.byRelativePath.get(file.relative);
++      if (!previous) return [{ kind: "added", file }];
++      if (RevisionedBackendState.sameRevision(previous.file, file)) return [];
++      return [{ kind: "changed", file, previous }];
++    });
++    const removedFiles =
++      coverage === "workspace"
++        ? [...this.index.byRelativePath.values()].filter(
++            (prepared) => !incomingByRelativePath.has(prepared.file.relative),
++          )
++        : [];
++    const effectiveByRelativePath =
++      coverage === "workspace"
++        ? new Map<string, WorkspaceFile>()
++        : new Map(
++            [...this.index.byRelativePath.values()].map((prepared) => [
++              prepared.file.relative,
++              prepared.file,
++            ]),
++          );
++    for (const file of files) {
++      effectiveByRelativePath.set(file.relative, file);
++    }
++    return {
++      coverage,
++      changes,
++      removedFiles,
++      effectiveFiles: [...effectiveByRelativePath.values()],
++    };
++  }
++
++  private candidateIndex(
++    request: RevisionedBackendPreparationRequest<PreparedDetails>,
++    preparedFiles: readonly RevisionedBackendPreparedFile<PreparedDetails>[],
++  ): RevisionedBackendIndex<PreparedDetails> {
++    const effectiveByRelativePath = new Map(
++      request.effectiveFiles.map((file) => [file.relative, file]),
++    );
++    if (effectiveByRelativePath.size !== request.effectiveFiles.length) {
++      throw new Error("Revisioned backend preparation has an incomplete final key set");
++    }
++    const preparedByRelativePath = new Map<
++      string,
++      RevisionedBackendPreparedFile<PreparedDetails>
++    >();
++    for (const prepared of preparedFiles) {
++      if (preparedByRelativePath.has(prepared.file.relative)) {
++        throw new Error(`Revisioned backend preparation duplicated ${prepared.file.relative}`);
++      }
++      const effective = effectiveByRelativePath.get(prepared.file.relative);
++      if (!effective) {
++        throw new Error(
++          `Revisioned backend preparation returned outside path ${prepared.file.relative}`,
++        );
++      }
++      if (!RevisionedBackendState.sameRevision(prepared.file, effective)) {
++        throw new Error(
++          `Revisioned backend preparation returned wrong revision for ${prepared.file.relative}`,
++        );
++      }
++      preparedByRelativePath.set(prepared.file.relative, prepared);
++    }
++    for (const change of request.changes) {
++      if (!preparedByRelativePath.has(change.file.relative)) {
++        throw new Error(
++          `Revisioned backend preparation omitted changed path ${change.file.relative}`,
++        );
++      }
++    }
++    const candidateByRelativePath = new Map(this.index.byRelativePath);
++    for (const removed of request.removedFiles) {
++      candidateByRelativePath.delete(removed.file.relative);
++    }
++    for (const prepared of preparedFiles) {
++      candidateByRelativePath.set(prepared.file.relative, prepared);
++    }
++    if (
++      candidateByRelativePath.size !== effectiveByRelativePath.size ||
++      [...candidateByRelativePath.keys()].some((path) => !effectiveByRelativePath.has(path))
++    ) {
++      throw new Error("Revisioned backend preparation has an incomplete final key set");
++    }
++    return RevisionedBackendState.buildIndex(candidateByRelativePath, this.index);
++  }
++
++  private refreshSummary(
++    request: RevisionedBackendPreparationRequest<PreparedDetails>,
++    files: readonly WorkspaceFile[],
++  ): BackendRefreshSummary {
++    const added = request.changes.filter((change) => change.kind === "added").length;
++    return {
++      added,
++      changed: request.changes.length - added,
++      removed: request.removedFiles.length,
++      unchanged: files.length - request.changes.length,
++    };
++  }
++
++  private static buildIndex<PreparedDetails>(
++    byRelativePath: ReadonlyMap<string, RevisionedBackendPreparedFile<PreparedDetails>>,
++    previous: RevisionedBackendIndex<PreparedDetails>,
++  ): RevisionedBackendIndex<PreparedDetails> {
++    const declarationsByIdentity = new Map<string, SymbolOverviewNode[]>();
++    const declarationsByRelativePath = new Map<string, readonly SymbolOverviewNode[]>();
++    const diagnosticsByRelativePath = new Map<string, readonly NavigationDiagnostic[]>();
++    const relativePathByAbsolute = new Map<string, string>();
++    for (const prepared of byRelativePath.values()) {
++      const previousPrepared = previous.byRelativePath.get(prepared.file.relative);
++      const unchanged = previousPrepared === prepared;
++      const declarations = unchanged
++        ? (previous.declarationsByRelativePath.get(prepared.file.relative) ?? [])
++        : OverviewTree.walkSymbols(prepared.entries.entries);
++      declarationsByRelativePath.set(prepared.file.relative, declarations);
++      diagnosticsByRelativePath.set(
++        prepared.file.relative,
++        unchanged
++          ? (previous.diagnosticsByRelativePath.get(prepared.file.relative) ?? [])
++          : (prepared.entries.diagnostics ?? []),
++      );
++      relativePathByAbsolute.set(prepared.file.absolute, prepared.file.relative);
++      for (const declaration of declarations) {
++        const key = formatSymbolIdentity(declaration.identity);
++        const matches = declarationsByIdentity.get(key) ?? [];
++        matches.push(declaration);
++        declarationsByIdentity.set(key, matches);
++      }
++    }
++    return {
++      byRelativePath,
++      declarationsByIdentity,
++      declarationsByRelativePath,
++      diagnosticsByRelativePath,
++      relativePathByAbsolute,
++    };
++  }
++
++  private static sameRevision(current: WorkspaceFile, incoming: WorkspaceFile): boolean {
++    return (
++      current.relative === incoming.relative &&
++      current.absolute === incoming.absolute &&
++      current.metadata.changeToken === incoming.metadata.changeToken
++    );
++  }
++}
+diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+index de201c608..3634417a3 100644
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -128,6 +128,16 @@ export type {
+   ResolveSymbolsMode,
+   ResolveSymbolsOptions,
+ } from "./backend/language-backend.js";
++export type {
++  IndexedBackendDeclaration,
++  RevisionedBackendFileChange,
++  RevisionedBackendPreparationRequest,
++  RevisionedBackendPreparedFile,
++} from "./backend/revisioned-backend-state.js";
++export {
++  RevisionedBackendPreparation,
++  RevisionedBackendState,
++} from "./backend/revisioned-backend-state.js";
+ export { BackendRouter } from "./backend/backend-router.js";
+ export { UserFacingError } from "./errors.js";
+ export {

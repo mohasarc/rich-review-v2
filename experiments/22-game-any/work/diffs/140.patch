@@ -1,0 +1,1119 @@
+diff --git a/apps/cli/src/commands/daemon/register-daemon-command.ts b/apps/cli/src/commands/daemon/register-daemon-command.ts
+index cf49c695b..b8c81ce5e 100644
+--- a/apps/cli/src/commands/daemon/register-daemon-command.ts
++++ b/apps/cli/src/commands/daemon/register-daemon-command.ts
+@@ -110,7 +110,8 @@ class DaemonStatusAction {
+     const controller = new DaemonController(
+       registry,
+       new LocalDaemonTransport(dependencies.daemonPolicy.values, {
+-        responseTimeoutPurpose: "status-observer",
++        lifecycleResponseTimeoutMs:
++          dependencies.daemonPolicy.values.transport.statusResponseTimeoutMs,
+       }),
+       stateDirectory,
+       { policy: dependencies.daemonPolicy.values },
+diff --git a/apps/cli/src/daemon/daemon-command-dispatcher.test.ts b/apps/cli/src/daemon/daemon-command-dispatcher.test.ts
+index 163f7a378..40c168ca6 100644
+--- a/apps/cli/src/daemon/daemon-command-dispatcher.test.ts
++++ b/apps/cli/src/daemon/daemon-command-dispatcher.test.ts
+@@ -19,7 +19,7 @@ import {
+   type DaemonRecord,
+ } from "./daemon-protocol.js";
+ import type { DaemonObservation } from "./daemon-record-observer.js";
+-import { DaemonTransportError } from "./local-daemon-transport.js";
++import { DaemonTransportError } from "./daemon-transport-error.js";
+ 
+ const workspaceRoot = resolve("synthetic-workspace");
+ const request: CliExecutionRequest = {
+diff --git a/apps/cli/src/daemon/daemon-command-dispatcher.ts b/apps/cli/src/daemon/daemon-command-dispatcher.ts
+index 2a994025a..f94e76432 100644
+--- a/apps/cli/src/daemon/daemon-command-dispatcher.ts
++++ b/apps/cli/src/daemon/daemon-command-dispatcher.ts
+@@ -27,7 +27,8 @@ import {
+ } from "./daemon-startup-coordinator.js";
+ import { DaemonWorkspaceIdentity } from "./daemon-workspace-identity.js";
+ import { InvocationWorkspaceSelector } from "./invocation-workspace-selector.js";
+-import { DaemonTransportError, LocalDaemonTransport } from "./local-daemon-transport.js";
++import { DaemonTransportError } from "./daemon-transport-error.js";
++import { LocalDaemonTransport } from "./local-daemon-transport.js";
+ import type { DaemonExecutionReceipt, DaemonExecutionRequester } from "./daemon-transport.js";
+ import { DaemonRecordObserver, type DaemonObservation } from "./daemon-record-observer.js";
+ 
+diff --git a/apps/cli/src/daemon/daemon-lifecycle-client.test.ts b/apps/cli/src/daemon/daemon-lifecycle-client.test.ts
+new file mode 100644
+index 000000000..f2b411dc9
+--- /dev/null
++++ b/apps/cli/src/daemon/daemon-lifecycle-client.test.ts
+@@ -0,0 +1,401 @@
++import { describe, expect, it } from "vitest";
++import { DaemonPolicy } from "@symnav/daemon";
++import { DaemonLifecycleClient } from "./daemon-lifecycle-client.js";
++import type {
++  DaemonExecuteRequest,
++  DaemonExecutionStatusRequest,
++  DaemonExecutionStatusResponse,
++  DaemonLifecycleRequest,
++  DaemonLifecycleResponse,
++  DaemonResponse,
++} from "./daemon-protocol.js";
++import { DAEMON_PROTOCOL_VERSION } from "./daemon-protocol.js";
++import { DaemonProtocolValidator } from "./daemon-protocol-validator.js";
++import type { DaemonSocketClient, DaemonSocketConnection } from "./daemon-transport.js";
++import { DaemonWireCodec } from "./daemon-wire-codec.js";
++
++describe("DaemonLifecycleClient", () => {
++  it.each([
++    [
++      {
++        kind: "identify",
++        instanceId: "instance",
++        processToken: "token",
++      },
++      {
++        kind: "identity",
++        instanceId: "instance",
++        processToken: "token",
++        pid: 123,
++        startedAt: 10,
++      },
++    ],
++    [
++      {
++        kind: "ping",
++        protocolVersion: DAEMON_PROTOCOL_VERSION,
++        instanceId: "instance",
++      },
++      {
++        kind: "pong",
++        protocolVersion: DAEMON_PROTOCOL_VERSION,
++        instanceId: "instance",
++        symnavVersion: "test",
++      },
++    ],
++    [
++      {
++        kind: "terminate",
++        instanceId: "instance",
++        processToken: "token",
++      },
++      { kind: "terminating", instanceId: "instance", processToken: "token" },
++    ],
++    [
++      {
++        kind: "kill",
++        instanceId: "instance",
++        processToken: "token",
++      },
++      { kind: "killing", instanceId: "instance", processToken: "token" },
++    ],
++    [
++      {
++        kind: "stop",
++        protocolVersion: DAEMON_PROTOCOL_VERSION,
++        instanceId: "instance",
++      },
++      { kind: "stopped", instanceId: "instance" },
++    ],
++  ] satisfies readonly (readonly [DaemonLifecycleRequest, DaemonLifecycleResponse])[])(
++    "exchanges one correlated $0.kind response",
++    async (request, response) => {
++      const harness = LifecycleClientHarness.responding(response);
++
++      await expect(harness.client.request("daemon-endpoint", request)).resolves.toEqual(response);
++
++      expect(harness.sockets.connections).toEqual([
++        { endpoint: "daemon-endpoint", timeoutMs: harness.responseTimeoutMs },
++      ]);
++      expect(harness.connection.writes).toEqual([harness.codec.encodeControl(request)]);
++      expect(harness.connection.endCount).toBe(1);
++      expect(harness.connection.destroyCount).toBe(0);
++    },
++  );
++
++  it("exchanges one correlated execution-status response", async () => {
++    const request: DaemonExecutionStatusRequest = {
++      kind: "execution-status",
++      protocolVersion: DAEMON_PROTOCOL_VERSION,
++      instanceId: "instance",
++      processToken: "token",
++      requestId: "request",
++    };
++    const response = {
++      kind: "execution-status" as const,
++      instanceId: "instance",
++      processToken: "token",
++      requestId: "request",
++      status: { state: "running" as const, startedAt: 20 },
++    } satisfies DaemonExecutionStatusResponse;
++    const harness = LifecycleClientHarness.responding(response);
++
++    await expect(harness.client.executionStatus("daemon-endpoint", request)).resolves.toEqual(
++      response.status,
++    );
++
++    expect(harness.sockets.connections).toEqual([
++      { endpoint: "daemon-endpoint", timeoutMs: harness.responseTimeoutMs },
++    ]);
++    expect(harness.connection.writes).toEqual([harness.codec.encodeControl(request)]);
++    expect(harness.connection.endCount).toBe(1);
++    expect(harness.connection.destroyCount).toBe(0);
++  });
++
++  it.each([
++    ["missing", []],
++    [
++      "duplicate",
++      [
++        Buffer.concat([
++          lifecycleCodec().encodeControl(pongResponse()),
++          lifecycleCodec().encodeControl(pongResponse()),
++        ]),
++      ],
++    ],
++    ["wrong-kind", [lifecycleCodec().encodeControl({ kind: "stopped", instanceId: "instance" })]],
++    [
++      "wrong-instance",
++      [lifecycleCodec().encodeControl({ ...pongResponse(), instanceId: "other" })],
++    ],
++    ["malformed", [Buffer.from([0, 0, 0, 1, 123])]],
++    ["truncated", [Buffer.from([0, 0, 0, 2, 123])]],
++    ["oversized", [oversizedFramePrefix()]],
++  ] as const)(
++    "rejects a %s lifecycle response and destroys its connection",
++    async (_name, bytes) => {
++      const harness = LifecycleClientHarness.receiving(bytes);
++
++      await expect(harness.client.request("daemon-endpoint", pingRequest())).rejects.toBeInstanceOf(
++        Error,
++      );
++
++      expect(harness.connection.endCount).toBe(0);
++      expect(harness.connection.destroyCount).toBe(1);
++    },
++  );
++
++  it("rejects a wrong identity token and destroys its connection", async () => {
++    const harness = LifecycleClientHarness.responding({
++      kind: "identity",
++      instanceId: "instance",
++      processToken: "other",
++      pid: 123,
++      startedAt: 10,
++    });
++
++    await expect(
++      harness.client.request("daemon-endpoint", {
++        kind: "identify",
++        instanceId: "instance",
++        processToken: "token",
++      }),
++    ).rejects.toMatchObject({ code: "authentication", delivery: "accepted" });
++
++    expect(harness.connection.endCount).toBe(0);
++    expect(harness.connection.destroyCount).toBe(1);
++  });
++
++  it("classifies a decoded semantically malformed lifecycle response as unconfirmed", async () => {
++    const harness = LifecycleClientHarness.responding({
++      kind: "pong",
++      protocolVersion: DAEMON_PROTOCOL_VERSION,
++      instanceId: "instance",
++    });
++
++    await expect(harness.client.request("daemon-endpoint", pingRequest())).rejects.toMatchObject({
++      code: "corrupt",
++      delivery: "submitted-unconfirmed",
++    });
++
++    expect(harness.connection.endCount).toBe(0);
++    expect(harness.connection.destroyCount).toBe(1);
++  });
++
++  it("classifies a decoded semantically malformed execution status as unconfirmed", async () => {
++    const request = executionStatusRequest();
++    const harness = LifecycleClientHarness.responding({
++      kind: "execution-status",
++      instanceId: request.instanceId,
++      processToken: request.processToken,
++      requestId: request.requestId,
++      status: { state: "running" },
++    });
++
++    await expect(harness.client.executionStatus("daemon-endpoint", request)).rejects.toMatchObject({
++      code: "corrupt",
++      delivery: "submitted-unconfirmed",
++    });
++
++    expect(harness.connection.endCount).toBe(0);
++    expect(harness.connection.destroyCount).toBe(1);
++  });
++
++  it("classifies a correlated lifecycle protocol mismatch as accepted", async () => {
++    const harness = LifecycleClientHarness.responding({
++      ...pongResponse(),
++      protocolVersion: DAEMON_PROTOCOL_VERSION + 1,
++    });
++
++    await expect(harness.client.request("daemon-endpoint", pingRequest())).rejects.toMatchObject({
++      code: "incompatible",
++      delivery: "accepted",
++      authenticatedInstanceId: "instance",
++    });
++
++    expect(harness.connection.endCount).toBe(0);
++    expect(harness.connection.destroyCount).toBe(1);
++  });
++
++  it("rejects wrong execution-status request correlation and destroys its connection", async () => {
++    const harness = LifecycleClientHarness.responding({
++      kind: "execution-status",
++      instanceId: "instance",
++      processToken: "token",
++      requestId: "other",
++      status: { state: "unknown" },
++    });
++
++    await expect(
++      harness.client.executionStatus("daemon-endpoint", {
++        kind: "execution-status",
++        protocolVersion: DAEMON_PROTOCOL_VERSION,
++        instanceId: "instance",
++        processToken: "token",
++        requestId: "request",
++      }),
++    ).rejects.toMatchObject({ code: "corrupt", delivery: "accepted" });
++
++    expect(harness.connection.endCount).toBe(0);
++    expect(harness.connection.destroyCount).toBe(1);
++  });
++
++  it("acknowledges one correlated result and closes its connection", async () => {
++    const request = executionRequest();
++    const response = {
++      kind: "result-acknowledged" as const,
++      instanceId: request.instanceId,
++      processToken: request.processToken,
++      requestId: request.requestId,
++      transferId: "transfer",
++    } satisfies DaemonResponse;
++    const harness = LifecycleClientHarness.responding(response);
++
++    await expect(
++      harness.client.acknowledgeResult("daemon-endpoint", request, "transfer"),
++    ).resolves.toBeUndefined();
++
++    expect(harness.connection.writes).toEqual([
++      harness.codec.encodeControl({
++        kind: "result-ack",
++        protocolVersion: request.protocolVersion,
++        instanceId: request.instanceId,
++        processToken: request.processToken,
++        requestId: request.requestId,
++        transferId: "transfer",
++      }),
++    ]);
++    expect(harness.connection.endCount).toBe(1);
++    expect(harness.connection.destroyCount).toBe(1);
++  });
++});
++
++class LifecycleClientHarness {
++  readonly responseTimeoutMs = 321;
++  readonly codec: DaemonWireCodec;
++  readonly connection: ScriptedDaemonSocketConnection;
++  readonly sockets: RecordingDaemonSocketClient;
++  readonly client: DaemonLifecycleClient;
++
++  private constructor(incoming: readonly Uint8Array[]) {
++    this.codec = lifecycleCodec();
++    this.connection = new ScriptedDaemonSocketConnection(incoming);
++    this.sockets = new RecordingDaemonSocketClient(this.connection);
++    this.client = new DaemonLifecycleClient({
++      sockets: this.sockets,
++      codec: this.codec,
++      validator: new DaemonProtocolValidator(),
++      responseTimeoutMs: this.responseTimeoutMs,
++    });
++  }
++
++  static responding(response: unknown): LifecycleClientHarness {
++    const codec = lifecycleCodec();
++    return new LifecycleClientHarness([codec.encodeControl(response)]);
++  }
++
++  static receiving(incoming: readonly Uint8Array[]): LifecycleClientHarness {
++    return new LifecycleClientHarness(incoming);
++  }
++}
++
++class RecordingDaemonSocketClient implements DaemonSocketClient {
++  readonly connections: { readonly endpoint: string; readonly timeoutMs?: number }[] = [];
++
++  constructor(private readonly connection: DaemonSocketConnection) {}
++
++  connect(endpoint: string, timeoutMs?: number): Promise<DaemonSocketConnection> {
++    this.connections.push({ endpoint, ...(timeoutMs === undefined ? {} : { timeoutMs }) });
++    return Promise.resolve(this.connection);
++  }
++}
++
++class ScriptedDaemonSocketConnection implements DaemonSocketConnection {
++  readonly writes: Uint8Array[] = [];
++  endCount = 0;
++  destroyCount = 0;
++  readonly incoming: AsyncIterable<Uint8Array>;
++
++  constructor(bytes: readonly Uint8Array[]) {
++    this.incoming = ScriptedDaemonSocketConnection.stream(bytes);
++  }
++
++  write(frame: Uint8Array): void {
++    this.writes.push(frame);
++  }
++
++  disableTimeout(): void {}
++
++  end(): void {
++    this.endCount += 1;
++  }
++
++  destroy(): void {
++    this.destroyCount += 1;
++  }
++
++  private static async *stream(bytes: readonly Uint8Array[]): AsyncIterable<Uint8Array> {
++    yield* bytes;
++  }
++}
++
++function lifecycleCodec(): DaemonWireCodec {
++  const policy = DaemonPolicy.currentSystem();
++  return new DaemonWireCodec({
++    maximumJsonPayloadBytes: policy.values.transport.maximumJsonPayloadBytes,
++    maximumExecutionControlPayloadBytes:
++      policy.values.transport.maximumExecutionControlPayloadBytes,
++    maximumChunkRawBytes: policy.values.output.maximumChunkRawBytes,
++  });
++}
++
++function pingRequest(): DaemonLifecycleRequest {
++  return {
++    kind: "ping",
++    protocolVersion: DAEMON_PROTOCOL_VERSION,
++    instanceId: "instance",
++  };
++}
++
++function executionStatusRequest(): DaemonExecutionStatusRequest {
++  return {
++    kind: "execution-status",
++    protocolVersion: DAEMON_PROTOCOL_VERSION,
++    instanceId: "instance",
++    processToken: "token",
++    requestId: "request",
++  };
++}
++
++function pongResponse(): DaemonLifecycleResponse {
++  return {
++    kind: "pong",
++    protocolVersion: DAEMON_PROTOCOL_VERSION,
++    instanceId: "instance",
++    symnavVersion: "test",
++  };
++}
++
++function oversizedFramePrefix(): Uint8Array {
++  const policy = DaemonPolicy.currentSystem();
++  const prefix = Buffer.alloc(4);
++  prefix.writeUInt32BE(policy.values.transport.maximumJsonPayloadBytes + 1);
++  return prefix;
++}
++
++function executionRequest(): DaemonExecuteRequest {
++  return {
++    kind: "execute",
++    protocolVersion: DAEMON_PROTOCOL_VERSION,
++    instanceId: "instance",
++    processToken: "token",
++    requestId: "request",
++    commandName: "version",
++    request: {
++      argv: ["--version"],
++      cwd: "/repo",
++      telemetryEnabled: false,
++      executionMode: "warm",
++    },
++  };
++}
+diff --git a/apps/cli/src/daemon/daemon-lifecycle-client.ts b/apps/cli/src/daemon/daemon-lifecycle-client.ts
+new file mode 100644
+index 000000000..7753789ba
+--- /dev/null
++++ b/apps/cli/src/daemon/daemon-lifecycle-client.ts
+@@ -0,0 +1,183 @@
++import type {
++  DaemonExecuteRequest,
++  DaemonExecutionStatus,
++  DaemonExecutionStatusRequest,
++  DaemonExecutionStatusResponse,
++  DaemonLifecycleRequest,
++  DaemonLifecycleResponse,
++  DaemonResultAcknowledgement,
++} from "./daemon-protocol.js";
++import { DaemonProtocolError, type DaemonProtocolValidator } from "./daemon-protocol-validator.js";
++import { DaemonTransportError, type DaemonDeliveryState } from "./daemon-transport-error.js";
++import type { DaemonLifecycleRequester, DaemonSocketClient } from "./daemon-transport.js";
++import type { DaemonWireCodec } from "./daemon-wire-codec.js";
++
++interface DaemonLifecycleClientOptions {
++  readonly sockets: DaemonSocketClient;
++  readonly codec: DaemonWireCodec;
++  readonly validator: DaemonProtocolValidator;
++  readonly responseTimeoutMs: number;
++}
++
++export class DaemonLifecycleClient implements DaemonLifecycleRequester {
++  constructor(private readonly options: DaemonLifecycleClientOptions) {}
++
++  request(endpoint: string, request: DaemonLifecycleRequest): Promise<DaemonLifecycleResponse> {
++    return this.singleResponse(endpoint, request);
++  }
++
++  async executionStatus(
++    endpoint: string,
++    request: DaemonExecutionStatusRequest,
++  ): Promise<DaemonExecutionStatus> {
++    const response = await this.singleResponse(endpoint, request);
++    if (response.kind !== "execution-status") {
++      throw new DaemonTransportError(
++        "corrupt",
++        "accepted",
++        "Daemon returned a non-status response",
++      );
++    }
++    return response.status;
++  }
++
++  async acknowledgeResult(
++    endpoint: string,
++    request: Pick<
++      DaemonExecuteRequest,
++      "protocolVersion" | "instanceId" | "processToken" | "requestId"
++    >,
++    transferId: string,
++  ): Promise<void> {
++    const acknowledgement: DaemonResultAcknowledgement = {
++      kind: "result-ack",
++      protocolVersion: request.protocolVersion,
++      instanceId: request.instanceId,
++      processToken: request.processToken,
++      requestId: request.requestId,
++      transferId,
++    };
++    const decoder = this.options.codec.controlDecoder();
++    let connection: Awaited<ReturnType<DaemonSocketClient["connect"]>> | undefined;
++    try {
++      connection = await this.options.sockets.connect(endpoint, this.options.responseTimeoutMs);
++      connection.write(this.options.codec.encodeControl(acknowledgement));
++      let responseReceived = false;
++      for await (const bytes of connection.incoming) {
++        for (const response of decoder.append(bytes)) {
++          if (responseReceived) throw new Error("Duplicate daemon result acknowledgement");
++          this.options.validator.resultAcknowledgement(request, transferId, response);
++          responseReceived = true;
++        }
++        if (responseReceived) connection.end();
++      }
++      decoder.assertComplete();
++      if (!responseReceived) throw new Error("Daemon acknowledgement response is missing");
++      connection.destroy();
++    } catch (error) {
++      connection?.destroy();
++      if (DaemonLifecycleClient.isSocketTimeout(error)) {
++        throw new Error("Daemon result acknowledgement timed out");
++      }
++      throw error;
++    }
++  }
++
++  private singleResponse(
++    endpoint: string,
++    request: DaemonLifecycleRequest,
++  ): Promise<DaemonLifecycleResponse>;
++  private singleResponse(
++    endpoint: string,
++    request: DaemonExecutionStatusRequest,
++  ): Promise<DaemonExecutionStatusResponse>;
++  private async singleResponse(
++    endpoint: string,
++    request: DaemonLifecycleRequest | DaemonExecutionStatusRequest,
++  ): Promise<DaemonLifecycleResponse | DaemonExecutionStatusResponse> {
++    this.options.validator.request(request);
++    const decoder = this.options.codec.controlDecoder();
++    let connection: Awaited<ReturnType<DaemonSocketClient["connect"]>>;
++    let delivery: DaemonDeliveryState = "not-submitted";
++    try {
++      connection = await this.options.sockets.connect(endpoint, this.options.responseTimeoutMs);
++    } catch (error) {
++      if (DaemonLifecycleClient.isSocketTimeout(error)) {
++        throw new DaemonTransportError("timeout", delivery, "Daemon request timed out");
++      }
++      const message = error instanceof Error ? error.message : String(error);
++      throw new DaemonTransportError("unreachable", delivery, message);
++    }
++    try {
++      connection.write(this.options.codec.encodeControl(request));
++      delivery = "submitted-unconfirmed";
++    } catch (error) {
++      connection.destroy();
++      throw DaemonLifecycleClient.transportError(error, delivery);
++    }
++    try {
++      for await (const bytes of connection.incoming) {
++        try {
++          const values = decoder.append(bytes);
++          if (values.length > 1) throw new Error("Daemon returned multiple responses");
++          const value = values[0];
++          if (value === undefined) continue;
++          const response =
++            request.kind === "execution-status"
++              ? this.options.validator.executionStatusResponse(request, value)
++              : this.options.validator.lifecycleResponse(request, value);
++          delivery = "accepted";
++          connection.end();
++          return response;
++        } catch (error) {
++          throw DaemonLifecycleClient.transportError(error, delivery);
++        }
++      }
++      try {
++        decoder.assertComplete();
++      } catch (error) {
++        throw DaemonLifecycleClient.transportError(error, delivery);
++      }
++      throw new DaemonTransportError(
++        "closed",
++        delivery,
++        "Daemon connection ended before a response",
++      );
++    } catch (error) {
++      connection.destroy();
++      if (DaemonLifecycleClient.isSocketTimeout(error)) {
++        throw new DaemonTransportError("timeout", delivery, "Daemon request timed out");
++      }
++      if (!(error instanceof DaemonTransportError) && !(error instanceof DaemonProtocolError)) {
++        const message = error instanceof Error ? error.message : String(error);
++        throw new DaemonTransportError("closed", delivery, message);
++      }
++      throw DaemonLifecycleClient.transportError(error, delivery);
++    }
++  }
++
++  private static transportError(
++    error: unknown,
++    delivery: DaemonDeliveryState,
++  ): DaemonTransportError {
++    if (error instanceof DaemonTransportError) return error;
++    if (error instanceof DaemonProtocolError) {
++      return new DaemonTransportError(
++        error.code,
++        "accepted",
++        error.message,
++        error.authenticatedInstanceId,
++      );
++    }
++    const message = error instanceof Error ? error.message : String(error);
++    return new DaemonTransportError("corrupt", delivery, message);
++  }
++
++  private static isSocketTimeout(error: unknown): boolean {
++    return (
++      error instanceof Error &&
++      "code" in error &&
++      (error as Error & { code?: string }).code === "ETIMEDOUT"
++    );
++  }
++}
+diff --git a/apps/cli/src/daemon/daemon-record-observer.test.ts b/apps/cli/src/daemon/daemon-record-observer.test.ts
+index 076df81ba..4d6745832 100644
+--- a/apps/cli/src/daemon/daemon-record-observer.test.ts
++++ b/apps/cli/src/daemon/daemon-record-observer.test.ts
+@@ -8,7 +8,7 @@ import {
+   type DaemonResponse,
+ } from "./daemon-protocol.js";
+ import { DaemonRecordObserver } from "./daemon-record-observer.js";
+-import { DaemonTransportError } from "./local-daemon-transport.js";
++import { DaemonTransportError } from "./daemon-transport-error.js";
+ 
+ describe("DaemonRecordObserver", () => {
+   it("reports an unpublished starting record without probing its endpoint", async () => {
+diff --git a/apps/cli/src/daemon/daemon-record-observer.ts b/apps/cli/src/daemon/daemon-record-observer.ts
+index c3399442e..9a5dac34c 100644
+--- a/apps/cli/src/daemon/daemon-record-observer.ts
++++ b/apps/cli/src/daemon/daemon-record-observer.ts
+@@ -1,7 +1,7 @@
+ import type { DaemonProcessTerminator } from "./daemon-process-launcher.js";
+ import { DAEMON_PROTOCOL_VERSION, type DaemonPong, type DaemonRecord } from "./daemon-protocol.js";
+ import type { DaemonLifecycleRequestSender } from "./daemon-transport.js";
+-import { DaemonTransportError } from "./local-daemon-transport.js";
++import { DaemonTransportError } from "./daemon-transport-error.js";
+ 
+ export interface DaemonIdentityEvidence {
+   readonly instanceId: string;
+diff --git a/apps/cli/src/daemon/daemon-transport-error.ts b/apps/cli/src/daemon/daemon-transport-error.ts
+new file mode 100644
+index 000000000..8656f7480
+--- /dev/null
++++ b/apps/cli/src/daemon/daemon-transport-error.ts
+@@ -0,0 +1,38 @@
++import { DaemonAdmissionRejections, type DaemonExecuteRejectionCode } from "@symnav/daemon";
++
++export type DaemonDeliveryState = "not-submitted" | "submitted-unconfirmed" | "accepted";
++
++export type DaemonTransportFailureCode =
++  | "unreachable"
++  | "timeout"
++  | "corrupt"
++  | "incompatible"
++  | "authentication"
++  | "closed"
++  | "rejected";
++
++export class DaemonTransportError extends Error {
++  readonly authenticatedInstanceId?: string;
++  readonly retrySafe: boolean;
++
++  constructor(
++    readonly code: DaemonTransportFailureCode,
++    readonly delivery: DaemonDeliveryState,
++    message: string,
++    authenticatedInstanceId?: string,
++    authenticatedRejectionCode?: DaemonExecuteRejectionCode,
++  ) {
++    super(message);
++    this.name = "DaemonTransportError";
++    if (authenticatedInstanceId !== undefined) {
++      this.authenticatedInstanceId = authenticatedInstanceId;
++    }
++    this.retrySafe =
++      delivery === "not-submitted" ||
++      (code === "rejected" &&
++        delivery === "submitted-unconfirmed" &&
++        authenticatedInstanceId !== undefined &&
++        authenticatedRejectionCode !== undefined &&
++        DaemonAdmissionRejections.retrySafe(authenticatedRejectionCode));
++  }
++}
+diff --git a/apps/cli/src/daemon/local-daemon-transport-execution.test.ts b/apps/cli/src/daemon/local-daemon-transport-execution.test.ts
+index 56e402379..1c5e0780b 100644
+--- a/apps/cli/src/daemon/local-daemon-transport-execution.test.ts
++++ b/apps/cli/src/daemon/local-daemon-transport-execution.test.ts
+@@ -11,7 +11,7 @@ import {
+   type DaemonExecutionServerFrame,
+   type DaemonServerMessage,
+ } from "./daemon-protocol.js";
+-import { DaemonTransportError } from "./local-daemon-transport.js";
++import { DaemonTransportError } from "./daemon-transport-error.js";
+ import { TestLocalDaemonTransport as LocalDaemonTransport } from "../../test/helpers/local-daemon-transport.js";
+ import {
+   DaemonCompletionSpoolStore as RuntimeDaemonCompletionSpoolStore,
+diff --git a/apps/cli/src/daemon/local-daemon-transport-socket-client.test.ts b/apps/cli/src/daemon/local-daemon-transport-socket-client.test.ts
+index d345d0296..294d533ac 100644
+--- a/apps/cli/src/daemon/local-daemon-transport-socket-client.test.ts
++++ b/apps/cli/src/daemon/local-daemon-transport-socket-client.test.ts
+@@ -1,5 +1,6 @@
+ import { describe, expect, it } from "vitest";
+ import { DaemonPolicy } from "@symnav/daemon";
++import { DaemonPolicyTestFactory } from "@symnav/daemon/policy-testing";
+ import type { DaemonSocketClient, DaemonSocketConnection } from "./daemon-transport.js";
+ import { DAEMON_PROTOCOL_VERSION } from "./daemon-protocol.js";
+ import { DaemonWireCodec } from "./daemon-wire-codec.js";
+@@ -46,6 +47,90 @@ describe("LocalDaemonTransport socket client boundary", () => {
+     expect(connection.destroyCount).toBe(0);
+   });
+ 
++  it("composes daemon-status lifecycle requests with the observer timeout", async () => {
++    const policy = DaemonPolicyTestFactory.withOverrides(DaemonPolicy.currentSystem(), {
++      transport: {
++        singleResponseTimeoutMs: 503,
++        statusResponseTimeoutMs: 97,
++        executionAdmissionTimeoutMs: 97,
++      },
++    });
++    const codec = new DaemonWireCodec({
++      maximumJsonPayloadBytes: policy.values.transport.maximumJsonPayloadBytes,
++      maximumExecutionControlPayloadBytes:
++        policy.values.transport.maximumExecutionControlPayloadBytes,
++      maximumChunkRawBytes: policy.values.output.maximumChunkRawBytes,
++    });
++    const connection = new ScriptedDaemonSocketConnection([
++      codec.encodeControl({
++        kind: "pong",
++        protocolVersion: DAEMON_PROTOCOL_VERSION,
++        instanceId: "instance",
++        symnavVersion: "test",
++      }),
++    ]);
++    const sockets = new RecordingDaemonSocketClient(connection);
++    const transport = new LocalDaemonTransport(policy.values, {
++      sockets,
++      lifecycleResponseTimeoutMs: policy.values.transport.statusResponseTimeoutMs,
++    });
++
++    await transport.request("daemon-endpoint", {
++      kind: "ping",
++      protocolVersion: DAEMON_PROTOCOL_VERSION,
++      instanceId: "instance",
++    });
++
++    expect(sockets.connections).toEqual([
++      {
++        endpoint: "daemon-endpoint",
++        timeoutMs: policy.values.transport.statusResponseTimeoutMs,
++      },
++    ]);
++  });
++
++  it("composes execution-status requests with the ordinary response timeout", async () => {
++    const policy = DaemonPolicyTestFactory.withOverrides(DaemonPolicy.currentSystem(), {
++      transport: {
++        singleResponseTimeoutMs: 503,
++        statusResponseTimeoutMs: 97,
++        executionAdmissionTimeoutMs: 97,
++      },
++    });
++    const codec = new DaemonWireCodec({
++      maximumJsonPayloadBytes: policy.values.transport.maximumJsonPayloadBytes,
++      maximumExecutionControlPayloadBytes:
++        policy.values.transport.maximumExecutionControlPayloadBytes,
++      maximumChunkRawBytes: policy.values.output.maximumChunkRawBytes,
++    });
++    const connection = new ScriptedDaemonSocketConnection([
++      codec.encodeControl({
++        kind: "execution-status",
++        instanceId: "instance",
++        processToken: "token",
++        requestId: "request",
++        status: { state: "unknown" },
++      }),
++    ]);
++    const sockets = new RecordingDaemonSocketClient(connection);
++    const transport = new LocalDaemonTransport(policy.values, { sockets });
++
++    await transport.executionStatus("daemon-endpoint", {
++      kind: "execution-status",
++      protocolVersion: DAEMON_PROTOCOL_VERSION,
++      instanceId: "instance",
++      processToken: "token",
++      requestId: "request",
++    });
++
++    expect(sockets.connections).toEqual([
++      {
++        endpoint: "daemon-endpoint",
++        timeoutMs: policy.values.transport.singleResponseTimeoutMs,
++      },
++    ]);
++  });
++
+   it("receives execution frames through the injected byte connection", async () => {
+     const policy = DaemonPolicy.currentSystem();
+     const codec = new DaemonWireCodec({
+diff --git a/apps/cli/src/daemon/local-daemon-transport-validation.test.ts b/apps/cli/src/daemon/local-daemon-transport-validation.test.ts
+index 2c8f73de4..c7d408dea 100644
+--- a/apps/cli/src/daemon/local-daemon-transport-validation.test.ts
++++ b/apps/cli/src/daemon/local-daemon-transport-validation.test.ts
+@@ -13,10 +13,8 @@ import type {
+   DaemonLifecycleRequest,
+ } from "./daemon-protocol.js";
+ import { DAEMON_PROTOCOL_VERSION } from "./daemon-protocol.js";
+-import {
+-  DaemonTransportError,
+-  LocalDaemonTransport as RuntimeLocalDaemonTransport,
+-} from "./local-daemon-transport.js";
++import { DaemonTransportError } from "./daemon-transport-error.js";
++import { LocalDaemonTransport as RuntimeLocalDaemonTransport } from "./local-daemon-transport.js";
+ import { TestLocalDaemonTransport as LocalDaemonTransport } from "../../test/helpers/local-daemon-transport.js";
+ 
+ describe("LocalDaemonTransport validation", () => {
+@@ -94,7 +92,7 @@ describe("LocalDaemonTransport validation", () => {
+         });
+       });
+       const transport = new RuntimeLocalDaemonTransport(policy.values, {
+-        responseTimeoutPurpose: "status-observer",
++        lifecycleResponseTimeoutMs: policy.values.transport.statusResponseTimeoutMs,
+       });
+ 
+       await expect(transport.request(endpoint, request)).rejects.toMatchObject({
+diff --git a/apps/cli/src/daemon/local-daemon-transport.ts b/apps/cli/src/daemon/local-daemon-transport.ts
+index 37f89f011..a75657f2f 100644
+--- a/apps/cli/src/daemon/local-daemon-transport.ts
++++ b/apps/cli/src/daemon/local-daemon-transport.ts
+@@ -1,21 +1,13 @@
+ import { existsSync, mkdirSync, rmSync } from "node:fs";
+ import { createServer, type Server, type Socket } from "node:net";
+ import { dirname } from "node:path";
+-import {
+-  DaemonAdmissionRejections,
+-  type DaemonExecuteRejectionCode,
+-  type DaemonExecutionFailureCode,
+-  type DaemonPolicyValues,
+-} from "@symnav/daemon";
++import { type DaemonExecutionFailureCode, type DaemonPolicyValues } from "@symnav/daemon";
+ import type {
+   DaemonExecuteRequest,
+   DaemonExecutionServerFrame,
+-  DaemonExecutionStatus,
+   DaemonExecutionStatusRequest,
+-  DaemonExecutionStatusResponse,
+   DaemonLifecycleRequest,
+   DaemonLifecycleResponse,
+-  DaemonResultAcknowledgement,
+   DaemonResultChunk,
+   DaemonServerMessage,
+   DaemonServer,
+@@ -35,9 +27,11 @@ import { DaemonProtocolError, DaemonProtocolValidator } from "./daemon-protocol-
+ import { DaemonClientResultCapture } from "./daemon-client-result-capture.js";
+ import { DaemonResultTransferReceiver } from "./daemon-result-transfer-receiver.js";
+ import { LocalDaemonSocketClient } from "./local-daemon-socket-client.js";
++import { DaemonLifecycleClient } from "./daemon-lifecycle-client.js";
++import { DaemonTransportError, type DaemonDeliveryState } from "./daemon-transport-error.js";
+ 
+ interface LocalDaemonTransportOptions {
+-  readonly responseTimeoutPurpose?: "ordinary" | "status-observer";
++  readonly lifecycleResponseTimeoutMs?: number;
+   readonly writeChunkSize?: number;
+   readonly outputDirectory?: string;
+   readonly sockets?: DaemonSocketClient;
+@@ -48,43 +42,6 @@ export type LocalDaemonTransportPolicy = Pick<
+   "transport" | "delivery" | "output"
+ >;
+ 
+-export type DaemonDeliveryState = "not-submitted" | "submitted-unconfirmed" | "accepted";
+-
+-export type DaemonTransportFailureCode =
+-  | "unreachable"
+-  | "timeout"
+-  | "corrupt"
+-  | "incompatible"
+-  | "authentication"
+-  | "closed"
+-  | "rejected";
+-
+-export class DaemonTransportError extends Error {
+-  readonly authenticatedInstanceId?: string;
+-  readonly retrySafe: boolean;
+-
+-  constructor(
+-    readonly code: DaemonTransportFailureCode,
+-    readonly delivery: DaemonDeliveryState,
+-    message: string,
+-    authenticatedInstanceId?: string,
+-    authenticatedRejectionCode?: DaemonExecuteRejectionCode,
+-  ) {
+-    super(message);
+-    this.name = "DaemonTransportError";
+-    if (authenticatedInstanceId !== undefined) {
+-      this.authenticatedInstanceId = authenticatedInstanceId;
+-    }
+-    this.retrySafe =
+-      delivery === "not-submitted" ||
+-      (code === "rejected" &&
+-        delivery === "submitted-unconfirmed" &&
+-        authenticatedInstanceId !== undefined &&
+-        authenticatedRejectionCode !== undefined &&
+-        DaemonAdmissionRejections.retrySafe(authenticatedRejectionCode));
+-  }
+-}
+-
+ class ListeningDaemonServer implements DaemonServer {
+   constructor(
+     private readonly server: Server,
+@@ -108,7 +65,7 @@ class ListeningDaemonServer implements DaemonServer {
+ export class LocalDaemonTransport
+   implements DaemonLifecycleRequester, DaemonExecutionRequester, DaemonRequestServer
+ {
+-  private readonly requestTimeoutMs: number;
++  private readonly endpointProbeTimeoutMs: number;
+   private readonly executionRequestTimeoutMs: number;
+   private readonly writeChunkSize: number | undefined;
+   private readonly outputDirectory: string | undefined;
+@@ -117,12 +74,10 @@ export class LocalDaemonTransport
+   private readonly outputPolicy: DaemonPolicyValues["output"];
+   private readonly deliveryPolicy: DaemonPolicyValues["delivery"];
+   private readonly sockets: DaemonSocketClient;
++  private readonly lifecycle: DaemonLifecycleClient;
+ 
+   constructor(policy: LocalDaemonTransportPolicy, options: LocalDaemonTransportOptions = {}) {
+-    this.requestTimeoutMs =
+-      options.responseTimeoutPurpose === "status-observer"
+-        ? policy.transport.statusResponseTimeoutMs
+-        : policy.transport.singleResponseTimeoutMs;
++    this.endpointProbeTimeoutMs = policy.transport.singleResponseTimeoutMs;
+     this.executionRequestTimeoutMs = policy.transport.executionAdmissionTimeoutMs;
+     this.codec = new DaemonWireCodec({
+       maximumJsonPayloadBytes: policy.transport.maximumJsonPayloadBytes,
+@@ -138,6 +93,13 @@ export class LocalDaemonTransport
+       new LocalDaemonSocketClient(
+         options.writeChunkSize === undefined ? {} : { writeChunkSize: options.writeChunkSize },
+       );
++    this.lifecycle = new DaemonLifecycleClient({
++      sockets: this.sockets,
++      codec: this.codec,
++      validator: this.validator,
++      responseTimeoutMs:
++        options.lifecycleResponseTimeoutMs ?? policy.transport.singleResponseTimeoutMs,
++    });
+   }
+ 
+   canFrame(value: unknown): boolean {
+@@ -150,80 +112,7 @@ export class LocalDaemonTransport
+   }
+ 
+   request(endpoint: string, request: DaemonLifecycleRequest): Promise<DaemonLifecycleResponse> {
+-    return this.singleResponse(endpoint, request);
+-  }
+-
+-  private singleResponse(
+-    endpoint: string,
+-    request: DaemonLifecycleRequest,
+-  ): Promise<DaemonLifecycleResponse>;
+-  private singleResponse(
+-    endpoint: string,
+-    request: DaemonExecutionStatusRequest,
+-  ): Promise<DaemonExecutionStatusResponse>;
+-  private async singleResponse(
+-    endpoint: string,
+-    request: DaemonLifecycleRequest | DaemonExecutionStatusRequest,
+-  ): Promise<DaemonLifecycleResponse | DaemonExecutionStatusResponse> {
+-    this.validator.request(request);
+-    const decoder = this.codec.controlDecoder();
+-    let connection: Awaited<ReturnType<DaemonSocketClient["connect"]>>;
+-    let delivery: DaemonDeliveryState = "not-submitted";
+-    try {
+-      connection = await this.sockets.connect(endpoint, this.requestTimeoutMs);
+-    } catch (error) {
+-      if (LocalDaemonTransport.isSocketTimeout(error)) {
+-        throw new DaemonTransportError("timeout", delivery, "Daemon request timed out");
+-      }
+-      const message = error instanceof Error ? error.message : String(error);
+-      throw new DaemonTransportError("unreachable", delivery, message);
+-    }
+-    try {
+-      connection.write(this.codec.encodeControl(request));
+-      delivery = "submitted-unconfirmed";
+-    } catch (error) {
+-      connection.destroy();
+-      throw LocalDaemonTransport.transportError(error, delivery);
+-    }
+-    try {
+-      for await (const bytes of connection.incoming) {
+-        try {
+-          const values = decoder.append(bytes);
+-          if (values.length > 1) throw new Error("Daemon returned multiple responses");
+-          const value = values[0];
+-          if (value === undefined) continue;
+-          const response =
+-            request.kind === "execution-status"
+-              ? this.validator.executionStatusResponse(request, value)
+-              : this.validator.lifecycleResponse(request, value);
+-          delivery = "accepted";
+-          connection.end();
+-          return response;
+-        } catch (error) {
+-          throw LocalDaemonTransport.transportError(error, delivery);
+-        }
+-      }
+-      try {
+-        decoder.assertComplete();
+-      } catch (error) {
+-        throw LocalDaemonTransport.transportError(error, delivery);
+-      }
+-      throw new DaemonTransportError(
+-        "closed",
+-        delivery,
+-        "Daemon connection ended before a response",
+-      );
+-    } catch (error) {
+-      connection.destroy();
+-      if (LocalDaemonTransport.isSocketTimeout(error)) {
+-        throw new DaemonTransportError("timeout", delivery, "Daemon request timed out");
+-      }
+-      if (!(error instanceof DaemonTransportError) && !(error instanceof DaemonProtocolError)) {
+-        const message = error instanceof Error ? error.message : String(error);
+-        throw new DaemonTransportError("closed", delivery, message);
+-      }
+-      throw LocalDaemonTransport.transportError(error, delivery);
+-    }
++    return this.lifecycle.request(endpoint, request);
+   }
+ 
+   execute(endpoint: string, request: DaemonExecuteRequest): Promise<DaemonExecutionReceipt> {
+@@ -586,53 +475,14 @@ export class LocalDaemonTransport
+     request: DaemonExecuteRequest,
+     manifest: Extract<DaemonExecutionServerFrame, { kind: "result-manifest" }>["manifest"],
+   ): Promise<void> {
+-    const acknowledgement: DaemonResultAcknowledgement = {
+-      kind: "result-ack",
+-      protocolVersion: request.protocolVersion,
+-      instanceId: request.instanceId,
+-      processToken: request.processToken,
+-      requestId: request.requestId,
+-      transferId: manifest.transferId,
+-    };
+-    const decoder = this.codec.controlDecoder();
+-    let connection: Awaited<ReturnType<DaemonSocketClient["connect"]>> | undefined;
+-    try {
+-      connection = await this.sockets.connect(endpoint, this.requestTimeoutMs);
+-      connection.write(this.codec.encodeControl(acknowledgement));
+-      let responseReceived = false;
+-      for await (const bytes of connection.incoming) {
+-        for (const response of decoder.append(bytes)) {
+-          if (responseReceived) throw new Error("Duplicate daemon result acknowledgement");
+-          this.validator.resultAcknowledgement(request, manifest.transferId, response);
+-          responseReceived = true;
+-        }
+-        if (responseReceived) connection.end();
+-      }
+-      decoder.assertComplete();
+-      if (!responseReceived) throw new Error("Daemon acknowledgement response is missing");
+-      connection.destroy();
+-    } catch (error) {
+-      connection?.destroy();
+-      if (LocalDaemonTransport.isSocketTimeout(error)) {
+-        throw new Error("Daemon result acknowledgement timed out");
+-      }
+-      throw error;
+-    }
++    return this.lifecycle.acknowledgeResult(endpoint, request, manifest.transferId);
+   }
+ 
+-  async executionStatus(
++  executionStatus(
+     endpoint: string,
+     request: DaemonExecutionStatusRequest,
+-  ): Promise<DaemonExecutionStatus> {
+-    const response = await this.singleResponse(endpoint, request);
+-    if (response.kind !== "execution-status") {
+-      throw new DaemonTransportError(
+-        "corrupt",
+-        "accepted",
+-        "Daemon returned a non-status response",
+-      );
+-    }
+-    return response.status;
++  ): ReturnType<DaemonLifecycleClient["executionStatus"]> {
++    return this.lifecycle.executionStatus(endpoint, request);
+   }
+ 
+   async listen(endpoint: string, handler: DaemonRequestHandler): Promise<DaemonServer> {
+@@ -665,7 +515,7 @@ export class LocalDaemonTransport
+ 
+   private async endpointIsReachable(endpoint: string): Promise<boolean> {
+     try {
+-      const connection = await this.sockets.connect(endpoint, this.requestTimeoutMs);
++      const connection = await this.sockets.connect(endpoint, this.endpointProbeTimeoutMs);
+       connection.destroy();
+       return true;
+     } catch {

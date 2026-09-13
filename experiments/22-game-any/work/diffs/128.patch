@@ -1,0 +1,1067 @@
+diff --git a/apps/cli/src/cli-program-executor.test.ts b/apps/cli/src/cli-program-executor.test.ts
+index 040e060a7..8964b6e76 100644
+--- a/apps/cli/src/cli-program-executor.test.ts
++++ b/apps/cli/src/cli-program-executor.test.ts
+@@ -3,14 +3,13 @@ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import { Writable } from "node:stream";
+ import { afterEach, describe, expect, it, vi } from "vitest";
+-import { InMemoryFileSystem, WorkspaceCatalog, type OverviewFileEntries } from "@symnav/core";
++import { InMemoryFileSystem, type OverviewFileEntries, WorkspaceSession } from "@symnav/core";
+ import * as commandExecutionResult from "./command-execution-result.js";
+ import { CliProgramExecutor, CommandResultReplayer } from "./cli-program-executor.js";
+ import { fakeDependencies } from "../test/integration/commands/helpers/fake-program-dependencies.js";
+ import { createCapturingRecorder } from "../test/integration/commands/helpers/fake-program-dependencies.js";
+ import { createFakeProgramContext } from "../test/integration/commands/helpers/fake-program-context.js";
+ import { FakeLanguageBackend } from "../test/integration/commands/helpers/fake-language-backend.js";
+-import { WorkspaceRequestScopeFactory } from "./workspace-request-scope.js";
+ 
+ describe("CliProgramExecutor", () => {
+   const temporaryRoots: string[] = [];
+@@ -182,6 +181,25 @@ describe("CliProgramExecutor", () => {
+     await result.output.dispose();
+   });
+ 
++  it.each([["--version"], ["--help"], ["overview", "--help"]])(
++    "does not construct backends for help invocation %j",
++    async (...argv) => {
++      const backends = vi.fn(() => {
++        throw new Error("help must not construct backends");
++      });
++
++      const result = await new CliProgramExecutor(fakeDependencies({ backends })).execute({
++        argv,
++        cwd: "/repo",
++        telemetryEnabled: false,
++      });
++
++      expect(result.exitCode).toBe(0);
++      expect(backends).not.toHaveBeenCalled();
++      await result.output.dispose();
++    },
++  );
++
+   it("captures user errors, crashes, JSON, and hidden stats", async () => {
+     const stateDir = mkdtempSync(join(tmpdir(), "symnav-executor-"));
+     temporaryRoots.push(stateDir);
+@@ -251,16 +269,42 @@ describe("CliProgramExecutor", () => {
+     expect(await decode(result)).toBe("Cannot answer: daemon response capacity exceeded.\n");
+   });
+ 
+-  it("reuses an injected request scope factory across executions", async () => {
++  it("creates a fresh request session for each non-injected navigation", async () => {
++    const fs = new ListingCountingFileSystem({
++      "/repo/.git/HEAD": "ref: refs/heads/main\n",
++      "/repo/src/a.ts": "export const a = 1;\n",
++    });
++    const createdBackends: FakeLanguageBackend[] = [];
++    const backends = vi.fn(() => {
++      const backend = new FakeLanguageBackend({ accept: (path) => path.endsWith(".ts") });
++      createdBackends.push(backend);
++      return [backend];
++    });
++    const executor = new CliProgramExecutor(fakeDependencies({ fs, backends }));
++
++    await executor.execute({ argv: ["resolve", "a"], cwd: "/repo", telemetryEnabled: false });
++    fs.directoryReads.length = 0;
++    await executor.execute({ argv: ["resolve", "a"], cwd: "/repo", telemetryEnabled: false });
++
++    expect(backends).toHaveBeenCalledTimes(2);
++    expect(createdBackends).toHaveLength(2);
++    expect(fs.directoryReads).not.toEqual([]);
++  });
++
++  it("reuses an injected workspace session across executions", async () => {
+     const fs = new ListingCountingFileSystem({
+       "/repo/.git/HEAD": "ref: refs/heads/main\n",
+       "/repo/src/a.ts": "export const a = 1;\n",
+     });
+     const backend = new FakeLanguageBackend({ accept: (path) => path.endsWith(".ts") });
+-    const factory = new WorkspaceRequestScopeFactory(fs, [backend], new WorkspaceCatalog(fs));
++    const workspaceSession = new WorkspaceSession({
++      fileSystem: fs,
++      backends: [backend],
++      discoveryRetention: "session",
++    });
+     const executor = new CliProgramExecutor(
+       fakeDependencies({ fs, backends: () => [backend] }),
+-      factory,
++      workspaceSession,
+     );
+ 
+     await executor.execute({
+diff --git a/apps/cli/src/cli-program-executor.ts b/apps/cli/src/cli-program-executor.ts
+index 17f989cc0..de37d1df6 100644
+--- a/apps/cli/src/cli-program-executor.ts
++++ b/apps/cli/src/cli-program-executor.ts
+@@ -1,4 +1,5 @@
+ import type { CliExecutionRequest, CommandExecutionResult } from "./command-execution-result.js";
++import type { WorkspaceSession } from "@symnav/core";
+ import {
+   CommandOutputCapacityError,
+   ControlledCommandResult,
+@@ -9,7 +10,6 @@ export { CommandResultReplayer } from "./command-execution-result.js";
+ import type { ProgramContext } from "./program-context.js";
+ import type { ProgramDependencies } from "./program-dependencies.js";
+ import { buildProgram } from "./program.js";
+-import type { WorkspaceRequestScopeFactory } from "./workspace-request-scope.js";
+ 
+ class CapturedProgramExit extends Error {
+   constructor(readonly exitCode: number) {
+@@ -20,7 +20,7 @@ class CapturedProgramExit extends Error {
+ export class CliProgramExecutor {
+   constructor(
+     private readonly dependencies: ProgramDependencies,
+-    private readonly scopeFactory?: WorkspaceRequestScopeFactory,
++    private readonly workspaceSession?: WorkspaceSession,
+     private readonly outputOptions: OrderedCommandOutputOptions = {},
+   ) {}
+ 
+@@ -39,7 +39,7 @@ export class CliProgramExecutor {
+       recorder: this.dependencies.recorder,
+       telemetryEnabled: request.telemetryEnabled,
+       executionMode: request.executionMode ?? "cold",
+-      ...(this.scopeFactory === undefined ? {} : { scopeFactory: this.scopeFactory }),
++      ...(this.workspaceSession === undefined ? {} : { workspaceSession: this.workspaceSession }),
+     };
+ 
+     try {
+diff --git a/apps/cli/src/command.ts b/apps/cli/src/command.ts
+index bd53f5294..ee1a31b8f 100644
+--- a/apps/cli/src/command.ts
++++ b/apps/cli/src/command.ts
+@@ -1,12 +1,13 @@
+ import {
+-  createWorkspace,
+   type BackendRouter,
+   type GitHistory,
+   type NavigationDiagnosticSeverity,
+   type ResultWithDiagnostics,
+   UserFacingError,
+   type Workspace,
++  type WorkspacePreparation,
+   type WorkspaceSnapshot,
++  WorkspaceSession,
+ } from "@symnav/core";
+ import { performance } from "node:perf_hooks";
+ 
+@@ -16,7 +17,6 @@ const severityPrefixes: Record<NavigationDiagnosticSeverity, string> = {
+ import type { ArgShape, OutcomeReport } from "@symnav/telemetry";
+ import type { ProgramContext } from "./program-context.js";
+ import type { ProgramDependencies } from "./program-dependencies.js";
+-import { WorkspaceRequestScopeFactory } from "./workspace-request-scope.js";
+ 
+ export interface CommandContext<Args> {
+   readonly workspace: Workspace;
+@@ -58,24 +58,31 @@ export async function runCommand<Result extends ResultWithDiagnostics, Args>(
+ 
+   try {
+     const freshnessStartedAt = performance.now();
+-    const scopeFactory =
+-      dependencies.scopeFactory ?? new WorkspaceRequestScopeFactory(fs, dependencies.backends());
+     const snapshotSelector = command.snapshotForBackendRefresh;
+-    workspace = snapshotSelector
+-      ? await createWorkspace({ startDir: cwd, fs })
+-      : await scopeFactory.openWorkspace(cwd);
++    const workspaceSession =
++      dependencies.workspaceSession ??
++      new WorkspaceSession({
++        fileSystem: fs,
++        backends: dependencies.backends(),
++        discoveryRetention: "request",
++      });
++    const preparation: WorkspacePreparation =
++      snapshotSelector === undefined
++        ? { coverage: "workspace" }
++        : {
++            coverage: "selection",
++            selectSnapshot: (scopeWorkspace, scopeRouter) =>
++              snapshotSelector({
++                workspace: scopeWorkspace,
++                router: scopeRouter,
++                git: dependencies.git,
++                cwd,
++                args,
++              }),
++          };
++    workspace = await workspaceSession.openWorkspace(cwd, preparation.coverage);
+     command.validate?.(args);
+-    const preparedScope = snapshotSelector
+-      ? await scopeFactory.prepareWorkspace(workspace, (scopeWorkspace, scopeRouter) =>
+-          snapshotSelector({
+-            workspace: scopeWorkspace,
+-            router: scopeRouter,
+-            git: dependencies.git,
+-            cwd,
+-            args,
+-          }),
+-        )
+-      : await scopeFactory.prepareWorkspace(workspace);
++    const preparedScope = await workspaceSession.prepareWorkspace(workspace, preparation);
+     workspace = preparedScope.workspace;
+     const freshnessCompletedAt = performance.now();
+     try {
+diff --git a/apps/cli/src/daemon/daemon-navigation-worker-entry.ts b/apps/cli/src/daemon/daemon-navigation-worker-entry.ts
+index a4547aa7b..dc01e46dd 100644
+--- a/apps/cli/src/daemon/daemon-navigation-worker-entry.ts
++++ b/apps/cli/src/daemon/daemon-navigation-worker-entry.ts
+@@ -96,7 +96,7 @@ class DaemonNavigationWorkerEntry {
+       this.retainedProgram = new RetainedWorkspaceProgram(dependencies, (refresh) => {
+         this.latestRefresh = refresh;
+       });
+-      const prepared = await this.retainedProgram.scopeFactory.prepare(workspaceRoot);
++      const prepared = await this.retainedProgram.workspaceSession.prepare(workspaceRoot);
+       this.latestRefresh = prepared.refresh;
+       const totalMs = performance.now() - startedAt;
+       this.send({
+@@ -149,9 +149,7 @@ class DaemonNavigationWorkerEntry {
+ 
+   private async releaseTransientResources(operationId: string): Promise<void> {
+     try {
+-      await Promise.all(
+-        this.retainedProgram?.backends.map((backend) => backend.releaseTransientResources()) ?? [],
+-      );
++      await this.retainedProgram?.workspaceSession.releaseTransientResources();
+       const heap = getHeapStatistics();
+       this.send({
+         kind: "heap",
+@@ -166,9 +164,7 @@ class DaemonNavigationWorkerEntry {
+   }
+ 
+   private async close(): Promise<void> {
+-    await Promise.all(
+-      this.retainedProgram?.backends.map((backend) => backend.releaseTransientResources()) ?? [],
+-    );
++    await this.retainedProgram?.workspaceSession.releaseTransientResources();
+     this.send({ kind: "closed", generation: this.data.generation });
+     this.port.close();
+   }
+diff --git a/apps/cli/src/daemon/retained-workspace-program.ts b/apps/cli/src/daemon/retained-workspace-program.ts
+index 56b438a25..b80285175 100644
+--- a/apps/cli/src/daemon/retained-workspace-program.ts
++++ b/apps/cli/src/daemon/retained-workspace-program.ts
+@@ -1,31 +1,29 @@
+-import { type BackendRefreshSummary, type LanguageBackend, WorkspaceCatalog } from "@symnav/core";
++import { type BackendRefreshSummary, WorkspaceSession } from "@symnav/core";
+ import type { CliExecutionRequest, CommandExecutionResult } from "../command-execution-result.js";
+ import { CliProgramExecutor } from "../cli-program-executor.js";
+ import type { ProgramDependencies } from "../program-dependencies.js";
+-import { WorkspaceRequestScopeFactory } from "../workspace-request-scope.js";
+ 
+ export class RetainedWorkspaceProgram {
+-  readonly backends: readonly LanguageBackend[];
+-  readonly scopeFactory: WorkspaceRequestScopeFactory;
++  readonly workspaceSession: WorkspaceSession;
+   private readonly executor: CliProgramExecutor;
+ 
+   constructor(
+     dependencies: ProgramDependencies,
+     backendRefreshed?: (summary: BackendRefreshSummary) => void,
+   ) {
+-    this.backends = dependencies.backends();
+-    this.scopeFactory = new WorkspaceRequestScopeFactory(
+-      dependencies.fs,
+-      this.backends,
+-      new WorkspaceCatalog(dependencies.fs),
+-    );
++    const backends = dependencies.backends();
++    this.workspaceSession = new WorkspaceSession({
++      fileSystem: dependencies.fs,
++      backends,
++      discoveryRetention: "session",
++    });
+     this.executor = new CliProgramExecutor(
+       {
+         ...dependencies,
+-        backends: () => this.backends,
++        backends: () => backends,
+         ...(backendRefreshed === undefined ? {} : { backendRefreshed }),
+       },
+-      this.scopeFactory,
++      this.workspaceSession,
+     );
+   }
+ 
+diff --git a/apps/cli/src/program-dependencies.ts b/apps/cli/src/program-dependencies.ts
+index 32a484170..921d84ef4 100644
+--- a/apps/cli/src/program-dependencies.ts
++++ b/apps/cli/src/program-dependencies.ts
+@@ -1,8 +1,13 @@
+-import type { BackendRefreshSummary, FileSystem, GitHistory, LanguageBackend } from "@symnav/core";
++import type {
++  BackendRefreshSummary,
++  FileSystem,
++  GitHistory,
++  LanguageBackend,
++  WorkspaceSession,
++} from "@symnav/core";
+ import type { Clock, Recorder } from "@symnav/telemetry";
+ import type { TelemetryIdentityProvider } from "./telemetry/telemetry-identity.js";
+ import type { CommandExecutionMode } from "./command-execution-result.js";
+-import type { WorkspaceRequestScopeFactory } from "./workspace-request-scope.js";
+ 
+ export interface CommandPhaseDurations {
+   readonly freshnessMs: number;
+@@ -23,5 +28,5 @@ export interface ProgramDependencies {
+   symnavVersion: string;
+   backendRefreshed?: (summary: BackendRefreshSummary) => void;
+   commandPhasesObserved?: (durations: CommandPhaseDurations) => void;
+-  scopeFactory?: WorkspaceRequestScopeFactory;
++  readonly workspaceSession?: WorkspaceSession;
+ }
+diff --git a/apps/cli/src/workspace-request-scope.test.ts b/apps/cli/src/workspace-request-scope.test.ts
+deleted file mode 100644
+index 11b89c1d0..000000000
+--- a/apps/cli/src/workspace-request-scope.test.ts
++++ /dev/null
+@@ -1,157 +0,0 @@
+-import { describe, expect, it } from "vitest";
+-
+-import { TypeScriptBackend, TypeScriptWorkspaceState } from "@symnav/backend-typescript";
+-import {
+-  InMemoryFileSystem,
+-  type FileMetadata,
+-  type Workspace,
+-  WorkspaceCatalog,
+-} from "@symnav/core";
+-
+-import { FakeLanguageBackend } from "../test/integration/commands/helpers/fake-language-backend.js";
+-import { WorkspaceRequestScopeFactory } from "./workspace-request-scope.js";
+-
+-class FailingSiblingMetadataFileSystem extends InMemoryFileSystem {
+-  readonly siblingMetadataReads: string[] = [];
+-  private failSiblingMetadata = false;
+-
+-  failUnrelatedSiblingMetadata(): void {
+-    this.failSiblingMetadata = true;
+-    this.siblingMetadataReads.length = 0;
+-  }
+-
+-  override async metadata(absPath: string): Promise<FileMetadata> {
+-    if (absPath.startsWith("/repo/siblings/")) {
+-      this.siblingMetadataReads.push(absPath);
+-      if (this.failSiblingMetadata) {
+-        throw new Error(`unrelated metadata failure: ${absPath}`);
+-      }
+-    }
+-    return super.metadata(absPath);
+-  }
+-}
+-
+-describe("WorkspaceRequestScopeFactory", () => {
+-  it("creates fresh request snapshots while reusing the provided backend instances", async () => {
+-    const fs = new InMemoryFileSystem({
+-      "/repo/.git/HEAD": "ref: refs/heads/main\n",
+-      "/repo/src/a.ts": "export const a = 1;\n",
+-    });
+-    const backend = new FakeLanguageBackend({ accept: (path) => path.endsWith(".ts") });
+-    const factory = new WorkspaceRequestScopeFactory(fs, [backend]);
+-
+-    const first = await factory.prepare("/repo");
+-    const second = await factory.prepare("/repo");
+-
+-    expect(first.workspace).not.toBe(second.workspace);
+-    expect(first.snapshot).not.toBe(second.snapshot);
+-    expect(first.snapshot.files.map((file) => file.relative)).toEqual(["src/a.ts"]);
+-    expect(second.snapshot.files.map((file) => file.relative)).toEqual(["src/a.ts"]);
+-    expect(first.router.find("src/a.ts")).toBe(backend);
+-    expect(second.router.find("src/a.ts")).toBe(backend);
+-    expect(first.refresh).toEqual({ added: 1, changed: 0, removed: 0, unchanged: 0 });
+-    expect(second.refresh).toEqual({ added: 1, changed: 0, removed: 0, unchanged: 0 });
+-    expect(backend.refreshCalls).toHaveLength(2);
+-  });
+-
+-  it("retains omitted siblings across an overview-style partial scope", async () => {
+-    const fs = new InMemoryFileSystem({
+-      "/repo/.git/HEAD": "ref: refs/heads/main\n",
+-      "/repo/src/a.ts": "export const a = 1;\n",
+-      "/repo/src/b.ts": "export const b = 2;\n",
+-    });
+-    const state = new TypeScriptWorkspaceState(fs);
+-    const backend = new TypeScriptBackend(fs, state);
+-    const factory = new WorkspaceRequestScopeFactory(fs, [backend]);
+-
+-    const firstFullScope = await factory.prepare("/repo");
+-    const siblingSourceFile = state.sourceFile("src/b.ts");
+-    const overviewScope = await factory.prepare("/repo", async (workspace) => {
+-      const fullSnapshot = await workspace.snapshot();
+-      return {
+-        root: fullSnapshot.root,
+-        files: fullSnapshot.files.filter((file) => file.relative === "src/a.ts"),
+-      };
+-    });
+-
+-    expect(firstFullScope.refresh).toEqual({
+-      added: 2,
+-      changed: 0,
+-      removed: 0,
+-      unchanged: 0,
+-    });
+-    expect(overviewScope.refresh).toEqual({
+-      added: 0,
+-      changed: 0,
+-      removed: 0,
+-      unchanged: 1,
+-    });
+-    expect(siblingSourceFile).toBeDefined();
+-    expect(state.currentFileCount()).toBe(2);
+-    expect(state.sourceFile("src/b.ts")).toBe(siblingSourceFile);
+-
+-    const secondFullScope = await factory.prepare("/repo");
+-
+-    expect(secondFullScope.refresh).toEqual({
+-      added: 0,
+-      changed: 0,
+-      removed: 0,
+-      unchanged: 2,
+-    });
+-    expect(state.sourceFile("src/b.ts")).toBe(siblingSourceFile);
+-  });
+-
+-  it("publishes a new immutable catalog turn only when prepare starts", async () => {
+-    const fs = new InMemoryFileSystem({
+-      "/repo/.git/HEAD": "ref: refs/heads/main\n",
+-      "/repo/src/a.ts": "export const a = 1;\n",
+-    });
+-    const backend = new FakeLanguageBackend({ accept: (path) => path.endsWith(".ts") });
+-    const factory = new WorkspaceRequestScopeFactory(fs, [backend], new WorkspaceCatalog(fs));
+-
+-    const first = await factory.prepare("/repo");
+-    const second = await factory.prepare("/repo");
+-
+-    expect(first.workspace).not.toBe(second.workspace);
+-    expect(first.snapshot).not.toBe(second.snapshot);
+-    expect(Object.isFrozen(first.snapshot)).toBe(true);
+-    expect(Object.isFrozen(first.snapshot.files)).toBe(true);
+-    expect(first.snapshot.files[0]).toBe(second.snapshot.files[0]);
+-  });
+-
+-  it("prepares a retained selection without reconciling unrelated siblings", async () => {
+-    const siblings = Object.fromEntries(
+-      Array.from({ length: 4_000 }, (_, index) => [
+-        `/repo/siblings/file-${index}.ts`,
+-        `export const sibling${index} = ${index};\n`,
+-      ]),
+-    );
+-    const fs = new FailingSiblingMetadataFileSystem({
+-      "/repo/.git/HEAD": "ref: refs/heads/main\n",
+-      "/repo/src/target.ts": "export const target = true;\n",
+-      ...siblings,
+-    });
+-    const catalog = new WorkspaceCatalog(fs);
+-    await catalog.refresh("/repo");
+-    fs.failUnrelatedSiblingMetadata();
+-    const retainedFactory = new WorkspaceRequestScopeFactory(
+-      fs,
+-      [new FakeLanguageBackend({ accept: (path) => path.endsWith(".ts") })],
+-      catalog,
+-    );
+-    const coldFactory = new WorkspaceRequestScopeFactory(fs, [
+-      new FakeLanguageBackend({ accept: (path) => path.endsWith(".ts") }),
+-    ]);
+-    const selectTarget = async (workspace: Workspace) => {
+-      const target = await workspace.resolveInputPath("src/target.ts", "/repo");
+-      return workspace.snapshot([target]);
+-    };
+-
+-    const retained = await retainedFactory.prepare("/repo", selectTarget);
+-    const cold = await coldFactory.prepare("/repo", selectTarget);
+-
+-    expect(retained.snapshot).toEqual(cold.snapshot);
+-    expect(retained.snapshot.files.map((file) => file.relative)).toEqual(["src/target.ts"]);
+-    expect(fs.siblingMetadataReads).toEqual([]);
+-  });
+-});
+diff --git a/apps/cli/src/workspace-request-scope.ts b/apps/cli/src/workspace-request-scope.ts
+deleted file mode 100644
+index 2cdfc9412..000000000
+--- a/apps/cli/src/workspace-request-scope.ts
++++ /dev/null
+@@ -1,55 +0,0 @@
+-import {
+-  BackendRouter,
+-  createWorkspace,
+-  type BackendRefreshCoverage,
+-  type BackendRefreshSummary,
+-  type FileSystem,
+-  type LanguageBackend,
+-  type Workspace,
+-  type WorkspaceSnapshot,
+-  WorkspaceCatalog,
+-} from "@symnav/core";
+-
+-export interface PreparedCommandScope {
+-  readonly workspace: Workspace;
+-  readonly snapshot: WorkspaceSnapshot;
+-  readonly router: BackendRouter;
+-  readonly refresh: BackendRefreshSummary;
+-}
+-
+-export class WorkspaceRequestScopeFactory {
+-  constructor(
+-    private readonly fs: FileSystem,
+-    private readonly backends: readonly LanguageBackend[],
+-    private readonly catalog?: WorkspaceCatalog,
+-  ) {}
+-
+-  async prepare(
+-    startDir: string,
+-    selectSnapshot?: (workspace: Workspace, router: BackendRouter) => Promise<WorkspaceSnapshot>,
+-  ): Promise<PreparedCommandScope> {
+-    const workspace = selectSnapshot
+-      ? await createWorkspace({ startDir, fs: this.fs })
+-      : await this.openWorkspace(startDir);
+-    return this.prepareWorkspace(workspace, selectSnapshot);
+-  }
+-
+-  openWorkspace(startDir: string): Promise<Workspace> {
+-    return this.catalog
+-      ? this.catalog.refresh(startDir)
+-      : createWorkspace({ startDir, fs: this.fs });
+-  }
+-
+-  async prepareWorkspace(
+-    workspace: Workspace,
+-    selectSnapshot?: (workspace: Workspace, router: BackendRouter) => Promise<WorkspaceSnapshot>,
+-  ): Promise<PreparedCommandScope> {
+-    const router = new BackendRouter(this.backends);
+-    const snapshot = selectSnapshot
+-      ? await selectSnapshot(workspace, router)
+-      : await workspace.snapshot();
+-    const coverage: BackendRefreshCoverage = selectSnapshot ? "selection" : "workspace";
+-    const refresh = await router.refresh(snapshot, coverage);
+-    return { workspace, snapshot, router, refresh };
+-  }
+-}
+diff --git a/apps/cli/test/integration/commands/helpers/fake-program-dependencies.ts b/apps/cli/test/integration/commands/helpers/fake-program-dependencies.ts
+index 357b085eb..ee90ada44 100644
+--- a/apps/cli/test/integration/commands/helpers/fake-program-dependencies.ts
++++ b/apps/cli/test/integration/commands/helpers/fake-program-dependencies.ts
+@@ -25,6 +25,9 @@ export function fakeDependencies(
+     ...(overrides.executionMode === undefined ? {} : { executionMode: overrides.executionMode }),
+     identity: overrides.identity ?? createFakeIdentityProvider(),
+     symnavVersion: overrides.symnavVersion ?? "0.0.0-test",
++    ...(overrides.workspaceSession === undefined
++      ? {}
++      : { workspaceSession: overrides.workspaceSession }),
+   };
+ }
+ 
+diff --git a/apps/cli/test/integration/commands/overview/overview-command.test.ts b/apps/cli/test/integration/commands/overview/overview-command.test.ts
+index ce3a8c931..362e3364c 100644
+--- a/apps/cli/test/integration/commands/overview/overview-command.test.ts
++++ b/apps/cli/test/integration/commands/overview/overview-command.test.ts
+@@ -3,11 +3,10 @@ import {
+   InMemoryFileSystem,
+   type OverviewExpansionResult,
+   type OverviewFileEntries,
+-  WorkspaceCatalog,
++  WorkspaceSession,
+ } from "@symnav/core";
+ import { TypeScriptBackend } from "@symnav/backend-typescript";
+ import { buildProgram } from "../../../../src/program.js";
+-import { WorkspaceRequestScopeFactory } from "../../../../src/workspace-request-scope.js";
+ import { FakeLanguageBackend } from "../helpers/fake-language-backend.js";
+ import { fakeDependencies } from "../helpers/fake-program-dependencies.js";
+ import { createFakeProgramContext } from "../helpers/fake-program-context.js";
+@@ -191,14 +190,17 @@ describe("symnav overview happy path", () => {
+       fakeDependencies({ fs, backends: () => [coldBackend] }),
+     );
+     const retainedBackend = new TypeScriptBackend(fs);
+-    const catalog = new WorkspaceCatalog(fs);
+-    await catalog.refresh("/repo");
++    const workspaceSession = new WorkspaceSession({
++      fileSystem: fs,
++      backends: [retainedBackend],
++      discoveryRetention: "session",
++    });
++    await workspaceSession.openWorkspace("/repo", "workspace");
+     fs.failSiblingMetadata();
+-    const scopeFactory = new WorkspaceRequestScopeFactory(fs, [retainedBackend], catalog);
+ 
+     const warm = await parse(["overview", "src/a.ts"], {
+       ...fakeDependencies({ fs, backends: () => [retainedBackend] }),
+-      scopeFactory,
++      workspaceSession,
+     });
+ 
+     expect(warm).toEqual(cold);
+@@ -237,15 +239,18 @@ describe("symnav overview happy path", () => {
+         },
+         "/repo/siblings/",
+       );
+-      const catalog = new WorkspaceCatalog(fs);
+-      await catalog.refresh("/repo");
+-      fs.failSiblingMetadata();
+       const backend = new TypeScriptBackend(fs);
+-      const scopeFactory = new WorkspaceRequestScopeFactory(fs, [backend], catalog);
++      const workspaceSession = new WorkspaceSession({
++        fileSystem: fs,
++        backends: [backend],
++        discoveryRetention: "session",
++      });
++      await workspaceSession.openWorkspace("/repo", "workspace");
++      fs.failSiblingMetadata();
+ 
+       const result = await parse(["overview", target], {
+         ...fakeDependencies({ fs, backends: () => [backend] }),
+-        scopeFactory,
++        workspaceSession,
+       });
+ 
+       if (stdoutContains === undefined) {
+diff --git a/apps/cli/test/integration/commands/run-command.test.ts b/apps/cli/test/integration/commands/run-command.test.ts
+index 9ad2f3dbf..1c6624e51 100644
+--- a/apps/cli/test/integration/commands/run-command.test.ts
++++ b/apps/cli/test/integration/commands/run-command.test.ts
+@@ -7,6 +7,7 @@ import {
+   type ResultWithDiagnostics,
+   type SymbolIdentity,
+   UserFacingError,
++  WorkspaceSession,
+ } from "@symnav/core";
+ import type { ArgShape } from "@symnav/telemetry";
+ import { runCommand } from "../../../src/command.js";
+@@ -73,6 +74,35 @@ class StubCommand implements Command<StubResult, StubArgs> {
+ const stubArgs = (note: string): StubArgs => ({ note });
+ 
+ describe("runCommand lifecycle", () => {
++  it("uses an injected workspace session without constructing request backends", async () => {
++    const context = createFakeProgramContext({ cwd: "/repo" });
++    const fileSystem = new InMemoryFileSystem({
++      "/repo/.git/HEAD": "ref: refs/heads/main\n",
++      "/repo/src/a.ts": "export const a = true;\n",
++    });
++    const backend = new FakeLanguageBackend();
++    const workspaceSession = new WorkspaceSession({
++      fileSystem,
++      backends: [backend],
++      discoveryRetention: "session",
++    });
++    const backends = vi.fn(() => {
++      throw new Error("request backends should not be constructed");
++    });
++
++    await runCommand(new StubCommand(), {
++      context,
++      dependencies: fakeDependencies({ fs: fileSystem, backends, workspaceSession }),
++      cwdOverride: undefined,
++      json: false,
++      args: stubArgs("session"),
++    });
++
++    expect(context.stdout.text()).toBe("text:computed");
++    expect(backends).not.toHaveBeenCalled();
++    expect(backend.refreshCalls).toHaveLength(1);
++  });
++
+   it("snapshots and refreshes once before compute reuses workspace files", async () => {
+     const context = createFakeProgramContext({ cwd: "/repo" });
+     const fs = new CountingFileSystem(
+diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+index c5389574b..e83e22cc5 100644
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -130,6 +130,13 @@ export type {
+ } from "./workspace/workspace.js";
+ export { createWorkspace } from "./workspace/workspace.js";
+ export { WorkspaceCatalog } from "./workspace/workspace-catalog.js";
++export {
++  WorkspaceSession,
++  type PreparedWorkspaceScope,
++  type WorkspaceDiscoveryRetention,
++  type WorkspacePreparation,
++  type WorkspaceSnapshotSelector,
++} from "./workspace/workspace-session.js";
+ export { InMemoryFileSystem } from "./workspace/in-memory/in-memory-file-system.js";
+ export type {
+   BackendRefreshCoverage,
+diff --git a/packages/core/src/workspace/workspace-session.test.ts b/packages/core/src/workspace/workspace-session.test.ts
+new file mode 100644
+index 000000000..f462170ec
+--- /dev/null
++++ b/packages/core/src/workspace/workspace-session.test.ts
+@@ -0,0 +1,296 @@
++import { describe, expect, it, vi } from "vitest";
++
++import type { CallEdge } from "../intermediate-representation/call-edge.js";
++import type { CallTargetResolution } from "../intermediate-representation/call-target.js";
++import type { OverviewFileEntries } from "../intermediate-representation/overview-tree.js";
++import type { SymbolReference } from "../intermediate-representation/references.js";
++import type { SymbolOverviewNode } from "../intermediate-representation/overview-tree.js";
++import type {
++  BackendRefreshRequest,
++  BackendRefreshSummary,
++  LanguageBackend,
++} from "../backend/language-backend.js";
++import type { ResolvedPath, Workspace } from "./workspace.js";
++import { InMemoryFileSystem } from "./in-memory/in-memory-file-system.js";
++import { WorkspaceSession } from "./workspace-session.js";
++
++class RecordingBackend implements LanguageBackend {
++  readonly refreshCalls: BackendRefreshRequest[] = [];
++  readonly releaseCalls: number[] = [];
++
++  constructor(
++    readonly name: string,
++    private readonly acceptsPath: (path: string) => boolean = () => true,
++    private readonly refreshResult: BackendRefreshSummary = {
++      added: 0,
++      changed: 0,
++      removed: 0,
++      unchanged: 0,
++    },
++    private readonly release: () => Promise<void> = async () => undefined,
++  ) {}
++
++  accepts(filePath: string): boolean {
++    return this.acceptsPath(filePath);
++  }
++
++  async refresh(request: BackendRefreshRequest): Promise<BackendRefreshSummary> {
++    this.refreshCalls.push(request);
++    return this.refreshResult;
++  }
++
++  releaseTransientResources(): Promise<void> {
++    this.releaseCalls.push(this.releaseCalls.length + 1);
++    return this.release();
++  }
++
++  async fileEntries(path: ResolvedPath): Promise<OverviewFileEntries> {
++    return { file: path.relative, entries: [] };
++  }
++
++  async resolveSymbols(): Promise<readonly SymbolOverviewNode[]> {
++    return [];
++  }
++
++  async declarations(): Promise<readonly SymbolOverviewNode[]> {
++    return [];
++  }
++
++  async findDefinitions(): Promise<readonly SymbolOverviewNode[]> {
++    return [];
++  }
++
++  async findReferences(): Promise<readonly SymbolReference[]> {
++    return [];
++  }
++
++  async findCallTarget(): Promise<CallTargetResolution> {
++    return { outcome: "not-found" };
++  }
++
++  async findCallees(): Promise<readonly CallEdge[]> {
++    return [];
++  }
++
++  async findCallers(): Promise<readonly CallEdge[]> {
++    return [];
++  }
++}
++
++class SelectiveFailureFileSystem extends InMemoryFileSystem {
++  failPath: string | undefined;
++
++  override async metadata(absPath: string) {
++    if (absPath === this.failPath) throw new Error(`metadata failed: ${absPath}`);
++    return super.metadata(absPath);
++  }
++}
++
++describe("WorkspaceSession", () => {
++  it("returns fresh turns while only session discovery retains file identity", async () => {
++    const fileSystem = workspaceFileSystem();
++    const requestSession = new WorkspaceSession({
++      fileSystem,
++      backends: [new RecordingBackend("request")],
++      discoveryRetention: "request",
++    });
++    const retainedSession = new WorkspaceSession({
++      fileSystem,
++      backends: [new RecordingBackend("session")],
++      discoveryRetention: "session",
++    });
++
++    const firstRequest = await requestSession.prepare("/repo");
++    const secondRequest = await requestSession.prepare("/repo");
++    const firstRetained = await retainedSession.prepare("/repo");
++    const secondRetained = await retainedSession.prepare("/repo");
++
++    expect(firstRequest.workspace).not.toBe(secondRequest.workspace);
++    expect(firstRequest.snapshot).not.toBe(secondRequest.snapshot);
++    expect(firstRequest.router).not.toBe(secondRequest.router);
++    expect(firstRequest.snapshot.files[0]).not.toBe(secondRequest.snapshot.files[0]);
++    expect(firstRetained.workspace).not.toBe(secondRetained.workspace);
++    expect(firstRetained.snapshot).not.toBe(secondRetained.snapshot);
++    expect(firstRetained.router).not.toBe(secondRetained.router);
++    expect(firstRetained.snapshot.files[0]).toBe(secondRetained.snapshot.files[0]);
++  });
++
++  it.each(["request", "session"] as const)(
++    "uses fresh lazy selection discovery for %s retention",
++    async (discoveryRetention) => {
++      const fileSystem = new SelectiveFailureFileSystem({
++        "/repo/.git/HEAD": "ref: refs/heads/main\n",
++        "/repo/src/target.ts": "export const target = true;\n",
++        "/repo/src/sibling.ts": "export const sibling = true;\n",
++      });
++      const backend = new RecordingBackend(discoveryRetention);
++      const session = new WorkspaceSession({ fileSystem, backends: [backend], discoveryRetention });
++      if (discoveryRetention === "session") await session.prepare("/repo");
++      fileSystem.failPath = "/repo/src/sibling.ts";
++
++      const selected = await session.prepare("/repo", {
++        coverage: "selection",
++        selectSnapshot: select("src/target.ts", "/repo"),
++      });
++
++      expect(selected.snapshot.files.map((file) => file.relative)).toEqual(["src/target.ts"]);
++      expect(backend.refreshCalls.at(-1)?.coverage).toBe("selection");
++      fileSystem.failPath = undefined;
++      await session.prepare("/repo");
++      expect(backend.refreshCalls.at(-1)?.coverage).toBe("workspace");
++    },
++  );
++
++  it("copies backend order and creates a new first-accepting router for each turn", async () => {
++    const first = new RecordingBackend("first");
++    const second = new RecordingBackend("second");
++    const suppliedBackends: LanguageBackend[] = [first, second];
++    const session = new WorkspaceSession({
++      fileSystem: workspaceFileSystem(),
++      backends: suppliedBackends,
++      discoveryRetention: "request",
++    });
++    suppliedBackends.reverse();
++
++    const firstTurn = await session.prepare("/repo");
++    const secondTurn = await session.prepare("/repo");
++
++    expect(firstTurn.router).not.toBe(secondTurn.router);
++    expect(firstTurn.router.find("src/a.ts")).toBe(first);
++    expect(first.refreshCalls[0]?.snapshot.files).toHaveLength(1);
++    expect(second.refreshCalls[0]?.snapshot.files).toHaveLength(0);
++    expect(session).not.toHaveProperty("backends");
++  });
++
++  it("does not refresh backends when selection fails", async () => {
++    const backend = new RecordingBackend("backend");
++    const session = new WorkspaceSession({
++      fileSystem: workspaceFileSystem(),
++      backends: [backend],
++      discoveryRetention: "session",
++    });
++
++    await expect(
++      session.prepare("/repo", {
++        coverage: "selection",
++        selectSnapshot: async () => {
++          throw new Error("selection failed");
++        },
++      }),
++    ).rejects.toThrow("selection failed");
++    expect(backend.refreshCalls).toEqual([]);
++  });
++
++  it("returns no stale scope when retained catalog discovery fails", async () => {
++    const fileSystem = new SelectiveFailureFileSystem({
++      "/repo/.git/HEAD": "ref: refs/heads/main\n",
++      "/repo/src/a.ts": "export const a = true;\n",
++    });
++    const backend = new RecordingBackend("backend");
++    const session = new WorkspaceSession({
++      fileSystem,
++      backends: [backend],
++      discoveryRetention: "session",
++    });
++    await session.prepare("/repo");
++    fileSystem.failPath = "/repo/src/a.ts";
++
++    await expect(session.prepare("/repo")).rejects.toThrow("metadata failed: /repo/src/a.ts");
++    expect(backend.refreshCalls).toHaveLength(1);
++  });
++
++  it("does not return a scope after a later backend fails following an earlier commit", async () => {
++    const first = new RecordingBackend("first", (path) => path.endsWith(".ts"), {
++      added: 1,
++      changed: 0,
++      removed: 0,
++      unchanged: 0,
++    });
++    const second = new RecordingBackend(
++      "second",
++      () => false,
++      undefined,
++      async () => undefined,
++    );
++    second.refresh = vi.fn(async () => {
++      throw new Error("later backend failed");
++    });
++    const session = new WorkspaceSession({
++      fileSystem: workspaceFileSystem(),
++      backends: [first, second],
++      discoveryRetention: "request",
++    });
++
++    await expect(session.prepare("/repo")).rejects.toThrow("later backend failed");
++    expect(first.refreshCalls).toHaveLength(1);
++    expect(second.refresh).toHaveBeenCalledOnce();
++  });
++
++  it("retains independent catalogs for multiple accepted roots", async () => {
++    const fileSystem = new InMemoryFileSystem({
++      "/first/.git/HEAD": "ref: refs/heads/main\n",
++      "/first/a.ts": "export const a = true;\n",
++      "/second/.git/HEAD": "ref: refs/heads/main\n",
++      "/second/b.ts": "export const b = true;\n",
++    });
++    const session = new WorkspaceSession({
++      fileSystem,
++      backends: [new RecordingBackend("backend")],
++      discoveryRetention: "session",
++    });
++
++    const first = await session.prepare("/first");
++    const second = await session.prepare("/second");
++    const retainedFirst = await session.prepare("/first");
++
++    expect(first.workspace.root).toBe("/first");
++    expect(second.workspace.root).toBe("/second");
++    expect(first.snapshot.files[0]).toBe(retainedFirst.snapshot.files[0]);
++  });
++
++  it("starts every release concurrently, retains state, and retries every backend", async () => {
++    let releaseFirst: (() => void) | undefined;
++    const firstGate = new Promise<void>((resolve) => {
++      releaseFirst = resolve;
++    });
++    const first = new RecordingBackend(
++      "first",
++      () => true,
++      undefined,
++      () => firstGate,
++    );
++    const second = new RecordingBackend("second");
++    const session = new WorkspaceSession({
++      fileSystem: workspaceFileSystem(),
++      backends: [first, second],
++      discoveryRetention: "session",
++    });
++    const beforeRelease = await session.prepare("/repo");
++
++    const releasing = session.releaseTransientResources();
++    expect(first.releaseCalls).toHaveLength(1);
++    expect(second.releaseCalls).toHaveLength(1);
++    releaseFirst?.();
++    await releasing;
++    await session.releaseTransientResources();
++    const afterRelease = await session.prepare("/repo");
++
++    expect(first.releaseCalls).toHaveLength(2);
++    expect(second.releaseCalls).toHaveLength(2);
++    expect(afterRelease.snapshot.files[0]).toBe(beforeRelease.snapshot.files[0]);
++  });
++});
++
++function workspaceFileSystem(): InMemoryFileSystem {
++  return new InMemoryFileSystem({
++    "/repo/.git/HEAD": "ref: refs/heads/main\n",
++    "/repo/src/a.ts": "export const a = true;\n",
++  });
++}
++
++function select(relativePath: string, cwd: string) {
++  return async (workspace: Workspace) => {
++    const path = await workspace.resolveInputPath(relativePath, cwd);
++    return workspace.snapshot([path]);
++  };
++}
+diff --git a/packages/core/src/workspace/workspace-session.ts b/packages/core/src/workspace/workspace-session.ts
+new file mode 100644
+index 000000000..bddbb9658
+--- /dev/null
++++ b/packages/core/src/workspace/workspace-session.ts
+@@ -0,0 +1,81 @@
++import { BackendRouter } from "../backend/backend-router.js";
++import type {
++  BackendRefreshCoverage,
++  BackendRefreshSummary,
++  LanguageBackend,
++} from "../backend/language-backend.js";
++import type { FileSystem } from "./file-system.js";
++import { WorkspaceCatalog } from "./workspace-catalog.js";
++import { createWorkspace, type Workspace, type WorkspaceSnapshot } from "./workspace.js";
++
++export type WorkspaceDiscoveryRetention = "request" | "session";
++
++export type WorkspaceSnapshotSelector = (
++  workspace: Workspace,
++  router: BackendRouter,
++) => Promise<WorkspaceSnapshot>;
++
++export type WorkspacePreparation =
++  | { readonly coverage: "workspace" }
++  | {
++      readonly coverage: "selection";
++      readonly selectSnapshot: WorkspaceSnapshotSelector;
++    };
++
++export interface PreparedWorkspaceScope {
++  readonly workspace: Workspace;
++  readonly snapshot: WorkspaceSnapshot;
++  readonly router: BackendRouter;
++  readonly refresh: BackendRefreshSummary;
++}
++
++export class WorkspaceSession {
++  readonly #fileSystem: FileSystem;
++  readonly #backends: readonly LanguageBackend[];
++  readonly #catalog: WorkspaceCatalog | undefined;
++
++  constructor(options: {
++    readonly fileSystem: FileSystem;
++    readonly backends: readonly LanguageBackend[];
++    readonly discoveryRetention: WorkspaceDiscoveryRetention;
++  }) {
++    this.#fileSystem = options.fileSystem;
++    this.#backends = Object.freeze([...options.backends]);
++    this.#catalog =
++      options.discoveryRetention === "session"
++        ? new WorkspaceCatalog(options.fileSystem)
++        : undefined;
++  }
++
++  async prepare(
++    startDirectory: string,
++    preparation: WorkspacePreparation = { coverage: "workspace" },
++  ): Promise<PreparedWorkspaceScope> {
++    const workspace = await this.openWorkspace(startDirectory, preparation.coverage);
++    return this.prepareWorkspace(workspace, preparation);
++  }
++
++  openWorkspace(startDirectory: string, coverage: BackendRefreshCoverage): Promise<Workspace> {
++    if (coverage === "selection" || this.#catalog === undefined) {
++      return createWorkspace({ startDir: startDirectory, fs: this.#fileSystem });
++    }
++    return this.#catalog.refresh(startDirectory);
++  }
++
++  async prepareWorkspace(
++    workspace: Workspace,
++    preparation: WorkspacePreparation,
++  ): Promise<PreparedWorkspaceScope> {
++    const router = new BackendRouter(this.#backends);
++    const snapshot =
++      preparation.coverage === "selection"
++        ? await preparation.selectSnapshot(workspace, router)
++        : await workspace.snapshot();
++    const refresh = await router.refresh(snapshot, preparation.coverage);
++    return { workspace, snapshot, router, refresh };
++  }
++
++  async releaseTransientResources(): Promise<void> {
++    await Promise.all(this.#backends.map((backend) => backend.releaseTransientResources()));
++  }
++}
