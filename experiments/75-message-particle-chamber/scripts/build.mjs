@@ -1,0 +1,14 @@
+import { build } from 'esbuild';
+import { readFile, writeFile, mkdir, copyFile } from 'node:fs/promises';
+import { resolve, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+const dir=resolve(fileURLToPath(new URL('..',import.meta.url)));
+await mkdir(join(dir,'assets'),{recursive:true});
+await build({entryPoints:[join(dir,'src/main.js')],outfile:join(dir,'assets/chamber.js'),bundle:true,format:'iife',minify:true,legalComments:'linked',target:['es2022'],logLevel:'info'});
+const esc=s=>String(s).replace(/[&<>\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const sources=JSON.parse(await readFile(join(dir,'evidence/receipts.json'),'utf8'));
+const sourceHTML=sources.map(s=>`<article id="${s.id}"><a href="index.html#complete-surface">← Chamber</a><h2>${esc(s.title)}</h2><p>${esc(s.side)} · ${esc(s.revision)}<br>${esc(s.path)} · lines ${s.start}–${s.end??s.start+s.text.split('\n').length-1}</p>${s.sha256?`<p>Full-file SHA-256: <code>${s.sha256}</code></p>`:''}<pre>${esc(s.text.split('\n').map((l,i)=>`${String(s.start+i).padStart(4)}  ${l}`).join('\n'))}</pre></article>`).join('');
+await writeFile(join(dir,'sources.html'),`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Particle chamber · source receipts</title><style>body{background:#101e27;color:#e4ebe9;font:16px/1.6 system-ui;margin:40px auto;padding:0 24px;max-width:1050px}a{color:#86e2d1}article{padding:30px 0;border-top:1px solid #42525c}pre{overflow:auto;background:#172a35;padding:20px;font-size:13px}p{overflow-wrap:anywhere}h2{font-weight:500}</style><a href="index.html">← Particle chamber</a><h1>Source receipts</h1><p>Frozen evidence for PR 148. Raw source supplies fidelity; the chamber's complete surface states the scoped decisions. No live worktree is needed.</p>${sourceHTML}</html>`);
+await copyFile(join(dir,'node_modules/pixi.js/LICENSE'),join(dir,'assets/LICENSE-pixi.txt'));
+const gsapPackage=JSON.parse(await readFile(join(dir,'node_modules/gsap/package.json'),'utf8'));
+await writeFile(join(dir,'assets/LICENSE-gsap.txt'),`GSAP ${gsapPackage.version}\nCopyright GreenSock\nLicense metadata: ${gsapPackage.license}\nTerms: https://gsap.com/standard-license/\nSee also the retained copyright and license notice in chamber.js.LEGAL.txt.\n`);

@@ -1,0 +1,1028 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Particle chamber · source receipts</title><style>body{background:#101e27;color:#e4ebe9;font:16px/1.6 system-ui;margin:40px auto;padding:0 24px;max-width:1050px}a{color:#86e2d1}article{padding:30px 0;border-top:1px solid #42525c}pre{overflow:auto;background:#172a35;padding:20px;font-size:13px}p{overflow-wrap:anywhere}h2{font-weight:500}</style><a href="index.html">← Particle chamber</a><h1>Source receipts</h1><p>Frozen evidence for PR 148. Raw source supplies fidelity; the chamber's complete surface states the scoped decisions. No live worktree is needed.</p><article id="codec"><a href="index.html#complete-surface">← Chamber</a><h2>4-byte envelope; separate limits</h2><p>head · 20838f8dbf413e04767543eb2380d0d114da6c60<br>packages/daemon/src/transport/wire-codec.ts · lines 1–68</p><p>Full-file SHA-256: <code>dbd1b4a04fc6bc8b01812f5635a930d6623ce567bae97dbb6dbdd4e8dfd61559</code></p><pre>   1  import { createHash } from &quot;node:crypto&quot;;
+   2  import type { DaemonResultChunk, DaemonServerMessage } from &quot;./protocol.js&quot;;
+   3  
+   4  const BINARY_FRAME_FLAG = 0x80000000;
+   5  const FRAME_LENGTH_MASK = 0x7fffffff;
+   6  const FRAME_PREFIX_BYTES = 4;
+   7  const BINARY_HEADER_LENGTH_BYTES = 4;
+   8  
+   9  export interface DaemonFrameDecoder&lt;Frame&gt; {
+  10    append(bytes: Uint8Array): readonly Frame[];
+  11    assertComplete(): void;
+  12  }
+  13  
+  14  export interface DaemonWireLimits {
+  15    readonly maximumJsonPayloadBytes: number;
+  16    readonly maximumExecutionControlPayloadBytes: number;
+  17    readonly maximumChunkRawBytes: number;
+  18  }
+  19  
+  20  interface DaemonResultChunkHeader {
+  21    readonly transferId: string;
+  22    readonly requestId: string;
+  23    readonly offset: number;
+  24    readonly sequence: number;
+  25    readonly stream: &quot;stdout&quot; | &quot;stderr&quot;;
+  26    readonly payloadLength: number;
+  27    readonly sha256: string;
+  28  }
+  29  
+  30  export class DaemonWireCodec {
+  31    constructor(private readonly limits: DaemonWireLimits) {}
+  32  
+  33    encodeControl(value: unknown): Uint8Array {
+  34      return this.encodeJson(value, this.limits.maximumJsonPayloadBytes);
+  35    }
+  36  
+  37    encodeServerMessage(message: DaemonServerMessage): Uint8Array {
+  38      if (&quot;kind&quot; in message) {
+  39        const maximumPayloadBytes = DaemonWireCodec.isExecutionControl(message.kind)
+  40          ? this.limits.maximumExecutionControlPayloadBytes
+  41          : this.limits.maximumJsonPayloadBytes;
+  42        return this.encodeJson(message, maximumPayloadBytes);
+  43      }
+  44      return DaemonResultChunkCodec.encode(message, this.limits);
+  45    }
+  46  
+  47    controlDecoder(): DaemonFrameDecoder&lt;unknown&gt; {
+  48      return new DaemonControlFrameDecoder(this.limits.maximumJsonPayloadBytes);
+  49    }
+  50  
+  51    transferDecoder(): DaemonFrameDecoder&lt;unknown | DaemonResultChunk&gt; {
+  52      return new DaemonTransferFrameDecoder(this.limits);
+  53    }
+  54  
+  55    private encodeJson(value: unknown, maximumPayloadBytes: number): Uint8Array {
+  56      const payload = Buffer.from(JSON.stringify(value), &quot;utf8&quot;);
+  57      if (payload.byteLength &gt; maximumPayloadBytes) {
+  58        throw new Error(`Daemon frame exceeds ${maximumPayloadBytes} bytes`);
+  59      }
+  60      const prefix = Buffer.alloc(FRAME_PREFIX_BYTES);
+  61      prefix.writeUInt32BE(payload.byteLength);
+  62      return Buffer.concat([prefix, payload]);
+  63    }
+  64  
+  65    private static isExecutionControl(kind: string): boolean {
+  66      return (
+  67        kind === &quot;accepted&quot; ||
+  68        kind === &quot;rejected&quot; ||</pre></article><article id="decode"><a href="index.html#complete-surface">← Chamber</a><h2>Buffer fragments until a complete frame exists</h2><p>head · 20838f8dbf413e04767543eb2380d0d114da6c60<br>packages/daemon/src/transport/wire-codec.ts · lines 115–164</p><p>Full-file SHA-256: <code>dbd1b4a04fc6bc8b01812f5635a930d6623ce567bae97dbb6dbdd4e8dfd61559</code></p><pre> 115  
+ 116    constructor(private readonly limits: DaemonWireLimits) {}
+ 117  
+ 118    append(bytes: Uint8Array): readonly (unknown | DaemonResultChunk)[] {
+ 119      this.buffered = Buffer.concat([this.buffered, bytes]);
+ 120      const values: (unknown | DaemonResultChunk)[] = [];
+ 121      while (this.buffered.byteLength &gt;= FRAME_PREFIX_BYTES) {
+ 122        const encodedLength = this.buffered.readUInt32BE(0);
+ 123        const binary = (encodedLength &amp; BINARY_FRAME_FLAG) !== 0;
+ 124        const payloadLength = encodedLength &amp; FRAME_LENGTH_MASK;
+ 125        const maximumPayloadBytes = binary
+ 126          ? this.limits.maximumExecutionControlPayloadBytes + this.limits.maximumChunkRawBytes
+ 127          : this.limits.maximumExecutionControlPayloadBytes;
+ 128        if (payloadLength &gt; maximumPayloadBytes) {
+ 129          throw new Error(&quot;Daemon result frame exceeds capacity&quot;);
+ 130        }
+ 131        if (this.buffered.byteLength &lt; payloadLength + FRAME_PREFIX_BYTES) break;
+ 132        const payload = this.buffered.subarray(
+ 133          FRAME_PREFIX_BYTES,
+ 134          payloadLength + FRAME_PREFIX_BYTES,
+ 135        );
+ 136        this.buffered = this.buffered.subarray(payloadLength + FRAME_PREFIX_BYTES);
+ 137        if (binary) {
+ 138          values.push(DaemonResultChunkCodec.decode(payload, this.limits));
+ 139          continue;
+ 140        }
+ 141        try {
+ 142          values.push(JSON.parse(payload.toString(&quot;utf8&quot;)));
+ 143        } catch {
+ 144          throw new Error(&quot;Daemon control frame contains malformed JSON&quot;);
+ 145        }
+ 146      }
+ 147      return values;
+ 148    }
+ 149  
+ 150    assertComplete(): void {
+ 151      if (this.buffered.byteLength !== 0) {
+ 152        throw new Error(&quot;Daemon result transfer ended with a truncated frame&quot;);
+ 153      }
+ 154    }
+ 155  }
+ 156  
+ 157  class DaemonResultChunkCodec {
+ 158    static encode(chunk: DaemonResultChunk, limits: DaemonWireLimits): Uint8Array {
+ 159      DaemonResultChunkCodec.assertChunk(chunk, limits.maximumChunkRawBytes);
+ 160      const header: DaemonResultChunkHeader = {
+ 161        transferId: chunk.transferId,
+ 162        requestId: chunk.requestId,
+ 163        offset: chunk.offset,
+ 164        sequence: chunk.sequence,</pre></article><article id="binary"><a href="index.html#complete-surface">← Chamber</a><h2>Binary header and per-chunk SHA-256</h2><p>head · 20838f8dbf413e04767543eb2380d0d114da6c60<br>packages/daemon/src/transport/wire-codec.ts · lines 168–258</p><p>Full-file SHA-256: <code>dbd1b4a04fc6bc8b01812f5635a930d6623ce567bae97dbb6dbdd4e8dfd61559</code></p><pre> 168      };
+ 169      const headerBytes = Buffer.from(JSON.stringify(header));
+ 170      if (
+ 171        BINARY_HEADER_LENGTH_BYTES + headerBytes.byteLength &gt;
+ 172        limits.maximumExecutionControlPayloadBytes
+ 173      ) {
+ 174        throw new Error(&quot;Daemon result frame exceeds capacity&quot;);
+ 175      }
+ 176      const payloadLength =
+ 177        BINARY_HEADER_LENGTH_BYTES + headerBytes.byteLength + chunk.bytes.byteLength;
+ 178      const encoded = Buffer.alloc(FRAME_PREFIX_BYTES + payloadLength);
+ 179      encoded.writeUInt32BE((BINARY_FRAME_FLAG | payloadLength) &gt;&gt;&gt; 0, 0);
+ 180      encoded.writeUInt32BE(headerBytes.byteLength, FRAME_PREFIX_BYTES);
+ 181      headerBytes.copy(encoded, FRAME_PREFIX_BYTES + BINARY_HEADER_LENGTH_BYTES);
+ 182      Buffer.from(chunk.bytes).copy(
+ 183        encoded,
+ 184        FRAME_PREFIX_BYTES + BINARY_HEADER_LENGTH_BYTES + headerBytes.byteLength,
+ 185      );
+ 186      return encoded;
+ 187    }
+ 188  
+ 189    static decode(payload: Buffer, limits: DaemonWireLimits): DaemonResultChunk {
+ 190      if (payload.byteLength &lt; BINARY_HEADER_LENGTH_BYTES) {
+ 191        throw new Error(&quot;Truncated daemon result chunk header&quot;);
+ 192      }
+ 193      const headerLength = payload.readUInt32BE(0);
+ 194      if (headerLength === 0 || headerLength &gt; payload.byteLength - BINARY_HEADER_LENGTH_BYTES) {
+ 195        throw new Error(&quot;Invalid daemon result chunk header length&quot;);
+ 196      }
+ 197      if (BINARY_HEADER_LENGTH_BYTES + headerLength &gt; limits.maximumExecutionControlPayloadBytes) {
+ 198        throw new Error(&quot;Daemon result frame exceeds capacity&quot;);
+ 199      }
+ 200      let parsed: unknown;
+ 201      try {
+ 202        parsed = JSON.parse(
+ 203          payload
+ 204            .subarray(BINARY_HEADER_LENGTH_BYTES, BINARY_HEADER_LENGTH_BYTES + headerLength)
+ 205            .toString(&quot;utf8&quot;),
+ 206        );
+ 207      } catch {
+ 208        throw new Error(&quot;Malformed daemon result chunk header&quot;);
+ 209      }
+ 210      const bytes = payload.subarray(BINARY_HEADER_LENGTH_BYTES + headerLength);
+ 211      if (
+ 212        !DaemonResultChunkCodec.isHeader(parsed, limits.maximumChunkRawBytes) ||
+ 213        parsed.payloadLength !== bytes.byteLength
+ 214      ) {
+ 215        throw new Error(&quot;Invalid daemon result chunk header&quot;);
+ 216      }
+ 217      if (createHash(&quot;sha256&quot;).update(bytes).digest(&quot;hex&quot;) !== parsed.sha256) {
+ 218        throw new Error(&quot;Corrupt daemon result chunk payload&quot;);
+ 219      }
+ 220      const chunk: DaemonResultChunk = {
+ 221        transferId: parsed.transferId,
+ 222        requestId: parsed.requestId,
+ 223        offset: parsed.offset,
+ 224        sequence: parsed.sequence,
+ 225        stream: parsed.stream,
+ 226        bytes: Uint8Array.from(bytes),
+ 227      };
+ 228      DaemonResultChunkCodec.assertChunk(chunk, limits.maximumChunkRawBytes);
+ 229      return chunk;
+ 230    }
+ 231  
+ 232    private static assertChunk(chunk: DaemonResultChunk, maximumChunkRawBytes: number): void {
+ 233      if (
+ 234        chunk.transferId.length === 0 ||
+ 235        chunk.requestId.length === 0 ||
+ 236        !Number.isSafeInteger(chunk.offset) ||
+ 237        chunk.offset &lt; 0 ||
+ 238        !Number.isSafeInteger(chunk.sequence) ||
+ 239        chunk.sequence &lt; 0 ||
+ 240        (chunk.stream !== &quot;stdout&quot; &amp;&amp; chunk.stream !== &quot;stderr&quot;) ||
+ 241        !(chunk.bytes instanceof Uint8Array) ||
+ 242        chunk.bytes.byteLength &gt; maximumChunkRawBytes
+ 243      ) {
+ 244        throw new Error(&quot;Invalid daemon result chunk&quot;);
+ 245      }
+ 246    }
+ 247  
+ 248    private static isHeader(
+ 249      value: unknown,
+ 250      maximumChunkRawBytes: number,
+ 251    ): value is DaemonResultChunkHeader {
+ 252      if (typeof value !== &quot;object&quot; || value === null || Array.isArray(value)) return false;
+ 253      const header = value as Record&lt;string, unknown&gt;;
+ 254      const expectedKeys = [
+ 255        &quot;offset&quot;,
+ 256        &quot;payloadLength&quot;,
+ 257        &quot;requestId&quot;,
+ 258        &quot;sequence&quot;,</pre></article><article id="manifest"><a href="index.html#complete-surface">← Chamber</a><h2>Identity, manifest equality and append barrier</h2><p>head · 20838f8dbf413e04767543eb2380d0d114da6c60<br>packages/daemon/src/transport/result-transfer-receiver.ts · lines 18–92</p><p>Full-file SHA-256: <code>bc22ca7fc6a83b22cefec0550346f281ed04f99d3cc4c4334716836981cabdd5</code></p><pre>  18    private completed = false;
+  19    private disposal: Promise&lt;void&gt; | undefined;
+  20  
+  21    constructor(
+  22      private readonly requestId: string,
+  23      private readonly output: DaemonOutputCapture,
+  24    ) {}
+  25  
+  26    get manifest(): CompletionSpoolManifest | undefined {
+  27      return this.expectedManifest;
+  28    }
+  29  
+  30    get nextOffset(): number {
+  31      return this.nextRecordOffset;
+  32    }
+  33  
+  34    get terminal(): boolean {
+  35      return this.terminalReceived;
+  36    }
+  37  
+  38    beginConnection(): void {
+  39      this.manifestReceived = false;
+  40      this.terminalReceived = false;
+  41    }
+  42  
+  43    acceptManifest(frame: ResultManifestFrame): void {
+  44      if (this.manifestReceived || this.terminalReceived) {
+  45        throw new Error(&quot;Duplicate result manifest&quot;);
+  46      }
+  47      if (
+  48        this.expectedManifest !== undefined &amp;&amp;
+  49        !DaemonResultTransferReceiver.manifestsMatch(this.expectedManifest, frame.manifest)
+  50      ) {
+  51        throw new Error(&quot;Daemon resumed with a different result manifest&quot;);
+  52      }
+  53      if (
+  54        frame.requestId !== this.requestId ||
+  55        frame.manifest.requestId !== this.requestId ||
+  56        frame.manifest.instanceId !== frame.instanceId
+  57      ) {
+  58        throw new Error(&quot;Daemon result manifest has invalid coordinates&quot;);
+  59      }
+  60      this.expectedManifest ??= frame.manifest;
+  61      this.manifestReceived = true;
+  62    }
+  63  
+  64    async acceptChunk(chunk: DaemonResultChunk): Promise&lt;void&gt; {
+  65      const manifest = this.expectedManifest;
+  66      if (
+  67        !this.manifestReceived ||
+  68        this.terminalReceived ||
+  69        manifest === undefined ||
+  70        chunk.requestId !== this.requestId ||
+  71        chunk.transferId !== manifest.transferId ||
+  72        chunk.offset !== this.nextRecordOffset ||
+  73        chunk.sequence !== this.nextRecordOffset
+  74      ) {
+  75        throw new Error(&quot;Daemon returned an invalid result chunk&quot;);
+  76      }
+  77      await this.output.append({
+  78        sequence: chunk.sequence,
+  79        stream: chunk.stream,
+  80        bytes: chunk.bytes,
+  81      });
+  82      this.nextRecordOffset += 1;
+  83    }
+  84  
+  85    acceptEnd(frame: ResultEndFrame): void {
+  86      const manifest = this.expectedManifest;
+  87      if (
+  88        !this.manifestReceived ||
+  89        this.terminalReceived ||
+  90        manifest === undefined ||
+  91        frame.instanceId !== manifest.instanceId ||
+  92        frame.requestId !== this.requestId ||</pre></article><article id="finish"><a href="index.html#complete-surface">← Chamber</a><h2>End, summary validation and output ownership</h2><p>head · 20838f8dbf413e04767543eb2380d0d114da6c60<br>packages/daemon/src/transport/result-transfer-receiver.ts · lines 94–154</p><p>Full-file SHA-256: <code>bc22ca7fc6a83b22cefec0550346f281ed04f99d3cc4c4334716836981cabdd5</code></p><pre>  94        frame.rawBytes !== manifest.rawBytes ||
+  95        frame.recordCount !== manifest.recordCount ||
+  96        frame.sha256 !== manifest.sha256 ||
+  97        this.nextRecordOffset !== manifest.recordCount
+  98      ) {
+  99        throw new Error(&quot;Daemon result transfer did not match its manifest&quot;);
+ 100      }
+ 101      this.terminalReceived = true;
+ 102    }
+ 103  
+ 104    async finish(): Promise&lt;DaemonExecutorExecutionResult&gt; {
+ 105      const manifest = this.expectedManifest;
+ 106      if (!this.terminalReceived || manifest === undefined) {
+ 107        throw new Error(&quot;Daemon result transfer is incomplete&quot;);
+ 108      }
+ 109      try {
+ 110        const captured = await this.output.finish(manifest.exitCode);
+ 111        if (!DaemonResultTransferReceiver.summariesMatch(captured.summary, manifest)) {
+ 112          this.disposal = captured.result.output.dispose();
+ 113          await this.disposal;
+ 114          throw new Error(&quot;Daemon result transfer failed digest validation&quot;);
+ 115        }
+ 116        this.completed = true;
+ 117        return captured.result;
+ 118      } catch (error) {
+ 119        await this.dispose();
+ 120        throw error;
+ 121      }
+ 122    }
+ 123  
+ 124    dispose(): Promise&lt;void&gt; {
+ 125      if (this.completed) return Promise.resolve();
+ 126      this.disposal ??= this.output.dispose();
+ 127      return this.disposal;
+ 128    }
+ 129  
+ 130    private static manifestsMatch(
+ 131      expected: CompletionSpoolManifest,
+ 132      actual: CompletionSpoolManifest,
+ 133    ): boolean {
+ 134      return (
+ 135        actual.transferId === expected.transferId &amp;&amp;
+ 136        actual.requestId === expected.requestId &amp;&amp;
+ 137        actual.instanceId === expected.instanceId &amp;&amp;
+ 138        actual.exitCode === expected.exitCode &amp;&amp;
+ 139        DaemonResultTransferReceiver.summariesMatch(actual, expected)
+ 140      );
+ 141    }
+ 142  
+ 143    private static summariesMatch(
+ 144      actual: CompletionSpoolManifest | DaemonCapturedOutputSummary,
+ 145      expected: CompletionSpoolManifest,
+ 146    ): boolean {
+ 147      return (
+ 148        actual.rawBytes === expected.rawBytes &amp;&amp;
+ 149        actual.recordCount === expected.recordCount &amp;&amp;
+ 150        actual.sha256 === expected.sha256
+ 151      );
+ 152    }
+ 153  }
+ 154  </pre></article><article id="reattach"><a href="index.html#complete-surface">← Chamber</a><h2>Bounded reattachment of the identical request</h2><p>head · 20838f8dbf413e04767543eb2380d0d114da6c60<br>packages/daemon/src/transport/execution-client.ts · lines 43–80</p><p>Full-file SHA-256: <code>470311ce4bd0df3de0f4af24c08eed3a8e8e13bbc633cfd8dd08a7ea7b7aba54</code></p><pre>  43      }));
+  44    }
+  45  
+  46    private async completeWithReattachments(
+  47      endpoint: string,
+  48      request: DaemonExecuteRequest,
+  49      completion: DaemonExecutionReceipt[&quot;completion&quot;],
+  50    ): DaemonExecutionReceipt[&quot;completion&quot;] {
+  51      let currentCompletion = completion;
+  52      let originalAcceptedClose: DaemonTransportError | undefined;
+  53      let reattachmentCount = 0;
+  54      while (true) {
+  55        try {
+  56          return await currentCompletion;
+  57        } catch (error) {
+  58          if (!DaemonExecutionClient.isAcceptedConnectionClose(error, request)) throw error;
+  59          originalAcceptedClose ??= error;
+  60          if (
+  61            reattachmentCount &gt;= this.options.deliveryPolicy.postAcceptanceExecutionReattachmentLimit
+  62          )
+  63            throw originalAcceptedClose;
+  64          try {
+  65            const reattached = await this.executeOnce(endpoint, request);
+  66            currentCompletion = reattached.completion;
+  67            reattachmentCount += 1;
+  68          } catch {
+  69            throw originalAcceptedClose;
+  70          }
+  71        }
+  72      }
+  73    }
+  74  
+  75    private executeOnce(
+  76      endpoint: string,
+  77      request: DaemonExecuteRequest,
+  78    ): Promise&lt;DaemonExecutionReceipt&gt; {
+  79      this.options.validator.request(request);
+  80      return new Promise((resolve, reject) =&gt; {</pre></article><article id="resume"><a href="index.html#complete-surface">← Chamber</a><h2>Bounded result-transfer recovery</h2><p>head · 20838f8dbf413e04767543eb2380d0d114da6c60<br>packages/daemon/src/transport/execution-client.ts · lines 115–151</p><p>Full-file SHA-256: <code>470311ce4bd0df3de0f4af24c08eed3a8e8e13bbc633cfd8dd08a7ea7b7aba54</code></p><pre> 115          if (
+ 116            resumeCount &gt;= this.options.deliveryPolicy.resultTransferResumeLimitPerExecutionAttempt ||
+ 117            completionSettled ||
+ 118            acceptance === undefined ||
+ 119            transfer.manifest === undefined ||
+ 120            terminal
+ 121          ) {
+ 122            return false;
+ 123          }
+ 124          resumeCount += 1;
+ 125          connection?.destroy();
+ 126          transfer.beginConnection();
+ 127          void this.fetchCompletion(endpoint, request, transfer)
+ 128            .then((completionValue) =&gt; {
+ 129              if (completionSettled) return;
+ 130              completionSettled = true;
+ 131              resolveCompletion(completionValue);
+ 132            })
+ 133            .catch((error: unknown) =&gt; {
+ 134              if (DaemonExecutionClient.isAcceptedConnectionClose(error, request) &amp;&amp; resume()) {
+ 135                return;
+ 136              }
+ 137              fail(
+ 138                error instanceof DaemonResultFetchEndedError
+ 139                  ? new DaemonTransportError(&quot;corrupt&quot;, &quot;accepted&quot;, error.message)
+ 140                  : error,
+ 141              );
+ 142            });
+ 143          return true;
+ 144        };
+ 145        const publishAcceptance = (): void =&gt; {
+ 146          if (acceptance === undefined || outerSettled) return;
+ 147          outerSettled = true;
+ 148          connection?.disableTimeout();
+ 149          resolve({ acceptance, completion });
+ 150        };
+ 151        const consume = async (bytes: Uint8Array): Promise&lt;void&gt; =&gt; {</pre></article><article id="fetch"><a href="index.html#complete-surface">← Chamber</a><h2>Fetch the next record; validate, then acknowledge</h2><p>head · 20838f8dbf413e04767543eb2380d0d114da6c60<br>packages/daemon/src/transport/execution-client.ts · lines 296–375</p><p>Full-file SHA-256: <code>470311ce4bd0df3de0f4af24c08eed3a8e8e13bbc633cfd8dd08a7ea7b7aba54</code></p><pre> 296        void receive();
+ 297      });
+ 298    }
+ 299  
+ 300    private async fetchCompletion(
+ 301      endpoint: string,
+ 302      request: DaemonExecuteRequest,
+ 303      transfer: DaemonResultTransferReceiver,
+ 304    ): DaemonExecutionReceipt[&quot;completion&quot;] {
+ 305      const decoder = this.options.codec.transferDecoder();
+ 306      let connection: Awaited&lt;ReturnType&lt;DaemonSocketClient[&quot;connect&quot;]&gt;&gt;;
+ 307      try {
+ 308        connection = await this.options.sockets.connect(endpoint);
+ 309      } catch (error) {
+ 310        const message = error instanceof Error ? error.message : String(error);
+ 311        throw new DaemonTransportError(&quot;closed&quot;, &quot;accepted&quot;, message, request.instanceId);
+ 312      }
+ 313      try {
+ 314        connection.write(
+ 315          this.options.codec.encodeControl({
+ 316            kind: &quot;result-fetch&quot;,
+ 317            protocolVersion: request.protocolVersion,
+ 318            instanceId: request.instanceId,
+ 319            processToken: request.processToken,
+ 320            requestId: request.requestId,
+ 321            offset: transfer.nextOffset,
+ 322          }),
+ 323        );
+ 324      } catch (error) {
+ 325        connection.destroy();
+ 326        throw DaemonExecutionClient.transportError(error, &quot;accepted&quot;);
+ 327      }
+ 328      let ended = false;
+ 329      try {
+ 330        for await (const bytes of connection.incoming) {
+ 331          try {
+ 332            let completedResult = false;
+ 333            let failedCode: DaemonExecutionFailureCode | undefined;
+ 334            for (const value of decoder.append(bytes)) {
+ 335              if (ended) throw new Error(&quot;Daemon resumed with a duplicate terminal frame&quot;);
+ 336              if (DaemonExecutionClient.isResultChunk(value)) {
+ 337                await transfer.acceptChunk(value);
+ 338                continue;
+ 339              }
+ 340              const frame = this.options.validator.executionFrame(request, value);
+ 341              if (frame.kind === &quot;result-manifest&quot;) {
+ 342                transfer.acceptManifest(frame);
+ 343                continue;
+ 344              }
+ 345              if (frame.kind === &quot;execution-failed&quot;) {
+ 346                ended = true;
+ 347                failedCode = frame.code;
+ 348                continue;
+ 349              }
+ 350              if (frame.kind !== &quot;result-end&quot;) {
+ 351                throw new Error(&quot;Daemon resumed with an invalid terminal frame&quot;);
+ 352              }
+ 353              transfer.acceptEnd(frame);
+ 354              ended = true;
+ 355              completedResult = true;
+ 356            }
+ 357            if (completedResult) {
+ 358              const result = await transfer.finish();
+ 359              const manifest = transfer.manifest;
+ 360              if (manifest === undefined) throw new Error(&quot;Completion manifest is missing&quot;);
+ 361              try {
+ 362                await this.options.lifecycle.acknowledgeResult(
+ 363                  endpoint,
+ 364                  request,
+ 365                  manifest.transferId,
+ 366                );
+ 367              } catch (error) {
+ 368                await result.output.dispose();
+ 369                throw error;
+ 370              }
+ 371              connection.end();
+ 372              return { status: &quot;completed&quot;, result };
+ 373            }
+ 374            if (failedCode !== undefined) {
+ 375              connection.end();</pre></article><article id="ack-client"><a href="index.html#complete-surface">← Chamber</a><h2>Acknowledgement precedes caller completion</h2><p>head · 20838f8dbf413e04767543eb2380d0d114da6c60<br>packages/daemon/src/transport/execution-client.ts · lines 210–240</p><p>Full-file SHA-256: <code>470311ce4bd0df3de0f4af24c08eed3a8e8e13bbc633cfd8dd08a7ea7b7aba54</code></p><pre> 210            if (completedManifest === undefined) throw new Error(&quot;Completion manifest is missing&quot;);
+ 211            try {
+ 212              await this.options.lifecycle.acknowledgeResult(
+ 213                endpoint,
+ 214                request,
+ 215                completedManifest.transferId,
+ 216              );
+ 217            } catch (error) {
+ 218              await result.output.dispose();
+ 219              throw error;
+ 220            }
+ 221            if (!completionSettled) {
+ 222              completionSettled = true;
+ 223              connection?.end();
+ 224              resolveCompletion({ status: &quot;completed&quot;, result });
+ 225            }
+ 226          }
+ 227          if (failedCode !== undefined &amp;&amp; !completionSettled) {
+ 228            completionSettled = true;
+ 229            connection?.end();
+ 230            await transfer.dispose();
+ 231            resolveCompletion({ status: &quot;failed&quot;, code: failedCode });
+ 232          }
+ 233        };
+ 234        const receive = async (): Promise&lt;void&gt; =&gt; {
+ 235          try {
+ 236            connection = await this.options.sockets.connect(
+ 237              endpoint,
+ 238              this.options.transportPolicy.executionAdmissionTimeoutMs,
+ 239            );
+ 240          } catch (error) {</pre></article><article id="retry"><a href="index.html#complete-surface">← Chamber</a><h2>Replay authority depends on delivery state</h2><p>head · 20838f8dbf413e04767543eb2380d0d114da6c60<br>packages/daemon/src/transport/transport-error.ts · lines 14–39</p><p>Full-file SHA-256: <code>9cc0deeabfb172a0f7eb2f3750e2793462e0778fde7887797716da8b26e41c98</code></p><pre>  14  export class DaemonTransportError extends Error {
+  15    readonly authenticatedInstanceId?: string;
+  16    readonly retrySafe: boolean;
+  17  
+  18    constructor(
+  19      readonly code: DaemonTransportFailureCode,
+  20      readonly delivery: DaemonDeliveryState,
+  21      message: string,
+  22      authenticatedInstanceId?: string,
+  23      authenticatedRejectionCode?: DaemonExecuteRejectionCode,
+  24    ) {
+  25      super(message);
+  26      this.name = &quot;DaemonTransportError&quot;;
+  27      if (authenticatedInstanceId !== undefined) {
+  28        this.authenticatedInstanceId = authenticatedInstanceId;
+  29      }
+  30      this.retrySafe =
+  31        delivery === &quot;not-submitted&quot; ||
+  32        (code === &quot;rejected&quot; &amp;&amp;
+  33          delivery === &quot;submitted-unconfirmed&quot; &amp;&amp;
+  34          authenticatedInstanceId !== undefined &amp;&amp;
+  35          authenticatedRejectionCode !== undefined &amp;&amp;
+  36          DaemonAdmissionRejections.retrySafe(authenticatedRejectionCode));
+  37    }
+  38  }
+  39  </pre></article><article id="capture-owner"><a href="index.html#complete-surface">← Chamber</a><h2>The package constructs result capture</h2><p>head · 20838f8dbf413e04767543eb2380d0d114da6c60<br>packages/daemon/src/client/daemon-client-runtime.ts · lines 94–105</p><p>Full-file SHA-256: <code>a4f055fc332198cf472504d620e651e184c035b9ce569b69cf25a24587cf6203</code></p><pre>  94      });
+  95      this.statusTransport = new LocalDaemonTransport({
+  96        policy: this.policy,
+  97        lifecycleResponseTimeoutMs: this.policy.values.transport.statusResponseTimeoutMs,
+  98      });
+  99      const processTerminator = new NodeDaemonProcessTerminator(this.policy.values.shutdown);
+ 100      const launcher = new NodeDaemonProcessLauncher(
+ 101        options.productVersion,
+ 102        options.executorModuleUrl,
+ 103        this.policy,
+ 104        processTerminator,
+ 105      );</pre></article><article id="runtime"><a href="index.html#complete-surface">← Chamber</a><h2>Warm failures and local fallback authority</h2><p>head · 20838f8dbf413e04767543eb2380d0d114da6c60<br>packages/daemon/src/client/daemon-client-runtime.ts · lines 185–224</p><p>Full-file SHA-256: <code>a4f055fc332198cf472504d620e651e184c035b9ce569b69cf25a24587cf6203</code></p><pre> 185      let receipt: Awaited&lt;ReturnType&lt;LocalDaemonTransport[&quot;execute&quot;]&gt;&gt;;
+ 186      try {
+ 187        receipt = await this.routingTransport.execute(record.endpoint, {
+ 188          kind: &quot;execute&quot;,
+ 189          protocolVersion: DAEMON_PROTOCOL_VERSION,
+ 190          instanceId: record.instanceId,
+ 191          processToken: record.processToken,
+ 192          requestId: randomUUID(),
+ 193          commandName: request.commandName,
+ 194          request: DaemonClientRuntime.executorRequest(request, &quot;warm&quot;),
+ 195        });
+ 196      } catch (error) {
+ 197        if (error instanceof DaemonTransportError &amp;&amp; error.retrySafe) {
+ 198          return this.executeLocally(request, &quot;fallback&quot;);
+ 199        }
+ 200        return { mode: &quot;warm&quot;, result: DaemonControlledResult.acceptedRequestDidNotComplete() };
+ 201      }
+ 202      try {
+ 203        const completion = await receipt.completion;
+ 204        if (completion.status === &quot;failed&quot;) {
+ 205          return { mode: &quot;warm&quot;, result: DaemonClientRuntime.controlledFailure(completion.code) };
+ 206        }
+ 207        if (!DaemonClientRuntime.isCompleteResult(completion.result)) {
+ 208          await DaemonClientRuntime.disposeMalformedOutput(completion.result);
+ 209          return { mode: &quot;warm&quot;, result: DaemonControlledResult.acceptedRequestDidNotComplete() };
+ 210        }
+ 211        return { mode: &quot;warm&quot;, result: completion.result };
+ 212      } catch {
+ 213        return { mode: &quot;warm&quot;, result: DaemonControlledResult.acceptedRequestDidNotComplete() };
+ 214      }
+ 215    }
+ 216  
+ 217    private async executeLocally(
+ 218      request: DaemonClientExecuteRequest,
+ 219      mode: &quot;cold&quot; | &quot;fallback&quot;,
+ 220    ): Promise&lt;DaemonClientExecuteResult&gt; {
+ 221      const executor = await this.options.executorFactory({
+ 222        stateDirectory: this.options.stateDirectory,
+ 223        productVersion: this.options.productVersion,
+ 224        sampleResources: () =&gt; undefined,</pre></article><article id="ledger"><a href="index.html#complete-surface">← Chamber</a><h2>Matching identity attaches; conflicting payload rejects</h2><p>head · 20838f8dbf413e04767543eb2380d0d114da6c60<br>packages/daemon/src/execution/accepted-request-ledger.ts · lines 52–108</p><p>Full-file SHA-256: <code>cf8af986c22f7349c020ccc6a453f69d278d5877da1622b33c1c6e63231b1d72</code></p><pre>  52  
+  53    get hasUnacknowledgedCompletions(): boolean {
+  54      for (const entry of this.entries.values()) {
+  55        if (entry.state.state === &quot;completed&quot; &amp;&amp; !this.acknowledged.has(entry.requestId)) return true;
+  56      }
+  57      return false;
+  58    }
+  59  
+  60    compatibilityFor(
+  61      requestId: string,
+  62      commandName: DaemonCommandName,
+  63      request: DaemonExecutorRequest,
+  64    ): AcceptedRequestCompatibility {
+  65      const existing = this.entries.get(requestId);
+  66      if (existing === undefined) return &quot;unseen&quot;;
+  67      const requestFingerprint = AcceptedRequestLedger.fingerprint(commandName, request);
+  68      return existing.requestFingerprint === requestFingerprint ? &quot;matching&quot; : &quot;conflicting&quot;;
+  69    }
+  70  
+  71    accept(
+  72      requestId: string,
+  73      commandName: DaemonCommandName,
+  74      request: DaemonExecutorRequest,
+  75    ): AcceptedRequestEntry {
+  76      const requestFingerprint = AcceptedRequestLedger.fingerprint(commandName, request);
+  77      const existing = this.entries.get(requestId);
+  78      if (existing !== undefined) {
+  79        if (existing.requestFingerprint !== requestFingerprint) {
+  80          throw new AcceptedRequestCorruptionError(requestId);
+  81        }
+  82        return existing;
+  83      }
+  84      const entry: AcceptedRequestEntry = {
+  85        requestId,
+  86        requestFingerprint,
+  87        commandName,
+  88        request,
+  89        acceptedAt: this.clock.wallNowMs(),
+  90        queuePosition: this.nonterminalCount,
+  91        deliveryTerminated: false,
+  92        state: { state: &quot;queued&quot; },
+  93      };
+  94      this.entries.set(requestId, entry);
+  95      return entry;
+  96    }
+  97  
+  98    markRunning(requestId: string, startedAt: number): AcceptedRequestEntry {
+  99      const entry = this.transitionable(requestId);
+ 100      if (entry.state.state !== &quot;queued&quot;) {
+ 101        throw new Error(`Accepted request ${requestId} is already ${entry.state.state}`);
+ 102      }
+ 103      return this.publish({
+ 104        ...entry,
+ 105        state: { state: &quot;running&quot;, startedAt },
+ 106      });
+ 107    }
+ 108  </pre></article><article id="ack-ledger"><a href="index.html#complete-surface">← Chamber</a><h2>Acknowledgement is a Set entry; ledger is retained</h2><p>head · 20838f8dbf413e04767543eb2380d0d114da6c60<br>packages/daemon/src/execution/accepted-request-ledger.ts · lines 170–205</p><p>Full-file SHA-256: <code>cf8af986c22f7349c020ccc6a453f69d278d5877da1622b33c1c6e63231b1d72</code></p><pre> 170      this.acknowledged.add(requestId);
+ 171    }
+ 172  
+ 173    isAcknowledged(requestId: string): boolean {
+ 174      return this.acknowledged.has(requestId);
+ 175    }
+ 176  
+ 177    terminateDelivery(requestId: string): boolean {
+ 178      const entry = this.entry(requestId);
+ 179      if (entry.deliveryTerminated) return false;
+ 180      this.entries.set(requestId, { ...entry, deliveryTerminated: true });
+ 181      return true;
+ 182    }
+ 183  
+ 184    isDeliveryTerminated(requestId: string): boolean {
+ 185      return this.entry(requestId).deliveryTerminated;
+ 186    }
+ 187  
+ 188    subscribe(requestId: string, subscriber: AcceptedRequestSubscriber): () =&gt; void {
+ 189      const entry = this.entry(requestId);
+ 190      let requestSubscribers = this.subscribers.get(requestId);
+ 191      if (requestSubscribers === undefined) {
+ 192        requestSubscribers = new Set();
+ 193        this.subscribers.set(requestId, requestSubscribers);
+ 194      }
+ 195      requestSubscribers.add(subscriber);
+ 196      subscriber(entry);
+ 197      return () =&gt; {
+ 198        requestSubscribers?.delete(subscriber);
+ 199        if (requestSubscribers?.size === 0) this.subscribers.delete(requestId);
+ 200      };
+ 201    }
+ 202  
+ 203    entryFor(requestId: string): AcceptedRequestEntry | undefined {
+ 204      return this.entries.get(requestId);
+ 205    }</pre></article><article id="ack-server"><a href="index.html#complete-surface">← Chamber</a><h2>Matching transfer acknowledgement cleans up spool</h2><p>head · 20838f8dbf413e04767543eb2380d0d114da6c60<br>packages/daemon/src/delivery/delivery-session.ts · lines 185–216</p><p>Full-file SHA-256: <code>456c21ae2783d7866842f67b35138797f9eceaa31380624bea2b0287fd80282a</code></p><pre> 185        if (traceWasDisconnected) this.reattachOperationTrace(request.requestId);
+ 186      }
+ 187      try {
+ 188        await this.deliverStoredCompletion(request.requestId, send, request.offset);
+ 189      } catch (error) {
+ 190        disconnectTraceConnection?.();
+ 191        throw error;
+ 192      }
+ 193    }
+ 194  
+ 195    async acknowledge(
+ 196      request: AuthenticatedDaemonResultAcknowledgement,
+ 197    ): Promise&lt;DaemonResultAcknowledged&gt; {
+ 198      const spool = await this.options.spoolStore.open(request.requestId);
+ 199      if (spool === undefined) throw new Error(&quot;Accepted request completion is unavailable&quot;);
+ 200      if (spool.completedManifest?.transferId !== request.transferId) {
+ 201        throw new Error(&quot;Result acknowledgement does not match completion transfer&quot;);
+ 202      }
+ 203      await spool.acknowledge().catch((error) =&gt; {
+ 204        this.recordFailure(&quot;completion-cleanup&quot;, error);
+ 205      });
+ 206      this.options.journal.acknowledge(request.requestId);
+ 207      this.completeOperationTrace(request.requestId, &quot;delivered&quot;);
+ 208      return {
+ 209        kind: &quot;result-acknowledged&quot;,
+ 210        ...this.options.coordinates,
+ 211        requestId: request.requestId,
+ 212        transferId: request.transferId,
+ 213      };
+ 214    }
+ 215  
+ 216    completeRetainedTraces(): void {</pre></article><article id="expiry"><a href="index.html#complete-surface">← Chamber</a><h2>Only disconnected diagnostic traces expire; capacity also bounds them</h2><p>head · 20838f8dbf413e04767543eb2380d0d114da6c60<br>packages/daemon/src/delivery/delivery-session.ts · lines 389–456</p><p>Full-file SHA-256: <code>456c21ae2783d7866842f67b35138797f9eceaa31380624bea2b0287fd80282a</code></p><pre> 389      if (this.operationTraceExpirations.has(requestId)) return;
+ 390      const trace = this.operationTraces.get(requestId);
+ 391      if (trace === undefined) return;
+ 392      trace.clientDisconnected();
+ 393      const expiration = setTimeout(
+ 394        () =&gt; this.expireOperationTrace(requestId),
+ 395        this.options.policy.diagnostics.disconnectedTraceRetentionMs,
+ 396      );
+ 397      expiration.unref();
+ 398      this.operationTraceExpirations.set(requestId, expiration);
+ 399      this.enforceOperationTraceCapacity();
+ 400    }
+ 401  
+ 402    private attachOperationTraceConnection(requestId: string, send: DaemonServerSend): () =&gt; void {
+ 403      const connectionCount = this.operationTraceConnections.get(requestId) ?? 0;
+ 404      if (connectionCount === 0) {
+ 405        const expiration = this.operationTraceExpirations.get(requestId);
+ 406        if (expiration !== undefined) clearTimeout(expiration);
+ 407        this.operationTraceExpirations.delete(requestId);
+ 408      }
+ 409      this.operationTraceConnections.set(requestId, connectionCount + 1);
+ 410      let connectionClosed = false;
+ 411      const disconnect = (): void =&gt; {
+ 412        if (connectionClosed) return;
+ 413        connectionClosed = true;
+ 414        const remainingConnections = (this.operationTraceConnections.get(requestId) ?? 1) - 1;
+ 415        if (remainingConnections &gt; 0) {
+ 416          this.operationTraceConnections.set(requestId, remainingConnections);
+ 417          return;
+ 418        }
+ 419        this.operationTraceConnections.delete(requestId);
+ 420        this.disconnectOperationTrace(requestId);
+ 421      };
+ 422      send.onClose(disconnect);
+ 423      return disconnect;
+ 424    }
+ 425  
+ 426    private traceWasDisconnected(requestId: string): boolean {
+ 427      if (this.operationTraceExpirations.has(requestId)) return true;
+ 428      return (
+ 429        !this.operationTraces.has(requestId) &amp;&amp; !this.options.journal.isDeliveryTerminated(requestId)
+ 430      );
+ 431    }
+ 432  
+ 433    private reattachOperationTrace(requestId: string): void {
+ 434      if (this.options.journal.isDeliveryTerminated(requestId)) return;
+ 435      const trace = this.operationTraces.get(requestId);
+ 436      if (trace === undefined) this.options.observer.reattached(requestId);
+ 437      else trace.reattached();
+ 438    }
+ 439  
+ 440    private expireOperationTrace(requestId: string): void {
+ 441      this.operationTraceExpirations.delete(requestId);
+ 442      this.operationTraceConnections.delete(requestId);
+ 443      if (!this.operationTraces.delete(requestId)) return;
+ 444      this.options.observer.traceExpired(requestId);
+ 445    }
+ 446  
+ 447    private enforceOperationTraceCapacity(): void {
+ 448      const capacity = Math.max(1, this.options.policy.diagnostics.maximumDisconnectedTraces);
+ 449      while (this.operationTraceExpirations.size &gt; capacity) {
+ 450        const oldestRequestId = this.operationTraceExpirations.keys().next().value as
+ 451          | string
+ 452          | undefined;
+ 453        if (oldestRequestId === undefined) return;
+ 454        const expiration = this.operationTraceExpirations.get(oldestRequestId);
+ 455        if (expiration !== undefined) clearTimeout(expiration);
+ 456        this.expireOperationTrace(oldestRequestId);</pre></article><article id="spool"><a href="index.html#complete-surface">← Chamber</a><h2>Record-based reads and acknowledgement disposal</h2><p>head · 20838f8dbf413e04767543eb2380d0d114da6c60<br>packages/daemon/src/delivery/completion-spool.ts · lines 259–295</p><p>Full-file SHA-256: <code>66513d25957d7dde8d426edbffd59b26bc07da3922dde95f0e3c3aa53a652871</code></p><pre> 259        const records =
+ 260          this.filePath === undefined
+ 261            ? this.inlineRecords
+ 262            : this.options.storage.records(this.filePath, this.options.maximumChunkBytes);
+ 263        for await (const record of records) {
+ 264          if (record.sequence &gt;= offset) yield record;
+ 265        }
+ 266      } catch (error) {
+ 267        throw new CompletionSpoolReadError(error);
+ 268      }
+ 269    }
+ 270  
+ 271    async acknowledge(): Promise&lt;void&gt; {
+ 272      if (!this.terminal) throw new Error(&quot;Completion spool is not complete&quot;);
+ 273      await this.dispose();
+ 274    }
+ 275  
+ 276    async dispose(): Promise&lt;void&gt; {
+ 277      if (this.cleanupFinished) return;
+ 278      if (this.disposal !== undefined) return this.disposal;
+ 279      this.disposal = this.performDispose();
+ 280      try {
+ 281        await this.disposal;
+ 282      } finally {
+ 283        this.disposal = undefined;
+ 284      }
+ 285    }
+ 286  
+ 287    private async failCapacity(): Promise&lt;never&gt; {
+ 288      await this.dispose();
+ 289      throw new CompletionSpoolCapacityError();
+ 290    }
+ 291  
+ 292    private async spillInlineRecords(): Promise&lt;void&gt; {
+ 293      const instanceDirectory = join(this.options.directory, this.options.identity.instanceId);
+ 294      await this.options.storage.ensureDirectory(this.options.directory);
+ 295      await this.options.storage.ensureDirectory(instanceDirectory);</pre></article><article id="limits"><a href="index.html#complete-surface">← Chamber</a><h2>Current recovery and trace-retention limits</h2><p>head · 20838f8dbf413e04767543eb2380d0d114da6c60<br>packages/daemon/src/daemon-policy.ts · lines 127–160</p><p>Full-file SHA-256: <code>7a3656def315dd18b43ec5a7db365e9896f2fe9518d49e89ecce707ee3c8d161</code></p><pre> 127          processExitPollIntervalMs: 20,
+ 128          resourceDrainAcknowledgementGraceMs: 250,
+ 129          resourceDrainAcknowledgementPollIntervalMs: 5,
+ 130        },
+ 131        delivery: {
+ 132          postAcceptanceExecutionReattachmentLimit: 1,
+ 133          resultTransferResumeLimitPerExecutionAttempt: 1,
+ 134        },
+ 135        output: {
+ 136          maximumChunkRawBytes: 64 * 1024,
+ 137          inlineRawBytes: 256 * 1024,
+ 138          maximumResultRawBytes: 256 * MEBIBYTE,
+ 139          maximumAggregateSpoolRawBytes: 512 * MEBIBYTE,
+ 140        },
+ 141        resources: {
+ 142          effectiveMemoryBytes,
+ 143          hardProcessRssBytes: hardProcessRssMiB * MEBIBYTE,
+ 144          softProcessRssBytes: Math.floor(hardProcessRssMiB * 0.8) * MEBIBYTE,
+ 145          resumeProcessRssBytes: Math.floor(hardProcessRssMiB * 0.7) * MEBIBYTE,
+ 146          workerMaxOldGenerationSizeMiB,
+ 147          supervisionIntervalMs: 250,
+ 148          replacementWindowMs: 10 * 60_000,
+ 149          replacementLimit: 2,
+ 150          workerHeapSampleIntervalMs: 25,
+ 151        },
+ 152        diagnostics: {
+ 153          logRotateBytes: 10 * MEBIBYTE,
+ 154          logBackupCount: 4,
+ 155          maximumQueuedEvents: 1_024,
+ 156          disconnectedTraceRetentionMs: 5 * 60_000,
+ 157          maximumDisconnectedTraces: 1_024,
+ 158        },
+ 159      });
+ 160    }</pre></article><article id="eviction"><a href="index.html#complete-surface">← Chamber</a><h2>Follow-up behavior is deferred</h2><p>head · 20838f8dbf413e04767543eb2380d0d114da6c60<br>plans/005/daemon-follow-ups-functional-spec.md · lines 1–8</p><p>Full-file SHA-256: <code>0f39ebc1d1d5018fe26af3617d7fc9653e7ef0e0c96b1ec4cf4982ccd6f8e627</code></p><pre>   1  # Symnav Daemon Follow-ups Functional Spec
+   2  
+   3  ## Goal
+   4  
+   5  Eight behavior changes surfaced by the architecture reviews and deferred until after the daemon restructuring in `daemon-architecture-functional-spec.md`. Each amends `daemon-functional-spec.md`; that document stays the source of truth for everything not named here. This is not a rewrite of routing, admission, or delivery, and not a change to any navigation command's output. This spec defines product behavior only; implementation choices live in the phased plans.
+   6  
+   7  ## Primary User
+   8  </pre></article><article id="eviction-detail"><a href="index.html#complete-surface">← Chamber</a><h2>Ledger eviction is a future behavior</h2><p>head · 20838f8dbf413e04767543eb2380d0d114da6c60<br>plans/005/daemon-follow-ups-functional-spec.md · lines 80–94</p><p>Full-file SHA-256: <code>0f39ebc1d1d5018fe26af3617d7fc9653e7ef0e0c96b1ec4cf4982ccd6f8e627</code></p><pre>  80  ## Ledger Eviction
+  81  
+  82  **Purpose.** Stop the accepted-request ledger growing for the daemon's lifetime.
+  83  
+  84  **Produces.** An acknowledged request disappears from the ledger at acknowledgement. An accepted request whose client never acknowledges disappears when its operation trace expires. Memory reported by `daemon status` stays flat under sustained request churn with no workspace changes.
+  85  
+  86  **Does not produce.** Early removal of a request whose result has not been delivered. A duplicate execution: a reconnect inside the retention period still attaches to the existing result.
+  87  
+  88  **Examples.**
+  89  
+  90  - 10,000 `overview` requests over a day, all acknowledged: ledger holds zero entries afterwards.
+  91  - A client disconnects after acceptance and never returns: entry and spool are gone `5 minutes` after completion.
+  92  - A client reconnects `4 minutes` after disconnect: it receives the stored result; at `6 minutes` it receives a not-found rejection and executes locally, since admission was never proven for that reconnect.
+  93  
+  94  **Edge cases.** Retention is measured from completion, not acceptance. A request still queued or executing is never evicted.</pre></article><article id="freeze"><a href="index.html#complete-surface">← Chamber</a><h2>Freeze active CLI compatibility copies</h2><p>head · 20838f8dbf413e04767543eb2380d0d114da6c60<br>meta-tests/src/daemon-compatibility-copy.test.ts · lines 1–77</p><p>Full-file SHA-256: <code>1d0e7076b9189bd85a26c07b28f4abc55a549877b489bae0798cc609e093bb11</code></p><pre>   1  import { createHash } from &quot;node:crypto&quot;;
+   2  import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from &quot;node:fs&quot;;
+   3  import { tmpdir } from &quot;node:os&quot;;
+   4  import { dirname, join, resolve } from &quot;node:path&quot;;
+   5  import { fileURLToPath } from &quot;node:url&quot;;
+   6  import { describe, expect, it } from &quot;vitest&quot;;
+   7  
+   8  class DaemonCompatibilityCopyInventory {
+   9    static readonly expectedDigest =
+  10      &quot;d0ff136f3be132ea004d3b13985192e055d1dfbad1abb773b607e89c54a1f41e&quot;;
+  11  
+  12    static files(repositoryRoot: string): readonly string[] {
+  13      const daemonDirectory = join(repositoryRoot, &quot;apps/cli/src/daemon&quot;);
+  14      const cliOwnedSources = new Set([
+  15        &quot;daemon-command-dispatcher.ts&quot;,
+  16        &quot;invocation-route.ts&quot;,
+  17        &quot;invocation-workspace-selector.ts&quot;,
+  18      ]);
+  19      return readdirSync(daemonDirectory)
+  20        .filter(
+  21          (name) =&gt; name.endsWith(&quot;.ts&quot;) &amp;&amp; !name.endsWith(&quot;.test.ts&quot;) &amp;&amp; !cliOwnedSources.has(name),
+  22        )
+  23        .map((name) =&gt; `apps/cli/src/daemon/${name}`)
+  24        .sort();
+  25    }
+  26  
+  27    static digest(repositoryRoot: string, files: readonly string[]): string {
+  28      const hash = createHash(&quot;sha256&quot;);
+  29      for (const file of files) {
+  30        hash.update(file);
+  31        hash.update(&quot;\0&quot;);
+  32        hash.update(readFileSync(join(repositoryRoot, file), &quot;utf8&quot;).replace(/\r\n/g, &quot;\n&quot;));
+  33        hash.update(&quot;\0&quot;);
+  34      }
+  35      return hash.digest(&quot;hex&quot;);
+  36    }
+  37  }
+  38  
+  39  describe(&quot;CLI daemon compatibility copies&quot;, () =&gt; {
+  40    it(&quot;remain frozen while package-local mechanisms are staged&quot;, () =&gt; {
+  41      const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), &quot;../..&quot;);
+  42      const files = DaemonCompatibilityCopyInventory.files(repositoryRoot);
+  43  
+  44      expect(files).toHaveLength(38);
+  45      expect(DaemonCompatibilityCopyInventory.digest(repositoryRoot, files)).toBe(
+  46        DaemonCompatibilityCopyInventory.expectedDigest,
+  47      );
+  48    });
+  49  
+  50    it(&quot;hashes semantic source content independently of checkout line endings&quot;, () =&gt; {
+  51      const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), &quot;../..&quot;);
+  52      const files = DaemonCompatibilityCopyInventory.files(repositoryRoot);
+  53      const crlfCheckoutRoot = mkdtempSync(join(tmpdir(), &quot;symnav-daemon-compatibility-&quot;));
+  54  
+  55      try {
+  56        for (const file of files) {
+  57          const source = readFileSync(join(repositoryRoot, file), &quot;utf8&quot;).replace(/\r?\n/g, &quot;\r\n&quot;);
+  58          const crlfFile = join(crlfCheckoutRoot, file);
+  59          mkdirSync(dirname(crlfFile), { recursive: true });
+  60          writeFileSync(crlfFile, source);
+  61        }
+  62  
+  63        expect(DaemonCompatibilityCopyInventory.digest(crlfCheckoutRoot, files)).toBe(
+  64          DaemonCompatibilityCopyInventory.expectedDigest,
+  65        );
+  66  
+  67        const changedFile = join(crlfCheckoutRoot, files[0]!);
+  68        writeFileSync(changedFile, `${readFileSync(changedFile, &quot;utf8&quot;)}export {};\r\n`);
+  69  
+  70        expect(DaemonCompatibilityCopyInventory.digest(crlfCheckoutRoot, files)).not.toBe(
+  71          DaemonCompatibilityCopyInventory.expectedDigest,
+  72        );
+  73      } finally {
+  74        rmSync(crlfCheckoutRoot, { recursive: true, force: true });
+  75      }
+  76    });
+  77  });</pre></article><article id="capture-test"><a href="index.html#complete-surface">← Chamber</a><h2>New package client capture and execution characterization</h2><p>head · 20838f8dbf413e04767543eb2380d0d114da6c60<br>packages/daemon/src/client/daemon-client.test.ts · lines 149–186</p><p>Full-file SHA-256: <code>f17bdd78a377298953eaf9d3e46c66e9a2cc889093cf1d4606529b34b9977f49</code></p><pre> 149    it(&quot;composes fresh warm result captures from output policy in the OS temporary directory&quot;, () =&gt; {
+ 150      const harness = new ClientHarness({});
+ 151      const createOutput = ClientCaptureInspection.createOutput(harness.client);
+ 152  
+ 153      const first = createOutput();
+ 154      const second = createOutput();
+ 155  
+ 156      expect(first).not.toBe(second);
+ 157      expect(ClientCaptureInspection.capture(first)).toMatchObject({
+ 158        directory: tmpdir(),
+ 159        maximumChunkRawBytes: DaemonPolicy.currentSystem().values.output.maximumChunkRawBytes,
+ 160        inlineRawBytes: DaemonPolicy.currentSystem().values.output.inlineRawBytes,
+ 161        maximumResultRawBytes: DaemonPolicy.currentSystem().values.output.maximumResultRawBytes,
+ 162      });
+ 163      expect(harness.executorFactory).not.toHaveBeenCalled();
+ 164    });
+ 165  
+ 166    it(&quot;executes ready requests warm without creating a host executor&quot;, async () =&gt; {
+ 167      const harness = new ClientHarness({});
+ 168  
+ 169      await expect(harness.client.execute(harness.request())).resolves.toEqual({
+ 170        mode: &quot;warm&quot;,
+ 171        result: success,
+ 172      });
+ 173  
+ 174      expect(harness.executorFactory).not.toHaveBeenCalled();
+ 175      expect(harness.warmRequests).toEqual([
+ 176        expect.objectContaining({
+ 177          commandName: &quot;overview&quot;,
+ 178          request: {
+ 179            argv: [&quot;overview&quot;, &quot;src/a.ts&quot;],
+ 180            cwd: &quot;/workspace&quot;,
+ 181            telemetryEnabled: true,
+ 182            executionMode: &quot;warm&quot;,
+ 183          },
+ 184        }),
+ 185      ]);
+ 186    });</pre></article><article id="intent"><a href="index.html#complete-surface">← Chamber</a><h2>PR 148: stated staging and output-ownership reasons</h2><p>bundle · 20838f8dbf413e04767543eb2380d0d114da6c60<br>inputs/pr-148/pr.json → body (body line numbers) · lines 90–91</p><pre>  90  - Chose package staging with a frozen CLI compatibility graph over switching production consumers during relocation, because mechanism ownership and host invocation coordination need separate review boundaries.
+  91  - Chose package-owned result capture and controlled failure outputs over host-provided storage or output factories, because warm transfer cleanup and replay safety belong to the daemon client.</pre></article><article id="tests"><a href="index.html#complete-surface">← Chamber</a><h2>Four focused test moves: assertion bodies retained</h2><p>comparison · 20838f8dbf413e04767543eb2380d0d114da6c60<br>evidence/test-inventory.json · lines 1–38</p><pre>   1  {
+   2    &quot;base&quot;: &quot;ba53c8e1662fd86d198b95321c90d9c9bef10184&quot;,
+   3    &quot;head&quot;: &quot;20838f8dbf413e04767543eb2380d0d114da6c60&quot;,
+   4    &quot;tests&quot;: [
+   5      {
+   6        &quot;basePath&quot;: &quot;apps/cli/src/daemon/daemon-wire-codec.test.ts&quot;,
+   7        &quot;headPath&quot;: &quot;packages/daemon/src/transport/wire-codec.test.ts&quot;,
+   8        &quot;baseSha256&quot;: &quot;45e9db6bdcd26448ecaea7e7640e2d15f7641d655978ff5b407a19946a199b95&quot;,
+   9        &quot;headSha256&quot;: &quot;2c3084362afa8d951a7c738c1d3bdff700f08463a555f8f4a9f137d557a556db&quot;,
+  10        &quot;bodyEquivalent&quot;: true,
+  11        &quot;normalization&quot;: &quot;Remove imports; adapt the delivery-test fake clock constructor only.&quot;
+  12      },
+  13      {
+  14        &quot;basePath&quot;: &quot;apps/cli/src/daemon/daemon-result-transfer-receiver.test.ts&quot;,
+  15        &quot;headPath&quot;: &quot;packages/daemon/src/transport/result-transfer-receiver.test.ts&quot;,
+  16        &quot;baseSha256&quot;: &quot;bbc36d6a1d02c1b3dcbd7ef59583858581db2e570e1fcaac09c5799b35de78e3&quot;,
+  17        &quot;headSha256&quot;: &quot;c0f8845154d1ca75494d3bb3e24bc54b1690e5b7d263ed65b8f83c90bb919e16&quot;,
+  18        &quot;bodyEquivalent&quot;: true,
+  19        &quot;normalization&quot;: &quot;Remove imports; adapt the delivery-test fake clock constructor only.&quot;
+  20      },
+  21      {
+  22        &quot;basePath&quot;: &quot;apps/cli/src/daemon/daemon-execution-client.test.ts&quot;,
+  23        &quot;headPath&quot;: &quot;packages/daemon/src/transport/execution-client.test.ts&quot;,
+  24        &quot;baseSha256&quot;: &quot;4ea084ef61849547b0a234e3ebf145181716bb8621df442e63ba317739132d1d&quot;,
+  25        &quot;headSha256&quot;: &quot;dd8dfd53e41987b1bf4e1b110d561870fbb02ed7075a2a2999e4f9e1662f1b52&quot;,
+  26        &quot;bodyEquivalent&quot;: true,
+  27        &quot;normalization&quot;: &quot;Remove imports; adapt the delivery-test fake clock constructor only.&quot;
+  28      },
+  29      {
+  30        &quot;basePath&quot;: &quot;apps/cli/src/daemon/daemon-delivery-session.test.ts&quot;,
+  31        &quot;headPath&quot;: &quot;packages/daemon/src/delivery/delivery-session.test.ts&quot;,
+  32        &quot;baseSha256&quot;: &quot;ab41b7f3924f91bf14c34ac96c00de78afc100cd8aa6460b125c99ac92cdf81e&quot;,
+  33        &quot;headSha256&quot;: &quot;71a77f549bba14ce9b96376a6646e7bbdc210fb2be8d41a5baa4ecf1bb3736ff&quot;,
+  34        &quot;bodyEquivalent&quot;: true,
+  35        &quot;normalization&quot;: &quot;Remove imports; adapt the delivery-test fake clock constructor only.&quot;
+  36      }
+  37    ]
+  38  }</pre></article></html>

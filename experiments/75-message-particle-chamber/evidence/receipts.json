@@ -1,0 +1,263 @@
+[
+  {
+    "id": "codec",
+    "title": "4-byte envelope; separate limits",
+    "side": "head",
+    "revision": "20838f8dbf413e04767543eb2380d0d114da6c60",
+    "path": "packages/daemon/src/transport/wire-codec.ts",
+    "start": 1,
+    "end": 68,
+    "sha256": "dbd1b4a04fc6bc8b01812f5635a930d6623ce567bae97dbb6dbdd4e8dfd61559",
+    "text": "import { createHash } from \"node:crypto\";\nimport type { DaemonResultChunk, DaemonServerMessage } from \"./protocol.js\";\n\nconst BINARY_FRAME_FLAG = 0x80000000;\nconst FRAME_LENGTH_MASK = 0x7fffffff;\nconst FRAME_PREFIX_BYTES = 4;\nconst BINARY_HEADER_LENGTH_BYTES = 4;\n\nexport interface DaemonFrameDecoder<Frame> {\n  append(bytes: Uint8Array): readonly Frame[];\n  assertComplete(): void;\n}\n\nexport interface DaemonWireLimits {\n  readonly maximumJsonPayloadBytes: number;\n  readonly maximumExecutionControlPayloadBytes: number;\n  readonly maximumChunkRawBytes: number;\n}\n\ninterface DaemonResultChunkHeader {\n  readonly transferId: string;\n  readonly requestId: string;\n  readonly offset: number;\n  readonly sequence: number;\n  readonly stream: \"stdout\" | \"stderr\";\n  readonly payloadLength: number;\n  readonly sha256: string;\n}\n\nexport class DaemonWireCodec {\n  constructor(private readonly limits: DaemonWireLimits) {}\n\n  encodeControl(value: unknown): Uint8Array {\n    return this.encodeJson(value, this.limits.maximumJsonPayloadBytes);\n  }\n\n  encodeServerMessage(message: DaemonServerMessage): Uint8Array {\n    if (\"kind\" in message) {\n      const maximumPayloadBytes = DaemonWireCodec.isExecutionControl(message.kind)\n        ? this.limits.maximumExecutionControlPayloadBytes\n        : this.limits.maximumJsonPayloadBytes;\n      return this.encodeJson(message, maximumPayloadBytes);\n    }\n    return DaemonResultChunkCodec.encode(message, this.limits);\n  }\n\n  controlDecoder(): DaemonFrameDecoder<unknown> {\n    return new DaemonControlFrameDecoder(this.limits.maximumJsonPayloadBytes);\n  }\n\n  transferDecoder(): DaemonFrameDecoder<unknown | DaemonResultChunk> {\n    return new DaemonTransferFrameDecoder(this.limits);\n  }\n\n  private encodeJson(value: unknown, maximumPayloadBytes: number): Uint8Array {\n    const payload = Buffer.from(JSON.stringify(value), \"utf8\");\n    if (payload.byteLength > maximumPayloadBytes) {\n      throw new Error(`Daemon frame exceeds ${maximumPayloadBytes} bytes`);\n    }\n    const prefix = Buffer.alloc(FRAME_PREFIX_BYTES);\n    prefix.writeUInt32BE(payload.byteLength);\n    return Buffer.concat([prefix, payload]);\n  }\n\n  private static isExecutionControl(kind: string): boolean {\n    return (\n      kind === \"accepted\" ||\n      kind === \"rejected\" ||"
+  },
+  {
+    "id": "decode",
+    "title": "Buffer fragments until a complete frame exists",
+    "side": "head",
+    "revision": "20838f8dbf413e04767543eb2380d0d114da6c60",
+    "path": "packages/daemon/src/transport/wire-codec.ts",
+    "start": 115,
+    "end": 164,
+    "sha256": "dbd1b4a04fc6bc8b01812f5635a930d6623ce567bae97dbb6dbdd4e8dfd61559",
+    "text": "\n  constructor(private readonly limits: DaemonWireLimits) {}\n\n  append(bytes: Uint8Array): readonly (unknown | DaemonResultChunk)[] {\n    this.buffered = Buffer.concat([this.buffered, bytes]);\n    const values: (unknown | DaemonResultChunk)[] = [];\n    while (this.buffered.byteLength >= FRAME_PREFIX_BYTES) {\n      const encodedLength = this.buffered.readUInt32BE(0);\n      const binary = (encodedLength & BINARY_FRAME_FLAG) !== 0;\n      const payloadLength = encodedLength & FRAME_LENGTH_MASK;\n      const maximumPayloadBytes = binary\n        ? this.limits.maximumExecutionControlPayloadBytes + this.limits.maximumChunkRawBytes\n        : this.limits.maximumExecutionControlPayloadBytes;\n      if (payloadLength > maximumPayloadBytes) {\n        throw new Error(\"Daemon result frame exceeds capacity\");\n      }\n      if (this.buffered.byteLength < payloadLength + FRAME_PREFIX_BYTES) break;\n      const payload = this.buffered.subarray(\n        FRAME_PREFIX_BYTES,\n        payloadLength + FRAME_PREFIX_BYTES,\n      );\n      this.buffered = this.buffered.subarray(payloadLength + FRAME_PREFIX_BYTES);\n      if (binary) {\n        values.push(DaemonResultChunkCodec.decode(payload, this.limits));\n        continue;\n      }\n      try {\n        values.push(JSON.parse(payload.toString(\"utf8\")));\n      } catch {\n        throw new Error(\"Daemon control frame contains malformed JSON\");\n      }\n    }\n    return values;\n  }\n\n  assertComplete(): void {\n    if (this.buffered.byteLength !== 0) {\n      throw new Error(\"Daemon result transfer ended with a truncated frame\");\n    }\n  }\n}\n\nclass DaemonResultChunkCodec {\n  static encode(chunk: DaemonResultChunk, limits: DaemonWireLimits): Uint8Array {\n    DaemonResultChunkCodec.assertChunk(chunk, limits.maximumChunkRawBytes);\n    const header: DaemonResultChunkHeader = {\n      transferId: chunk.transferId,\n      requestId: chunk.requestId,\n      offset: chunk.offset,\n      sequence: chunk.sequence,"
+  },
+  {
+    "id": "binary",
+    "title": "Binary header and per-chunk SHA-256",
+    "side": "head",
+    "revision": "20838f8dbf413e04767543eb2380d0d114da6c60",
+    "path": "packages/daemon/src/transport/wire-codec.ts",
+    "start": 168,
+    "end": 258,
+    "sha256": "dbd1b4a04fc6bc8b01812f5635a930d6623ce567bae97dbb6dbdd4e8dfd61559",
+    "text": "    };\n    const headerBytes = Buffer.from(JSON.stringify(header));\n    if (\n      BINARY_HEADER_LENGTH_BYTES + headerBytes.byteLength >\n      limits.maximumExecutionControlPayloadBytes\n    ) {\n      throw new Error(\"Daemon result frame exceeds capacity\");\n    }\n    const payloadLength =\n      BINARY_HEADER_LENGTH_BYTES + headerBytes.byteLength + chunk.bytes.byteLength;\n    const encoded = Buffer.alloc(FRAME_PREFIX_BYTES + payloadLength);\n    encoded.writeUInt32BE((BINARY_FRAME_FLAG | payloadLength) >>> 0, 0);\n    encoded.writeUInt32BE(headerBytes.byteLength, FRAME_PREFIX_BYTES);\n    headerBytes.copy(encoded, FRAME_PREFIX_BYTES + BINARY_HEADER_LENGTH_BYTES);\n    Buffer.from(chunk.bytes).copy(\n      encoded,\n      FRAME_PREFIX_BYTES + BINARY_HEADER_LENGTH_BYTES + headerBytes.byteLength,\n    );\n    return encoded;\n  }\n\n  static decode(payload: Buffer, limits: DaemonWireLimits): DaemonResultChunk {\n    if (payload.byteLength < BINARY_HEADER_LENGTH_BYTES) {\n      throw new Error(\"Truncated daemon result chunk header\");\n    }\n    const headerLength = payload.readUInt32BE(0);\n    if (headerLength === 0 || headerLength > payload.byteLength - BINARY_HEADER_LENGTH_BYTES) {\n      throw new Error(\"Invalid daemon result chunk header length\");\n    }\n    if (BINARY_HEADER_LENGTH_BYTES + headerLength > limits.maximumExecutionControlPayloadBytes) {\n      throw new Error(\"Daemon result frame exceeds capacity\");\n    }\n    let parsed: unknown;\n    try {\n      parsed = JSON.parse(\n        payload\n          .subarray(BINARY_HEADER_LENGTH_BYTES, BINARY_HEADER_LENGTH_BYTES + headerLength)\n          .toString(\"utf8\"),\n      );\n    } catch {\n      throw new Error(\"Malformed daemon result chunk header\");\n    }\n    const bytes = payload.subarray(BINARY_HEADER_LENGTH_BYTES + headerLength);\n    if (\n      !DaemonResultChunkCodec.isHeader(parsed, limits.maximumChunkRawBytes) ||\n      parsed.payloadLength !== bytes.byteLength\n    ) {\n      throw new Error(\"Invalid daemon result chunk header\");\n    }\n    if (createHash(\"sha256\").update(bytes).digest(\"hex\") !== parsed.sha256) {\n      throw new Error(\"Corrupt daemon result chunk payload\");\n    }\n    const chunk: DaemonResultChunk = {\n      transferId: parsed.transferId,\n      requestId: parsed.requestId,\n      offset: parsed.offset,\n      sequence: parsed.sequence,\n      stream: parsed.stream,\n      bytes: Uint8Array.from(bytes),\n    };\n    DaemonResultChunkCodec.assertChunk(chunk, limits.maximumChunkRawBytes);\n    return chunk;\n  }\n\n  private static assertChunk(chunk: DaemonResultChunk, maximumChunkRawBytes: number): void {\n    if (\n      chunk.transferId.length === 0 ||\n      chunk.requestId.length === 0 ||\n      !Number.isSafeInteger(chunk.offset) ||\n      chunk.offset < 0 ||\n      !Number.isSafeInteger(chunk.sequence) ||\n      chunk.sequence < 0 ||\n      (chunk.stream !== \"stdout\" && chunk.stream !== \"stderr\") ||\n      !(chunk.bytes instanceof Uint8Array) ||\n      chunk.bytes.byteLength > maximumChunkRawBytes\n    ) {\n      throw new Error(\"Invalid daemon result chunk\");\n    }\n  }\n\n  private static isHeader(\n    value: unknown,\n    maximumChunkRawBytes: number,\n  ): value is DaemonResultChunkHeader {\n    if (typeof value !== \"object\" || value === null || Array.isArray(value)) return false;\n    const header = value as Record<string, unknown>;\n    const expectedKeys = [\n      \"offset\",\n      \"payloadLength\",\n      \"requestId\",\n      \"sequence\","
+  },
+  {
+    "id": "manifest",
+    "title": "Identity, manifest equality and append barrier",
+    "side": "head",
+    "revision": "20838f8dbf413e04767543eb2380d0d114da6c60",
+    "path": "packages/daemon/src/transport/result-transfer-receiver.ts",
+    "start": 18,
+    "end": 92,
+    "sha256": "bc22ca7fc6a83b22cefec0550346f281ed04f99d3cc4c4334716836981cabdd5",
+    "text": "  private completed = false;\n  private disposal: Promise<void> | undefined;\n\n  constructor(\n    private readonly requestId: string,\n    private readonly output: DaemonOutputCapture,\n  ) {}\n\n  get manifest(): CompletionSpoolManifest | undefined {\n    return this.expectedManifest;\n  }\n\n  get nextOffset(): number {\n    return this.nextRecordOffset;\n  }\n\n  get terminal(): boolean {\n    return this.terminalReceived;\n  }\n\n  beginConnection(): void {\n    this.manifestReceived = false;\n    this.terminalReceived = false;\n  }\n\n  acceptManifest(frame: ResultManifestFrame): void {\n    if (this.manifestReceived || this.terminalReceived) {\n      throw new Error(\"Duplicate result manifest\");\n    }\n    if (\n      this.expectedManifest !== undefined &&\n      !DaemonResultTransferReceiver.manifestsMatch(this.expectedManifest, frame.manifest)\n    ) {\n      throw new Error(\"Daemon resumed with a different result manifest\");\n    }\n    if (\n      frame.requestId !== this.requestId ||\n      frame.manifest.requestId !== this.requestId ||\n      frame.manifest.instanceId !== frame.instanceId\n    ) {\n      throw new Error(\"Daemon result manifest has invalid coordinates\");\n    }\n    this.expectedManifest ??= frame.manifest;\n    this.manifestReceived = true;\n  }\n\n  async acceptChunk(chunk: DaemonResultChunk): Promise<void> {\n    const manifest = this.expectedManifest;\n    if (\n      !this.manifestReceived ||\n      this.terminalReceived ||\n      manifest === undefined ||\n      chunk.requestId !== this.requestId ||\n      chunk.transferId !== manifest.transferId ||\n      chunk.offset !== this.nextRecordOffset ||\n      chunk.sequence !== this.nextRecordOffset\n    ) {\n      throw new Error(\"Daemon returned an invalid result chunk\");\n    }\n    await this.output.append({\n      sequence: chunk.sequence,\n      stream: chunk.stream,\n      bytes: chunk.bytes,\n    });\n    this.nextRecordOffset += 1;\n  }\n\n  acceptEnd(frame: ResultEndFrame): void {\n    const manifest = this.expectedManifest;\n    if (\n      !this.manifestReceived ||\n      this.terminalReceived ||\n      manifest === undefined ||\n      frame.instanceId !== manifest.instanceId ||\n      frame.requestId !== this.requestId ||"
+  },
+  {
+    "id": "finish",
+    "title": "End, summary validation and output ownership",
+    "side": "head",
+    "revision": "20838f8dbf413e04767543eb2380d0d114da6c60",
+    "path": "packages/daemon/src/transport/result-transfer-receiver.ts",
+    "start": 94,
+    "end": 154,
+    "sha256": "bc22ca7fc6a83b22cefec0550346f281ed04f99d3cc4c4334716836981cabdd5",
+    "text": "      frame.rawBytes !== manifest.rawBytes ||\n      frame.recordCount !== manifest.recordCount ||\n      frame.sha256 !== manifest.sha256 ||\n      this.nextRecordOffset !== manifest.recordCount\n    ) {\n      throw new Error(\"Daemon result transfer did not match its manifest\");\n    }\n    this.terminalReceived = true;\n  }\n\n  async finish(): Promise<DaemonExecutorExecutionResult> {\n    const manifest = this.expectedManifest;\n    if (!this.terminalReceived || manifest === undefined) {\n      throw new Error(\"Daemon result transfer is incomplete\");\n    }\n    try {\n      const captured = await this.output.finish(manifest.exitCode);\n      if (!DaemonResultTransferReceiver.summariesMatch(captured.summary, manifest)) {\n        this.disposal = captured.result.output.dispose();\n        await this.disposal;\n        throw new Error(\"Daemon result transfer failed digest validation\");\n      }\n      this.completed = true;\n      return captured.result;\n    } catch (error) {\n      await this.dispose();\n      throw error;\n    }\n  }\n\n  dispose(): Promise<void> {\n    if (this.completed) return Promise.resolve();\n    this.disposal ??= this.output.dispose();\n    return this.disposal;\n  }\n\n  private static manifestsMatch(\n    expected: CompletionSpoolManifest,\n    actual: CompletionSpoolManifest,\n  ): boolean {\n    return (\n      actual.transferId === expected.transferId &&\n      actual.requestId === expected.requestId &&\n      actual.instanceId === expected.instanceId &&\n      actual.exitCode === expected.exitCode &&\n      DaemonResultTransferReceiver.summariesMatch(actual, expected)\n    );\n  }\n\n  private static summariesMatch(\n    actual: CompletionSpoolManifest | DaemonCapturedOutputSummary,\n    expected: CompletionSpoolManifest,\n  ): boolean {\n    return (\n      actual.rawBytes === expected.rawBytes &&\n      actual.recordCount === expected.recordCount &&\n      actual.sha256 === expected.sha256\n    );\n  }\n}\n"
+  },
+  {
+    "id": "reattach",
+    "title": "Bounded reattachment of the identical request",
+    "side": "head",
+    "revision": "20838f8dbf413e04767543eb2380d0d114da6c60",
+    "path": "packages/daemon/src/transport/execution-client.ts",
+    "start": 43,
+    "end": 80,
+    "sha256": "470311ce4bd0df3de0f4af24c08eed3a8e8e13bbc633cfd8dd08a7ea7b7aba54",
+    "text": "    }));\n  }\n\n  private async completeWithReattachments(\n    endpoint: string,\n    request: DaemonExecuteRequest,\n    completion: DaemonExecutionReceipt[\"completion\"],\n  ): DaemonExecutionReceipt[\"completion\"] {\n    let currentCompletion = completion;\n    let originalAcceptedClose: DaemonTransportError | undefined;\n    let reattachmentCount = 0;\n    while (true) {\n      try {\n        return await currentCompletion;\n      } catch (error) {\n        if (!DaemonExecutionClient.isAcceptedConnectionClose(error, request)) throw error;\n        originalAcceptedClose ??= error;\n        if (\n          reattachmentCount >= this.options.deliveryPolicy.postAcceptanceExecutionReattachmentLimit\n        )\n          throw originalAcceptedClose;\n        try {\n          const reattached = await this.executeOnce(endpoint, request);\n          currentCompletion = reattached.completion;\n          reattachmentCount += 1;\n        } catch {\n          throw originalAcceptedClose;\n        }\n      }\n    }\n  }\n\n  private executeOnce(\n    endpoint: string,\n    request: DaemonExecuteRequest,\n  ): Promise<DaemonExecutionReceipt> {\n    this.options.validator.request(request);\n    return new Promise((resolve, reject) => {"
+  },
+  {
+    "id": "resume",
+    "title": "Bounded result-transfer recovery",
+    "side": "head",
+    "revision": "20838f8dbf413e04767543eb2380d0d114da6c60",
+    "path": "packages/daemon/src/transport/execution-client.ts",
+    "start": 115,
+    "end": 151,
+    "sha256": "470311ce4bd0df3de0f4af24c08eed3a8e8e13bbc633cfd8dd08a7ea7b7aba54",
+    "text": "        if (\n          resumeCount >= this.options.deliveryPolicy.resultTransferResumeLimitPerExecutionAttempt ||\n          completionSettled ||\n          acceptance === undefined ||\n          transfer.manifest === undefined ||\n          terminal\n        ) {\n          return false;\n        }\n        resumeCount += 1;\n        connection?.destroy();\n        transfer.beginConnection();\n        void this.fetchCompletion(endpoint, request, transfer)\n          .then((completionValue) => {\n            if (completionSettled) return;\n            completionSettled = true;\n            resolveCompletion(completionValue);\n          })\n          .catch((error: unknown) => {\n            if (DaemonExecutionClient.isAcceptedConnectionClose(error, request) && resume()) {\n              return;\n            }\n            fail(\n              error instanceof DaemonResultFetchEndedError\n                ? new DaemonTransportError(\"corrupt\", \"accepted\", error.message)\n                : error,\n            );\n          });\n        return true;\n      };\n      const publishAcceptance = (): void => {\n        if (acceptance === undefined || outerSettled) return;\n        outerSettled = true;\n        connection?.disableTimeout();\n        resolve({ acceptance, completion });\n      };\n      const consume = async (bytes: Uint8Array): Promise<void> => {"
+  },
+  {
+    "id": "fetch",
+    "title": "Fetch the next record; validate, then acknowledge",
+    "side": "head",
+    "revision": "20838f8dbf413e04767543eb2380d0d114da6c60",
+    "path": "packages/daemon/src/transport/execution-client.ts",
+    "start": 296,
+    "end": 375,
+    "sha256": "470311ce4bd0df3de0f4af24c08eed3a8e8e13bbc633cfd8dd08a7ea7b7aba54",
+    "text": "      void receive();\n    });\n  }\n\n  private async fetchCompletion(\n    endpoint: string,\n    request: DaemonExecuteRequest,\n    transfer: DaemonResultTransferReceiver,\n  ): DaemonExecutionReceipt[\"completion\"] {\n    const decoder = this.options.codec.transferDecoder();\n    let connection: Awaited<ReturnType<DaemonSocketClient[\"connect\"]>>;\n    try {\n      connection = await this.options.sockets.connect(endpoint);\n    } catch (error) {\n      const message = error instanceof Error ? error.message : String(error);\n      throw new DaemonTransportError(\"closed\", \"accepted\", message, request.instanceId);\n    }\n    try {\n      connection.write(\n        this.options.codec.encodeControl({\n          kind: \"result-fetch\",\n          protocolVersion: request.protocolVersion,\n          instanceId: request.instanceId,\n          processToken: request.processToken,\n          requestId: request.requestId,\n          offset: transfer.nextOffset,\n        }),\n      );\n    } catch (error) {\n      connection.destroy();\n      throw DaemonExecutionClient.transportError(error, \"accepted\");\n    }\n    let ended = false;\n    try {\n      for await (const bytes of connection.incoming) {\n        try {\n          let completedResult = false;\n          let failedCode: DaemonExecutionFailureCode | undefined;\n          for (const value of decoder.append(bytes)) {\n            if (ended) throw new Error(\"Daemon resumed with a duplicate terminal frame\");\n            if (DaemonExecutionClient.isResultChunk(value)) {\n              await transfer.acceptChunk(value);\n              continue;\n            }\n            const frame = this.options.validator.executionFrame(request, value);\n            if (frame.kind === \"result-manifest\") {\n              transfer.acceptManifest(frame);\n              continue;\n            }\n            if (frame.kind === \"execution-failed\") {\n              ended = true;\n              failedCode = frame.code;\n              continue;\n            }\n            if (frame.kind !== \"result-end\") {\n              throw new Error(\"Daemon resumed with an invalid terminal frame\");\n            }\n            transfer.acceptEnd(frame);\n            ended = true;\n            completedResult = true;\n          }\n          if (completedResult) {\n            const result = await transfer.finish();\n            const manifest = transfer.manifest;\n            if (manifest === undefined) throw new Error(\"Completion manifest is missing\");\n            try {\n              await this.options.lifecycle.acknowledgeResult(\n                endpoint,\n                request,\n                manifest.transferId,\n              );\n            } catch (error) {\n              await result.output.dispose();\n              throw error;\n            }\n            connection.end();\n            return { status: \"completed\", result };\n          }\n          if (failedCode !== undefined) {\n            connection.end();"
+  },
+  {
+    "id": "ack-client",
+    "title": "Acknowledgement precedes caller completion",
+    "side": "head",
+    "revision": "20838f8dbf413e04767543eb2380d0d114da6c60",
+    "path": "packages/daemon/src/transport/execution-client.ts",
+    "start": 210,
+    "end": 240,
+    "sha256": "470311ce4bd0df3de0f4af24c08eed3a8e8e13bbc633cfd8dd08a7ea7b7aba54",
+    "text": "          if (completedManifest === undefined) throw new Error(\"Completion manifest is missing\");\n          try {\n            await this.options.lifecycle.acknowledgeResult(\n              endpoint,\n              request,\n              completedManifest.transferId,\n            );\n          } catch (error) {\n            await result.output.dispose();\n            throw error;\n          }\n          if (!completionSettled) {\n            completionSettled = true;\n            connection?.end();\n            resolveCompletion({ status: \"completed\", result });\n          }\n        }\n        if (failedCode !== undefined && !completionSettled) {\n          completionSettled = true;\n          connection?.end();\n          await transfer.dispose();\n          resolveCompletion({ status: \"failed\", code: failedCode });\n        }\n      };\n      const receive = async (): Promise<void> => {\n        try {\n          connection = await this.options.sockets.connect(\n            endpoint,\n            this.options.transportPolicy.executionAdmissionTimeoutMs,\n          );\n        } catch (error) {"
+  },
+  {
+    "id": "retry",
+    "title": "Replay authority depends on delivery state",
+    "side": "head",
+    "revision": "20838f8dbf413e04767543eb2380d0d114da6c60",
+    "path": "packages/daemon/src/transport/transport-error.ts",
+    "start": 14,
+    "end": 39,
+    "sha256": "9cc0deeabfb172a0f7eb2f3750e2793462e0778fde7887797716da8b26e41c98",
+    "text": "export class DaemonTransportError extends Error {\n  readonly authenticatedInstanceId?: string;\n  readonly retrySafe: boolean;\n\n  constructor(\n    readonly code: DaemonTransportFailureCode,\n    readonly delivery: DaemonDeliveryState,\n    message: string,\n    authenticatedInstanceId?: string,\n    authenticatedRejectionCode?: DaemonExecuteRejectionCode,\n  ) {\n    super(message);\n    this.name = \"DaemonTransportError\";\n    if (authenticatedInstanceId !== undefined) {\n      this.authenticatedInstanceId = authenticatedInstanceId;\n    }\n    this.retrySafe =\n      delivery === \"not-submitted\" ||\n      (code === \"rejected\" &&\n        delivery === \"submitted-unconfirmed\" &&\n        authenticatedInstanceId !== undefined &&\n        authenticatedRejectionCode !== undefined &&\n        DaemonAdmissionRejections.retrySafe(authenticatedRejectionCode));\n  }\n}\n"
+  },
+  {
+    "id": "capture-owner",
+    "title": "The package constructs result capture",
+    "side": "head",
+    "revision": "20838f8dbf413e04767543eb2380d0d114da6c60",
+    "path": "packages/daemon/src/client/daemon-client-runtime.ts",
+    "start": 94,
+    "end": 105,
+    "sha256": "a4f055fc332198cf472504d620e651e184c035b9ce569b69cf25a24587cf6203",
+    "text": "    });\n    this.statusTransport = new LocalDaemonTransport({\n      policy: this.policy,\n      lifecycleResponseTimeoutMs: this.policy.values.transport.statusResponseTimeoutMs,\n    });\n    const processTerminator = new NodeDaemonProcessTerminator(this.policy.values.shutdown);\n    const launcher = new NodeDaemonProcessLauncher(\n      options.productVersion,\n      options.executorModuleUrl,\n      this.policy,\n      processTerminator,\n    );"
+  },
+  {
+    "id": "runtime",
+    "title": "Warm failures and local fallback authority",
+    "side": "head",
+    "revision": "20838f8dbf413e04767543eb2380d0d114da6c60",
+    "path": "packages/daemon/src/client/daemon-client-runtime.ts",
+    "start": 185,
+    "end": 224,
+    "sha256": "a4f055fc332198cf472504d620e651e184c035b9ce569b69cf25a24587cf6203",
+    "text": "    let receipt: Awaited<ReturnType<LocalDaemonTransport[\"execute\"]>>;\n    try {\n      receipt = await this.routingTransport.execute(record.endpoint, {\n        kind: \"execute\",\n        protocolVersion: DAEMON_PROTOCOL_VERSION,\n        instanceId: record.instanceId,\n        processToken: record.processToken,\n        requestId: randomUUID(),\n        commandName: request.commandName,\n        request: DaemonClientRuntime.executorRequest(request, \"warm\"),\n      });\n    } catch (error) {\n      if (error instanceof DaemonTransportError && error.retrySafe) {\n        return this.executeLocally(request, \"fallback\");\n      }\n      return { mode: \"warm\", result: DaemonControlledResult.acceptedRequestDidNotComplete() };\n    }\n    try {\n      const completion = await receipt.completion;\n      if (completion.status === \"failed\") {\n        return { mode: \"warm\", result: DaemonClientRuntime.controlledFailure(completion.code) };\n      }\n      if (!DaemonClientRuntime.isCompleteResult(completion.result)) {\n        await DaemonClientRuntime.disposeMalformedOutput(completion.result);\n        return { mode: \"warm\", result: DaemonControlledResult.acceptedRequestDidNotComplete() };\n      }\n      return { mode: \"warm\", result: completion.result };\n    } catch {\n      return { mode: \"warm\", result: DaemonControlledResult.acceptedRequestDidNotComplete() };\n    }\n  }\n\n  private async executeLocally(\n    request: DaemonClientExecuteRequest,\n    mode: \"cold\" | \"fallback\",\n  ): Promise<DaemonClientExecuteResult> {\n    const executor = await this.options.executorFactory({\n      stateDirectory: this.options.stateDirectory,\n      productVersion: this.options.productVersion,\n      sampleResources: () => undefined,"
+  },
+  {
+    "id": "ledger",
+    "title": "Matching identity attaches; conflicting payload rejects",
+    "side": "head",
+    "revision": "20838f8dbf413e04767543eb2380d0d114da6c60",
+    "path": "packages/daemon/src/execution/accepted-request-ledger.ts",
+    "start": 52,
+    "end": 108,
+    "sha256": "cf8af986c22f7349c020ccc6a453f69d278d5877da1622b33c1c6e63231b1d72",
+    "text": "\n  get hasUnacknowledgedCompletions(): boolean {\n    for (const entry of this.entries.values()) {\n      if (entry.state.state === \"completed\" && !this.acknowledged.has(entry.requestId)) return true;\n    }\n    return false;\n  }\n\n  compatibilityFor(\n    requestId: string,\n    commandName: DaemonCommandName,\n    request: DaemonExecutorRequest,\n  ): AcceptedRequestCompatibility {\n    const existing = this.entries.get(requestId);\n    if (existing === undefined) return \"unseen\";\n    const requestFingerprint = AcceptedRequestLedger.fingerprint(commandName, request);\n    return existing.requestFingerprint === requestFingerprint ? \"matching\" : \"conflicting\";\n  }\n\n  accept(\n    requestId: string,\n    commandName: DaemonCommandName,\n    request: DaemonExecutorRequest,\n  ): AcceptedRequestEntry {\n    const requestFingerprint = AcceptedRequestLedger.fingerprint(commandName, request);\n    const existing = this.entries.get(requestId);\n    if (existing !== undefined) {\n      if (existing.requestFingerprint !== requestFingerprint) {\n        throw new AcceptedRequestCorruptionError(requestId);\n      }\n      return existing;\n    }\n    const entry: AcceptedRequestEntry = {\n      requestId,\n      requestFingerprint,\n      commandName,\n      request,\n      acceptedAt: this.clock.wallNowMs(),\n      queuePosition: this.nonterminalCount,\n      deliveryTerminated: false,\n      state: { state: \"queued\" },\n    };\n    this.entries.set(requestId, entry);\n    return entry;\n  }\n\n  markRunning(requestId: string, startedAt: number): AcceptedRequestEntry {\n    const entry = this.transitionable(requestId);\n    if (entry.state.state !== \"queued\") {\n      throw new Error(`Accepted request ${requestId} is already ${entry.state.state}`);\n    }\n    return this.publish({\n      ...entry,\n      state: { state: \"running\", startedAt },\n    });\n  }\n"
+  },
+  {
+    "id": "ack-ledger",
+    "title": "Acknowledgement is a Set entry; ledger is retained",
+    "side": "head",
+    "revision": "20838f8dbf413e04767543eb2380d0d114da6c60",
+    "path": "packages/daemon/src/execution/accepted-request-ledger.ts",
+    "start": 170,
+    "end": 205,
+    "sha256": "cf8af986c22f7349c020ccc6a453f69d278d5877da1622b33c1c6e63231b1d72",
+    "text": "    this.acknowledged.add(requestId);\n  }\n\n  isAcknowledged(requestId: string): boolean {\n    return this.acknowledged.has(requestId);\n  }\n\n  terminateDelivery(requestId: string): boolean {\n    const entry = this.entry(requestId);\n    if (entry.deliveryTerminated) return false;\n    this.entries.set(requestId, { ...entry, deliveryTerminated: true });\n    return true;\n  }\n\n  isDeliveryTerminated(requestId: string): boolean {\n    return this.entry(requestId).deliveryTerminated;\n  }\n\n  subscribe(requestId: string, subscriber: AcceptedRequestSubscriber): () => void {\n    const entry = this.entry(requestId);\n    let requestSubscribers = this.subscribers.get(requestId);\n    if (requestSubscribers === undefined) {\n      requestSubscribers = new Set();\n      this.subscribers.set(requestId, requestSubscribers);\n    }\n    requestSubscribers.add(subscriber);\n    subscriber(entry);\n    return () => {\n      requestSubscribers?.delete(subscriber);\n      if (requestSubscribers?.size === 0) this.subscribers.delete(requestId);\n    };\n  }\n\n  entryFor(requestId: string): AcceptedRequestEntry | undefined {\n    return this.entries.get(requestId);\n  }"
+  },
+  {
+    "id": "ack-server",
+    "title": "Matching transfer acknowledgement cleans up spool",
+    "side": "head",
+    "revision": "20838f8dbf413e04767543eb2380d0d114da6c60",
+    "path": "packages/daemon/src/delivery/delivery-session.ts",
+    "start": 185,
+    "end": 216,
+    "sha256": "456c21ae2783d7866842f67b35138797f9eceaa31380624bea2b0287fd80282a",
+    "text": "      if (traceWasDisconnected) this.reattachOperationTrace(request.requestId);\n    }\n    try {\n      await this.deliverStoredCompletion(request.requestId, send, request.offset);\n    } catch (error) {\n      disconnectTraceConnection?.();\n      throw error;\n    }\n  }\n\n  async acknowledge(\n    request: AuthenticatedDaemonResultAcknowledgement,\n  ): Promise<DaemonResultAcknowledged> {\n    const spool = await this.options.spoolStore.open(request.requestId);\n    if (spool === undefined) throw new Error(\"Accepted request completion is unavailable\");\n    if (spool.completedManifest?.transferId !== request.transferId) {\n      throw new Error(\"Result acknowledgement does not match completion transfer\");\n    }\n    await spool.acknowledge().catch((error) => {\n      this.recordFailure(\"completion-cleanup\", error);\n    });\n    this.options.journal.acknowledge(request.requestId);\n    this.completeOperationTrace(request.requestId, \"delivered\");\n    return {\n      kind: \"result-acknowledged\",\n      ...this.options.coordinates,\n      requestId: request.requestId,\n      transferId: request.transferId,\n    };\n  }\n\n  completeRetainedTraces(): void {"
+  },
+  {
+    "id": "expiry",
+    "title": "Only disconnected diagnostic traces expire; capacity also bounds them",
+    "side": "head",
+    "revision": "20838f8dbf413e04767543eb2380d0d114da6c60",
+    "path": "packages/daemon/src/delivery/delivery-session.ts",
+    "start": 389,
+    "end": 456,
+    "sha256": "456c21ae2783d7866842f67b35138797f9eceaa31380624bea2b0287fd80282a",
+    "text": "    if (this.operationTraceExpirations.has(requestId)) return;\n    const trace = this.operationTraces.get(requestId);\n    if (trace === undefined) return;\n    trace.clientDisconnected();\n    const expiration = setTimeout(\n      () => this.expireOperationTrace(requestId),\n      this.options.policy.diagnostics.disconnectedTraceRetentionMs,\n    );\n    expiration.unref();\n    this.operationTraceExpirations.set(requestId, expiration);\n    this.enforceOperationTraceCapacity();\n  }\n\n  private attachOperationTraceConnection(requestId: string, send: DaemonServerSend): () => void {\n    const connectionCount = this.operationTraceConnections.get(requestId) ?? 0;\n    if (connectionCount === 0) {\n      const expiration = this.operationTraceExpirations.get(requestId);\n      if (expiration !== undefined) clearTimeout(expiration);\n      this.operationTraceExpirations.delete(requestId);\n    }\n    this.operationTraceConnections.set(requestId, connectionCount + 1);\n    let connectionClosed = false;\n    const disconnect = (): void => {\n      if (connectionClosed) return;\n      connectionClosed = true;\n      const remainingConnections = (this.operationTraceConnections.get(requestId) ?? 1) - 1;\n      if (remainingConnections > 0) {\n        this.operationTraceConnections.set(requestId, remainingConnections);\n        return;\n      }\n      this.operationTraceConnections.delete(requestId);\n      this.disconnectOperationTrace(requestId);\n    };\n    send.onClose(disconnect);\n    return disconnect;\n  }\n\n  private traceWasDisconnected(requestId: string): boolean {\n    if (this.operationTraceExpirations.has(requestId)) return true;\n    return (\n      !this.operationTraces.has(requestId) && !this.options.journal.isDeliveryTerminated(requestId)\n    );\n  }\n\n  private reattachOperationTrace(requestId: string): void {\n    if (this.options.journal.isDeliveryTerminated(requestId)) return;\n    const trace = this.operationTraces.get(requestId);\n    if (trace === undefined) this.options.observer.reattached(requestId);\n    else trace.reattached();\n  }\n\n  private expireOperationTrace(requestId: string): void {\n    this.operationTraceExpirations.delete(requestId);\n    this.operationTraceConnections.delete(requestId);\n    if (!this.operationTraces.delete(requestId)) return;\n    this.options.observer.traceExpired(requestId);\n  }\n\n  private enforceOperationTraceCapacity(): void {\n    const capacity = Math.max(1, this.options.policy.diagnostics.maximumDisconnectedTraces);\n    while (this.operationTraceExpirations.size > capacity) {\n      const oldestRequestId = this.operationTraceExpirations.keys().next().value as\n        | string\n        | undefined;\n      if (oldestRequestId === undefined) return;\n      const expiration = this.operationTraceExpirations.get(oldestRequestId);\n      if (expiration !== undefined) clearTimeout(expiration);\n      this.expireOperationTrace(oldestRequestId);"
+  },
+  {
+    "id": "spool",
+    "title": "Record-based reads and acknowledgement disposal",
+    "side": "head",
+    "revision": "20838f8dbf413e04767543eb2380d0d114da6c60",
+    "path": "packages/daemon/src/delivery/completion-spool.ts",
+    "start": 259,
+    "end": 295,
+    "sha256": "66513d25957d7dde8d426edbffd59b26bc07da3922dde95f0e3c3aa53a652871",
+    "text": "      const records =\n        this.filePath === undefined\n          ? this.inlineRecords\n          : this.options.storage.records(this.filePath, this.options.maximumChunkBytes);\n      for await (const record of records) {\n        if (record.sequence >= offset) yield record;\n      }\n    } catch (error) {\n      throw new CompletionSpoolReadError(error);\n    }\n  }\n\n  async acknowledge(): Promise<void> {\n    if (!this.terminal) throw new Error(\"Completion spool is not complete\");\n    await this.dispose();\n  }\n\n  async dispose(): Promise<void> {\n    if (this.cleanupFinished) return;\n    if (this.disposal !== undefined) return this.disposal;\n    this.disposal = this.performDispose();\n    try {\n      await this.disposal;\n    } finally {\n      this.disposal = undefined;\n    }\n  }\n\n  private async failCapacity(): Promise<never> {\n    await this.dispose();\n    throw new CompletionSpoolCapacityError();\n  }\n\n  private async spillInlineRecords(): Promise<void> {\n    const instanceDirectory = join(this.options.directory, this.options.identity.instanceId);\n    await this.options.storage.ensureDirectory(this.options.directory);\n    await this.options.storage.ensureDirectory(instanceDirectory);"
+  },
+  {
+    "id": "limits",
+    "title": "Current recovery and trace-retention limits",
+    "side": "head",
+    "revision": "20838f8dbf413e04767543eb2380d0d114da6c60",
+    "path": "packages/daemon/src/daemon-policy.ts",
+    "start": 127,
+    "end": 160,
+    "sha256": "7a3656def315dd18b43ec5a7db365e9896f2fe9518d49e89ecce707ee3c8d161",
+    "text": "        processExitPollIntervalMs: 20,\n        resourceDrainAcknowledgementGraceMs: 250,\n        resourceDrainAcknowledgementPollIntervalMs: 5,\n      },\n      delivery: {\n        postAcceptanceExecutionReattachmentLimit: 1,\n        resultTransferResumeLimitPerExecutionAttempt: 1,\n      },\n      output: {\n        maximumChunkRawBytes: 64 * 1024,\n        inlineRawBytes: 256 * 1024,\n        maximumResultRawBytes: 256 * MEBIBYTE,\n        maximumAggregateSpoolRawBytes: 512 * MEBIBYTE,\n      },\n      resources: {\n        effectiveMemoryBytes,\n        hardProcessRssBytes: hardProcessRssMiB * MEBIBYTE,\n        softProcessRssBytes: Math.floor(hardProcessRssMiB * 0.8) * MEBIBYTE,\n        resumeProcessRssBytes: Math.floor(hardProcessRssMiB * 0.7) * MEBIBYTE,\n        workerMaxOldGenerationSizeMiB,\n        supervisionIntervalMs: 250,\n        replacementWindowMs: 10 * 60_000,\n        replacementLimit: 2,\n        workerHeapSampleIntervalMs: 25,\n      },\n      diagnostics: {\n        logRotateBytes: 10 * MEBIBYTE,\n        logBackupCount: 4,\n        maximumQueuedEvents: 1_024,\n        disconnectedTraceRetentionMs: 5 * 60_000,\n        maximumDisconnectedTraces: 1_024,\n      },\n    });\n  }"
+  },
+  {
+    "id": "eviction",
+    "title": "Follow-up behavior is deferred",
+    "side": "head",
+    "revision": "20838f8dbf413e04767543eb2380d0d114da6c60",
+    "path": "plans/005/daemon-follow-ups-functional-spec.md",
+    "start": 1,
+    "end": 8,
+    "sha256": "0f39ebc1d1d5018fe26af3617d7fc9653e7ef0e0c96b1ec4cf4982ccd6f8e627",
+    "text": "# Symnav Daemon Follow-ups Functional Spec\n\n## Goal\n\nEight behavior changes surfaced by the architecture reviews and deferred until after the daemon restructuring in `daemon-architecture-functional-spec.md`. Each amends `daemon-functional-spec.md`; that document stays the source of truth for everything not named here. This is not a rewrite of routing, admission, or delivery, and not a change to any navigation command's output. This spec defines product behavior only; implementation choices live in the phased plans.\n\n## Primary User\n"
+  },
+  {
+    "id": "eviction-detail",
+    "title": "Ledger eviction is a future behavior",
+    "side": "head",
+    "revision": "20838f8dbf413e04767543eb2380d0d114da6c60",
+    "path": "plans/005/daemon-follow-ups-functional-spec.md",
+    "start": 80,
+    "end": 94,
+    "sha256": "0f39ebc1d1d5018fe26af3617d7fc9653e7ef0e0c96b1ec4cf4982ccd6f8e627",
+    "text": "## Ledger Eviction\n\n**Purpose.** Stop the accepted-request ledger growing for the daemon's lifetime.\n\n**Produces.** An acknowledged request disappears from the ledger at acknowledgement. An accepted request whose client never acknowledges disappears when its operation trace expires. Memory reported by `daemon status` stays flat under sustained request churn with no workspace changes.\n\n**Does not produce.** Early removal of a request whose result has not been delivered. A duplicate execution: a reconnect inside the retention period still attaches to the existing result.\n\n**Examples.**\n\n- 10,000 `overview` requests over a day, all acknowledged: ledger holds zero entries afterwards.\n- A client disconnects after acceptance and never returns: entry and spool are gone `5 minutes` after completion.\n- A client reconnects `4 minutes` after disconnect: it receives the stored result; at `6 minutes` it receives a not-found rejection and executes locally, since admission was never proven for that reconnect.\n\n**Edge cases.** Retention is measured from completion, not acceptance. A request still queued or executing is never evicted."
+  },
+  {
+    "id": "freeze",
+    "title": "Freeze active CLI compatibility copies",
+    "side": "head",
+    "revision": "20838f8dbf413e04767543eb2380d0d114da6c60",
+    "path": "meta-tests/src/daemon-compatibility-copy.test.ts",
+    "start": 1,
+    "end": 77,
+    "sha256": "1d0e7076b9189bd85a26c07b28f4abc55a549877b489bae0798cc609e093bb11",
+    "text": "import { createHash } from \"node:crypto\";\nimport { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from \"node:fs\";\nimport { tmpdir } from \"node:os\";\nimport { dirname, join, resolve } from \"node:path\";\nimport { fileURLToPath } from \"node:url\";\nimport { describe, expect, it } from \"vitest\";\n\nclass DaemonCompatibilityCopyInventory {\n  static readonly expectedDigest =\n    \"d0ff136f3be132ea004d3b13985192e055d1dfbad1abb773b607e89c54a1f41e\";\n\n  static files(repositoryRoot: string): readonly string[] {\n    const daemonDirectory = join(repositoryRoot, \"apps/cli/src/daemon\");\n    const cliOwnedSources = new Set([\n      \"daemon-command-dispatcher.ts\",\n      \"invocation-route.ts\",\n      \"invocation-workspace-selector.ts\",\n    ]);\n    return readdirSync(daemonDirectory)\n      .filter(\n        (name) => name.endsWith(\".ts\") && !name.endsWith(\".test.ts\") && !cliOwnedSources.has(name),\n      )\n      .map((name) => `apps/cli/src/daemon/${name}`)\n      .sort();\n  }\n\n  static digest(repositoryRoot: string, files: readonly string[]): string {\n    const hash = createHash(\"sha256\");\n    for (const file of files) {\n      hash.update(file);\n      hash.update(\"\\0\");\n      hash.update(readFileSync(join(repositoryRoot, file), \"utf8\").replace(/\\r\\n/g, \"\\n\"));\n      hash.update(\"\\0\");\n    }\n    return hash.digest(\"hex\");\n  }\n}\n\ndescribe(\"CLI daemon compatibility copies\", () => {\n  it(\"remain frozen while package-local mechanisms are staged\", () => {\n    const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), \"../..\");\n    const files = DaemonCompatibilityCopyInventory.files(repositoryRoot);\n\n    expect(files).toHaveLength(38);\n    expect(DaemonCompatibilityCopyInventory.digest(repositoryRoot, files)).toBe(\n      DaemonCompatibilityCopyInventory.expectedDigest,\n    );\n  });\n\n  it(\"hashes semantic source content independently of checkout line endings\", () => {\n    const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), \"../..\");\n    const files = DaemonCompatibilityCopyInventory.files(repositoryRoot);\n    const crlfCheckoutRoot = mkdtempSync(join(tmpdir(), \"symnav-daemon-compatibility-\"));\n\n    try {\n      for (const file of files) {\n        const source = readFileSync(join(repositoryRoot, file), \"utf8\").replace(/\\r?\\n/g, \"\\r\\n\");\n        const crlfFile = join(crlfCheckoutRoot, file);\n        mkdirSync(dirname(crlfFile), { recursive: true });\n        writeFileSync(crlfFile, source);\n      }\n\n      expect(DaemonCompatibilityCopyInventory.digest(crlfCheckoutRoot, files)).toBe(\n        DaemonCompatibilityCopyInventory.expectedDigest,\n      );\n\n      const changedFile = join(crlfCheckoutRoot, files[0]!);\n      writeFileSync(changedFile, `${readFileSync(changedFile, \"utf8\")}export {};\\r\\n`);\n\n      expect(DaemonCompatibilityCopyInventory.digest(crlfCheckoutRoot, files)).not.toBe(\n        DaemonCompatibilityCopyInventory.expectedDigest,\n      );\n    } finally {\n      rmSync(crlfCheckoutRoot, { recursive: true, force: true });\n    }\n  });\n});"
+  },
+  {
+    "id": "capture-test",
+    "title": "New package client capture and execution characterization",
+    "side": "head",
+    "revision": "20838f8dbf413e04767543eb2380d0d114da6c60",
+    "path": "packages/daemon/src/client/daemon-client.test.ts",
+    "start": 149,
+    "end": 186,
+    "sha256": "f17bdd78a377298953eaf9d3e46c66e9a2cc889093cf1d4606529b34b9977f49",
+    "text": "  it(\"composes fresh warm result captures from output policy in the OS temporary directory\", () => {\n    const harness = new ClientHarness({});\n    const createOutput = ClientCaptureInspection.createOutput(harness.client);\n\n    const first = createOutput();\n    const second = createOutput();\n\n    expect(first).not.toBe(second);\n    expect(ClientCaptureInspection.capture(first)).toMatchObject({\n      directory: tmpdir(),\n      maximumChunkRawBytes: DaemonPolicy.currentSystem().values.output.maximumChunkRawBytes,\n      inlineRawBytes: DaemonPolicy.currentSystem().values.output.inlineRawBytes,\n      maximumResultRawBytes: DaemonPolicy.currentSystem().values.output.maximumResultRawBytes,\n    });\n    expect(harness.executorFactory).not.toHaveBeenCalled();\n  });\n\n  it(\"executes ready requests warm without creating a host executor\", async () => {\n    const harness = new ClientHarness({});\n\n    await expect(harness.client.execute(harness.request())).resolves.toEqual({\n      mode: \"warm\",\n      result: success,\n    });\n\n    expect(harness.executorFactory).not.toHaveBeenCalled();\n    expect(harness.warmRequests).toEqual([\n      expect.objectContaining({\n        commandName: \"overview\",\n        request: {\n          argv: [\"overview\", \"src/a.ts\"],\n          cwd: \"/workspace\",\n          telemetryEnabled: true,\n          executionMode: \"warm\",\n        },\n      }),\n    ]);\n  });"
+  },
+  {
+    "id": "intent",
+    "title": "PR 148: stated staging and output-ownership reasons",
+    "side": "bundle",
+    "revision": "20838f8dbf413e04767543eb2380d0d114da6c60",
+    "path": "inputs/pr-148/pr.json → body (body line numbers)",
+    "start": 90,
+    "end": 91,
+    "text": "- Chose package staging with a frozen CLI compatibility graph over switching production consumers during relocation, because mechanism ownership and host invocation coordination need separate review boundaries.\n- Chose package-owned result capture and controlled failure outputs over host-provided storage or output factories, because warm transfer cleanup and replay safety belong to the daemon client."
+  },
+  {
+    "id": "tests",
+    "title": "Four focused test moves: assertion bodies retained",
+    "side": "comparison",
+    "revision": "20838f8dbf413e04767543eb2380d0d114da6c60",
+    "path": "evidence/test-inventory.json",
+    "start": 1,
+    "text": "{\n  \"base\": \"ba53c8e1662fd86d198b95321c90d9c9bef10184\",\n  \"head\": \"20838f8dbf413e04767543eb2380d0d114da6c60\",\n  \"tests\": [\n    {\n      \"basePath\": \"apps/cli/src/daemon/daemon-wire-codec.test.ts\",\n      \"headPath\": \"packages/daemon/src/transport/wire-codec.test.ts\",\n      \"baseSha256\": \"45e9db6bdcd26448ecaea7e7640e2d15f7641d655978ff5b407a19946a199b95\",\n      \"headSha256\": \"2c3084362afa8d951a7c738c1d3bdff700f08463a555f8f4a9f137d557a556db\",\n      \"bodyEquivalent\": true,\n      \"normalization\": \"Remove imports; adapt the delivery-test fake clock constructor only.\"\n    },\n    {\n      \"basePath\": \"apps/cli/src/daemon/daemon-result-transfer-receiver.test.ts\",\n      \"headPath\": \"packages/daemon/src/transport/result-transfer-receiver.test.ts\",\n      \"baseSha256\": \"bbc36d6a1d02c1b3dcbd7ef59583858581db2e570e1fcaac09c5799b35de78e3\",\n      \"headSha256\": \"c0f8845154d1ca75494d3bb3e24bc54b1690e5b7d263ed65b8f83c90bb919e16\",\n      \"bodyEquivalent\": true,\n      \"normalization\": \"Remove imports; adapt the delivery-test fake clock constructor only.\"\n    },\n    {\n      \"basePath\": \"apps/cli/src/daemon/daemon-execution-client.test.ts\",\n      \"headPath\": \"packages/daemon/src/transport/execution-client.test.ts\",\n      \"baseSha256\": \"4ea084ef61849547b0a234e3ebf145181716bb8621df442e63ba317739132d1d\",\n      \"headSha256\": \"dd8dfd53e41987b1bf4e1b110d561870fbb02ed7075a2a2999e4f9e1662f1b52\",\n      \"bodyEquivalent\": true,\n      \"normalization\": \"Remove imports; adapt the delivery-test fake clock constructor only.\"\n    },\n    {\n      \"basePath\": \"apps/cli/src/daemon/daemon-delivery-session.test.ts\",\n      \"headPath\": \"packages/daemon/src/delivery/delivery-session.test.ts\",\n      \"baseSha256\": \"ab41b7f3924f91bf14c34ac96c00de78afc100cd8aa6460b125c99ac92cdf81e\",\n      \"headSha256\": \"71a77f549bba14ce9b96376a6646e7bbdc210fb2be8d41a5baa4ecf1bb3736ff\",\n      \"bodyEquivalent\": true,\n      \"normalization\": \"Remove imports; adapt the delivery-test fake clock constructor only.\"\n    }\n  ]\n}"
+  }
+]

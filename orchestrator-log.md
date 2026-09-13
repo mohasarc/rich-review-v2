@@ -1185,3 +1185,9 @@ no changes added to commit (use "git add" and/or "git commit -a")
    108166a..d75f90f  main -> main
 - 2026-09-13 14:27:24 +03: MONITOR OK supervisor=39161, finished=74, running=5, queued=3, dirty-worktrees=0, missing-readmes=0, free-disk=21.3GiB
 - 2026-09-13 14:29:36 +03: FINISH 76-scientific-specimen-atlas via codex, exit 0, README present
+- 2026-09-13 14:29:36 +03: COMMIT OK 76-scientific-specimen-atlas: [main 2fc1f88] Add experiment 76 scientific-specimen-atlas
+- 2026-09-13 14:29:36 +03: START 80-typographic-morphology attempt 1 via claude-opus, pid 84715
+- 2026-09-13 14:32:32 +03: PUBLISH OK: To https://github.com/mohasarc/rich-review-v2.git
+   d75f90f..2fc1f88  main -> main
+- 2026-09-13 14:32:34 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/79-failure-domain-pinball/node_modules/phaser/types/phaser.json
+- 2026-09-13 14:35:27 +03: FINISH 75-message-particle-chamber via codex, exit 0, README present
