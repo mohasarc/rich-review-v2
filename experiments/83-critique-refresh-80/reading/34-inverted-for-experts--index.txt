@@ -1,0 +1,394 @@
+Skip to all decisions
+34
+rich-review / evidence first
+Owner map
+60 files
+Policy record
+Sources
+PR 131 · ROUTE DAEMON THRESHOLDS THROUGH CENTRALIZED POLICY
+execution-status gets
+the ordinary timeout.
+HEAD TEST · OBSERVER TRANSPORT
+identify
+or
+ping
+singleResponseTimeoutMs: 1_000,
+statusResponseTimeoutMs: 10,
+response scheduled at 50 ms
+expects “timeout” ↗
+HEAD TEST · ORDINARY TRANSPORT
+execution-status
+singleResponseTimeoutMs: 10,
+statusResponseTimeoutMs: 1_000,
+response scheduled at 50 ms
+expects “timeout” ↗
+Checked-in assertions, not execution results. Production values: 100 ms observer / 250 ms ordinary.
+Explain this choice ↗
+A quick shape
+Simplified ownership sketch
+packages/daemon
+Existing policy snapshot
+→
+CLI composition
+Required slices + purpose
+→
+CLI mechanisms
+local threshold defaults
+consume supplied values
+
+Policy values and serialized process/worker bridges already exist in the base. #131 connects their consumers; the mechanisms remain in apps/cli. Expand the boundaries ↗
+
+THE FULL SURFACE
+
+23 choices
+5 without a recorded reason
+
+01
+Requests & recovery
+02
+Bytes across boundaries
+03
+Memory & supervision
+04
+Startup & shutdown
+05
+Diagnostics
+06
+Test seams & evidence changes
+Read down, or choose any evidence strip. Explanations open alongside the same claim.
+60 / 60 files placed ↗
+All decisions, evidence first
+
+Value strips use compact notation. Source excerpts preserve the original lines.
+
+Find evidence or a decision
+/
+Stated
+A reason exists in the PR or policy record.
+Unexplained
+No reason found in the inspected records.
+Only unexplained (5)
+
+Showing all 23 choices.
+
+01
+Requests & recovery
+
+Purpose, acceptance, and two different kinds of retry.
+
+4 choices
+01
+identify + status-observer → 100 ms
+execution-status + ordinary → 250 ms
+head · local-daemon-transport-validation.test.ts:106 ↗
+The caller’s purpose selects the timeout
+
+The status command supplies status-observer at construction. Ordinary lifecycle and execution-status calls use 250 ms; the payload’s kind does not select the limit.
+
+Stated
+Status observation and ordinary execution-status requests have distinct deadlines.
+Explain
+↗
+02
+executionAdmissionTimeoutMs: 5_000
+publishAcceptance → socket.setTimeout(0)
+head · local-daemon-transport.ts:496 ↗
+Acceptance removes the execution timeout
+
+The 5 s admission timeout now comes from policy. The existing acceptance boundary still removes it. Accepted completion, worker output acknowledgement, and unacknowledged-result retention gain no deadline.
+
+Stated
+Bound admission without timing accepted completion; retained-result eviction and silence handling are deferred.
+Explain
+↗
+03
+executeCount: 2, fetchCount: 1
+reattachment limit = 1; resume limit / attempt = 1
+head · local-daemon-transport-execution.test.ts:846 ↗
+Reattachment and fetch resume have separate scopes
+
+A matching authenticated close can reattach the same request. Fetch resume needs acceptance plus a manifest; its counter starts inside each executeOnce. The added test uses 2 execute connections and 1 fetch. A failed fetch settles that attempt.
+
+Stated
+Each reattached execute attempt has its own fetch-resume allowance.
+Explain
+↗
+04
+base: await reattached.completion inside catch
+head: currentCompletion = reattached.completion
+base · local-daemon-transport.ts:398 ↗
+The loop changes which completion error escapes
+
+If the first completion fails with E₁ and a successfully reattached completion fails with E₂, the base returns E₁; the head loop can return E₂. If executeOnce itself rejects while reattaching, the current earlier error still escapes.
+
+Unexplained
+No recorded reason found for changing completion-error provenance.
+Explain
+↗
+02
+Bytes across boundaries
+
+The same output slice follows capture, storage, workers, and sockets.
+
+3 choices
+05
+maximumChunkRawBytes: 64 * 1024
+response(value, maximumChunkRawBytes)
+head · daemon-navigation-worker-protocol.ts:127 ↗
+One chunk limit reaches every byte boundary
+
+Capture splits and coalesces records at the policy limit; spool append/read, worker send/receive, and result codec encode/decode receive that same limit. File decoding retains the configured record limit. The default stays 64 KiB.
+
+Stated
+Required policy inputs prevent omitted composition from recreating local defaults; the record limit bounds one raw output record.
+Explain
+↗
+06
+inlineRawBytes → maximumResultRawBytes
+256 KiB → 256 MiB; aggregate 512 MiB
+head · completion-spool.ts:304 ↗
+Inline, result, and aggregate limits remain distinct
+
+Output capture and completion spooling require the output slice. CliProgramExecutor obtains it from dependencies, including local execution. Per-result and per-daemon aggregate capacity stay separate; numeric production overrides are removed.
+
+Stated
+Avoid files for small results while separately bounding one result and all retained completions.
+Explain
+↗
+07
+maximumJsonPayloadBytes: 8 * MiB
+maximumExecutionControlPayloadBytes: 256 * KiB
+head · daemon-result-chunk-codec.ts:145 ↗
+JSON frames and execution transfer frames keep different caps
+
+Ordinary JSON accepts up to 8 MiB; execution control uses 256 KiB. A binary transfer frame allows the control cap plus the 64 KiB raw chunk cap, with the chunk checked separately. Transport reads each bound from policy.
+
+Stated
+Bound decoded control input and keep binary-transfer control bounded separately.
+Explain
+↗
+03
+Memory & supervision
+
+Consume the snapshot; stop deriving another resource policy.
+
+2 choices
+08
+const resourcePolicy = policy.values.resources;
+memoryCapBytes: this.resourcePolicy.hardProcessRssBytes
+base · daemon-resource-monitor.ts:21 ↗
+The resource snapshot becomes the reported and enforced cap
+
+Delete the CLI resource-policy derivation and the independent memoryCapBytes option. Supervisor, ready record, resource reports, and worker heap use the existing snapshot. At 1 GiB effective memory: hard 512, soft 409, resume 358, worker 256 MiB.
+
+Stated
+One threshold owner; preserve selected raw memory and pass the derived worker limit unchanged.
+Explain
+↗
+09
+supervisionIntervalMs = 250
+replacementLimit = 2 in 10 min; worker sample = 25 ms
+head · daemon-resource-monitor.ts:103 ↗
+Sampling, hysteresis, and replacement use the resource slice
+
+Supervisor sampling stays 250 ms and worker heap sampling 25 ms. Hard pressure replaces; soft pressure sheds; resumption needs the lower RSS threshold. The third replacement request inside ten minutes drains. All limits now come from the snapshot; a new consumer test uses 17 ms and 103/102/101-byte thresholds.
+
+Stated
+Sample without per-operation overhead, shed before hard replacement, and stop persistent replacement churn.
+Explain
+↗
+04
+Startup & shutdown
+
+Equal numbers still have separate jobs. Missing deadlines stay missing.
+
+5 choices
+10
+coordinationGraceMs = 15_000
+heartbeat / authorization / observation = 100 / 10 / 20 ms
+head · daemon-startup-coordinator.ts:64 ↗
+Startup grace is not a warm-up deadline
+
+Registry ownership, missing-owner observation, and process authorization use 15 s grace. Heartbeat, authorization polling, and readiness polling stay distinct at 100/10/20 ms. Replacing a prior instance gets 5 min. The unused startupTimeoutMs option disappears; healthy startup and startup silence still have no deadline.
+
+Stated
+Preserve election recovery grace; progressing warm-up has no project-size deadline and silence handling is deferred.
+Explain
+↗
+11
+retry limit 0 → launchCount 1
+retry limit 2 → launchCount 3
+head · daemon-startup-coordinator.ts:77 ↗
+Child failure uses a numeric retry budget
+
+A loop replaces the hard-coded second attempt. Default one retry applies to child exit or lost warm-up; other errors escape. Waiting for startup ownership does not reset the budget. Added tests exercise zero and two retries.
+
+Stated
+Preserve one fresh launch after a failed child.
+Explain
+↗
+12
+idle = 30 min; stop = 5 s
+force reserve = min(500 ms, floor(stop / 2))
+head · daemon-controller.ts:71 ↗
+Idle lifetime and explicit stop keep separate clocks
+
+Lifetime receives the 30 min idle policy. Explicit stop receives a 5 s total budget, reserves at most 500 ms and at most half the stop budget for forced termination, and observes every 20 ms. Active navigation still delays idle shutdown.
+
+Stated
+Release inactive resources, bound graceful stop and escalation together, and preserve small overridden stop windows.
+Explain
+↗
+13
+processSignalExitTimeoutMs = 500
+processExitPollIntervalMs = 20
+head · daemon-process-launcher.ts:62 ↗
+Process termination retains its own signal intervals
+
+NodeDaemonProcessTerminator requires the shutdown slice: 500 ms after SIGTERM and 500 ms after SIGKILL, with 20 ms polling. Launcher, dispatcher, coordinator, and controller compose it from policy; this is distinct from the controller’s stop budget.
+
+Stated
+Give each signal a bounded exit interval and preserve process-exit polling independently.
+Explain
+↗
+14
+resourceDrainAcknowledgementGraceMs = 250
+resourceDrainAcknowledgementPollIntervalMs = 5
+head · workspace-daemon.ts:925 ↗
+Resource drain keeps a short acknowledgement grace
+
+The resource-drain wait now reads a 250 ms grace and a distinct 5 ms poll interval from shutdown policy. It waits while unacknowledged completions remain. This short drain grace is separate from normal result retention.
+
+Stated
+Permit an attached client to acknowledge before cleanup and preserve the fast acknowledgement cadence.
+Explain
+↗
+05
+Diagnostics
+
+Log capacity and trace retention receive the diagnostic slice.
+
+2 choices
+15
+logRotateBytes = 10 MiB
+logBackupCount = 4; maximumQueuedEvents = 1_024
+head · daemon-logger.ts:265 ↗
+Log rotation, backup count, and queue capacity become inputs
+
+Logger requires diagnostics policy for rotation, four backups plus the active log, and a 1,024-event queue. Storage injection remains. The new blocked-storage test lowers the queue to one and observes diagnostics-dropped.
+
+Stated
+Bound active log size, diagnostic history, and memory when storage is slow.
+Explain
+↗
+16
+disconnectedTraceRetentionMs = 5 min
+capacity = Math.max(1, maximumDisconnectedTraces)
+head · workspace-daemon.ts:842 ↗
+Disconnected traces keep their own retention policy
+
+WorkspaceDaemon reads trace expiration and capacity from diagnostics: five minutes, at most 1,024 by default, with an effective minimum of one. Capacity expires the oldest disconnected trace. This diagnostic state is separate from retained output.
+
+Stated
+Retain reconnect evidence without changing result retention; bound diagnostic-only retention.
+Explain
+↗
+06
+Test seams & evidence changes
+
+Adapters, adjusted fixtures, deleted cases, and the source guard are decisions too.
+
+7 choices
+17
+Test… → DaemonPolicyTestFactory.withOverrides
+→ Runtime…({ policy })
+head · daemon-controller.ts:27 ↗
+Legacy test knobs move into seven test-only helpers
+
+Seven new helpers adapt controller, terminator, registry, resource policy, startup coordinator, transport, and workspace tests. Tests can vary validated snapshots; runtime constructors require policy. Local logger/spool adapters and e2e import rewiring follow the same separation.
+
+Stated
+Tests need small thresholds without restoring runtime tuning seams.
+Explain
+↗
+18
+capture(1) → capture(32)
+inline 0 → positive; "xx" → "x", "x"
+base · cli-program-executor.test.ts:98 ↗
+Tiny output fixtures change with policy validation
+
+The capture parity test raises its spill threshold from 1 to 32. Spool fixtures replace zero inline capacity with positive values and extra records; one request fixture splits “xx” into two records. Workspace adapters derive ordered capacities. A new test checks a one-byte chunk.
+
+Unexplained
+The validator requires 0 < chunk ≤ inline ≤ result ≤ aggregate; no specific reason was found for these fixture translations or their chosen sizes.
+Explain
+↗
+19
+inlineRawBytes: Math.max(64 KiB, requested)
+mkdirSync(outputDirectory, { recursive: true })
+head · local-daemon-transport.ts:47 ↗
+Transport’s “inline zero” now means at least one chunk
+
+The new transport helper raises requested inline capacity to at least the default 64 KiB chunk size and creates the output directory. Existing outputInlineBytes: 0 tests therefore no longer force the first byte to disk. Their assertions remain visible in the source.
+
+Unexplained
+No reason found for selecting this normalization or for adding eager directory creation.
+Explain
+↗
+20
+TestWorkspaceDaemon: memoryCapBytes?: number
+resource overrides come from options.resourcePolicy?.record
+head · workspace-daemon.ts:11 ↗
+A retained test memoryCapBytes option no longer configures runtime
+
+TestWorkspaceDaemon still accepts memoryCapBytes, but constructs the resource snapshot from the base policy and optional resourcePolicy record. It forwards memoryCapBytes through a spread to a runtime that no longer reads it. No reason was found for retaining that inert test input.
+
+Unexplained
+No recorded reason found for retaining the legacy test input without translating it into policy.
+Explain
+↗
+21
+− describe("DaemonResourcePolicy", …)
+existing package tests cover recipes and defaults
+base · daemon-resource-monitor.test.ts:11 ↗
+Seven CLI derivation/default cases are deleted
+
+Five memory rows, a constraint-selection case, and a literal 250 ms constant case disappear with the old class. The already-existing package suite checks the recipes, constraints, and defaults, but does not repeat the exact 256 MiB input row. The consumer’s 250 ms sampling test remains.
+
+Unexplained
+No specific deletion rationale found. Existing package coverage is context, not a newly added replacement suite or a proof of equivalence.
+Explain
+↗
+22
+resource: 17 ms, 103/102/101 bytes
+spool chunk: 2 bytes; JSON: 32 bytes; log queue: 1
+head · completion-spool.test.ts:17 ↗
+New tests exercise supplied values and separated scopes
+
+New cases exercise resource cadence/thresholds, spool chunk capacity, JSON capacity, a one-byte output chunk, diagnostic queue capacity, timeout purpose, child retry limits 0/2, and fetch after reattachment. E2e changes mostly rewire imports; diagnostic expectations read policy values.
+
+Stated
+The PR describes tests as preserving threshold and retry behavior while production knobs are retired.
+Explain
+↗
+23
+expect(sources).not.toContain(retiredSeam)
+head · daemon-package.test.ts:192 ↗
+The source guard expands its retired-seam vocabulary
+
+The package-boundary meta-test expands a string deny-list over CLI production sources: retired constants, optional threshold inputs, duplicated resource derivation, and policy reconstruction. It checks named strings; this is not semantic proof that every possible bypass is absent.
+
+Stated
+The PR explicitly calls for rejecting retired defaults and bypasses.
+Explain
+↗
+You have reached the end of the decision surface.
+Lower layers add source detail and diagrams to these same choices.
+Browse all 60 changed files ↗
+Inspect provenance ↗
+Experiment 34 · inverted-for-experts · read-only
+b3a6c4fa5 → b100221db · +1,298 / −544
+Experiment notes
+
+[SVG text in document order]
+

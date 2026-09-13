@@ -1,0 +1,333 @@
+Skip to decisions
+RICH REVIEW / FIELD NOTE 28
+PR 131 / SYMNAV / HOW THIS WAS MEASURED ↗
+
+BLAST RADIUS FROM REAL SYMBOL REFERENCES
+
+One policy.
+Many places to feel it.
+
+PR #131 makes daemon consumers take their thresholds from the existing policy snapshot. The ownership boundary changes; the mechanisms still live in the CLI package.
+
+60
+changed files
+15
+decisions to understand
+40
+symnav refs queries · base + head
+
+b3a6c4fa5d → b100221db4
+
+01 / THE SHAPE
+Simplified ownership picture. Arrows show configuration, not a call graph.
+
+BEFORE · PART 07
+
+packages/daemon
+Complete policy snapshot
+Already crosses process & worker boundaries
+↓
+apps/cli · mechanisms
+optional numbers
+local defaults
+Output · resources · lifecycle · diagnostics · transport
+
+AFTER · PART 08 / THIS PR
+
+packages/daemon
+The same policy owner
+Its definitions and defaults are unchanged in this PR
+↓
+required slices
+apps/cli · composition + mechanisms
+Output
+Resources
+Startup
+Shutdown
+Diagnostics
+Transport
+Delivery
+WHERE THEY RUN
+All three still in apps/cli
+Caller process
+composition · transport · capture
+⇢
+Daemon process
+spool · resources · lifecycle · logs
+⇢
+Worker thread
+capture · chunk validation · heap samples
+
+New required policy input Existing snapshot transfer. Test-only adapters translate legacy knobs outside these runtime boxes.
+
+02 / FOLLOW THE REFERENCES
+
+Start with the widest reach.
+
+Proxy, not runtime impact. Radius counts distinct external production files returned by symnav refs for manually chosen consumer symbols. Imports and types count; declaration files are excluded. No transitive expansion. Known missing references and the exact rule ↓
+
+Small counts still carry decisions.
+Which error escapes ↗
+Changed test inputs ↗
+Deleted assertions ↗
+Test casts & expectations ↗
+
+Reach is mostly stable. 8 of 9 nonzero production footprints contain the same base/head files. This refactor changes how existing consumers get their thresholds.
+
+Rank by
+Base ∪ head files
+Head files
+Base files
+Reference kinds
+All source references
+Usage references only
+DECISION / REASON / DEFAULTS
+PROD.
+FILES
+TEST
+FILES
+01Keep startup coordination separate from healthy warm-up
+STATEDStartup
+
+Supply registry grace, heartbeat, authorization polling, readiness polling and old-process termination through policy. Remove the unused startup-timeout member and test knob; progressing warm-up remains unbounded.
+
+15 s grace · 100 ms heartbeat · 10 ms authorization · 20 ms observation · 5 min previous-process termination
+BASE 5 → HEAD 5 · OPEN MECHANISM ↗
+5
+base ∪ head
+22
+02Keep distinct stop, idle and acknowledgement clocks
+STATEDShutdown
+
+Require shutdown policy for idle lifetime, controller stop, signal waits and drain acknowledgements. Preserve the half-window bound on forced-stop reserve and the fast acknowledgement poll.
+
+30 min idle · 5 s stop · ≤500 ms force reserve · 500 ms per signal · 250 ms acknowledgement grace / 5 ms poll
+BASE 4 → HEAD 4 · OPEN MECHANISM ↗
+4
+base ∪ head
+7
+03Policy owns both diagnostic storage limits
+STATEDDiagnostics
+
+Logger rotation, backup count and queue capacity use diagnostics policy. Disconnected operation traces use its retention and capacity, keeping an effective minimum of one trace; completion retention is a separate mechanism.
+
+10 MiB log · 4 backups · 1,024 queued events · 5 min / 1,024 disconnected traces (minimum 1)
+BASE 3 → HEAD 3 · OPEN MECHANISM ↗
+3
+base ∪ head
+1
+04Carry chunk and frame caps through each validator
+STATEDTransport
+
+Transport, binary codec, file reader and both worker-message endpoints use supplied caps. JSON and execution-control limits stay separate; the worker host decodes the snapshot to recover its chunk cap.
+
+8 MiB JSON · 256 KiB execution control · 64 KiB raw chunk
+BASE 3 → HEAD 3 · OPEN MECHANISM ↗
+3
+base ∪ head
+3
+05One output slice governs capture and retention
+STATEDOutput
+
+Remove local inline, record, per-result and aggregate limits. Pass the same output slice into command capture and completion spooling, including disk decoding.
+
+64 KiB per chunk · 256 KiB inline · 256 MiB per result · 512 MiB aggregate spool
+BASE 3 → HEAD 3 · OPEN MECHANISM ↗
+3
+base ∪ head
+4
+06Choose a response deadline by composition purpose
+STATEDTransport
+
+Status aggregation explicitly selects status-observer (100 ms); ordinary lifecycle and execution-status requests retain 250 ms. Admission still has 5 s, and accepted completion has no time deadline.
+
+100 ms observer · 250 ms ordinary · 5 s admission · no accepted-completion deadline
+BASE 3 → HEAD 3 · OPEN MECHANISM ↗
+3
+base ∪ head
+4
+07Use snapshot memory values without a second derivation
+STATEDResources
+
+Delete the CLI resource-policy class and memory-cap input. The snapshot now supplies RSS thresholds, reported hard cap, worker heap limit, supervision and heap-sampling cadence, and the replacement circuit.
+
+250 ms supervision · 25 ms heap sampling · 2 replacements per 10 min; next pressure event drains
+BASE 2 → HEAD 1 · OPEN MECHANISM ↗
+2
+base ∪ head
+5
+08Count startup retries for explicit child failure
+STATEDStartup
+
+Replace the fixed second launch with a loop bounded by childFailureRetryLimit. Only child-exit or lost-warm-up errors consume it; tests add zero- and two-retry policies.
+
+Default 1 retry; tests exercise 0 and 2
+BASE 1 → HEAD 1 · OPEN MECHANISM ↗
+1
+base ∪ head
+1
+09Give execute reattachment and result fetch separate budgets
+STATEDTransport
+
+Replace the fixed reattachment wrapper and fetch boolean with independent numeric counters. Every execute attempt owns a fresh fetch counter; fetch failure still goes directly to failure handling.
+
+Default: 1 reattachment · 1 fetch resume per execution attempt
+BASE 1 → HEAD 1 · OPEN MECHANISM ↗
+1
+base ∪ head
+8
+10Move legacy test knobs into seven test-only adapters
+STATEDTests
+
+Tests import adapter subclasses or a resource adapter that builds validated policy. Runtime constructors require policy; test clocks, storage, process and worker seams still exist.
+
+BASE 0 → HEAD 0 · OPEN MECHANISM ↗
+0
+base ∪ head
+26
+11Let a later completion failure become the reported error
+UNEXPLAINEDTransport
+
+The new reattachment loop propagates the current completion failure when its budget is exhausted. A failure to obtain the reattachment receipt still preserves the preceding error. This is not called out in the PR.
+
+BASE 0 → HEAD 0 · OPEN MECHANISM ↗
+0
+base ∪ head
+0
+12Adjust small test policies and their storage paths
+UNEXPLAINEDTests
+
+Valid policies require positive chunks ≤ inline ≤ result ≤ aggregate. Tests replace inline=0 and rescale chunk/inline values; adapters clamp inline, create output directories, and accept a legacy memoryCapBytes value that they do not project.
+
+BASE 0 → HEAD 0 · OPEN MECHANISM ↗
+0
+base ∪ head
+17
+
+Counts overlap between decisions. They cannot be added together. A file being referenced does not mean its behavior changes. Ties use decision ID, never a correctness score.
+
+Outside the reach of refs
+
+These decisions have no meaningful symbol-reference measure. Their summaries remain part of the top layer.
+
+—Remove the CLI resource-derivation test block
+UNEXPLAINEDTests
+
+The deleted block covers five memory sizes, constraint selection and the 250 ms constant. Central policy tests already cover related derivation/default cases; the exact old 256 MiB table row is absent there.
+
+Assertion coverage is not a referenced symbol. No numeric radius is assigned.
+—
+no metric
+—
+—Use policy-based expectations and cast new fixtures
+UNEXPLAINEDTests
+
+Spool/e2e expectations now read policy defaults instead of retired constants. Three added policy-consumer cases cast through unknown to constructor parameter types, so those fixtures bypass normal assignability checks.
+
+A type-checking or test-oracle choice has no stable symbol-ref footprint.
+—
+no metric
+—
+—Enforce retirement with a production-source string scan
+STATEDTests
+
+Extend the package meta-test to reject old constant names, optional threshold seams and local policy reconstruction identifiers. This encodes a source boundary through strings; it does not trace semantic data flow.
+
+String-based source rules are invisible to symbol references.
+—
+no metric
+—
+03 / LOOK INSIDE
+← Return to list
+STATED
+RANK 01 / STARTUP
+Keep startup coordination separate from healthy warm-up
+
+Supply registry grace, heartbeat, authorization polling, readiness polling and old-process termination through policy. Remove the unused startup-timeout member and test knob; progressing warm-up remains unbounded.
+
+Mechanism
+References
+Evidence
+
+REASON · STATED
+
+The policy record gives coordination a recovery grace and deliberately gives healthy startup no project-size deadline.
+
+plans/005/daemon-policy.md · Startup rows and intentional absences Read source ↗
+
+THE RELATIONSHIP
+
+Caller · coordinator
+↓
+Registry · ownership grace
+↓
+Daemon · authorize + heartbeat
+↓
+Readiness · no project-size deadline
+
+Simplified concept sequence; boxes may be alternatives or parallel owners, not chronological execution steps.
+
+BEFORE
+
+Registry uses a 15 s constant; coordinator carries an unused startupTimeoutMs field.
+
+Heartbeat and authorization waits are local numbers.
+
+AFTER
+
+Coordination grace belongs to startup policy.
+
+Heartbeat, polling and previous-instance termination receive distinct policy values; no healthy warm-up timer is introduced.
+
+Recorded defaults
+15 s grace · 100 ms heartbeat · 10 ms authorization · 20 ms observation · 5 min previous-process termination
+Trace the observed reach →
+Read the source →
+Next decision →
+
+04 / THE MEASUREMENT IS PART OF THE EXPLANATION
+
+A reproducible count, with a visible blind spot.
+What is counted
+Manually map every changed file to decisions and choose symbols that expose those decisions.
+Run symnav refs TARGET --all --full-lines --json at both pinned revisions.
+Union files across a decision’s seeds. Exclude all its seed declaration files and generated output; classify tests and fixtures separately.
+Rank by distinct production files. The default unions base and head paths, avoiding double counts and retaining the reach of deleted symbols.
+
+Switching to “Usage” excludes import, export and type references. It still counts the backend’s static usage category, not executed calls. Adapter symbols only exist in head. “0” means no observed external files; “—” means this choice cannot be measured this way.
+
+FAILED PROBE · PRESERVED
+
+The policy-field query misses consumers.
+
+A real refs query for DaemonPolicyValues::output returned only two references: a package test and the policy constructor. It missed known apps/cli consumers, including policy.values.output in CliProgramExecutor. Consumer symbols are used for this experiment instead. Cross-project/type-projection coverage is incomplete; the underlying cause has not been isolated.
+
+Open the raw 2-reference result ↗ · Symbol overview ↗
+
+Consumer seeds avoid depending on that particular field query. Their counts are still an observed footprint, not proof of completeness. A method seed can have zero external references because the work happens inside its declaring file. A class seed includes consumers of unchanged parts of the class.
+
+Reproduce or change the seed choices
+python3 blast_radius.py
+python3 verify.py
+
+Authored decisions and seed manifest · Collection script · Computed report · Experiment notes
+
+Backend diagnostic retained: skipped unrecognised statement syntax at packages/testing/fixtures/extraction-diagnostics-cases/src/unsupported-statement.ts:5 (MissingDeclaration)
+
+DIFF SHA256 eea6ebcc821ca61531513fea6a45c699703547c15daa7b4a38eb0f8c3583688b MANIFEST SHA256 391b99bbbb64e50eca44e412256cc3c8bf5a049bc6735e263bbbfbde3dda6eef
+
+Evidence scope
+
+PR body and six commit messages; complete diff; both worktrees; policy and architecture records; existing package policy tests. No implementing-agent transcript supplied.
+
+PR body + commit messages · Policy record · Architecture contract
+
+Reasons marked “stated” have a source in those inputs. “Unexplained” means no reason was found there. Describing an implication of the code does not establish author intent.
+
+All 60 changed files are assigned to decisions
+Exact seed selection
+EXPERIMENT 28 / BLAST-RADIUS-TOOL
+Back to the shape ↑
+
+[SVG text in document order]
+

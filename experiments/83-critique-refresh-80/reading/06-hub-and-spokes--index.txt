@@ -1,0 +1,1153 @@
+#148 · hub & spokes
+Top: picture, facts
+WHAT SHIPS, AND WHAT GUARDS IT
+K1 Copy mechanisms into the package;…
+K2 Freeze the 38 CLI copies with one…
+K3 Move direct mechanism unit suites…
+K4 Edit shipped CLI mechanisms first…
+SHAPE OF THE HUB
+K5 Separate public declarations from…
+K6 Host passes 7 options, including …
+K17 control() rethrows mechanism er…
+K7 Route with 4 ordered, lazy guards
+K8 Build every mechanism once per cl…
+K9 Client owns warm result capture a…
+K15 Keep acceptance-based idle timing
+SMALL, EASY TO MISS
+K10 Warm requests send the client’s p…
+K11 Export ./process-entry and `./w…
+K12 Re-implement the completion-spool…
+K13 Remove the temporary `@symnav/dae…
+K14 Group package mechanisms into 10 …
+K16 Keep an unreachable disabled ro…
+K18 Use a Windows-specific terminatio…
+DEEPER
+Two hubs, one runs
+Facade: what a host sees
+Routing spoke
+Composition: exact wiring
+Warm results and failure bytes
+Across the process boundary
+Static structure: where the boundary moved
+Tests: what pins what
+Shipped CLI edits before the freeze
+Method and receipts
+#148 Own daemon mechanisms behind DaemonClient
+stack part 25 of 26 · 45 commits · 153 files · +14,624 −815 · base …part-24 → head …part-25
+Start with the picture and decision cards; every deeper section expands those decisions. Click a spoke, card, or link to go deeper; ↩ returns to your place. Scroll for the linear version.
+
+@symnav/daemon gains DaemonClient: a host hands it a workspace root and argv (or start/status/stop); the client picks warm, cold, or fallback and returns bytes. The CLI has no production caller yet. symnav still runs the CLI’s own daemon copies, frozen by a hash test.
+
+New hub (package)
+What symnav runs today
+star groups direct and indirect dependencies; spokes share registry, transport and terminator. Constructor wiring in “Composition”.
+apps/cli — what `symnav` runs today (base and head)
+InvocationWorkspaceSelector
+argv → local / control / workspace
+core.createWorkspace
+resolve root
+createRuntime()
+per request
+CliProgramExecutor
+local run
+38 frozen copies 🔒
+registry · transport · startup …
+register-daemon-command
+start / status / stop
+DaemonCommand
+Dispatcher
+apps/cli · live
+spawned by the CLI
+apps/cli/dist/daemon/daemon-entry.js
+→ DaemonProcessCoordinator (CLI copy)
+→ daemon-navigation-worker-entry.js
+@symnav/daemon — client objects inside the host process (new in #148)
+DaemonRoutingPolicy
+4 ordered guards
+new
+DaemonPolicy · clock
+policy existed · clock copied
+≡
+DaemonRegistry
++ workspace identity · 1,068 lines
+≡
+DaemonRecordObserver
+identify + ping
+≡
+LocalDaemonTransport ×2
+250 ms routing · 100 ms status
+≠ 17
+Warm result capture
++ 3 “Cannot answer” messages
+≡
+StartupCoordinator → Launcher
+trigger · ensureRunning · spawn
+≠ 10
+DaemonController ×2
+start/stop · status
+≠ 20
+host executorFactory
+cold · fallback · per attempt
+DaemonClient
+facade 64 lines
+runtime 270 lines
+spawned by DaemonClient (only in tests and recorded runs during #148)
+daemon process: process-entry.js → DaemonProcessCoordinator
+far hub · 40 modules: queue · ledger · execution + delivery sessions
+spool · resources · worker generations · lifetime · logger · socket server
+worker thread
+worker-entry.js · 13 modules
+loads host executor module
+spawn (detached)
+unix socket
+0 production callers in #148
+#149 connects the CLI host
+≡ / ≠ compare source after removing top-level imports and blank lines; type-path changes remain. new = no CLI twin. Click a box or focus it and press Enter to open its section.
+ONE CONCRETE RUN — PICK A STEP, WATCH WHICH SPOKES IT TOUCHES
+DaemonClient + real symnav executor
+A · overview #1, no daemon
+B · overview #2, daemon ready
+C · control status
+E · control stop
+G · overview, daemonEnabled=false
+DaemonClient + fixture executor
+A · execute, no daemon
+B · execute, ready
+C · status
+D · execute as version 2.0.0
+E · stop
+F · stop again
+G · disabled
+CLI dispatcher (what ships)
+L · symnav --version
+A · overview #1, no daemon
+B · overview #2, daemon ready
+G · SYMNAV_DAEMON=0
+→ mode warm, exit 0, 206 bytes, sha256 0ce31f99f2876e19   (13.5 ms)
+daemon.log (far side): request-accepted → turn-started → worker-completed → response-spooled → execution-terminal → delivery-terminal
+
+    +0.0 ms  DaemonClientRuntime.execute
+    +0.1 ms    DaemonRoutingPolicy.decide
+    +0.1 ms      guard:RecordPresentRoutingGuard.evaluate
+    +0.1 ms        DaemonRegistry.read
+    +0.4 ms      guard:NotStartingRoutingGuard.evaluate
+    +0.4 ms      guard:RecordVersionRoutingGuard.evaluate
+    +0.4 ms      guard:ResponsiveRoutingGuard.evaluate
+    +0.5 ms        DaemonRecordObserver.observe
+    +0.6 ms          LocalDaemonTransport(250ms).request  ×2
+    +3.7 ms    LocalDaemonTransport(250ms).execute
+   +12.0 ms      DaemonClientResultCapture.append
+   +12.2 ms      DaemonClientResultCapture.finish
+Saved real executions, macOS arm64, Node v22.12.0, built head/base worktrees, 2026-09-12T23:28Z. Buttons replay stored data; no daemon runs in this page. Probes wrap prototypes in memory. Scripts: analysis/trace.mjs, analysis/trace-old.mjs.
+highlights group calls by spoke; far-process highlights correlate client calls with daemon-log timestamps
+Where the +14,624 lines go
+copied mechanisms (38 files)
++10,158
+new tests, fixtures, helpers
++2,716
+moved tests (net of rename)
++603
+hub code: client/ (4 files)
++507
+shipped CLI edits (12 files)
++408
+meta-tests, plans, CLI tests, config
++232
+Hub code is 507 lines (3.5%). Copied mechanisms are 10,158 (69%).
+git diff --numstat -M base...head, bucketed: analysis/size-buckets.json
+0 production imports of DaemonClient. Shipped binary on head spawns apps/cli/dist/daemon/daemon-entry.js.
+grep over apps/, meta-tests/; ps of spawned daemon: analysis/cli-probe-head.txt. Caller arrives in #149: apps/cli/src/program.ts:58 (stack tip)
+One input, both hubs: overview barrel.ts → 206 bytes via DaemonClient and 206 via the shipped dispatcher (both warm), matching fingerprint 0ce31f99f2876e19.
+SHA-256 of stream names + bytes, first 16 hex. Saved trace-cli.json and trace-old-head.json; also cold and disabled steps. One fixture, not a whole-system parity result.
+PR “Before” diagram draws CLI host → WorkspaceDaemon. The host’s hub is DaemonCommandDispatcher (apps/cli/src/cli.ts:11); WorkspaceDaemon (now DaemonProcessCoordinator) runs inside the spawned daemon process.
+cli.ts, daemon-entry.ts in base
+18 decision groups: 6 stated, 4 unexplained, 8 combining stated and unexplained choices.
+Reasons searched in the PR body, 45 commit messages (bodies empty), all four plans/005 documents, CLAUDE.md and the contributor guide. “Unexplained” means no reason found in these inputs; each mixed card separates the supported choice from the rationale gap.
+
+Ranking: tier 1 changes what users run or what guards it; tier 2 shapes the hub’s contract; tier 3 is local. Inside a tier: unexplained first.
+
+WHAT SHIPS, AND WHAT GUARDS IT (4)
+K2STATED + UNEXPLAINEDFreeze the 38 CLI copies with one sha256 digest
+meta-tests/src/daemon-compatibility-copy.test.ts hashes the 38 files (CRLF→LF) and asserts count = 38. Any edit to shipped daemon code fails CI until the digest changes. Pins CLI copies to themselves, not to the package copies (10 already differ). 3 CLI-owned files excluded by name.
+STATEDStaging separates mechanism ownership from host coordination (PR body, Decisions #3).
+UNEXPLAINEDWhy one digest, why these exemptions, and why no package-equivalence assertion: no reason found.
+Until #149, is the invariant you need “CLI copy unchanged” or “CLI copy ≡ package copy”?
+open Static structure: where the boundary moved ↓
+K3STATED + UNEXPLAINEDMove direct mechanism unit suites to the package copies
+37 test files moved (ed3baa7f1 +18,875 in package, 501c5b5e7 −18,139 in app). The CLI retains dispatcher, transport-contract and e2e tests. 10 copied files still differ after top-level imports are removed; 3 differences are only type import/re-export paths. daemon-entry.test.ts deleted (2 tests); CLI version-mismatch oracle restored in daemon-executor.test.ts. Added: tsx devDependency, fileParallelism: false; Windows-specific cleanup expectation (K18).
+STATEDThe extraction spec says tests using deep mechanism paths must use the public surface or move into the package.
+UNEXPLAINEDWhy direct suites are not retained for the still-shipped copies until cutover, and why test file parallelism is disabled: no reason found.
+Until #149 lands, is e2e + dispatcher tests + digest enough cover for the code users run?
+open Tests: what pins what ↓
+K4STATED + UNEXPLAINEDEdit shipped CLI mechanisms first, then freeze them
+14 commits edit CLI mechanisms before the copy. 12 shipped production files change (+408/−284): registry and controller use a canonical owner predicate, with identityKey and full-owner comparisons added; timing uses an injected daemon wall/monotonic clock; coordinate validation moves into construction and adds workspaceRoot; WorkspaceDaemon becomes DaemonProcessCoordinator.
+STATEDThe architecture spec assigns daemon clocks and canonical lock ownership to the daemon; it names the process coordinator split.
+UNEXPLAINEDWhy some ownership comparisons become stricter during an unchanged-behavior refactor: no reason found.
+Do the tightened ownership comparisons count as behavior change under the spec’s “no fixes while moving” rule?
+open Shipped CLI edits before the freeze ↓
+K1STATEDCopy mechanisms into the package; CLI keeps running its own copies
+38 files, 10,158 lines copied into packages/daemon/src. DaemonClient has 0 production callers. The symnav binary still spawns apps/cli/dist/daemon/daemon-entry.js. #149 switches the CLI.
+Reason: “mechanism ownership and host invocation coordination need separate review boundaries” — PR body, Decisions #3
+open Two hubs, one runs ↓
+SHAPE OF THE HUB (7)
+K6STATED + UNEXPLAINEDHost passes 7 options, including a required readiness probe
+stateDirectory, productVersion, daemonEnabled (readonly boolean option), executorFactory (new executor per local attempt; no resource sample), executorModuleUrl, readinessProbe, policy?. Host keeps argv classification and workspace-root resolution. Disabled skips execute routing and start; status/stop remain available. The internal coordinator retains a version --version probe default.
+STATEDExecutor/module injection keeps command-specific logic in the host (architecture spec, Executor Contract and Module Injection).
+UNEXPLAINEDWhy readinessProbe is required, why its internal default stays CLI-shaped, and why daemonEnabled is a boolean rather than a callback: no reason found.
+For a long-lived host, should daemonEnabled be fixed configuration or a per-call callback as it is in today’s dispatcher?
+open Facade: what a host sees ↓
+K17STATED + UNEXPLAINEDcontrol() rethrows mechanism errors; host formats them
+start/status/stop failures reject the promise (daemon-client-control.test.ts “rejects %s mechanism errors for the host wrapper”). Today the CLI command prints Cannot start daemon: … and exits 2 itself.
+STATEDLifecycle reports let the host render lifecycle outcomes (architecture spec, Lifecycle Rendering).
+UNEXPLAINEDWhy mechanism errors reject for the host to format instead of returning reports: no reason found.
+open Facade: what a host sees ↓
+K8STATED + UNEXPLAINEDBuild every mechanism once per client, not per request
+Constructor builds 1 registry, 2 transports (250 ms / 100 ms lifecycle timeout), 1 terminator, 1 launcher, 1 startup coordinator, 2 controllers, 4 record observers (3 built inside coordinator and controllers). Registry, routing transport, terminator are shared across spokes. Dispatcher built its set per request; CLI daemon commands per command. The shared coordinator keeps 4 launched-process maps for the client’s lifetime.
+STATEDdaemon-policy.md gives the 100 ms status timeout a separate purpose: keep status aggregation responsive independently of routing’s 250 ms timeout.
+UNEXPLAINEDWhy mechanisms and the coordinator’s process maps are shared for one client’s lifetime: no reason found.
+Should state from a routing trigger survive into later control calls on the same client?
+open Composition: exact wiring ↓
+K5STATEDSeparate public declarations from the Node runtime
+DaemonClient (64 lines) imports only types. Its constructor starts import(runtimeModuleUrl) through a string variable; execute/control await the same promise. The facade’s type-dependency closure has 7 source files. The runtime still uses Node. Root API grows by 1 class + 4 types.
+Reason: “host declarations must not acquire Node ambient dependencies” — PR body, Decisions #1
+open Facade: what a host sees ↓
+K7STATEDRoute with 4 ordered, lazy guards
+record present → not starting → version match → responsive. First answer wins; registry read and observation memoized per decision. Absent and fallback routes trigger background startup without waiting; starting/recovering stay local without a trigger. The 12-scenario table matches the dispatcher’s route outcomes (daemon-client.test.ts:33-124).
+Reason: “the first routing decision must prevent every later side effect” — PR body, Decisions #2; spec “Guard-List Admission and Routing”
+open Routing spoke ↓
+K9STATEDClient owns warm result capture and failure bytes
+Package builds a DaemonClientResultCapture (OS temp dir) per warm request. Only a retry-safe transport failure reruns locally; uncertain acceptance or failed completion returns a warm failure. 5 failure codes → 3 “Cannot answer: …” messages, now defined in package and CLI. Malformed warm output is disposed before replacement; dispatcher did not.
+Reason: “warm transfer cleanup and replay safety belong to the daemon client” — PR body, Decisions #4
+open Warm results and failure bytes ↓
+K15STATEDKeep acceptance-based idle timing
+The 30-minute idle deadline starts at construction and resets on navigation acceptance, not completion. Navigation that reaches its deadline triggers shutdown when the queue empties; a new test pins this. The functional spec excludes warm-up from idle, but this PR defers readiness-armed and completion-based timing; follow-ups grow from 6 to 8 items.
+Reason: “readiness- and completion-based lifetime changes are explicitly deferred behavior” — PR body, Decisions #5
+open Across the process boundary ↓
+SMALL, EASY TO MISS (7)
+K10UNEXPLAINEDWarm requests send the client’s protocol constant
+protocolVersion: DAEMON_PROTOCOL_VERSION (daemon-client-runtime.ts:189) replaces the record’s protocolVersion (daemon-command-dispatcher.ts:216).
+Reason: No reason found.
+open Routing spoke ↓
+K12UNEXPLAINEDRe-implement the completion-spool record codec in the package
+CompletionSpoolRecordCodec (63 lines, delivery/completion-spool.ts) replaces the CLI’s OrderedCommandOutput.encodeRecord/decodeFileRecords. One 9-byte header format, two implementations.
+Reason: No reason found. Nearby repo rule, not cited: “Loose coupling beats DRY across module boundaries” (CLAUDE.md).
+open Across the process boundary ↓
+K16UNEXPLAINEDKeep an unreachable disabled route variant
+DaemonRouteSnapshot includes { kind: "disabled" } (daemon-routing-policy.ts:6); no guard returns it. execute checks daemonEnabled before routing (daemon-client-runtime.ts:140).
+Reason: Commit subject only: “Represent disabled daemon routing” (+1 line).
+open Routing spoke ↓
+K18UNEXPLAINEDUse a Windows-specific termination expectation
+built-process-entry.test.ts expects a retained ready record and no process-termination log on win32; the test cleans up the record. Other platforms expect automatic record removal and a diagnostic. This is a new test’s platform split, not a deleted cross-platform assertion. Windows was not run for this artifact.
+Reason: Commit subject only: “Specify Windows process entry cleanup ownership”.
+open Tests: what pins what ↓
+K11STATED + UNEXPLAINEDExport ./process-entry and ./worker-entry subpaths
+Side-effect-only entries with no named exports (entry-boundary.test.ts). No importer in #148 or in #149’s CLI; launcher and worker resolve entries by relative URL (process-launcher.ts:156, navigation-worker.ts:95).
+STATEDThe extraction spec includes package-owned process and worker entries in the public surface.
+UNEXPLAINEDWhy public subpaths are added while internal launchers use relative URLs: no additional reason found.
+open Across the process boundary ↓
+K14STATED + UNEXPLAINEDGroup package mechanisms into 10 ownership folders
+client/ delivery/ diagnostics/ execution/ lifecycle/ process/ registry/ resources/ transport/ worker/. Placement calls: startup-coordinator under registry/, controller and process-launcher under process/, client-result-capture under transport/. 28 of 51 production files import the package’s own entry @symnav/daemon (including type-only imports, retained from the CLI copies); value imports of that root now exports DaemonClient, so daemon process and worker thread load the facade module too.
+STATEDThe contributor guide asks directories to follow ownership so their listing explains the package; commit: Organize daemon mechanisms by ownership.
+UNEXPLAINEDWhy these particular folder placements and retained self-imports: no reason found.
+open Static structure: where the boundary moved ↓
+K13STATEDPLANNED; OMITTED FROM PR BODYRemove the temporary @symnav/daemon/policy-testing export
+Export, ESLint no-restricted-imports rule, and 5 test declarations (6 cases, including it.each) deleted. DaemonPolicyTestFactory now lives in two test helpers (apps/cli/test/helpers/daemon-policy.ts, packages/daemon/test/helpers/daemon-policy.ts), identical except one import.
+Reason: daemon-policy.md, Migration access: the policy-testing subpath is temporary and is removed after app-owned mechanism tests move package-local. Its retirement is explicitly planned; the PR body omits it.
+open Static structure: where the boundary moved ↓
+↩ back
+Two hubs, one runs
+Deeper view of K1 Copy mechanisms into the package; CLI keeps running its own copies · K8 Build every mechanism once per client, not per request
+Responsibility	DaemonCommandDispatcher
+apps/cli · live	DaemonClient
+package · #148, no caller	After #149
+stack tip, context only
+Classify argv (local / control / workspace)	●	host	host: CliInvocationCoordinator
+Resolve workspace root (core)	●	host	host
+Read registry, probe daemon	●	●	DaemonClient
+Decide warm / cold / fallback	● if-chain	● 4 guards	DaemonClient
+Trigger background start	●	●	DaemonClient
+Run warm over socket, capture result	●	●	DaemonClient
+Run locally	● CliProgramExecutor	● host executorFactory	host for local routes; DaemonClient for workspace routes
+Controlled failure bytes	● ControlledCommandResult	● DaemonControlledResult	both exist
+start / status / stop composition	register-daemon-command.ts	● control()	DaemonClient
+Mechanism lifetime	per request / per command	per client	per DaemonClient, built with CLI dependencies
+Who owns each step of one invocation. #149 column from the stack tip (apps/cli/src/cli-invocation-coordinator.ts, program.ts:58), shown only to place #148.
+	input (overview-cases fixture)	dispatcher, base	dispatcher, head (ships)	DaemonClient, head + CLI executor
+A	overview barrel.ts, no daemon	cold · 206 B · 0ce31f99f2876e19	cold · 206 B · 0ce31f99f2876e19	cold · 206 B · 0ce31f99f2876e19
+B	overview barrel.ts, daemon ready	warm · 206 B · 0ce31f99f2876e19	warm · 206 B · 0ce31f99f2876e19	warm · 206 B · 0ce31f99f2876e19
+G	overview barrel.ts, daemon disabled	cold · 206 B · 0ce31f99f2876e19	cold · 206 B · 0ce31f99f2876e19	cold · 206 B · 0ce31f99f2876e19
+each column is a separate real run with its own daemon; sha256 over stream name + bytes, first 16 hex
+SPOKES TOUCHED, SAME STEP B (WARM)
+dispatcher (ships)	DaemonClient
+DaemonCommandDispatcher
+InvocationWorkspaceSelector
+@symnav/core
+DaemonCommandDispatcher.createRuntime
+DaemonCommandDispatcher
+DaemonRegistry
+DaemonRecordObserver
+LocalDaemonTransport
+DaemonClientResultCapture	DaemonClientRuntime
+DaemonRoutingPolicy
+guard RecordPresentRoutingGuard
+DaemonRegistry
+guard NotStartingRoutingGuard
+guard RecordVersionRoutingGuard
+guard ResponsiveRoutingGuard
+DaemonRecordObserver
+LocalDaemonTransport
+DaemonClientResultCapture
+Left calls selector, core, createRuntime on every request. Right: none of those; routing through 4 guards.
+EVIDENCE
+CLI entry: the host enters the old hub head:apps/cli/src/cli.ts:1-23
+Old hub: DaemonCommandDispatcher.execute + routeFor head:apps/cli/src/daemon/daemon-command-dispatcher.ts:118-204
+New hub: DaemonClientRuntime.execute head:packages/daemon/src/client/daemon-client-runtime.ts:139-159
+Where the caller appears (#149) #149 tip:apps/cli/src/program.ts:58-66 (from #149 (stack tip), not part of #148)
+Shipped binary on head: spawned daemon command line (analysis/cli-probe-head.txt)
+Shipped binary on base: same entry (analysis/cli-probe-base.txt)
+↩ back
+Facade: what a host sees
+Deeper view of K5 Separate public declarations from the Node runtime · K6 Host passes 7 options, including a required readiness probe · K17 control() rethrows mechanism errors; host formats them
+spawned by launcher: daemon process 40 files · 9,471 lines | worker thread 13 files · 1,639 lines
+host process after construction: 29 files · 6,766 lines (Node APIs)
+host compiles against: 7 files
+client/daemon-client-contracts.ts
+client/daemon-client.ts
+daemon-command-name.ts
+daemon-diagnostics.ts
+daemon-executor.ts
+daemon-lifecycle-report.ts
+daemon-policy.ts
+import(runtimeModuleUrl)
+string variable → tsc
+does not follow it
++ spawn edge
+process-launcher.ts:156
++ Worker edge
+navigation-worker.ts:95
+nested rectangles compare code reach; the host is a separate process from the daemon Inner box: source type-dependency closure of client/daemon-client.ts (analysis/graph.py). Outer counts: modules Node actually resolved from built dist — host imports the package root, constructs DaemonClient, calls execute; daemon and worker counts come from importing their entries in separate probe processes. Resolve hook: analysis/module-load-*.mjs.
+DaemonClientOptions	used by	origin / note
+stateDirectory	registry dir, controllers, local executor	existed in CLI wiring
+productVersion	version guard, launcher config, local executor	was symnavVersion from CLI dependencies
+daemonEnabled	execute short-circuit, control start → {status: "disabled"}	readonly boolean option; dispatcher took () => boolean per call
+executorFactory	every cold and fallback run (new executor each time)	spec: daemon defines executor, CLI implements
+executorModuleUrl	launcher → daemon process → worker loads it	spec: injected module location
+readinessProbe	DaemonStartupCoordinator.probeExecution during daemon start	required; package keeps default version --version
+policy?	every threshold	tests override; default DaemonPolicy.currentSystem()
+Returned: execute → { mode: "warm" | "cold" | "fallback", result }; control → DaemonStartResult | RunningDaemonStatus[] | DaemonStopResult, rejecting on mechanism errors.
+EVIDENCE
+Facade: DaemonClient + runtime loader head:packages/daemon/src/client/daemon-client.ts:1-64
+Host contracts head:packages/daemon/src/client/daemon-client-contracts.ts:1-36
+Contract test: exact host boundary head:packages/daemon/src/host-contract.test.ts:540-555
+Package default probe still names a CLI flag head:packages/daemon/src/registry/startup-coordinator.ts:79-82
+Where the probe is used head:packages/daemon/src/registry/startup-coordinator.ts:468-487
+Test: new executor for every local attempt head:packages/daemon/src/client/daemon-client.test.ts:138-147
+Test: control composition, distinct timeouts head:packages/daemon/src/client/daemon-client-control.test.ts:11-41
+↩ back
+Routing spoke
+Deeper view of K7 Route with 4 ordered, lazy guards · K10 Warm requests send the client’s protocol constant · K16 Keep an unreachable disabled route variant
+1. RecordPresentRoutingGuard
+registry.read() → none
+answers
+cold · absent
+read throws → cold · recovering
+undefined → next
+2. NotStartingRoutingGuard
+record.state = starting
+answers
+cold · starting
+undefined → next
+3. RecordVersionRoutingGuard
+record.symnavVersion ≠ productVersion
+answers
+fallback · incompatible
+undefined → next
+4. ResponsiveRoutingGuard
+observe(record): identify + ping
+answers
+warm
+starting → cold · starting/recovering · unresponsive or observe throws → cold · recovering · exited → try record removal, fallback · dead · pong version ≠ or invalid observation → fallback · incompatible
+Order from daemon-routing-policy.ts:123-128. A guard returns a route or undefined. Background start fires only for cold · absent and any fallback (daemon-client-runtime.ts:155-157), same rule as dispatcher :155-160.
+scenario	mode	local runs	warm runs	background start	registry reads	observations	record removals
+disabled	cold	1	0	0	0	0	0
+absent	cold	1	0	1	1	0	0
+registry recovery	cold	1	0	0	1	0	0
+starting record	cold	1	0	0	1	0	0
+ready idle	warm	0	1	0	1	1	0
+ready busy	warm	0	1	0	1	1	0
+responsive starting	cold	1	0	0	1	1	0
+unresponsive	cold	1	0	0	1	1	0
+exited	fallback	1	0	1	1	1	1
+record version mismatch	fallback	1	0	1	1	0	0
+pong version mismatch	fallback	1	0	1	1	1	0
+invalid observation	fallback	1	0	1	1	1	0
+Transcribed from the it.each table at daemon-client.test.ts:33-90: effects per scenario on the first decision.
+dispatcher routeFor (apps/cli, head)	package guard	difference
+:170-175 read; catch → recovering; undefined → absent	RecordPresentRoutingGuard	read memoized in DaemonRoutingContextState
+:176 state starting	NotStartingRoutingGuard	none
+:177-179 symnavVersion ≠	RecordVersionRoutingGuard	none
+:180-203 observe + branches	ResponsiveRoutingGuard	observation memoized; same branch order
+:128-130 disabled → route {kind:"disabled"}	(before routing) daemon-client-runtime.ts:140	variant kept in type, never produced (K16)
+:132-138 resolve root; failure → local cold	—	host’s job now (K6)
+:216 protocolVersion: record.protocolVersion	daemon-client-runtime.ts:189 DAEMON_PROTOCOL_VERSION	K10
+Line numbers: apps/cli/src/daemon/daemon-command-dispatcher.ts on head (identical on base).
+fixture run D: a client at version 2.0.0 meets a 1.0.0 daemon → guard 3 answers fallback · incompatible → local run returns in 0.8 ms while the background start terminates the 1.0.0 daemon and launches 2.0.0 (player: run “fixture”, step D)
+EVIDENCE
+Guards and policy head:packages/daemon/src/client/daemon-routing-policy.ts:66-137
+Memoizing context head:packages/daemon/src/client/daemon-routing-policy.ts:29-64
+Test: no work until decision, memoized operations head:packages/daemon/src/client/daemon-routing-policy.test.ts:123-162
+Test: 12-scenario route table head:packages/daemon/src/client/daemon-client.test.ts:33-124
+Old routeFor for comparison head:apps/cli/src/daemon/daemon-command-dispatcher.ts:118-204
+↩ back
+Composition: exact wiring
+Deeper view of K8 Build every mechanism once per client, not per request
+built in constructor	stateDirectory	productVersion	executorModuleUrl	readinessProbe	policy	registry	routing transport	status transport	terminator	launcher	coordinator	note
+DaemonRegistry daemon-client-runtime.ts:87	●				●							
+LocalDaemonTransport · routing :91					●							250 ms lifecycle timeout; builds a result capture per warm request
+LocalDaemonTransport · status :95					●							100 ms lifecycle timeout (statusResponseTimeoutMs)
+NodeDaemonProcessTerminator :99					●							
+NodeDaemonProcessLauncher :100		●	●		●				●			
+DaemonRecordObserver :106							●		●			
+DaemonStartupCoordinator :107				●	●	●	●		●	●		holds launchedInstances, launchedProcesses, launchedExits, launchedInstanceIdsByIdentity; builds its own observer
+DaemonController · control :117	●				●	●	●		●	●	●	builds its own observer
+DaemonController · status :128	●				●	●		●	●			no launcher → cannot start; builds its own observer
+DaemonRoutingPolicy :83												field initializer; no dependencies
+instances shared by	3	1	1	1	8	3	3	1	5	2	1	yellow: one instance, several holders
+Exact version of the star: each row is one object DaemonClientRuntime builds (daemon-client-runtime.ts:83-137), each ● an argument it receives. One registry, one routing transport, one terminator reach several spokes. Coordinator and both controllers also build private observers (startup-coordinator.ts:83, controller.ts:57), so a client holds 4 observers. The package DaemonController gained an injectable startupCoordinator for this sharing; the shipped CLI copy builds a new coordinator inside every start.
+DaemonCommandDispatcher
+rebuilt each request
+registry · transport · terminator · launcher · observer · coordinator
+register-daemon-command
+rebuilt each command
+registry · transport · controller (+ coordinator inside start)
+DaemonClient
+built once per client
+all 10 rows above
+time →
+block counts illustrate repetition; lifetimes are exact
+EVIDENCE
+DaemonClientRuntime constructor head:packages/daemon/src/client/daemon-client-runtime.ts:74-137
+Dispatcher: runtime per request head:apps/cli/src/daemon/daemon-command-dispatcher.ts:277-300
+Test: one composition, distinct timeouts head:packages/daemon/src/client/daemon-client-control.test.ts:11-41
+Policy record: why status and routing have different timeouts head:plans/005/daemon-policy.md:1-10
+Package DaemonController vs shipped copy (top-level imports and blanks stripped)
+Package LocalDaemonTransport vs shipped copy (top-level imports and blanks stripped)
+↩ back
+Warm results and failure bytes
+Deeper view of K9 Client owns warm result capture and failure bytes
+DaemonClientRuntime
+RoutingPolicy + guards
+DaemonRegistry
+RecordObserver
+LocalDaemonTransport 250 ms
+ResultCapture
+DaemonClientRuntime.execute
++0.0 ms
+DaemonRoutingPolicy.decide
++0.1 ms
+RecordPresentRoutingGuard.evaluate
++0.1 ms
+DaemonRegistry.read
++0.1 ms
+NotStartingRoutingGuard.evaluate
++0.3 ms
+RecordVersionRoutingGuard.evaluate
++0.3 ms
+ResponsiveRoutingGuard.evaluate
++0.3 ms
+DaemonRecordObserver.observe
++0.4 ms
+LocalDaemonTransport.request (250ms)
++0.5 ms
+LocalDaemonTransport.request (250ms)
++1.4 ms
+LocalDaemonTransport.execute (250ms)
++3.7 ms
+DaemonClientResultCapture.append
++15.2 ms
+DaemonClientResultCapture.finish
++15.4 ms
+fixture run, step B (warm). Far side for the same request from daemon.log: request-accepted → turn-started → worker-completed → response-spooled → execution-terminal → delivery-terminal
+warm outcome	mode	bytes returned to host	change vs dispatcher
+retrySafe transport error: not-submitted, or authenticated retry-safe admission rejection	fallback	local run via executorFactory	no
+transport error without retrySafe: e.g. unconfirmed timeout, closed after acceptance, authenticated incompatible rejection	warm	Cannot answer: accepted daemon request did not complete.	no replay
+non-transport error (malformed response)	warm	Cannot answer: accepted daemon request did not complete.	no replay
+completion failed · controlled-resource	warm	Cannot answer: daemon workspace capacity exceeded.	no
+completion failed · response-capacity	warm	Cannot answer: daemon response capacity exceeded.	no
+completion failed · worker-exit / stopping / internal	warm	Cannot answer: accepted daemon request did not complete.	no
+completed, exit code not integer	warm	dispose output, then “did not complete” message	new: dispose
+completed, output missing	warm	“did not complete” message	no
+From daemon-client-runtime.ts:181-270 and tests daemon-client.test.ts:188-277. Messages exist twice: package DaemonControlledResult (daemon-client-runtime.ts:56-72), CLI ControlledCommandResult (command-execution-result.ts:449-470).
+EVIDENCE
+executeWarm head:packages/daemon/src/client/daemon-client-runtime.ts:181-228
+Package failure bytes head:packages/daemon/src/client/daemon-client-runtime.ts:56-72
+CLI failure bytes (same strings) head:apps/cli/src/command-execution-result.ts:449-470
+Dispatcher executeWarm (no dispose on malformed) head:apps/cli/src/daemon/daemon-command-dispatcher.ts:206-247
+Test: capture per warm request, OS temp dir head:packages/daemon/src/client/daemon-client.test.ts:149-164
+↩ back
+Across the process boundary
+Deeper view of K15 Keep acceptance-based idle timing · K11 Export ./process-entry and ./worker-entry subpaths · K12 Re-implement the completion-spool record codec in the package
+host process only (of 29) 5 files
+client/daemon-client-runtime.ts 270
+client/daemon-routing-policy.ts 137
+process/controller.ts 436
+registry/record-observer.ts 160
+registry/startup-coordinator.ts 501
+host and daemon process 24 files
+client/daemon-client.ts 64
+daemon-admission.ts 129
+daemon-command-name.ts 32
+daemon-diagnostics.ts 40
+daemon-execution-failure.ts 35
+daemon-executor.ts 216
+daemon-policy.ts 342
+index.ts 55
+lifecycle/daemon-clock.ts 28
+process/process-launcher.ts 266
+process/runtime-values.ts 11
+registry/registry.ts 985
+registry/workspace-identity.ts 83
+transport/client-result-capture.ts 231
+transport/execution-client.ts 446
+transport/lifecycle-client.ts 183
+transport/local-transport.ts 129
+transport/protocol-validator.ts 672
+transport/protocol.ts 483
+transport/result-transfer-receiver.ts 153
+transport/socket-client.ts 171
+transport/socket-server.ts 181
+transport/transport-error.ts 38
+transport/wire-codec.ts 289
+daemon process only (of 40) 16 files
+delivery/completion-spool.ts 453
+delivery/delivery-session.ts 522
+diagnostics/logger.ts 408
+diagnostics/operation-observer.ts 170
+execution/accepted-execution-session.ts 193
+execution/accepted-request-ledger.ts 254
+execution/request-queue.ts 149
+lifecycle/daemon-lifetime.ts 60
+process-entry.ts 42
+process/activity-projector.ts 126
+process/process-coordinator.ts 673
+process/process-termination-observer.ts 72
+resources/resource-supervisor.ts 213
+worker/navigation-worker.ts 306
+worker/worker-generation-manager.ts 249
+worker/worker-protocol.ts 319
+worker thread only (of 13) 2 files
+worker-entry.ts 1
+worker/navigation-worker-entry.ts 367
+modules Node resolved from packages/daemon/dist on head, logged by a resolve hook (analysis/module-load-*.mjs). Line counts from source. client/daemon-client.js loads in all three: mechanisms import @symnav/daemon, whose root now exports DaemonClient; the runtime loads only in the host.
+	shipped CLI	package (DaemonClient)
+daemon entry	apps/cli/src/daemon/daemon-process-launcher.ts:156
+./daemon-entry.js	packages/daemon/src/process/process-launcher.ts:156
+../process-entry.js
+worker entry	daemon-navigation-worker.ts:96
+./daemon-navigation-worker-entry.js	worker/navigation-worker.ts:95
+../worker-entry.js
+package.json exports	—	./process-entry, ./worker-entry (side-effect only; unused by importers)
+spool record codec	OrderedCommandOutput in command-execution-result.ts:296-360	CompletionSpoolRecordCodec in delivery/completion-spool.ts:1-63
+DaemonClient + real CLI executor, daemon.log of the package-spawned daemon
+start
+startup-completed
+freshness
+ready
+request-accepted
+turn-started
+worker-completed
+response-spooled
+execution-terminal
+delivery-terminal
+shutdown
+stop
+0
+8
+18
+28
+navigation running (accepted at 8)
+deadline = 8 + idle 10 → idle fires when queue empties at 18
+Acceptance-based (kept)
+Follow-ups spec (deferred): deadline counts from completion; first deadline armed at readiness
+numbers from the unit test (idle = 10 ms), not production (30 min) Code: daemon-lifetime.ts:23-34.
+EVIDENCE
+Package process entry head:packages/daemon/src/process-entry.ts:1-42
+Package launcher → ../process-entry.js head:packages/daemon/src/process/process-launcher.ts:155-157
+CLI launcher → ./daemon-entry.js head:apps/cli/src/daemon/daemon-process-launcher.ts:155-157
+Package worker → ../worker-entry.js head:packages/daemon/src/worker/navigation-worker.ts:95-105
+package.json exports head:packages/daemon/package.json:1-32
+Package spool codec (head of file) head:packages/daemon/src/delivery/completion-spool.ts:1-30
+completion-spool: package vs shipped copy
+DaemonLifetime head:packages/daemon/src/lifecycle/daemon-lifetime.ts:11-34
+Test pinning acceptance-based deadline head:packages/daemon/src/lifecycle/daemon-lifetime.test.ts:46-62
+Functional spec: warm-up is outside idle time head:plans/005/daemon-functional-spec.md:299-304
+plans/005/daemon-follow-ups-functional-spec.md diff
+↩ back
+Static structure: where the boundary moved
+Deeper view of K1 Copy mechanisms into the package; CLI keeps running its own copies · K2 Freeze the 38 CLI copies with one sha256 digest · K13 Remove the temporary @symnav/daemon/policy-testing export · K14 Group package mechanisms into 10 ownership folders
+base
+apps/cli/src/daemon
+41 production files: mechanisms + dispatcher
+42 unit test files beside them
+packages/daemon/src
+9 production files: contracts, policy,
+admission, executor loader, reports,
+index, policy-testing subpath
+head
+apps/cli/src/daemon 🔒
+38 frozen copies (sha256) + 3 CLI-owned
+still the only code `symnav` runs
+unit tests: 4 files (dispatcher, selector,
+transport contract)
+packages/daemon/src
+51 production files in 10 folders
+38 copies: 28 ≡, 10 ≠ · client/ new
+37 moved unit test files
+28 files import @symnav/daemon
+copy
+tests move
+Dependency direction unchanged: @symnav/daemon still imports no internal package (package-boundary.test.ts). The moved boundary is ownership, not imports.
+Digest input: every apps/cli/src/daemon/*.ts except tests and daemon-command-dispatcher.ts, invocation-route.ts, invocation-workspace-selector.ts. Count asserted: 38. Adding a new file there also fails the test.
+accepted-execution-session-contracts.ts
+accepted-execution-session.ts
+accepted-request-ledger.ts
+completion-spool.ts
+daemon-activity-projector.ts
+daemon-client-result-capture.ts
+daemon-clock.ts
+daemon-controller.ts
+daemon-delivery-session.ts
+daemon-entry.ts
+daemon-execution-client.ts
+daemon-lifecycle-client.ts
+daemon-lifetime.ts
+daemon-logger.ts
+daemon-navigation-worker-entry.ts
+daemon-navigation-worker-protocol.ts
+daemon-navigation-worker.ts
+daemon-operation-observer.ts
+daemon-process-coordinator.ts
+daemon-process-launcher.ts
+daemon-process-termination-observer.ts
+daemon-protocol-validator.ts
+daemon-protocol.ts
+daemon-record-observer.ts
+daemon-registry.ts
+daemon-resource-monitor.ts
+daemon-result-transfer-receiver.ts
+daemon-runtime-values.ts
+daemon-startup-coordinator.ts
+daemon-transport-error.ts
+daemon-transport.ts
+daemon-wire-codec.ts
+daemon-worker-generation-manager.ts
+daemon-workspace-identity.ts
+local-daemon-socket-client.ts
+local-daemon-socket-server.ts
+local-daemon-transport.ts
+workspace-request-queue.ts
+(root) 10
+· daemon-admission.ts 129 (existed)
+· daemon-command-name.ts 32 (existed)
+· daemon-diagnostics.ts 40 (existed)
+· daemon-execution-failure.ts 35 (existed)
+· daemon-executor.ts 216 (existed)
+· daemon-lifecycle-report.ts 92 (existed)
+· daemon-policy.ts 342 (existed)
+· index.ts 55 (existed)
+≠ 4 process-entry.ts 42 ← daemon-entry.ts
+new worker-entry.ts 1
+client/ 4
+new daemon-client-contracts.ts 36
+new daemon-client-runtime.ts 270
+new daemon-client.ts 64
+new daemon-routing-policy.ts 137
+registry/ 4
+≡ record-observer.ts 160 ← daemon-record-observer.ts
+≡ registry.ts 985 ← daemon-registry.ts
+≠ 10 startup-coordinator.ts 501 ← daemon-startup-coordinator.ts
+≡ workspace-identity.ts 83 ← daemon-workspace-identity.ts
+transport/ 12
+≡ client-result-capture.ts 231 ← daemon-client-result-capture.ts
+≡ contracts.ts 70 ← daemon-transport.ts
+≡ execution-client.ts 446 ← daemon-execution-client.ts
+≡ lifecycle-client.ts 183 ← daemon-lifecycle-client.ts
+≠ 17 local-transport.ts 129 ← local-daemon-transport.ts
+≡ protocol-validator.ts 672 ← daemon-protocol-validator.ts
+≡ protocol.ts 483 ← daemon-protocol.ts
+≡ result-transfer-receiver.ts 153 ← daemon-result-transfer-receiver.ts
+≡ socket-client.ts 171 ← local-daemon-socket-client.ts
+≡ socket-server.ts 181 ← local-daemon-socket-server.ts
+≡ transport-error.ts 38 ← daemon-transport-error.ts
+≡ wire-codec.ts 289 ← daemon-wire-codec.ts
+process/ 6
+≡ activity-projector.ts 126 ← daemon-activity-projector.ts
+≠ 20 controller.ts 436 ← daemon-controller.ts
+≠ 2 process-coordinator.ts 673 ← daemon-process-coordinator.ts
+≠ 2 process-launcher.ts 266 ← daemon-process-launcher.ts
+≡ process-termination-observer.ts 72 ← daemon-process-termination-observer.ts
+≡ runtime-values.ts 11 ← daemon-runtime-values.ts
+execution/ 4
+≡ accepted-execution-session-contracts.ts 66 ← accepted-execution-session-contracts.ts
+≡ accepted-execution-session.ts 193 ← accepted-execution-session.ts
+≡ accepted-request-ledger.ts 254 ← accepted-request-ledger.ts
+≡ request-queue.ts 149 ← workspace-request-queue.ts
+delivery/ 2
+≠ 69 completion-spool.ts 453 ← completion-spool.ts
+≡ delivery-session.ts 522 ← daemon-delivery-session.ts
+diagnostics/ 2
+≡ logger.ts 408 ← daemon-logger.ts
+≠ 2 operation-observer.ts 170 ← daemon-operation-observer.ts
+lifecycle/ 2
+≡ daemon-clock.ts 28 ← daemon-clock.ts
+≡ daemon-lifetime.ts 60 ← daemon-lifetime.ts
+resources/ 1
+≠ 4 resource-supervisor.ts 213 ← daemon-resource-monitor.ts
+worker/ 4
+≡ navigation-worker-entry.ts 367 ← daemon-navigation-worker-entry.ts
+≠ 23 navigation-worker.ts 306 ← daemon-navigation-worker.ts
+≡ worker-generation-manager.ts 249 ← daemon-worker-generation-manager.ts
+≡ worker-protocol.ts 319 ← daemon-navigation-worker-protocol.ts
+≡ identical to shipped copy (top-level imports and blanks stripped) · ≠ n differing lines · new · “·” existed before #148. ← origin file in apps/cli/src/daemon.
+EVIDENCE
+Digest meta-test head:meta-tests/src/daemon-compatibility-copy.test.ts:8-48
+Policy record: removing the temporary test subpath was planned head:plans/005/daemon-policy.md:62-66
+policy-testing removal: ESLint rule, lint tests, package export test
+host-contract.test.ts diff (policy-testing tests removed, client boundary added)
+↩ back
+Tests: what pins what
+Deeper view of K3 Move direct mechanism unit suites to the package copies · K18 Use a Windows-specific termination expectation
+moved test file (now in package)	tests	expect() calls	delta
+delivery/completion-spool.test.ts	7→7	 39→39	same
+delivery/delivery-session.test.ts	10→10	 49→49	same
+diagnostics/logger.test.ts	11→11	 24→24	same
+diagnostics/operation-observer.test.ts	4→4	 5→5	same
+execution/accepted-execution-session.test.ts	5→5	 20→20	same
+execution/accepted-request-ledger.test.ts	9→9	 34→34	same
+execution/request-queue.test.ts	8→8	 26→26	same
+lifecycle/daemon-clock.test.ts	2→3	 3→4	+1 tests, +1 expects
+lifecycle/daemon-lifetime.test.ts	3→4	 5→7	+1 tests, +2 expects
+process/activity-projector.test.ts	12→12	 32→32	same
+process/controller.test.ts	8→8	 43→43	same
+process/process-coordinator-requests.test.ts	67→69	 213→219	+2 tests, +6 expects
+process/process-coordinator.test.ts	11→11	 47→47	same
+process/process-launcher.test.ts	5→5	 27→27	same
+process/process-termination-observer.test.ts	1→1	 16→16	same
+registry/record-observer.test.ts	11→11	 17→17	same
+registry/registry.test.ts	36→44	 127→159	+8 tests, +32 expects
+registry/startup-coordinator.test.ts	42→42	 142→142	same
+registry/workspace-identity.test.ts	3→3	 12→12	same
+resources/resource-supervisor.test.ts	11→11	 40→40	same
+transport/client-result-capture.test.ts	5→5	 20→20	same
+transport/daemon-result-chunk-codec.test.ts	1→1	 3→3	same
+transport/execution-client.test.ts	3→3	 20→20	same
+transport/lifecycle-client.test.ts	7→7	 32→32	same
+transport/local-daemon-transport-composition.test.ts	3→3	 27→27	same
+transport/local-daemon-transport-execution.test.ts	26→26	 65→65	same
+transport/local-daemon-transport-socket-client.test.ts	6→6	 21→21	same
+transport/local-daemon-transport-validation.test.ts	25→25	 30→30	same
+transport/local-transport.test.ts	14→14	 16→16	same
+transport/protocol-validator.test.ts	9→9	 20→20	same
+transport/result-transfer-receiver.test.ts	7→7	 29→29	same
+transport/socket-client.test.ts	12→12	 37→37	same
+transport/socket-server.test.ts	9→9	 30→30	same
+transport/wire-codec.test.ts	6→6	 14→14	same
+worker/navigation-worker.test.ts	17→16	 39→38	-1 tests, -1 expects
+worker/worker-generation-manager.test.ts	13→13	 44→44	same
+worker/worker-protocol.test.ts	2→2	 6→6	same
+Static count of it/test declarations and expect( calls per file; it.each counts once. Script: analysis/tests.py.
+NON-IDENTICAL NORMALIZED COPIES (10)
+package file	lines ≠	what differs
+delivery/completion-spool.ts	+66 −3	inlined spool record codec (K12)
+process/controller.ts	+14 −6	injectable startupCoordinator (K8)
+process-entry.ts	+2 −2	class renamed DaemonProcessEntry
+worker/navigation-worker.ts	+10 −13	worker entry URL ../worker-entry.js (K11)
+diagnostics/operation-observer.ts	+1 −1	inline type import path
+process/process-coordinator.ts	+1 −1	inline type import path
+process/process-launcher.ts	+1 −1	daemon entry URL ../process-entry.js (K11)
+resources/resource-supervisor.ts	+2 −2	inline type import paths
+registry/startup-coordinator.ts	+8 −2	readinessProbe option (K6)
+transport/local-transport.ts	+10 −7	injectable createOutput (K9)
+Moved suites target package paths; three differences here are only type import/re-export paths. This text comparison is not a behavioral comparison.
+REMOVED OR REPLACED TEST CASES
+src/daemon/daemon-entry.test.ts deleted	− starts the detached daemon with only daemon-owned process configuration
+− keeps the process and worker entries independent from CLI and core modules
+src/daemon-package.test.ts	− has the exact private ESM root and temporary policy-testing exports
+src/lint-rule.test.ts	− allows CLI test files to import the temporary daemon policy factory
+− rejects production imports of the temporary daemon policy factory
+src/host-contract.test.ts	− exports exactly one policy-testing source and runtime symbol
+− detects an extra policy-testing %s export
+− emits only the policy test factory from the temporary subpath
+src/worker/navigation-worker.test.ts	− classifies a CLI executor version mismatch as an initialization failure
+− proves readiness through the injected CLI version command with legacy cold input
+Renames (WorkspaceDaemon → DaemonProcessCoordinator) omitted. CLI version oracle re-added: apps/cli/src/daemon-executor.test.ts “rejects a product version that does not match the CLI”.
+NEW TEST FILES (12)
+meta-tests/src/daemon-compatibility-copy.test.ts 2 tests · 4 expects
+packages/daemon/src/client/daemon-client-control.test.ts 3 tests · 11 expects
+packages/daemon/src/client/daemon-client-public.test.ts 1 tests · 4 expects
+packages/daemon/src/client/daemon-client.test.ts 7 tests · 41 expects
+packages/daemon/src/client/daemon-routing-policy.test.ts 1 tests · 8 expects
+packages/daemon/src/entry-boundary.test.ts 1 tests · 2 expects
+packages/daemon/src/package-boundary.test.ts 1 tests · 1 expects
+packages/daemon/src/process/process-coordinator-construction.test.ts 2 tests · 4 expects
+packages/daemon/test/fixtures/executor-module.test.ts 3 tests · 10 expects
+packages/daemon/test/integration/built-entry-artifacts.test.ts 1 tests · 4 expects
+packages/daemon/test/integration/built-process-entry.test.ts 1 tests · 14 expects
+packages/daemon/test/integration/built-process-launcher.test.ts 0 tests · 3 expects
+What pins shipped daemon code after #148: e2e suites apps/cli/test/e2e/daemon/* daemon-command-dispatcher*.test.ts, daemon-transport.test.ts, the digest. The 37 relocated direct mechanism suites now target package paths. Static assertion counts describe test text, not coverage or strength.
+EVIDENCE
+Deleted: apps/cli/src/daemon/daemon-entry.test.ts (base)
+Re-added CLI oracle: daemon-executor.test.ts
+packages/daemon/src/delivery/completion-spool.ts vs apps/cli/src/daemon/completion-spool.ts
+packages/daemon/src/process/controller.ts vs apps/cli/src/daemon/daemon-controller.ts
+packages/daemon/src/process-entry.ts vs apps/cli/src/daemon/daemon-entry.ts
+packages/daemon/src/worker/navigation-worker.ts vs apps/cli/src/daemon/daemon-navigation-worker.ts
+packages/daemon/src/diagnostics/operation-observer.ts vs apps/cli/src/daemon/daemon-operation-observer.ts
+packages/daemon/src/process/process-coordinator.ts vs apps/cli/src/daemon/daemon-process-coordinator.ts
+packages/daemon/src/process/process-launcher.ts vs apps/cli/src/daemon/daemon-process-launcher.ts
+packages/daemon/src/resources/resource-supervisor.ts vs apps/cli/src/daemon/daemon-resource-monitor.ts
+packages/daemon/src/registry/startup-coordinator.ts vs apps/cli/src/daemon/daemon-startup-coordinator.ts
+packages/daemon/src/transport/local-transport.ts vs apps/cli/src/daemon/local-daemon-transport.ts
+↩ back
+Shipped CLI edits before the freeze
+Deeper view of K4 Edit shipped CLI mechanisms first, then freeze them
+1 · edit CLI mechanisms in place
+2 · copy into package, move tests
+3 · build the hub
+4 · digest portability, Windows
+Specify daemon lifetime clock owne
+Give daemon lifetime its wall cloc
+Specify registry startup ownership
+Centralize registry startup owners
+Rename workspace daemon as process
+Specify process request authentica
+Specify validated process coordina
+Adopt validated process coordinate
+Specify daemon clock source owners
+Route daemon timing through its cl
+Characterize process callback comp
+Specify canonical startup ownershi
+Centralize all startup ownership d
+Specify narrow startup ownership c
+Stage daemon mechanism compatibili
+Organize daemon mechanisms by owne
+Add daemon package executable entr
+Prove built daemon entry resolutio
+Retire flat daemon staging copies
+Relocate daemon mechanism ownershi
+Retire app-owned daemon mechanism
+Keep executor fixture package-inde
+Conform daemon staging tests to li
+Specify exhaustive daemon entry ex
+Prove built daemon process entry e
+Restore CLI executor version rejec
+Specify ordered daemon routing dec
+Own ordered daemon routing decisio
+Define daemon client host contract
+Specify daemon client execution ow
+Route execution through DaemonClie
+Specify daemon client lifecycle co
+Own daemon lifecycle composition i
+Specify host-owned daemon readines
+Route host readiness probes throug
+Compose warm result capture in Dae
+Expose the Node-free DaemonClient
+Lock the public DaemonClient bound
+Represent disabled daemon routing
+Complete daemon client routing cha
+Specify missing warm output handli
+Lock daemon control overload retur
+Specify portable daemon compatibil
+Normalize daemon compatibility sou
+Specify Windows process entry clea
+45 commits in order; bar height log-scaled by lines changed, split by area (green = CLI src, light green = CLI tests, grey = package copies, blue = client/, violet = package tests, brown = meta-tests). Purple subject = “Specify…/Characterize…” (test-first commits). Commit bodies are empty. Hover a bar for numbers.
+shipped CLI file	added	removed
+daemon-registry.ts	 +229	 −100
+daemon-process-coordinator.ts	 +75	 −62
+daemon-controller.ts	 +32	 −40
+daemon-startup-coordinator.ts	 +26	 −41
+daemon-entry.ts	 +14	 −21
+daemon-lifetime.ts	 +6	 −6
+daemon-navigation-worker-entry.ts	 +6	 −5
+daemon-resource-monitor.ts	 +6	 −5
+daemon-process-launcher.ts	 +7	 −3
+workspace-request-queue.ts	 +8	 −2
+accepted-request-ledger.ts	 +3	 −2
+daemon-record-observer.ts	 +0	 −1
+base → head, whole-file Python difflib comparison (+412/−288). Git’s alignment yields +408/−284 for the same 12 files, as shown at the top. Then frozen by digest.
+ownership check site (apps/cli, shipped)	base compares	head compares
+registry: writeStartingIfStartupOwner gate	instanceId	identityKey, instanceId
+registry: writeStartingIfStartupOwner after write	instanceId	full owner record (8 fields incl. revision)
+registry: writeClaimedStartingRecord gate	instanceId	identityKey, instanceId
+registry: writeClaimedStartingRecord after replace	instanceId, ownerPid, processToken	full owner record (8 fields)
+registry: refreshStartupOwner	instanceId	identityKey, instanceId
+registry: isStartupOwner	instanceId	identityKey, instanceId
+registry: removeStartupLockIfInstance	instanceId	identityKey, instanceId
+registry: transferStartupToDaemon	launcher param fields; current = param	current matches param + identity.identityKey
+registry: writeIfStartupOwner, claimStartupForDaemon, startupOwnerMatchesProcess, removeStartupLockIfProcess	5 fields	same fields through predicate
+controller: status, armed launch	instanceId, processToken	identityKey, instanceId, processToken
+controller: status, live owner	instanceId	identityKey, instanceId
+controller: stopStarting (pid ≤ 0)	processToken	identityKey, instanceId, processToken
+controller: cleanup branch for owner without processToken	removes lock	branch deleted (type says unreachable)
+Read from the diff by hand; verify in evidence below. Owner file lives under daemons/<identityKey>/startup.lock, so identityKey mismatch implies a foreign or corrupt owner file.
+EVIDENCE
+Head: one predicate head:apps/cli/src/daemon/daemon-registry.ts:842-861
+Base: sameStartupOwner base:apps/cli/src/daemon/daemon-registry.ts:717-731
+Base: isStartupOwner base:apps/cli/src/daemon/daemon-registry.ts:407-409
+Head: isStartupOwner head:apps/cli/src/daemon/daemon-registry.ts:516-523
+Coordinate validation now in coordinator constructor head:packages/daemon/src/process/process-coordinator.ts:541-554
+Base entry: validation lived here, observer installed first base:apps/cli/src/daemon/daemon-entry.ts:1-49
+CLI daemon-controller.ts diff
+apps/cli/src/daemon/daemon-registry.ts: base → head
+apps/cli/src/daemon/daemon-process-coordinator.ts: base → head
+apps/cli/src/daemon/daemon-controller.ts: base → head
+apps/cli/src/daemon/daemon-startup-coordinator.ts: base → head
+apps/cli/src/daemon/daemon-entry.ts: base → head
+apps/cli/src/daemon/daemon-lifetime.ts: base → head
+apps/cli/src/daemon/daemon-navigation-worker-entry.ts: base → head
+apps/cli/src/daemon/daemon-resource-monitor.ts: base → head
+apps/cli/src/daemon/daemon-process-launcher.ts: base → head
+apps/cli/src/daemon/workspace-request-queue.ts: base → head
+apps/cli/src/daemon/accepted-request-ledger.ts: base → head
+apps/cli/src/daemon/daemon-record-observer.ts: base → head
+↩ back
+Method and receipts
+Inputs
+bundle inputs/pr-148 (pr.json, diff, files; overview files contained headings but no symbol output), worktrees pr-148-head/base, stack-head for #149 context only
+Copy map
+analysis/pairs.py: 38 CLI↔package pairs, text diff with top-level imports and blank lines stripped; type imports/re-exports can remain
+Tests
+analysis/tests.py: static it/test/expect counts, renamed pairs
+Commits
+analysis/commits.py: numstat per commit bucketed by area
+Import graph
+analysis/graph.py: relative imports, new URL(…, import.meta.url) spawn edges, string-variable dynamic import
+Runs
+analysis/trace.mjs (DaemonClient; EXECUTOR=cli for the real symnav executor), analysis/trace-old.mjs base|head (CLI dispatcher), analysis/cli-probe.sh (shipped binary + ps). Prototype wrapping in-process; worktrees untouched.
+Tests run
+head: packages/daemon client, host-contract, package/entry boundary and public-import tests: 68 passed; meta-tests digest test 2 passed. Full suite not run. Logs: daemon checks, digest checks.
+Revisions
+base ba53c8e1662fd86d198b95321c90d9c9bef10184 → head 20838f8dbf413e04767543eb2380d0d114da6c60. Earlier attempts’ recordings are retained with their timestamps; this page replays saved data.
+Not verified
+Windows behavior; long-lived host reuse of one client; whether tightened ownership checks change any real outcome.
+Build
+python3 build.py regenerates data.js from analysis outputs and worktree excerpts
+
+[SVG text in document order]
+apps/cli — what `symnav` runs today (base and head)
+InvocationWorkspaceSelector
+argv → local / control / workspace
+core.createWorkspace
+resolve root
+createRuntime()
+per request
+CliProgramExecutor
+local run
+38 frozen copies 🔒
+registry · transport · startup …
+register-daemon-command
+start / status / stop
+DaemonCommand
+Dispatcher
+apps/cli · live
+spawned by the CLI
+apps/cli/dist/daemon/daemon-entry.js
+→ DaemonProcessCoordinator (CLI copy)
+→ daemon-navigation-worker-entry.js
+@symnav/daemon — client objects inside the host process (new in #148)
+DaemonRoutingPolicy
+4 ordered guards
+new
+DaemonPolicy · clock
+policy existed · clock copied
+≡
+DaemonRegistry
++ workspace identity · 1,068 lines
+≡
+DaemonRecordObserver
+identify + ping
+≡
+LocalDaemonTransport ×2
+250 ms routing · 100 ms status
+≠ 17
+Warm result capture
++ 3 “Cannot answer” messages
+≡
+StartupCoordinator → Launcher
+trigger · ensureRunning · spawn
+≠ 10
+DaemonController ×2
+start/stop · status
+≠ 20
+host executorFactory
+cold · fallback · per attempt
+DaemonClient
+facade 64 lines
+runtime 270 lines
+spawned by DaemonClient (only in tests and recorded runs during #148)
+daemon process: process-entry.js → DaemonProcessCoordinator
+far hub · 40 modules: queue · ledger · execution + delivery sessions
+spool · resources · worker generations · lifetime · logger · socket server
+worker thread
+worker-entry.js · 13 modules
+loads host executor module
+spawn (detached)
+unix socket
+0 production callers in #148
+#149 connects the CLI host
+spawned by launcher: daemon process 40 files · 9,471 lines   |   worker thread 13 files · 1,639 lines
+host process after construction: 29 files · 6,766 lines (Node APIs)
+host compiles against: 7 files
+client/daemon-client-contracts.ts
+client/daemon-client.ts
+daemon-command-name.ts
+daemon-diagnostics.ts
+daemon-executor.ts
+daemon-lifecycle-report.ts
+daemon-policy.ts
+import(runtimeModuleUrl)
+string variable → tsc
+does not follow it
++ spawn edge
+process-launcher.ts:156
++ Worker edge
+navigation-worker.ts:95
+1. RecordPresentRoutingGuard
+registry.read() → none
+answers
+cold · absent
+undefined → next
+2. NotStartingRoutingGuard
+record.state = starting
+answers
+cold · starting
+undefined → next
+3. RecordVersionRoutingGuard
+record.symnavVersion ≠ productVersion
+answers
+fallback · incompatible
+undefined → next
+4. ResponsiveRoutingGuard
+observe(record): identify + ping
+answers
+warm
+DaemonCommandDispatcher
+rebuilt each request
+registry · transport · terminator · launcher · observer · coordinator
+register-daemon-command
+rebuilt each command
+registry · transport · controller (+ coordinator inside start)
+DaemonClient
+built once per client
+all 10 rows above
+time →
+DaemonClientRuntime
+RoutingPolicy + guards
+DaemonRegistry
+RecordObserver
+LocalDaemonTransport 250 ms
+ResultCapture
+DaemonClientRuntime.execute
++0.0 ms
+DaemonRoutingPolicy.decide
++0.1 ms
+RecordPresentRoutingGuard.evaluate
++0.1 ms
+DaemonRegistry.read
++0.1 ms
+NotStartingRoutingGuard.evaluate
++0.3 ms
+RecordVersionRoutingGuard.evaluate
++0.3 ms
+ResponsiveRoutingGuard.evaluate
++0.3 ms
+DaemonRecordObserver.observe
++0.4 ms
+LocalDaemonTransport.request (250ms)
++0.5 ms
+LocalDaemonTransport.request (250ms)
++1.4 ms
+LocalDaemonTransport.execute (250ms)
++3.7 ms
+DaemonClientResultCapture.append
++15.2 ms
+DaemonClientResultCapture.finish
++15.4 ms
+0
+8
+18
+28
+navigation running (accepted at 8)
+deadline = 8 + idle 10 → idle fires when queue empties at 18
+Acceptance-based (kept)
+Follow-ups spec (deferred): deadline counts from completion; first deadline armed at readiness
+base
+apps/cli/src/daemon
+41 production files: mechanisms + dispatcher
+42 unit test files beside them
+packages/daemon/src
+9 production files: contracts, policy,
+admission, executor loader, reports,
+index, policy-testing subpath
+head
+apps/cli/src/daemon 🔒
+38 frozen copies (sha256) + 3 CLI-owned
+still the only code `symnav` runs
+unit tests: 4 files (dispatcher, selector,
+transport contract)
+packages/daemon/src
+51 production files in 10 folders
+38 copies: 28 ≡, 10 ≠ · client/ new
+37 moved unit test files
+28 files import @symnav/daemon
+copy
+tests move
+1 · edit CLI mechanisms in place
+2 · copy into package, move tests
+3 · build the hub
+4 · digest portability, Windows
+Specify daemon lifetime clock owne
+Give daemon lifetime its wall cloc
+Specify registry startup ownership
+Centralize registry startup owners
+Rename workspace daemon as process
+Specify process request authentica
+Specify validated process coordina
+Adopt validated process coordinate
+Specify daemon clock source owners
+Route daemon timing through its cl
+Characterize process callback comp
+Specify canonical startup ownershi
+Centralize all startup ownership d
+Specify narrow startup ownership c
+Stage daemon mechanism compatibili
+Organize daemon mechanisms by owne
+Add daemon package executable entr
+Prove built daemon entry resolutio
+Retire flat daemon staging copies
+Relocate daemon mechanism ownershi
+Retire app-owned daemon mechanism 
+Keep executor fixture package-inde
+Conform daemon staging tests to li
+Specify exhaustive daemon entry ex
+Prove built daemon process entry e
+Restore CLI executor version rejec
+Specify ordered daemon routing dec
+Own ordered daemon routing decisio
+Define daemon client host contract
+Specify daemon client execution ow
+Route execution through DaemonClie
+Specify daemon client lifecycle co
+Own daemon lifecycle composition i
+Specify host-owned daemon readines
+Route host readiness probes throug
+Compose warm result capture in Dae
+Expose the Node-free DaemonClient 
+Lock the public DaemonClient bound
+Represent disabled daemon routing
+Complete daemon client routing cha
+Specify missing warm output handli
+Lock daemon control overload retur
+Specify portable daemon compatibil
+Normalize daemon compatibility sou
+Specify Windows process entry clea

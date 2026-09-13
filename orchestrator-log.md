@@ -1250,3 +1250,9 @@ no changes added to commit (use "git add" and/or "git commit -a")
 - 2026-09-13 15:32:17 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/79-failure-domain-pinball/node_modules/phaser/types/phaser.json
 - 2026-09-13 15:32:17 +03: MONITOR OK supervisor=39161, finished=80, running=4, queued=0, dirty-worktrees=0, missing-readmes=0, free-disk=19.4GiB
 - 2026-09-13 15:35:53 +03: FINISH 80-typographic-morphology via codex, exit 0, README present
+- 2026-09-13 15:35:53 +03: COMMIT OK 80-typographic-morphology: [main b0abdc8] Add experiment 80 typographic-morphology
+- 2026-09-13 15:37:31 +03: PUBLISH OK: To https://github.com/mohasarc/rich-review-v2.git
+   463c701..b0abdc8  main -> main
+- 2026-09-13 15:37:32 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/79-failure-domain-pinball/node_modules/phaser/types/phaser.json
+- 2026-09-13 15:42:36 +03: MONITOR ALERT files over 20 MB require ignore handling: experiments/79-failure-domain-pinball/node_modules/phaser/types/phaser.json
+- 2026-09-13 15:44:14 +03: FINISH 83-critique-refresh-80 via codex, exit 0, README present
