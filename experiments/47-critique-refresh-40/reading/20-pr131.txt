@@ -1,0 +1,5247 @@
+Skip to callable contracts
+20
+CONTRACT TABLE
+symnav / daemon refactor
+Experiment notes ↗
+
+A CHANGE, SEEN FROM THE CALLER’S SIDE
+
+What can a caller
+rely on?
+
+Inputs. Returned values. Failures. State and I/O.
+Every public callable in the changed modules, side by side.
+
+#127
+Cache lifetime
+27 contracts
+#131
+Policy consumers
+213 contracts
+
+#131 · 60 CHANGED FILES / THE COMPLETE PICTURE
+
+One snapshot becomes the explicit consumer input.
+
+A complete policy snapshot already exists at the base of this PR. The change routes its output, transport, delivery, startup, shutdown, resource and diagnostic values into app-owned mechanisms. Public callers lose local numeric defaults; outcome shapes mostly stay.
+
+178
+production
+callables + ports
+B
+BASE · MULTIPLE SOURCES OF LIMITS
+PACKAGES/DAEMON · ALREADY PRESENT
+Immutable DaemonPolicy snapshot
+serialized across process / worker boundaries ↓
+APPS/CLI · MECHANISM IMPLEMENTATIONS
+Local defaults + optional numeric overrides
+↓ operational thresholds
+Output
+Lifecycle
+Resources
+A
+HEAD · ONE SOURCE, REQUIRED INPUTS
+PACKAGES/DAEMON · EXISTING CODE OWNER
+Same DaemonPolicy snapshot
+required slices / explicit leaf values ↓
+APPS/CLI · SAME PHYSICAL HOME
+Output
+record limits
+Lifecycle
+wait / retry
+Resources
+RSS / workers
+Transport
+purpose + budgets
+Diagnostics
+retention
+
+Compressed package-and-input view: seven policy sections feed many consumers; some codecs accept individual numbers. No mechanism class moves package in #131. Select a box to inspect its contracts.
+
+Caller-visible boundaries: required policy inputs; unchanged production defaults; purpose-selected timeouts; independent recovery budgets; centralized resource/diagnostic values; earlier parent-side policy validation. Also inspect changed error selection, remaining numeric seams, and test adapter/fixture changes.
+
+RECORDS → MEMORY / DISK
+Output & spools
+
+Required output policy and explicit disk chunk caps. Record order, hashing, spill, cleanup and controlled capacity results remain.
+
+49 callables · inspect →
+CLIENT ↔ DAEMON SOCKET
+Transport & codecs
+
+Required transport/output/delivery values; timeout chosen by purpose; separate counters. Fetch failure settles its completion. Later completion errors can replace the first failure.
+
+16 callables · inspect →
+OWNERSHIP → READY → STOPPED
+Lifecycle & registry
+
+Required startup/shutdown policy; counted child retries; no healthy-start deadline. Ownership fences, signal sequence, stale-record cleanup during status and fire-and-forget idle callback stay. Explicit grace override remains.
+
+53 callables · inspect →
+RSS → SHED / REPLACE / DRAIN
+Resources & workers
+
+Existing policy supplies memory, sampling and replacement values. Parent parses the worker snapshot before spawning. Generation checks and hysteresis stay.
+
+31 callables · inspect →
+EVENTS → QUEUE → ROTATED FILES
+Diagnostics
+
+Required diagnostics slice. Same closed event schema, hashed correlation, best-effort writes and dropping behavior; trace retention also uses policy.
+
+11 callables · inspect →
+CONSTRUCT THE CONSUMER GRAPH
+CLI composition
+
+Executor, commands, dispatcher and WorkspaceDaemon pass slices. Ready memory reports use policy. Mechanisms remain in apps/cli; worker/process entry wiring also changes.
+
+18 callables · inspect →
+ADAPTERS OUTSIDE PRODUCTION
+Test & benchmark surface
+
+Seven exported helper adapters translate knobs into validated policy. Spill fixtures change, old recipe tests disappear, boundary string checks expand. Benchmark APIs remain.
+
+35 callables · inspect →
+
+Read the decisions below, then any boundary’s callable table. Source evidence is the last layer.
+
+01 / DECISIONS CARRIED BY THE CONTRACTS
+
+What the caller inherits
+
+“Stated” means a reason was found.
+“Unexplained” means none was found in the inspected inputs.
+
+P1
+STATED
+Make policy supply mandatory at consumer construction
+
+The PR says omission must not recreate local defaults. The spec assigns every threshold one owner.
+
+Inspect the evidence ↗
+B
+Optional numeric arguments and constants configure app-owned mechanisms, alongside the existing snapshot.
+A
+Consumers take required policy sections. Removed constants and the CLI resource factory have no production compatibility overload. Clocks, storage, factories, directories and write fragmentation remain injectable; classes stay in apps/cli.
+P2
+STATED
+Carry one output budget through every representation
+
+The PR explicitly covers output capture, spooling, framing and worker validation; the policy record gives the capacity reasons.
+
+Inspect the evidence ↗
+B
+64 KiB chunks, 256 KiB inline, 256 MiB result, 512 MiB aggregate; several fixed or optional local sources.
+A
+Same production defaults from output policy. Storage.records, decodeFileRecords, encode/decode and worker response validation require a chunk cap. Raw in-memory decodeRecords still has no policy parameter.
+P3
+STATED
+Choose timeout by the transport’s purpose
+
+The PR distinguishes status observation from ordinary execution-status requests.
+
+Inspect the evidence ↗
+B
+Status command constructs a transport with requestTimeoutMs: 100; ordinary default is 250 ms.
+A
+Constructor purpose selects 100 ms status-observer or 250 ms ordinary. Admission remains 5 s. No accepted-completion deadline is added; the timer is disabled at acceptance.
+P4
+STATED
+Keep execution reattachment and result resume separate
+
+The PR says each reattached execute attempt has its own fetch-resume allowance.
+
+Inspect the evidence ↗
+B
+One reattachment in an outer catch; one boolean resume guard inside executeOnce.
+A
+Numeric counters default to one each. Reattachment resubmits the same authenticated request; each executeOnce starts resumeCount at zero. A failed fetch rejects completion; the fetch path itself does not schedule a further fetch.
+P5
+UNEXPLAINED
+Change which reattachment error escapes
+
+No reason found for this error-selection change in the PR, commits or policy record.
+
+Inspect the evidence ↗
+B
+If reattached acceptance or completion fails, the catch throws the original completion error.
+A
+Failure to obtain a reattached receipt still throws the current completion error. Once a receipt exists, a later completion failure is handled on the next loop and may become the reported error.
+P6
+STATED
+Centralize distinct lifecycle timers and child retries
+
+The policy record gives a reason for each cadence and deadline and explicitly leaves healthy startup untimed.
+
+Inspect the evidence ↗
+B
+15 s ownership grace, 100/10/20 ms startup cadences, one child retry; stop/signal/idle numbers live near use.
+A
+Same defaults from startup/shutdown. ensureRunning retries child-exit or lost-warmup up to policy limit. Stop reserves min(maximum reserve, floor(stop window / 2)); SIGTERM then SIGKILL remain. Unused startupTimeoutMs is deleted.
+P7
+STATED
+Use the snapshot for memory and the replacement circuit
+
+The spec and policy record put the memory recipe, pressure thresholds and anti-churn circuit under daemon policy.
+
+Inspect the evidence ↗
+B
+CLI re-derives a resource record; WorkspaceDaemon can accept independent memoryCapBytes/resourcePolicy.
+A
+Use resources directly, including worker MiB limit and ready/status hard-RSS reports. Keep soft/resume hysteresis, generation fencing and boundary scheduling. Supervision 250 ms, worker sampling 25 ms, two replacements per 10 min before drain.
+P8
+STATED
+Consume diagnostics policy without changing failure isolation
+
+The PR names logging and trace retention as consumers; the policy record explains bounded diagnostic retention.
+
+Inspect the evidence ↗
+B
+Logger and daemon choose queue, rotation, backup and trace values locally.
+A
+10 MiB logs / four backups / 1,024 queued events and five-minute / 1,024 disconnected traces come from policy. Closed event schemas, correlation hashing, dropping and best-effort storage behavior remain.
+P9
+STATED
+Move numeric test knobs into seven adapters
+
+The PR says tests need small thresholds without reopening production tuning seams.
+
+Inspect the evidence ↗
+B
+Tests construct runtime classes with legacy numbers; some force disk storage with inlineBytes: 0.
+A
+New helper classes translate knobs via DaemonPolicyTestFactory or forward explicit policy. Valid snapshots enforce chunk ≤ inline ≤ result ≤ aggregate and positive chunk size. Test calls and benchmark imports move to helpers.
+P10
+UNEXPLAINED
+Leave a few low-level numeric seams and normalize test values
+
+No specific reason found for retaining the explicit registry grace override or these adapter translations; the broader adapter choice is stated separately.
+
+Inspect the evidence ↗
+B
+Registry can accept explicit grace; test transport inline sizes can be tiny; workspace tests can pass memoryCapBytes.
+A
+Registry still accepts graceMs. Test transport raises inline bytes to at least a chunk and creates a requested output directory; workspace helper can map zero inline to half a result cap, lower chunk/result sizes, and still accepts memoryCapBytes without reading it. Codec/storage caps remain raw required numbers.
+P11
+UNEXPLAINED
+Change the test witnesses alongside the production seam
+
+The PR promises threshold/retry preservation and names test adapters, but gives no specific reason for each deleted case or changed fixture value.
+
+Inspect the evidence ↗
+B
+CLI resource suite pins memory derivation and its exported 250 ms constant; capture parity spills at 1 byte; spool tests use zero inline.
+A
+Delete the old resource-policy block (five parameter rows plus constrained-memory and cadence cases); daemon-package policy tests already cover the recipe, with a 1-byte boundary instead of 256 MiB. Capture parity now uses 32 bytes; zero-inline spool cases cross positive thresholds with extra records. Add policy, one-byte chunk, timeout, zero/two child-retry and reattach/fetch checks; expand retired-name meta-tests.
+P12
+UNEXPLAINED
+Parse policy in the parent before constructing the worker
+
+Worker chunk validation is explicitly in scope, but no reason is given for moving malformed-snapshot failure to parent construction as well as worker startup.
+
+Inspect the evidence ↗
+B
+Parent starts the worker with the serialized policy; the worker entry parses it.
+A
+NodeDaemonNavigationWorker first calls DaemonPolicy.fromSerialized to obtain maximumChunkRawBytes, then creates Worker. An invalid serialized snapshot can now throw synchronously before a thread is spawned.
+
+02 / FOLLOW A BOUNDARY
+
+One operation, two contracts
+
+ILLUSTRATIVE PATH · SOURCE-DERIVED, NOT EXECUTED
+
+A timeout belongs to a caller’s purpose
+daemon status observer
+100 ms
+Construct transport with status-observer purpose. Base passed the number 100 directly.
+ordinary execution-status exchange
+250 ms
+Ordinary transport stays ordinary even though the request contains “status”.
+execute admission → acceptance
+5 s → ∞
+5 s until acceptance; then timer disabled. ∞ means no completion deadline, not guaranteed completion.
+Recovery boundary	Base	Head
+Authenticated accepted connection closes	One outer reattachment	Counted reattachments; default 1
+Manifest exists; transfer interrupted	Boolean resume guard in executeOnce	Resume count in executeOnce; default 1
+Reattached executeOnce begins	A fresh boolean guard	A fresh resumeCount = 0
+Fetch attempt fails	Reject this completion	Reject this completion; fetch path does not launch another fetch
+Later accepted completion fails	Original completion error escapes	Later completion error can escape (P5)
+
+Independent budgets describe different recovery scopes. They do not authorize replay as a new local command. Zero/two startup retry values are characterized separately from delivery limits in the changed tests.
+
+Inspect execute and its helpers ↗
+
+03 / CALLABLE INVENTORY
+
+The contract matrix
+↑ Back to the complete picture
+Scope is the PR’s changed modules. This is the union of public methods, functions, constructors, accessors and callable ports declared in those files, including unchanged members. Overloads share one row. Re-export fanout, inherited members, private methods and imported libraries are not expanded. Test helpers have their own filter. See every file and count ↗
+Find a callable
+Boundary
+All boundaries
+Output & spools
+Transport & codecs
+Lifecycle & registry
+Resources & workers
+Diagnostics
+CLI composition
+Test & benchmark surface
+Surface
+Production + ports
+Everything, including test helpers
+Test & benchmark helpers
+Source change
+All declarations
+Edited declaration, type or body
+Added
+Removed
+Same declaration and body
+Reset
+
+178 of 213 callable contracts · 178 production / 35 test support
+
+B base A head = same wording on both sides
+
+A source badge compares declaration, local named types and member body; it does not prove unchanged behavior. The contract notes include changes through private helpers and constructors. Errors cover explicit domain branches and named dependencies, not every possible JavaScript or OS exception. Callable ports leave unexpressed behavior to their implementation.
+
+CALLABLE / EVIDENCE	INPUTS	OUTPUTS	ERRORS	SIDE EFFECTS
+CLI composition / apps/cli/src/cli-program-executor.ts
+
+CliProgramExecutor.constructor
+constructor · p131-1
+signature edited
+Source & named types ↗
+
+Third outputOptions parameter removed; output policy now comes from dependencies.daemonPolicy.
+
+	
+B
+private readonly dependencies: ProgramDependencies
+private readonly workspaceSession?: WorkspaceSession
+private readonly outputOptions: OrderedCommandOutputOptions = {}
+A
+private readonly dependencies: ProgramDependencies
+private readonly workspaceSession?: WorkspaceSession
+	
+=
+CliProgramExecutor
+
+Executor bound to dependencies and optional workspace session.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Stores dependencies; output is created per execution.
+
+
+
+CliProgramExecutor.execute
+method · p131-2
+body edited
+Source & named types ↗
+
+Output construction uses dependencies.daemonPolicy.values.output.
+
+	
+=
+request: CliExecutionRequest
+	
+=
+Promise<CommandExecutionResult>
+
+Captured ordered output and exit code.
+
+	
+=
+
+Captured exits become results; output capacity becomes controlled failure output; other errors dispose output then rethrow.
+
+	
+=
+
+Runs the CLI with captured stdout/stderr and request telemetry/mode.
+
+
+Output & spools / apps/cli/src/command-execution-result.ts
+
+CommandOutput.records
+interface port · p131-3
+same declaration + body
+Source & named types ↗
+
+Same output port; stored file decoding receives the configured chunk cap.
+
+	
+=
+offset?: number
+	
+=
+AsyncIterable<CommandOutputRecord>
+
+Ordered records from optional sequence offset.
+
+	
+=
+
+Interface specifies no error vocabulary; disk-backed implementations can fail during iteration.
+
+	
+=
+
+May read retained memory or spool storage.
+
+
+
+CommandOutput.dispose
+interface port · p131-4
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+Promise<void>
+
+Completion of output cleanup.
+
+	
+=
+
+Interface specifies no error vocabulary.
+
+	
+=
+
+Releases owned output storage according to implementation.
+
+
+
+CommandOutputSnapshot.constructor
+constructor · p131-5
+same declaration + body
+Source & named types ↗	
+=
+records: readonly Omit<CommandOutputRecord, "sequence">[]
+	
+=
+CommandOutputSnapshot
+
+Snapshot with assigned sequence numbers and a content summary.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Copies input bytes and computes SHA-256; no file I/O.
+
+
+
+CommandOutputSnapshot.records
+method · p131-6
+same declaration + body
+Source & named types ↗	
+=
+offset = 0
+	
+=
+AsyncIterable<CommandOutputRecord>
+
+Captured records whose sequence is at least offset (default 0).
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Iterates retained memory.
+
+
+
+CommandOutputSnapshot.dispose
+method · p131-7
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+Promise<void>
+
+Already fulfilled Promise<void>.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+No cleanup work; the snapshot retains its captured array.
+
+
+
+OrderedCommandOutput.constructor
+constructor · p131-8
+signature edited
+Source & named types ↗
+
+Optional inlineBytes/maximumBytes defaults replaced by required output policy, including maximum chunk size.
+
+	
+B
+options: OrderedCommandOutputOptions = {}
+Changes in OrderedCommandOutputOptions:
+readonly inlineBytes?: number;
+readonly maximumBytes?: number;
+policy: (not present)
+A
+options: OrderedCommandOutputOptions
+Changes in OrderedCommandOutputOptions:
+inlineBytes: (removed)
+maximumBytes: (removed)
+readonly policy: DaemonPolicyValues["output"];
+	
+=
+OrderedCommandOutput
+
+Output collector exposing writable stdout and stderr.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Stores capacities and directory; initializes ordered capture state.
+
+
+
+OrderedCommandOutput.appendRecord
+method · p131-9
+body edited
+Source & named types ↗
+
+Chunk and total-result bounds are now policy values.
+
+	
+=
+record: CommandOutputRecord
+	
+=
+Promise<void>
+
+Completion of a serialized append.
+
+	
+=
+
+Rejects after finish, on wrong sequence, oversized chunk, total capacity or storage failure.
+
+	
+=
+
+Flushes pending bytes, copies the record, updates counters/hash; can spill to disk.
+
+
+
+OrderedCommandOutput.finish
+method · p131-10
+body edited
+Source & named types ↗
+
+Stored disk reader keeps the chunk limit used for capture.
+
+	
+=
+exitCode: number
+	
+=
+Promise<CommandExecutionResult>
+
+Stored output summary plus caller-supplied exit code.
+
+	
+=
+
+Repeat finish, previous capture failure, stream or file failure can reject.
+
+	
+=
+
+Ends streams, flushes capture, closes spool file and transfers retained output ownership.
+
+
+
+OrderedCommandOutput.replaceWith
+method · p131-11
+same declaration + body
+Source & named types ↗	
+=
+result: CommandExecutionResult
+	
+=
+Promise<CommandExecutionResult>
+
+The supplied replacement result.
+
+	
+=
+
+Cleanup failure can reject before returning replacement.
+
+	
+=
+
+Disposes the existing output.
+
+
+
+OrderedCommandOutput.dispose
+method · p131-12
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+Promise<void>
+
+Completion of output cleanup.
+
+	
+=
+
+Ignores ENOENT on unlink; other close/unlink failures propagate.
+
+	
+=
+
+Closes and removes any owned spool file.
+
+
+
+OrderedCommandOutput.static encodeRecord
+method · p131-13
+same declaration + body
+Source & named types ↗	
+=
+record: CommandOutputRecord
+	
+=
+Buffer
+
+9-byte record header followed by payload bytes.
+
+	
+=
+
+Buffer integer writes can reject invalid numeric range.
+
+	
+=
+
+Allocates encoded bytes; no I/O.
+
+
+
+OrderedCommandOutput.static decodeRecords
+method · p131-14
+same declaration + body
+Source & named types ↗	
+=
+encoded: Uint8Array
+	
+=
+CommandOutputRecord[]
+
+Decoded in-memory records.
+
+	
+=
+
+Throws on truncated header, bad stream byte or payload overrun.
+
+	
+=
+
+Copies input buffer; no policy/chunk or sequence-continuity check is added.
+
+
+
+OrderedCommandOutput.static decodeFileRecords
+method · p131-15
+signature edited
+Source & named types ↗
+
+Adds required maximumRecordBytes; old decoder used 64 KiB.
+
+	
+B
+filePath: string
+A
+filePath: string
+maximumRecordBytes: number
+	
+=
+AsyncIterable<CommandOutputRecord>
+
+Disk records with consecutive sequences and bounded payload sizes.
+
+	
+=
+
+Not-regular-file, corrupt/truncated record and open/read/close failures can reject iteration.
+
+	
+=
+
+Opens without following symlinks where supported, reads records, closes in finally.
+
+
+
+CommandOutputCapacityError.constructor
+constructor · p131-16
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+CommandOutputCapacityError
+
+An error object carrying the declared message/fields/cause.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Constructs the error; does not itself throw it.
+
+
+
+CommandResultReplayer.static replay
+method · p131-17
+same declaration + body
+Source & named types ↗	
+=
+result: CommandExecutionResult
+context: ProgramContext
+	
+=
+Promise<never | void>
+
+Output replay completion; a nonzero result invokes context.exit.
+
+	
+=
+
+Read/write/cleanup or context.exit failure can propagate.
+
+	
+=
+
+Writes records in order with backpressure; always disposes output.
+
+
+
+CommandResultReplayer.constructor
+implicit constructor · p131-18
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+CommandResultReplayer
+
+A CommandResultReplayer instance.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Implicit constructor initializes instance fields; static-only utility instances add no operation.
+
+
+
+ControlledCommandResult.static acceptedRequestDidNotComplete
+method · p131-19
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+CommandExecutionResult
+
+Exit code 1 with a fixed stderr explanation for the named failure.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Creates an in-memory output snapshot; emits nothing until replayed.
+
+
+
+ControlledCommandResult.static workspaceCapacityExceeded
+method · p131-20
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+CommandExecutionResult
+
+Exit code 1 with a fixed stderr explanation for the named failure.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Creates an in-memory output snapshot; emits nothing until replayed.
+
+
+
+ControlledCommandResult.static responseCapacityExceeded
+method · p131-21
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+CommandExecutionResult
+
+Exit code 1 with a fixed stderr explanation for the named failure.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Creates an in-memory output snapshot; emits nothing until replayed.
+
+
+
+ControlledCommandResult.constructor
+implicit constructor · p131-22
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+ControlledCommandResult
+
+A ControlledCommandResult instance.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Implicit constructor initializes instance fields; static-only utility instances add no operation.
+
+
+CLI composition / apps/cli/src/commands/daemon/register-daemon-command.ts
+
+registerDaemonCommand
+function · p131-23
+same declaration + body
+Source & named types ↗
+
+Actions now pass required slices; only the status action selects status-observer purpose.
+
+	
+=
+program: CommanderCommand
+context: ProgramContext
+dependencies: ProgramDependencies
+	
+=
+void
+
+void: installs daemon start, status and stop commands.
+
+	
+=
+
+Deferred command actions format failures through their existing paths.
+
+	
+=
+
+Registers callbacks; invoked callbacks create registry/controller/transport and print results.
+
+
+Output & spools / apps/cli/src/daemon/completion-spool.ts
+
+CompletionSpoolFile.write
+interface port · p131-24
+same declaration + body
+Source & named types ↗	
+=
+bytes: Uint8Array
+	
+=
+Promise<unknown>
+
+Completion of writing bytes.
+
+	
+=
+
+Storage implementation determines write failures.
+
+	
+=
+
+Writes through the injected spool-file port.
+
+
+
+CompletionSpoolFile.sync
+interface port · p131-25
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+Promise<void>
+
+Completion of file sync.
+
+	
+=
+
+Storage implementation determines sync failures.
+
+	
+=
+
+Requests durable file synchronization.
+
+
+
+CompletionSpoolFile.close
+interface port · p131-26
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+Promise<void>
+
+Completion of file close.
+
+	
+=
+
+Storage implementation determines close failures.
+
+	
+=
+
+Closes the injected file handle.
+
+
+
+CompletionSpoolStorage.ensureDirectory
+interface port · p131-27
+same declaration + body
+Source & named types ↗	
+=
+path: string
+	
+=
+Promise<void>
+
+Completion of private spool-directory preparation.
+
+	
+=
+
+Unsafe/symlink/non-directory detection or filesystem failure can reject.
+
+	
+=
+
+Creates recursively and sets mode 0700 in Node storage.
+
+
+
+CompletionSpoolStorage.createFile
+interface port · p131-28
+same declaration + body
+Source & named types ↗	
+=
+path: string
+	
+=
+Promise<CompletionSpoolFile>
+
+A new spool-file handle.
+
+	
+=
+
+Exclusive-open failure, including existing path, can reject.
+
+	
+=
+
+Node storage creates with wx and mode 0600.
+
+
+
+CompletionSpoolStorage.records
+interface port · p131-29
+signature edited
+Source & named types ↗
+
+Adds maximumChunkBytes parameter; cap crosses the storage interface.
+
+	
+B
+path: string
+A
+path: string
+maximumChunkBytes: number
+	
+B
+AsyncIterable<CommandOutputRecord>
+
+Disk records with the fixed 64 KiB raw chunk cap.
+
+A
+AsyncIterable<CommandOutputRecord>
+
+Disk records constrained by the supplied raw chunk cap.
+
+	
+=
+
+Decode/corruption/ filesystem failures surface during iteration.
+
+	
+=
+
+Delegates to OrderedCommandOutput.decodeFileRecords.
+
+
+
+CompletionSpoolStorage.unlink
+interface port · p131-30
+same declaration + body
+Source & named types ↗	
+=
+path: string
+	
+=
+Promise<void>
+
+Completion of unlink.
+
+	
+=
+
+Filesystem failures can propagate.
+
+	
+=
+
+Removes the named file.
+
+
+
+CompletionSpoolStorage.removeInstance
+interface port · p131-31
+same declaration + body
+Source & named types ↗	
+=
+path: string
+	
+=
+Promise<void>
+
+Completion of instance-directory removal.
+
+	
+=
+
+Filesystem failures can propagate.
+
+	
+=
+
+Recursively removes with force in Node storage.
+
+
+
+NodeCompletionSpoolStorage.ensureDirectory
+method · p131-32
+same declaration + body
+Source & named types ↗	
+=
+path: string
+	
+=
+Promise<void>
+
+Completion of private spool-directory preparation.
+
+	
+=
+
+Unsafe/symlink/non-directory detection or filesystem failure can reject.
+
+	
+=
+
+Creates recursively and sets mode 0700 in Node storage.
+
+
+
+NodeCompletionSpoolStorage.createFile
+method · p131-33
+same declaration + body
+Source & named types ↗	
+=
+path: string
+	
+=
+Promise<CompletionSpoolFile>
+
+A new spool-file handle.
+
+	
+=
+
+Exclusive-open failure, including existing path, can reject.
+
+	
+=
+
+Node storage creates with wx and mode 0600.
+
+
+
+NodeCompletionSpoolStorage.records
+method · p131-34
+signature edited
+Source & named types ↗
+
+Adds maximumChunkBytes parameter; cap crosses the storage interface.
+
+	
+B
+path: string
+A
+path: string
+maximumChunkBytes: number
+	
+B
+AsyncIterable<CommandOutputRecord>
+
+Disk records with the fixed 64 KiB raw chunk cap.
+
+A
+AsyncIterable<CommandOutputRecord>
+
+Disk records constrained by the supplied raw chunk cap.
+
+	
+=
+
+Decode/corruption/ filesystem failures surface during iteration.
+
+	
+=
+
+Delegates to OrderedCommandOutput.decodeFileRecords.
+
+
+
+NodeCompletionSpoolStorage.unlink
+method · p131-35
+same declaration + body
+Source & named types ↗	
+=
+path: string
+	
+=
+Promise<void>
+
+Completion of unlink.
+
+	
+=
+
+Filesystem failures can propagate.
+
+	
+=
+
+Removes the named file.
+
+
+
+NodeCompletionSpoolStorage.removeInstance
+method · p131-36
+same declaration + body
+Source & named types ↗	
+=
+path: string
+	
+=
+Promise<void>
+
+Completion of instance-directory removal.
+
+	
+=
+
+Filesystem failures can propagate.
+
+	
+=
+
+Recursively removes with force in Node storage.
+
+
+
+NodeCompletionSpoolStorage.constructor
+implicit constructor · p131-37
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+NodeCompletionSpoolStorage
+
+A NodeCompletionSpoolStorage instance.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Implicit constructor initializes instance fields; static-only utility instances add no operation.
+
+
+
+CompletionSpoolCapacityError.constructor
+constructor · p131-38
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+CompletionSpoolCapacityError
+
+An error object carrying the declared message/fields/cause.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Constructs the error; does not itself throw it.
+
+
+
+CompletionSpoolReadError.constructor
+constructor · p131-39
+same declaration + body
+Source & named types ↗	
+=
+cause: unknown
+	
+=
+CompletionSpoolReadError
+
+An error object carrying the declared message/fields/cause.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Constructs the error; does not itself throw it.
+
+
+
+CompletionSpool.constructor
+constructor · p131-40
+named type edited
+Source & named types ↗
+
+CompletionSpoolOptions gains required maximumChunkBytes even though the constructor’s named type is unchanged.
+
+	
+B
+private readonly options: CompletionSpoolOptions
+Changes in CompletionSpoolOptions:
+maximumChunkBytes: (not present)
+Changes in CompletionSpoolStorage:
+records(path: string): AsyncIterable<CommandOutputRecord>;
+A
+private readonly options: CompletionSpoolOptions
+Changes in CompletionSpoolOptions:
+readonly maximumChunkBytes: number;
+Changes in CompletionSpoolStorage:
+records(path: string, maximumChunkBytes: number): AsyncIterable<CommandOutputRecord>;
+
+Named input/output type changes. Open types beside source.
+
+	
+=
+CompletionSpool
+
+An unfinished spool with caller-supplied ownership and accounting callbacks.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Initializes counters, hash and storage state.
+
+
+
+CompletionSpool.completedManifest
+accessor · p131-41
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+CompletionSpoolManifest | undefined
+
+Completed manifest, or undefined before completion.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Reads retained manifest.
+
+
+
+CompletionSpool.append
+method · p131-42
+body edited
+Source & named types ↗
+
+Chunk capacity moves from fixed 64 KiB to the injected spool option.
+
+	
+=
+record: CommandOutputRecord
+	
+=
+Promise<void>
+
+Completion of one next-sequence append.
+
+	
+=
+
+Terminal/order/chunk errors reject; per-result or aggregate capacity failure disposes; storage failure unwinds reservations and disposal can also fail.
+
+	
+=
+
+Reserves raw bytes, copies/hash-counts record and spills above inline capacity.
+
+
+
+CompletionSpool.finish
+method · p131-43
+same declaration + body
+Source & named types ↗	
+=
+exitCode: number
+	
+=
+Promise<CompletionSpoolManifest>
+
+Manifest with transfer/request/instance identity, exit code, counts and hash.
+
+	
+=
+
+Terminal or invalid nonnegative integer exit code rejects; sync/close failure triggers disposal and rejection.
+
+	
+=
+
+Syncs and closes file, marks terminal, counts completion.
+
+
+
+CompletionSpool.read
+method · p131-44
+body edited
+Source & named types ↗
+
+File read forwards the same maximumChunkBytes used by append.
+
+	
+=
+offset: number
+	
+=
+AsyncIterable<CommandOutputRecord>
+
+Records from a valid inclusive offset through the completed spool.
+
+	
+=
+
+Incomplete spool or invalid offset rejects; iteration/storage failures wrap as CompletionSpoolReadError.
+
+	
+=
+
+Reads memory or file; keeps data for acknowledgement.
+
+
+
+CompletionSpool.acknowledge
+method · p131-45
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+Promise<void>
+
+Completion of acknowledged-spool disposal.
+
+	
+=
+
+Incomplete spool or disposal failure rejects.
+
+	
+=
+
+Disposes retained bytes/files and accounting.
+
+
+
+CompletionSpool.dispose
+method · p131-46
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+Promise<void>
+
+Completion of idempotent cleanup, shared while disposal is pending.
+
+	
+=
+
+Close/unlink/cleanup failures can reject.
+
+	
+=
+
+Releases retained storage and counters.
+
+
+
+DaemonCompletionSpoolStore.constructor
+constructor · p131-47
+named type edited
+Source & named types ↗
+
+Required output policy replaces three optional numeric limits and supplies chunk size.
+
+	
+B
+private readonly options: DaemonCompletionSpoolStoreOptions
+Changes in DaemonCompletionSpoolStoreOptions:
+readonly inlineBytes?: number;
+readonly maximumResultBytes?: number;
+readonly maximumAggregateBytes?: number;
+policy: (not present)
+Changes in CompletionSpoolStorage:
+records(path: string): AsyncIterable<CommandOutputRecord>;
+A
+private readonly options: DaemonCompletionSpoolStoreOptions
+Changes in DaemonCompletionSpoolStoreOptions:
+inlineBytes: (removed)
+maximumResultBytes: (removed)
+maximumAggregateBytes: (removed)
+readonly policy: DaemonPolicyValues["output"];
+Changes in CompletionSpoolStorage:
+records(path: string, maximumChunkBytes: number): AsyncIterable<CommandOutputRecord>;
+
+Named input/output type changes. Open types beside source.
+
+	
+=
+DaemonCompletionSpoolStore
+
+Store for one workspace/instance.
+
+	
+=
+
+Invalid instance identity throws during construction.
+
+	
+=
+
+Captures output capacities and default or injected storage.
+
+
+
+DaemonCompletionSpoolStore.create
+method · p131-48
+body edited
+Source & named types ↗
+
+Propagates policy-derived capacities to each spool.
+
+	
+=
+requestId: string
+	
+=
+Promise<CompletionSpool>
+
+A new spool with fresh transfer UUID.
+
+	
+=
+
+Duplicate requestId rejects.
+
+	
+=
+
+Registers spool and pending cleanup, wires aggregate reservation and completion accounting.
+
+
+
+DaemonCompletionSpoolStore.open
+method · p131-49
+same declaration + body
+Source & named types ↗	
+=
+requestId: string
+	
+=
+Promise<CompletionSpool | undefined>
+
+The existing spool or undefined.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Reads request-to-spool map.
+
+
+
+DaemonCompletionSpoolStore.usage
+method · p131-50
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+CompletionSpoolUsage
+
+Raw retained bytes and completion count.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Reads counters; disk spool bytes are separate from process RSS.
+
+
+
+DaemonCompletionSpoolStore.cleanupInstance
+method · p131-51
+same declaration + body
+Source & named types ↗	
+=
+instanceId: string
+	
+=
+Promise<void>
+
+Completion of cleanup for this store’s matching instance; other instance IDs do nothing.
+
+	
+=
+
+Collects disposal/removal failures into AggregateError.
+
+	
+=
+
+Disposes pending spools and removes the instance directory; confirmed-dead method delegates.
+
+
+
+DaemonCompletionSpoolStore.cleanupConfirmedDeadInstance
+method · p131-52
+same declaration + body
+Source & named types ↗	
+=
+instanceId: string
+	
+=
+Promise<void>
+
+Completion of cleanup for this store’s matching instance; other instance IDs do nothing.
+
+	
+=
+
+Collects disposal/removal failures into AggregateError.
+
+	
+=
+
+Disposes pending spools and removes the instance directory; confirmed-dead method delegates.
+
+
+CLI composition / apps/cli/src/daemon/daemon-command-dispatcher.ts
+
+DaemonWarmupTrigger.trigger
+interface port · p131-53
+same declaration + body
+Source & named types ↗	
+=
+identity: DaemonWorkspaceIdentity
+	
+=
+Promise<DaemonWarmupTriggerResult>
+
+A ready or warming startup result.
+
+	
+=
+
+The injected trigger implementation owns failure behavior.
+
+	
+=
+
+May initiate or observe daemon warmup.
+
+
+
+DaemonCommandDispatcherOptions.createDependencies
+callback port · p131-54
+same declaration + body
+Source & named types ↗	
+=
+stateDirectory: string
+	
+=
+ProgramDependencies
+
+Program dependencies for the supplied state directory.
+
+	
+=
+
+Caller-supplied callback; no error type is declared.
+
+	
+=
+
+Composition callback creates dependencies.
+
+
+
+DaemonCommandDispatcherOptions.daemonEnabled
+callback port · p131-55
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+boolean
+
+Whether daemon routing is enabled.
+
+	
+=
+
+Caller-supplied callback; no error type is declared.
+
+	
+=
+
+Reads an enablement decision.
+
+
+
+DaemonCommandDispatcherOptions.resolveWorkspaceRoot
+callback port · p131-56
+same declaration + body
+Source & named types ↗	
+=
+startDir: string
+dependencies: ProgramDependencies
+	
+=
+Promise<string>
+
+Resolved workspace root.
+
+	
+=
+
+Callback rejection is handled by the dispatcher’s cold-local fallback.
+
+	
+=
+
+Discovers workspace using supplied dependencies.
+
+
+
+DaemonCommandDispatcherOptions.runtimeFactory
+callback port · p131-57
+same declaration + body
+Source & named types ↗
+
+The default factory now passes policy slices to each consumer; injection signature is unchanged.
+
+	
+=
+identity: DaemonWorkspaceIdentity
+dependencies: ProgramDependencies
+policy: DaemonPolicy
+	
+=
+DaemonDispatchRuntime
+
+Registry/transport/observer/coordinator runtime for identity and policy.
+
+	
+=
+
+Callback/construction errors can propagate.
+
+	
+=
+
+Composes runtime objects.
+
+
+
+DaemonCommandDispatcherOptions.executorFactory
+callback port · p131-58
+same declaration + body
+Source & named types ↗	
+=
+dependencies: ProgramDependencies
+	
+=
+CommandExecutor
+
+Command executor from dependencies.
+
+	
+=
+
+Caller-supplied callback; no error type is declared.
+
+	
+=
+
+Creates local execution dependency.
+
+
+
+DaemonCommandDispatcherOptions.requestId
+callback port · p131-59
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+string
+
+Request identifier string.
+
+	
+=
+
+Caller-supplied callback; no error type is declared.
+
+	
+=
+
+Default implementation generates a UUID.
+
+
+
+DaemonCommandDispatcher.constructor
+constructor · p131-60
+same declaration + body
+Source & named types ↗
+
+Default runtime factory now supplies policy; construction signature stays.
+
+	
+=
+private readonly options: DaemonCommandDispatcherOptions
+	
+=
+DaemonCommandDispatcher
+
+Dispatcher with supplied or default routing factories.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Stores policy and composition callbacks.
+
+
+
+DaemonCommandDispatcher.execute
+method · p131-61
+same declaration + body
+Source & named types ↗
+
+Default consumers are now constructed with this dispatcher’s policy.
+
+	
+=
+request: CliExecutionRequest
+	
+=
+Promise<DispatchedCommandResult>
+
+Dispatched command result for cold, warm or fallback route.
+
+	
+=
+
+Existing route/transport/execution failures follow the existing controlled-result/fallback paths.
+
+	
+=
+
+Resolves workspace, may trigger independent warmup, then executes chosen route.
+
+
+Lifecycle & registry / apps/cli/src/daemon/daemon-controller.ts
+
+DaemonController.constructor
+constructor · p131-62
+signature edited
+Source & named types ↗
+
+Fourth options argument is required, with startup/shutdown policy; numeric stop/poll knobs removed.
+
+	
+B
+private readonly registry: DaemonRegistry
+private readonly transport: LocalDaemonTransport
+private readonly stateDirectory: string
+options: DaemonControllerOptions = {}
+Changes in DaemonControllerOptions:
+readonly stopTimeoutMs?: number;
+readonly pollIntervalMs?: number;
+policy: (not present)
+A
+private readonly registry: DaemonRegistry
+private readonly transport: LocalDaemonTransport
+private readonly stateDirectory: string
+options: DaemonControllerOptions
+Changes in DaemonControllerOptions:
+stopTimeoutMs: (removed)
+pollIntervalMs: (removed)
+readonly policy: Pick<DaemonPolicyValues, "startup" | "shutdown">;
+	
+=
+DaemonController
+
+Lifecycle controller for registry, transport and state directory.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Constructs observer and default process terminator.
+
+
+
+DaemonController.start
+method · p131-63
+body edited
+Source & named types ↗
+
+Forwards required startup/shutdown policy to coordinator.
+
+	
+=
+workspaceRoot: string
+	
+=
+Promise<DaemonStartResult>
+
+Ready/already-running start result.
+
+	
+=
+
+Missing launcher throws; coordinator/launch failures propagate.
+
+	
+=
+
+Creates coordinator and ensures daemon readiness.
+
+
+
+DaemonController.status
+method · p131-64
+same declaration + body
+Source & named types ↗
+
+Uses the injected transport’s purpose-selected deadline; status() itself selects no deadline.
+
+	
+=
+No arguments
+	
+=
+Promise<readonly RunningDaemonStatus[]>
+
+Observed running/starting/unresponsive statuses sorted by workspace root.
+
+	
+=
+
+Registry/dependency failures may propagate; exited/abandoned observations can be omitted.
+
+	
+=
+
+Reads and probes registry; can remove stale starting ownership and records.
+
+
+
+DaemonController.stop
+method · p131-65
+body edited
+Source & named types ↗
+
+All wait budgets come from shutdown policy; reserve formula is preserved.
+
+	
+=
+workspaceRoot: string
+	
+=
+Promise<DaemonStopResult>
+
+not-running, stopped or killed result for the workspace.
+
+	
+=
+
+Live unresponsive process or failure of authenticated termination can reject.
+
+	
+=
+
+Requests stop, waits within graceful reserve, can authenticate/escalate kill and remove matching registry record.
+
+
+Lifecycle & registry / apps/cli/src/daemon/daemon-lifetime.ts
+
+DaemonLifetime.constructor
+constructor · p131-66
+signature edited
+Source & named types ↗
+
+Second argument becomes { idleTimeoutMs } policy slice instead of a number.
+
+	
+B
+private readonly clock: Clock
+private readonly idleTimeoutMs: number
+private readonly onIdle: () => Promise<void>
+A
+private readonly clock: Clock
+policy: Pick<DaemonPolicyValues["shutdown"], "idleTimeoutMs">
+private readonly onIdle: () => Promise<void>
+	
+=
+DaemonLifetime
+
+Idle-lifetime tracker with a scheduled timer.
+
+	
+=
+
+Clock/scheduling dependencies can throw.
+
+	
+=
+
+Starts timing immediately and stores asynchronous onIdle callback.
+
+
+
+DaemonLifetime.navigationAccepted
+method · p131-67
+same declaration + body
+Source & named types ↗
+
+Timeout value now originates in policy.
+
+	
+=
+No arguments
+	
+=
+void
+
+void
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+If running, marks navigation active, resets deadline and reschedules idle check.
+
+
+
+DaemonLifetime.queueBecameIdle
+method · p131-68
+same declaration + body
+Source & named types ↗
+
+Idle duration now originates in policy; fire-and-forget callback behavior stays.
+
+	
+=
+No arguments
+	
+=
+void
+
+void
+
+	
+=
+
+Synchronous onIdle throw can escape; its returned Promise is neither awaited nor caught here.
+
+	
+=
+
+Marks navigation idle and invokes idle action if deadline has passed.
+
+
+
+DaemonLifetime.stop
+method · p131-69
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+void
+
+void
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Marks stopped and clears timer.
+
+
+Diagnostics / apps/cli/src/daemon/daemon-logger.ts
+
+DaemonLogStorage.prepare
+interface port · p131-70
+same declaration + body
+Source & named types ↗	
+=
+directory: string
+logPath: string
+	
+=
+Promise<void>
+
+Completion of log-directory/file preparation.
+
+	
+=
+
+Injected storage defines failures; logger drains catch storage errors.
+
+	
+=
+
+Prepares storage paths.
+
+
+
+DaemonLogStorage.size
+interface port · p131-71
+same declaration + body
+Source & named types ↗	
+=
+path: string
+	
+=
+Promise<number>
+
+Current log size in bytes.
+
+	
+=
+
+Injected storage defines failures.
+
+	
+=
+
+Reads file metadata.
+
+
+
+DaemonLogStorage.append
+interface port · p131-72
+same declaration + body
+Source & named types ↗	
+=
+path: string
+line: string
+	
+=
+Promise<void>
+
+Completion of appending one serialized line.
+
+	
+=
+
+Injected storage defines failures.
+
+	
+=
+
+Appends diagnostic data.
+
+
+
+DaemonLogStorage.move
+interface port · p131-73
+same declaration + body
+Source & named types ↗	
+=
+source: string
+destination: string
+	
+=
+Promise<void>
+
+Completion of log-file move.
+
+	
+=
+
+Injected storage defines failures.
+
+	
+=
+
+Renames source to destination for rotation.
+
+
+
+DaemonLogStorage.remove
+interface port · p131-74
+same declaration + body
+Source & named types ↗	
+=
+path: string
+	
+=
+Promise<void>
+
+Completion of removal.
+
+	
+=
+
+Injected storage defines failures.
+
+	
+=
+
+Removes rotated log.
+
+
+
+DaemonLogStorage.sync
+interface port · p131-75
+same declaration + body
+Source & named types ↗	
+=
+path: string
+	
+=
+Promise<void>
+
+Completion of log sync.
+
+	
+=
+
+Injected storage defines failures.
+
+	
+=
+
+Requests durable synchronization.
+
+
+
+DaemonLogger.constructor
+constructor · p131-76
+signature edited
+Source & named types ↗
+
+Required diagnostics policy replaces optional rotation/queue numbers and fixed backup count.
+
+	
+B
+private readonly identity: DaemonWorkspaceIdentity
+private readonly instanceId: string
+private readonly clock: DaemonClock
+options: DaemonLoggerOptions = {}
+Changes in DaemonLoggerOptions:
+readonly rotateBytes?: number;
+readonly maximumQueuedEvents?: number;
+policy: (not present)
+A
+private readonly identity: DaemonWorkspaceIdentity
+private readonly instanceId: string
+private readonly clock: DaemonClock
+options: DaemonLoggerOptions
+Changes in DaemonLoggerOptions:
+rotateBytes: (removed)
+maximumQueuedEvents: (removed)
+readonly policy: DaemonPolicyValues["diagnostics"];
+	
+=
+DaemonLogger
+
+Logger with bounded queue and rotation configuration.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Stores clock, identity, capacities and storage; no immediate log write.
+
+
+
+DaemonLogger.record
+method · p131-77
+same declaration + body
+Source & named types ↗
+
+Queue bound and downstream rotation now use diagnostics policy.
+
+	
+=
+event: DaemonDiagnosticEvent
+	
+=
+void
+
+void; closed, invalid, or excess-queue events may be dropped.
+
+	
+=
+
+record catches errors; diagnostic failures do not become command failure.
+
+	
+=
+
+Closes event schema, hashes request correlation, queues/drains writes or increments drop count.
+
+
+
+DaemonLogger.flush
+method · p131-78
+same declaration + body
+Source & named types ↗
+
+Rotation, backup and queue bounds now come from diagnostics policy.
+
+	
+=
+No arguments
+	
+=
+Promise<void>
+
+Completion of draining diagnostics; close first disables further events.
+
+	
+=
+
+Storage drain and final-sync errors are handled best-effort by the existing logger.
+
+	
+=
+
+Writes queued/drop events and syncs; may rotate files.
+
+
+
+DaemonLogger.close
+method · p131-79
+same declaration + body
+Source & named types ↗
+
+Rotation, backup and queue bounds now come from diagnostics policy.
+
+	
+=
+No arguments
+	
+=
+Promise<void>
+
+Completion of draining diagnostics; close first disables further events.
+
+	
+=
+
+Storage drain and final-sync errors are handled best-effort by the existing logger.
+
+	
+=
+
+Writes queued/drop events and syncs; may rotate files.
+
+
+
+DaemonLogger.static errorName
+method · p131-80
+same declaration + body
+Source & named types ↗	
+=
+error: unknown
+	
+=
+DaemonDiagnosticErrorName
+
+Allowed diagnostic error name or UnknownError.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Inspects the value’s name; no logging or I/O.
+
+
+Resources & workers / apps/cli/src/daemon/daemon-navigation-worker-protocol.ts
+
+DaemonNavigationWorkerProtocol.static request
+method · p131-81
+same declaration + body
+Source & named types ↗	
+=
+value: unknown
+	
+=
+DaemonNavigationWorkerRequest
+
+Validated worker request union.
+
+	
+=
+
+Throws Invalid daemon navigation worker request for malformed shape.
+
+	
+=
+
+Checks fields without transport or state mutation.
+
+
+
+DaemonNavigationWorkerProtocol.static response
+method · p131-82
+signature edited
+Source & named types ↗
+
+Adds required maximumChunkRawBytes; old chunk bound was fixed at 64 KiB.
+
+	
+B
+value: unknown
+A
+value: unknown
+maximumChunkRawBytes: number
+	
+=
+DaemonNavigationWorkerResponse
+
+Validated worker response union.
+
+	
+=
+
+Throws Invalid daemon navigation worker response for malformed shape or oversized output chunk.
+
+	
+=
+
+Checks fields; returns the validated value.
+
+
+
+DaemonNavigationWorkerProtocol.constructor
+implicit constructor · p131-83
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+DaemonNavigationWorkerProtocol
+
+A DaemonNavigationWorkerProtocol instance.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Implicit constructor initializes instance fields; static-only utility instances add no operation.
+
+
+Resources & workers / apps/cli/src/daemon/daemon-navigation-worker.ts
+
+DaemonNavigationWorkerExitedError.constructor
+constructor · p131-84
+same declaration + body
+Source & named types ↗	
+=
+readonly exit: DaemonNavigationWorkerExit
+message = `Daemon navigation worker exited (${exit.cause})`
+	
+=
+DaemonNavigationWorkerExitedError
+
+An error object carrying the declared message/fields/cause.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Constructs the error; does not itself throw it.
+
+
+
+DaemonNavigationWorker.start
+interface port · p131-85
+same declaration + body
+Source & named types ↗
+
+Response chunk validation now uses parsed policy in the Node implementation.
+
+	
+=
+workspaceRoot: string
+	
+=
+Promise<DaemonNavigationWorkerResponse>
+
+Worker readiness response.
+
+	
+=
+
+Worker exit, communication/protocol or remote failures can reject or produce a failure response.
+
+	
+=
+
+Sends initialize message scoped to the generation.
+
+
+
+DaemonNavigationWorker.execute
+interface port · p131-86
+same declaration + body
+Source & named types ↗
+
+Parent validates received output chunk size from policy.
+
+	
+=
+requestId: string
+request: CliExecutionRequest
+output: { append(record: CommandOutputRecord): Promise<void> }
+	
+=
+Promise<DaemonNavigationWorkerResponse>
+
+Worker response for the request.
+
+	
+=
+
+Worker/protocol and output-consumer failures use existing response/rejection paths.
+
+	
+=
+
+Sends execute; streams records through the supplied append callback with acknowledgements.
+
+
+
+DaemonNavigationWorker.releaseTransientResources
+interface port · p131-87
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+Promise<DaemonNavigationWorkerResponse>
+
+Worker response after transient release.
+
+	
+=
+
+Worker/communication failures can reject.
+
+	
+=
+
+Sends generation-scoped release request with a new operation sequence.
+
+
+
+DaemonNavigationWorker.drainAndClose
+interface port · p131-88
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+Promise<void>
+
+Completion after close acknowledgement and worker exit; already exited is a no-op.
+
+	
+=
+
+Close/communication failures can reject.
+
+	
+=
+
+Sends close, waits for worker termination.
+
+
+
+DaemonNavigationWorker.terminate
+interface port · p131-89
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+Promise<void>
+
+Completion after forced worker termination; already exited is a no-op.
+
+	
+=
+
+Worker termination can reject.
+
+	
+=
+
+Terminates worker and awaits the exited promise.
+
+
+
+NodeDaemonNavigationWorker.constructor
+constructor · p131-90
+body edited
+Source & named types ↗
+
+Parent obtains maximumChunkRawBytes through DaemonPolicy.fromSerialized.
+
+	
+=
+options: NodeDaemonNavigationWorkerOptions
+	
+=
+NodeDaemonNavigationWorker
+
+Live worker adapter with generation, message listeners and exited promise.
+
+	
+B
+
+Worker construction may throw; parent does not parse serialized policy here (worker entry already does).
+
+A
+
+Malformed serialized policy now throws before worker creation; Worker construction errors also propagate.
+
+	
+B
+
+Spawns thread and attaches message/error/exit listeners; uses fixed 64 KiB response validation.
+
+A
+
+Parses policy, spawns thread, attaches message/error/exit listeners.
+
+
+
+NodeDaemonNavigationWorker.start
+method · p131-91
+same declaration + body
+Source & named types ↗
+
+Response chunk validation now uses parsed policy in the Node implementation.
+
+	
+=
+workspaceRoot: string
+	
+=
+Promise<DaemonNavigationWorkerResponse>
+
+Worker readiness response.
+
+	
+=
+
+Worker exit, communication/protocol or remote failures can reject or produce a failure response.
+
+	
+=
+
+Sends initialize message scoped to the generation.
+
+
+
+NodeDaemonNavigationWorker.execute
+method · p131-92
+same declaration + body
+Source & named types ↗
+
+Parent validates received output chunk size from policy.
+
+	
+=
+requestId: string
+request: CliExecutionRequest
+output: { append(record: CommandOutputRecord): Promise<void> }
+	
+=
+Promise<DaemonNavigationWorkerResponse>
+
+Worker response for the request.
+
+	
+=
+
+Worker/protocol and output-consumer failures use existing response/rejection paths.
+
+	
+=
+
+Sends execute; streams records through the supplied append callback with acknowledgements.
+
+
+
+NodeDaemonNavigationWorker.releaseTransientResources
+method · p131-93
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+Promise<DaemonNavigationWorkerResponse>
+
+Worker response after transient release.
+
+	
+=
+
+Worker/communication failures can reject.
+
+	
+=
+
+Sends generation-scoped release request with a new operation sequence.
+
+
+
+NodeDaemonNavigationWorker.drainAndClose
+method · p131-94
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+Promise<void>
+
+Completion after close acknowledgement and worker exit; already exited is a no-op.
+
+	
+=
+
+Close/communication failures can reject.
+
+	
+=
+
+Sends close, waits for worker termination.
+
+
+
+NodeDaemonNavigationWorker.terminate
+method · p131-95
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+Promise<void>
+
+Completion after forced worker termination; already exited is a no-op.
+
+	
+=
+
+Worker termination can reject.
+
+	
+=
+
+Terminates worker and awaits the exited promise.
+
+
+Lifecycle & registry / apps/cli/src/daemon/daemon-process-launcher.ts
+
+DaemonProcess.terminate
+interface port · p131-96
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+Promise<void>
+
+Completion of process termination.
+
+	
+=
+
+The injected process handle owns failure behavior.
+
+	
+=
+
+Terminates the associated process.
+
+
+
+DaemonProcessTerminator.isAlive
+interface port · p131-97
+same declaration + body
+Source & named types ↗	
+=
+pid: number
+	
+=
+boolean
+
+Whether a positive integer PID is alive; EPERM counts as alive.
+
+	
+=
+
+The Node implementation converts probe failure to boolean.
+
+	
+=
+
+Probes process with signal 0.
+
+
+
+DaemonProcessTerminator.terminate
+interface port · p131-98
+same declaration + body
+Source & named types ↗
+
+Signal wait and polling values now come from shutdown policy.
+
+	
+=
+pid: number
+	
+=
+Promise<void>
+
+Completion after process exit; absent process is a no-op.
+
+	
+=
+
+Refuses current PID; signals may fail; surviving both waits raises DaemonProcessTerminationError.
+
+	
+=
+
+Sends SIGTERM, waits, then SIGKILL and waits again.
+
+
+
+DaemonProcessLauncher.launch
+interface port · p131-99
+same declaration + body
+Source & named types ↗
+
+Default terminator consumes the launcher policy’s shutdown section.
+
+	
+=
+identity: DaemonWorkspaceIdentity
+instanceId: string
+processToken: string
+	
+=
+Promise<DaemonProcess>
+
+Detached child handle with PID, exited promise and terminate method.
+
+	
+=
+
+Directory creation, configuration encoding or spawn failure can fail.
+
+	
+=
+
+Creates identity directory and spawns daemon entry with serialized policy.
+
+
+
+NodeDaemonProcessTerminator.constructor
+constructor · p131-100
+signature edited
+Source & named types ↗
+
+Required shutdown slice replaces two defaulted numeric arguments.
+
+	
+B
+private readonly gracefulTimeoutMs = 500
+private readonly pollIntervalMs = 20
+A
+policy: DaemonPolicyValues["shutdown"]
+	
+=
+NodeDaemonProcessTerminator
+
+Process terminator with independent signal and polling intervals.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Stores signal and polling durations.
+
+
+
+NodeDaemonProcessTerminator.isAlive
+method · p131-101
+same declaration + body
+Source & named types ↗	
+=
+pid: number
+	
+=
+boolean
+
+Whether a positive integer PID is alive; EPERM counts as alive.
+
+	
+=
+
+The Node implementation converts probe failure to boolean.
+
+	
+=
+
+Probes process with signal 0.
+
+
+
+NodeDaemonProcessTerminator.terminate
+method · p131-102
+same declaration + body
+Source & named types ↗
+
+Signal wait and polling values now come from shutdown policy.
+
+	
+=
+pid: number
+	
+=
+Promise<void>
+
+Completion after process exit; absent process is a no-op.
+
+	
+=
+
+Refuses current PID; signals may fail; surviving both waits raises DaemonProcessTerminationError.
+
+	
+=
+
+Sends SIGTERM, waits, then SIGKILL and waits again.
+
+
+
+NodeDaemonProcessLauncher.constructor
+constructor · p131-103
+signature edited
+Source & named types ↗
+
+Default terminator now uses policy.values.shutdown.
+
+	
+B
+readonly symnavVersion: string
+readonly policy: DaemonPolicy
+terminator: DaemonProcessTerminator = new NodeDaemonProcessTerminator()
+A
+readonly symnavVersion: string
+readonly policy: DaemonPolicy
+terminator: DaemonProcessTerminator = new NodeDaemonProcessTerminator(policy.values.shutdown)
+	
+=
+NodeDaemonProcessLauncher
+
+Launcher bound to version, snapshot and terminator.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Creates a default terminator if absent.
+
+
+
+NodeDaemonProcessLauncher.memoryCapBytes
+accessor · p131-104
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+number
+
+hardProcessRssBytes from this policy.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Reads immutable snapshot.
+
+
+
+NodeDaemonProcessLauncher.launch
+method · p131-105
+same declaration + body
+Source & named types ↗
+
+Default terminator consumes the launcher policy’s shutdown section.
+
+	
+=
+identity: DaemonWorkspaceIdentity
+instanceId: string
+processToken: string
+	
+=
+Promise<DaemonProcess>
+
+Detached child handle with PID, exited promise and terminate method.
+
+	
+=
+
+Directory creation, configuration encoding or spawn failure can fail.
+
+	
+=
+
+Creates identity directory and spawns daemon entry with serialized policy.
+
+
+
+DaemonProcessConfigurationParser.static parse
+method · p131-106
+same declaration + body
+Source & named types ↗	
+=
+encoded: string | undefined
+	
+=
+DaemonProcessConfiguration
+
+Validated decoded daemon-process configuration.
+
+	
+=
+
+Missing input, malformed JSON or invalid configuration throws.
+
+	
+=
+
+Decodes base64url and checks configuration; no process launch.
+
+
+
+DaemonProcessConfigurationParser.constructor
+implicit constructor · p131-107
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+DaemonProcessConfigurationParser
+
+A DaemonProcessConfigurationParser instance.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Implicit constructor initializes instance fields; static-only utility instances add no operation.
+
+
+Lifecycle & registry / apps/cli/src/daemon/daemon-registry.ts
+
+DaemonStartupLease.transferToDaemon
+interface port · p131-108
+same declaration + body
+Source & named types ↗	
+=
+pid: number
+processToken: string
+	
+=
+boolean
+
+Whether ownership successfully transferred to the daemon.
+
+	
+=
+
+Registry/storage errors can propagate from the lease implementation.
+
+	
+=
+
+Changes the startup owner using PID/token fencing.
+
+
+
+DaemonStartupLease.heartbeat
+interface port · p131-109
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+boolean
+
+Whether the observed owner heartbeat was refreshed.
+
+	
+=
+
+Registry/storage errors can propagate.
+
+	
+=
+
+Refreshes heartbeat and revision, retaining ownership fences.
+
+
+
+DaemonStartupLease.release
+interface port · p131-110
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+boolean
+
+Whether the lease owner released its lock.
+
+	
+=
+
+Registry/storage errors can propagate.
+
+	
+=
+
+Removes/renames only a matching ownership lock.
+
+
+
+DaemonRegistry.constructor
+constructor · p131-111
+signature edited
+Source & named types ↗
+
+Required startup policy inserted before optional platform/rename arguments.
+
+	
+B
+private readonly registryDirectory: string
+private readonly platform = process.platform
+private readonly renamePath: typeof renameSync = renameSync
+A
+private readonly registryDirectory: string
+startupPolicy: DaemonPolicyValues["startup"]
+platform: NodeJS.Platform = process.platform
+renamePath: typeof renameSync = renameSync
+	
+=
+DaemonRegistry
+
+Registry scoped to one registry directory and platform.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Stores startup policy and rename implementation.
+
+
+
+DaemonRegistry.read
+method · p131-112
+same declaration + body
+Source & named types ↗	
+=
+identity: DaemonWorkspaceIdentity
+	
+=
+DaemonRecord | undefined
+
+Current-format matching daemon record or undefined.
+
+	
+=
+
+Missing/invalid record handling is retained; other filesystem failures can propagate.
+
+	
+=
+
+Reads stored registry records and validates identity/current schema.
+
+
+
+DaemonRegistry.readInstance
+method · p131-113
+same declaration + body
+Source & named types ↗	
+=
+identity: DaemonWorkspaceIdentity
+instanceId: string
+	
+=
+DaemonRecord | undefined
+
+Current-format matching daemon record or undefined.
+
+	
+=
+
+Missing/invalid record handling is retained; other filesystem failures can propagate.
+
+	
+=
+
+Reads stored registry records and validates identity/current schema.
+
+
+
+DaemonRegistry.readStored
+method · p131-114
+same declaration + body
+Source & named types ↗	
+=
+identity: DaemonWorkspaceIdentity
+	
+=
+DaemonRecord | undefined
+
+Stored matching record or undefined, including older recognized formats.
+
+	
+=
+
+Missing/invalid record handling is retained; other filesystem failures can propagate.
+
+	
+=
+
+Reads stored registry without the current-format filter used by read/readInstance.
+
+
+
+DaemonRegistry.readStoredInstance
+method · p131-115
+same declaration + body
+Source & named types ↗	
+=
+identity: DaemonWorkspaceIdentity
+instanceId: string
+	
+=
+DaemonRecord | undefined
+
+Stored matching record or undefined, including older recognized formats.
+
+	
+=
+
+Missing/invalid record handling is retained; other filesystem failures can propagate.
+
+	
+=
+
+Reads stored registry without the current-format filter used by read/readInstance.
+
+
+
+DaemonRegistry.write
+method · p131-116
+same declaration + body
+Source & named types ↗	
+=
+record: DaemonRecord
+	
+=
+void
+
+void
+
+	
+=
+
+Filesystem failures can propagate.
+
+	
+=
+
+Writes a private temporary JSON record then atomically renames it.
+
+
+
+DaemonRegistry.writeIfStartupOwner
+method · p131-117
+same declaration + body
+Source & named types ↗
+
+Private mutation acquisition now uses policy coordination grace.
+
+	
+=
+identity: DaemonWorkspaceIdentity
+record: DaemonRecord
+	
+=
+boolean
+
+Whether publication kept the expected startup owner.
+
+	
+=
+
+Filesystem/owner replacement errors can propagate.
+
+	
+=
+
+Writes guarded starting/ready records; rechecks ownership and removes stale publication where implemented.
+
+
+
+DaemonRegistry.writeStartingIfStartupOwner
+method · p131-118
+same declaration + body
+Source & named types ↗
+
+Private mutation acquisition now uses policy coordination grace.
+
+	
+=
+identity: DaemonWorkspaceIdentity
+record: DaemonRecord
+	
+=
+boolean
+
+Whether publication kept the expected startup owner.
+
+	
+=
+
+Filesystem/owner replacement errors can propagate.
+
+	
+=
+
+Writes guarded starting/ready records; rechecks ownership and removes stale publication where implemented.
+
+
+
+DaemonRegistry.armStartingProcessLaunch
+method · p131-119
+same declaration + body
+Source & named types ↗
+
+Private mutation grace now comes from startup policy.
+
+	
+=
+identity: DaemonWorkspaceIdentity
+record: DaemonRecord
+	
+=
+boolean
+
+Whether a zero-PID starting record was armed for launch.
+
+	
+=
+
+Filesystem/owner replacement errors can propagate.
+
+	
+=
+
+Uses guarded startup mutation to publish a claimed starting record.
+
+
+
+DaemonRegistry.acquireStartup
+method · p131-120
+same declaration + body
+Source & named types ↗
+
+Mutation-owner protection uses policy grace; overloads remain.
+
+	
+=
+acquireStartup( identity: DaemonWorkspaceIdentity, candidate: Omit<DaemonStartupOwner, "acquiredAt" | "revision">, ): StartupLease | undefined
+acquireStartup(identity: DaemonWorkspaceIdentity, instanceId: string): StartupLease | undefined
+	
+=
+StartupLease | undefined
+
+Startup lease or undefined when another owner wins.
+
+	
+=
+
+Lock/rename/write failures can propagate.
+
+	
+=
+
+Creates or recovers startup ownership; supports both candidate-owner and legacy instanceId overloads.
+
+
+
+DaemonRegistry.claimStartupForDaemon
+method · p131-121
+same declaration + body
+Source & named types ↗
+
+Mutation grace uses policy.
+
+	
+=
+identity: DaemonWorkspaceIdentity
+instanceId: string
+processToken: string
+pid: number
+	
+=
+DaemonStartupLease | undefined
+
+A daemon-owned lease, or undefined for invalid PID/identity/token/owner mismatch.
+
+	
+=
+
+Filesystem mutation errors can propagate.
+
+	
+=
+
+Atomically adopts launcher ownership for a daemon and refreshes heartbeat/revision.
+
+
+
+DaemonRegistry.transferStartupToDaemon
+method · p131-122
+same declaration + body
+Source & named types ↗
+
+Mutation grace uses policy.
+
+	
+=
+identity: DaemonWorkspaceIdentity
+launcherOwner: StartupOwner
+pid: number
+processToken: string
+	
+=
+boolean
+
+Whether matching launcher ownership became daemon ownership.
+
+	
+=
+
+Filesystem mutation errors can propagate.
+
+	
+=
+
+Replaces matching owner with daemon PID and fresh revision/heartbeat.
+
+
+
+DaemonRegistry.heartbeatStartupOwner
+method · p131-123
+same declaration + body
+Source & named types ↗
+
+Mutation grace uses policy.
+
+	
+=
+identity: DaemonWorkspaceIdentity
+owner: StartupOwner
+	
+=
+StartupOwner | undefined
+
+Updated owner, or undefined if ownership was lost.
+
+	
+=
+
+Filesystem mutation errors can propagate.
+
+	
+=
+
+Writes refreshed heartbeat and revision behind mutation fencing.
+
+
+
+DaemonRegistry.refreshStartupOwner
+method · p131-124
+same declaration + body
+Source & named types ↗
+
+Mutation grace uses policy.
+
+	
+=
+identity: DaemonWorkspaceIdentity
+instanceId: string
+	
+=
+boolean
+
+Whether the instance’s current owner was refreshed.
+
+	
+=
+
+Filesystem mutation errors can propagate.
+
+	
+=
+
+Reads owner then heartbeats only a matching instance.
+
+
+
+DaemonRegistry.startupOwnerIsWithinGrace
+method · p131-125
+signature edited
+Source & named types ↗
+
+Default grace now comes from startupPolicy.coordinationGraceMs; explicit numeric override remains.
+
+	
+B
+owner: StartupOwner
+graceMs = DAEMON_STARTUP_TIMEOUT_MS
+now = Date.now()
+A
+owner: StartupOwner
+graceMs = this.startupPolicy.coordinationGraceMs
+now = Date.now()
+	
+=
+boolean
+
+now − heartbeatAt ≤ graceMs.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Reads supplied timestamps; does not refresh ownership.
+
+
+
+DaemonRegistry.startupOwner
+method · p131-126
+same declaration + body
+Source & named types ↗	
+=
+identity: DaemonWorkspaceIdentity
+	
+=
+StartupOwner | undefined
+
+Valid startup-owner record, or undefined.
+
+	
+=
+
+ENOENT and SyntaxError yield undefined; other errors rethrow.
+
+	
+=
+
+Reads/parses startup-owner file.
+
+
+
+DaemonRegistry.isStartupOwner
+method · p131-127
+same declaration + body
+Source & named types ↗	
+=
+identity: DaemonWorkspaceIdentity
+instanceId: string
+	
+=
+boolean
+
+Whether instance or authenticated process coordinates match current ownership.
+
+	
+=
+
+Registry/filesystem errors can propagate.
+
+	
+=
+
+Reads owner and, for process matching, stored record; no mutation.
+
+
+
+DaemonRegistry.startupOwnerMatchesProcess
+method · p131-128
+same declaration + body
+Source & named types ↗	
+=
+identity: DaemonWorkspaceIdentity
+record: DaemonRecord
+	
+=
+boolean
+
+Whether instance or authenticated process coordinates match current ownership.
+
+	
+=
+
+Registry/filesystem errors can propagate.
+
+	
+=
+
+Reads owner and, for process matching, stored record; no mutation.
+
+
+
+DaemonRegistry.removeStartupLockIfProcess
+method · p131-129
+same declaration + body
+Source & named types ↗
+
+Owner-based private mutation grace now uses policy.
+
+	
+=
+identity: DaemonWorkspaceIdentity
+record: DaemonRecord
+	
+=
+boolean
+
+Whether a matching startup lock was released.
+
+	
+=
+
+Filesystem/rename errors can propagate; matching already-released locks are recognized.
+
+	
+=
+
+Uses process/instance/owner fences and renames the lock to its released path.
+
+
+
+DaemonRegistry.removeStartupLockIfInstance
+method · p131-130
+same declaration + body
+Source & named types ↗
+
+Owner-based private mutation grace now uses policy.
+
+	
+=
+identity: DaemonWorkspaceIdentity
+instanceId: string
+	
+=
+boolean
+
+Whether a matching startup lock was released.
+
+	
+=
+
+Filesystem/rename errors can propagate; matching already-released locks are recognized.
+
+	
+=
+
+Uses process/instance/owner fences and renames the lock to its released path.
+
+
+
+DaemonRegistry.removeStartupLockIfOwner
+method · p131-131
+same declaration + body
+Source & named types ↗
+
+Owner-based private mutation grace now uses policy.
+
+	
+=
+identity: DaemonWorkspaceIdentity
+observedOwner: StartupOwner
+	
+=
+boolean
+
+Whether a matching startup lock was released.
+
+	
+=
+
+Filesystem/rename errors can propagate; matching already-released locks are recognized.
+
+	
+=
+
+Uses process/instance/owner fences and renames the lock to its released path.
+
+
+
+DaemonRegistry.removeIfInstance
+method · p131-132
+same declaration + body
+Source & named types ↗	
+=
+identity: DaemonWorkspaceIdentity
+instanceId: string
+	
+=
+void
+
+void
+
+	
+=
+
+Filesystem failures can propagate.
+
+	
+=
+
+Removes the named instance’s record with force.
+
+
+
+DaemonRegistry.removeIfProcess
+method · p131-133
+same declaration + body
+Source & named types ↗	
+=
+identity: DaemonWorkspaceIdentity
+instanceId: string
+processToken: string
+	
+=
+boolean
+
+Whether a token-matching record was removed.
+
+	
+=
+
+Filesystem failures can propagate.
+
+	
+=
+
+Checks stored process token before removal.
+
+
+
+DaemonRegistry.list
+method · p131-134
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+readonly DaemonRecord[]
+
+Current-format records whose file locations match identity.
+
+	
+=
+
+Registry/file-reading failures can propagate.
+
+	
+=
+
+Scans record paths, filters parsed records.
+
+
+
+DaemonRegistry.isStartupMutationOwner
+method · p131-135
+same declaration + body
+Source & named types ↗	
+=
+identity: DaemonWorkspaceIdentity
+owner: StartupMutationOwner
+	
+=
+boolean
+
+Whether a mutation owner still matches the stored token/revision.
+
+	
+=
+
+Registry/filesystem errors can propagate.
+
+	
+=
+
+Reads mutation ownership.
+
+
+
+DaemonRegistry.releaseStartupMutation
+method · p131-136
+same declaration + body
+Source & named types ↗	
+=
+identity: DaemonWorkspaceIdentity
+owner: StartupMutationOwner
+	
+=
+void
+
+void; a non-owner does nothing.
+
+	
+=
+
+Ignores ENOENT; other rename/removal failures rethrow.
+
+	
+=
+
+Renames owned mutation directory and removes it after rechecking ownership.
+
+
+Resources & workers / apps/cli/src/daemon/daemon-resource-monitor.ts
+
+DaemonResourcePolicy.static fromSystemMemory
+method · p131-137
+removed
+Source & named types ↗
+
+Removed public factory. Existing @symnav/daemon DaemonPolicy.fromSystemMemory({totalBytes, constrainedBytes?}) supplies resources instead.
+
+	
+B
+totalMemoryBytes: number
+constrainedMemoryBytes?: number
+A
+Absent from this side.
+	
+B
+DaemonResourcePolicy
+
+A CLI-specific derived resource-policy record.
+
+A
+Absent from this side.
+	
+B
+
+No explicit failure branch for typed input.
+
+A
+Absent from this side.
+	
+B
+
+Computes bounded process/worker memory thresholds.
+
+A
+Absent from this side.
+
+
+DaemonResourceSupervisorOptions.now
+callback port · p131-138
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+number
+
+Current time, resident-memory bytes or retained-spool bytes, according to the callback.
+
+	
+=
+
+Caller-supplied callback; no error type is declared.
+
+	
+=
+
+Samples the injected clock or resource measurement.
+
+
+
+DaemonResourceSupervisorOptions.residentMemoryBytes
+callback port · p131-139
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+number
+
+Current time, resident-memory bytes or retained-spool bytes, according to the callback.
+
+	
+=
+
+Caller-supplied callback; no error type is declared.
+
+	
+=
+
+Samples the injected clock or resource measurement.
+
+
+
+DaemonResourceSupervisorOptions.spoolBytes
+callback port · p131-140
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+number
+
+Current time, resident-memory bytes or retained-spool bytes, according to the callback.
+
+	
+=
+
+Caller-supplied callback; no error type is declared.
+
+	
+=
+
+Samples the injected clock or resource measurement.
+
+
+
+DaemonResourceSupervisorOptions.scheduleAtTurnBoundary
+callback port · p131-141
+same declaration + body
+Source & named types ↗	
+=
+operation: () => Promise<void>
+	
+=
+Promise<void>
+
+Completion of the supplied boundary operation.
+
+	
+=
+
+Scheduling or operation rejection can propagate.
+
+	
+=
+
+Schedules resource work at a workspace turn boundary.
+
+
+
+DaemonResourceSupervisorOptions.releaseTransientResources
+callback port · p131-142
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+Promise<void>
+
+Completion of transient-resource release.
+
+	
+=
+
+Release rejection is handled by the supervisor’s retryable shed path.
+
+	
+=
+
+Asks the host to shed transient state.
+
+
+
+DaemonResourceSupervisorOptions.replaceWorker
+callback port · p131-143
+same declaration + body
+Source & named types ↗	
+=
+cause: DaemonWorkerReplacementCause
+	
+=
+Promise<number>
+
+The new worker generation number.
+
+	
+=
+
+Replacement rejection can propagate.
+
+	
+=
+
+Replaces a worker for the supplied pressure/exit cause.
+
+
+
+DaemonResourceSupervisorOptions.drain
+callback port · p131-144
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+Promise<void>
+
+Completion of resource drain.
+
+	
+=
+
+Drain rejection can propagate.
+
+	
+=
+
+Asks the daemon to stop admission and drain.
+
+
+
+DaemonResourceSupervisor.constructor
+constructor · p131-145
+named type edited
+Source & named types ↗
+
+Options.policy becomes a resources slice; optional intervalMs disappears.
+
+	
+B
+private readonly options: DaemonResourceSupervisorOptions
+Changes in DaemonResourceSupervisorOptions:
+readonly policy: DaemonResourcePolicy;
+readonly intervalMs?: number;
+A
+private readonly options: DaemonResourceSupervisorOptions
+Changes in DaemonResourceSupervisorOptions:
+readonly policy: DaemonPolicyValues["resources"];
+intervalMs: (removed)
+
+Named input/output type changes. Open types beside source.
+
+	
+=
+DaemonResourceSupervisor
+
+Supervisor initialized with worker generation and measurement callbacks.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Stores policy and callbacks; does not start its interval yet.
+
+
+
+DaemonResourceSupervisor.snapshot
+accessor · p131-146
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+DaemonResourceSnapshot
+
+Frozen usage/state snapshot with generation and replacement count.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Copies current counters; reading does not sample memory.
+
+
+
+DaemonResourceSupervisor.start
+method · p131-147
+body edited
+Source & named types ↗
+
+Uses policy.supervisionIntervalMs instead of optional intervalMs/250 ms constant.
+
+	
+=
+No arguments
+	
+=
+void
+
+void; repeated start or stopped supervisor is a no-op.
+
+	
+=
+
+Timer-triggered sample rejections are caught.
+
+	
+=
+
+Starts an unref’ed periodic resource sample.
+
+
+
+DaemonResourceSupervisor.sample
+method · p131-148
+same declaration + body
+Source & named types ↗
+
+Thresholds, replacement window and replacement count all come from resources policy.
+
+	
+=
+reason: "warmup" | "interval" | "admission" | "turn-complete"
+	
+=
+Promise<void>
+
+Completion of one resource sample.
+
+	
+=
+
+Shed/replace/drain callback failures follow existing recovery/rejection paths.
+
+	
+=
+
+Measures RSS/spool; pauses admission, sheds once per hysteresis cycle or replaces/drains. sampleAtTurnBoundary runs boundary work inline.
+
+
+
+DaemonResourceSupervisor.sampleAtTurnBoundary
+method · p131-149
+same declaration + body
+Source & named types ↗
+
+Thresholds, replacement window and replacement count all come from resources policy.
+
+	
+=
+No arguments
+	
+=
+Promise<void>
+
+Completion of one resource sample.
+
+	
+=
+
+Shed/replace/drain callback failures follow existing recovery/rejection paths.
+
+	
+=
+
+Measures RSS/spool; pauses admission, sheds once per hysteresis cycle or replaces/drains. sampleAtTurnBoundary runs boundary work inline.
+
+
+
+DaemonResourceSupervisor.workerHeapReported
+method · p131-150
+same declaration + body
+Source & named types ↗	
+=
+generation: number
+usedBytes: number
+limitBytes: number
+peakUsedBytes = usedBytes
+	
+=
+void
+
+void; stale generations are ignored.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Updates current and peak worker heap counters.
+
+
+
+DaemonResourceSupervisor.workerExited
+method · p131-151
+same declaration + body
+Source & named types ↗
+
+Replacement circuit uses policy window and count.
+
+	
+=
+exit: import("./daemon-navigation-worker.js").DaemonNavigationWorkerExit
+	
+=
+(inferred; see source)
+
+Completion of replacement for current generation; stopped/stale exits do nothing.
+
+	
+=
+
+Replacement or drain failures can reject.
+
+	
+=
+
+Maps OOM vs other exit to replacement cause.
+
+
+
+DaemonResourceSupervisor.stop
+method · p131-152
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+void
+
+void
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Clears sample timer and marks state stopped.
+
+
+Transport & codecs / apps/cli/src/daemon/daemon-result-chunk-codec.ts
+
+DaemonResultChunkCodec.static encode
+method · p131-153
+signature edited
+Source & named types ↗
+
+Adds maximumChunkRawBytes argument; removes fixed 64 KiB import.
+
+	
+B
+chunk: DaemonResultChunk
+A
+chunk: DaemonResultChunk
+maximumChunkRawBytes: number
+	
+=
+Buffer
+
+Length-prefixed binary frame with identity header and SHA-256 payload hash.
+
+	
+=
+
+Invalid chunk shape/identity/sequence/stream or cap violation throws.
+
+	
+=
+
+Allocates encoded buffer; no socket write.
+
+
+
+DaemonResultChunkCodec.static decode
+method · p131-154
+signature edited
+Source & named types ↗
+
+Adds maximumChunkRawBytes for header and chunk validation.
+
+	
+B
+payload: Buffer
+A
+payload: Buffer
+maximumChunkRawBytes: number
+	
+=
+DaemonResultChunk
+
+Validated result chunk with copied payload bytes.
+
+	
+=
+
+Truncated/malformed/invalid header, hash mismatch or invalid chunk throws.
+
+	
+=
+
+Parses metadata and verifies payload length/hash.
+
+
+
+DaemonResultChunkCodec.constructor
+implicit constructor · p131-155
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+DaemonResultChunkCodec
+
+A DaemonResultChunkCodec instance.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Implicit constructor initializes instance fields; static-only utility instances add no operation.
+
+
+
+DaemonTransferFrameDecoder.constructor
+constructor · p131-156
+signature edited
+Source & named types ↗
+
+Adds required raw chunk maximum beside control-frame maximum.
+
+	
+B
+private readonly maximumControlFrameBytes: number
+A
+private readonly maximumControlFrameBytes: number
+private readonly maximumChunkRawBytes: number
+	
+=
+DaemonTransferFrameDecoder
+
+Incremental transfer-frame decoder.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Initializes empty buffered bytes and stores frame capacities.
+
+
+
+DaemonTransferFrameDecoder.append
+method · p131-157
+body edited
+Source & named types ↗
+
+Binary capacity is control maximum + configured chunk maximum.
+
+	
+=
+bytes: Buffer
+	
+=
+readonly (unknown | DaemonResultChunk)[]
+
+All complete JSON/control or binary chunk frames available so far.
+
+	
+=
+
+Oversized frame, malformed JSON or chunk decoder failure throws.
+
+	
+=
+
+Buffers partial bytes and consumes full frames.
+
+
+
+DaemonTransferFrameDecoder.assertComplete
+method · p131-158
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+void
+
+void when no partial frame remains.
+
+	
+=
+
+Throws when buffered bytes remain at end of transfer.
+
+	
+=
+
+Reads decoder remainder.
+
+
+Lifecycle & registry / apps/cli/src/daemon/daemon-startup-coordinator.ts
+
+DaemonStartupCoordinator.constructor
+constructor · p131-159
+signature edited
+Source & named types ↗
+
+Options required; startup/termination/poll numeric options removed. The old startupTimeoutMs field was never read.
+
+	
+B
+private readonly registry: DaemonRegistry
+private readonly launcher: DaemonProcessLauncher
+private readonly transport: LocalDaemonTransport
+options: DaemonStartupCoordinatorOptions = {}
+Changes in DaemonStartupCoordinatorOptions:
+readonly startupTimeoutMs?: number;
+readonly terminationTimeoutMs?: number;
+readonly pollIntervalMs?: number;
+policy: (not present)
+A
+private readonly registry: DaemonRegistry
+private readonly launcher: DaemonProcessLauncher
+private readonly transport: LocalDaemonTransport
+options: DaemonStartupCoordinatorOptions
+Changes in DaemonStartupCoordinatorOptions:
+startupTimeoutMs: (removed)
+terminationTimeoutMs: (removed)
+pollIntervalMs: (removed)
+readonly policy: Pick<DaemonPolicyValues, "startup" | "shutdown">;
+	
+=
+DaemonStartupCoordinator
+
+Coordinator with registry, launcher, transport and observation dependencies.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Stores policy timings/retry count and constructs default terminator/observer.
+
+
+
+DaemonStartupCoordinator.ensureRunning
+method · p131-160
+body edited
+Source & named types ↗
+
+General loop consumes childFailureRetryLimit; previous behavior allowed one retry.
+
+	
+=
+identity: DaemonWorkspaceIdentity
+	
+=
+Promise<DaemonStartResult>
+
+Ready/already-running result after triggering and observing startup.
+
+	
+=
+
+Retries only child-exit or lost-warmup errors; other failures and exhausted budget rethrow.
+
+	
+=
+
+Can acquire ownership, replace old daemon, launch a child and wait for readiness.
+
+
+
+DaemonStartupCoordinator.trigger
+method · p131-161
+same declaration + body
+Source & named types ↗
+
+Delegated timings and registry grace now derive from policy.
+
+	
+=
+identity: DaemonWorkspaceIdentity
+	
+=
+Promise<DaemonWarmupTriggerResult>
+
+Already ready result or warming trigger result.
+
+	
+=
+
+Election/probe/launch/replacement failures propagate; owned lease is released on failure.
+
+	
+=
+
+Observes compatible daemon or elects ownership, replaces stored instance and launches.
+
+
+
+DaemonStartupCoordinator.waitUntilReady
+method · p131-162
+body edited
+Source & named types ↗
+
+Missing-owner grace changes source to policy; successful healthy startup stays untimed.
+
+	
+=
+identity: DaemonWorkspaceIdentity
+expectedInstanceId?: string
+	
+=
+Promise<DaemonStartResult>
+
+Ready/already-running result for an authenticated compatible daemon.
+
+	
+=
+
+Child exit, abandoned/lost warmup or missing readiness fails; live warmup has no duration cap.
+
+	
+=
+
+Polls readiness, probes execution and handles ownership/child-exit transitions.
+
+
+Transport & codecs / apps/cli/src/daemon/local-daemon-transport.ts
+
+DaemonServerSend.(call)
+interface port · p131-163
+same declaration + body
+Source & named types ↗	
+=
+response: DaemonServerMessage
+	
+=
+Promise<void>
+
+Completion of sending the response.
+
+	
+=
+
+Send/encoding/socket failures can reject.
+
+	
+=
+
+Writes to the request’s server socket.
+
+
+
+DaemonServerSend.onClose
+interface port · p131-164
+same declaration + body
+Source & named types ↗	
+=
+listener: () => void
+	
+=
+() => void
+
+Unsubscribe function for the close listener.
+
+	
+=
+
+The callable interface declares no error vocabulary.
+
+	
+=
+
+Registers connection-close listener; returned function removes it.
+
+
+
+DaemonTransportError.constructor
+constructor · p131-165
+same declaration + body
+Source & named types ↗	
+=
+readonly code: DaemonTransportFailureCode
+readonly delivery: DaemonDeliveryState
+message: string
+authenticatedInstanceId?: string
+retrySafe = delivery === "not-submitted"
+	
+=
+DaemonTransportError
+
+An error object carrying the declared message/fields/cause.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Constructs the error; does not itself throw it.
+
+
+
+LocalDaemonTransport.constructor
+constructor · p131-166
+signature edited
+Source & named types ↗
+
+Required first policy argument; options retain purpose (ordinary/status-observer), directory and writeChunkSize.
+
+	
+B
+options: LocalDaemonTransportOptions = {}
+Changes in LocalDaemonTransportOptions:
+readonly maximumFrameBytes?: number;
+readonly requestTimeoutMs?: number;
+readonly executionRequestTimeoutMs?: number;
+readonly outputInlineBytes?: number;
+responseTimeoutPurpose: (not present)
+Changes in LocalDaemonTransportPolicy:
+(definition): (not present)
+A
+policy: LocalDaemonTransportPolicy
+options: LocalDaemonTransportOptions = {}
+Changes in LocalDaemonTransportOptions:
+maximumFrameBytes: (removed)
+requestTimeoutMs: (removed)
+executionRequestTimeoutMs: (removed)
+outputInlineBytes: (removed)
+readonly responseTimeoutPurpose?: "ordinary" | "status-observer";
+Changes in LocalDaemonTransportPolicy:
+export type LocalDaemonTransportPolicy = Pick< DaemonPolicyValues, "transport" | "delivery" | "output" >;
+	
+=
+LocalDaemonTransport
+
+Transport with output, delivery and transport policy sections.
+
+	
+=
+
+No explicit failure branch for typed input.
+
+	
+=
+
+Stores capacities/timeouts and optional directory/write fragmentation settings.
+
+
+
+LocalDaemonTransport.canFrame
+method · p131-167
+same declaration + body
+Source & named types ↗
+
+JSON cap now comes from transport policy.
+
+	
+=
+value: unknown
+	
+=
+boolean
+
+Whether JSON frame encoding succeeds within configured capacity.
+
+	
+=
+
+Converts encoding/capacity failures to false.
+
+	
+=
+
+Encodes a candidate in memory without sending.
+
+
+
+LocalDaemonTransport.request
+method · p131-168
+same declaration + body
+Source & named types ↗
+
+Uses transport purpose’s single-response deadline and JSON cap.
+
+	
+=
+endpoint: string
+request: DaemonLifecycleRequest
+	
+=
+Promise<DaemonLifecycleResponse>
+
+One validated lifecycle response.
+
+	
+=
+
+Unreachable, timeout, closed, corrupt or rejected transport failures can reject.
+
+	
+=
+
+Opens socket, writes request, validates reply and closes.
+
+
+
+LocalDaemonTransport.execute
+method · p131-169
+body edited
+Source & named types ↗
+
+Independent numeric reattachment/resume limits; acceptance disables admission timer; fetch failure settles completion.
+
+	
+=
+endpoint: string
+request: DaemonExecuteRequest
+	
+=
+Promise<DaemonExecutionReceipt>
+
+Receipt with authenticated acceptance and a separate completion Promise.
+
+	
+B
+
+Admission failures reject receipt; accepted transport failures reject completion; remote execution failure can resolve {status:failed}. A failed reattached acceptance or completion rethrows the original completion error.
+
+A
+
+Admission failures reject receipt; accepted transport failure can reject completion; remote execution failure can resolve {status:failed}. Error selection on reattachment changes.
+
+	
+=
+
+Sends execute, captures/spills output, may fetch by offset, acknowledge result and reattach same request.
+
+
+
+LocalDaemonTransport.executionStatus
+method · p131-170
+same declaration + body
+Source & named types ↗
+
+Uses instance-selected timeout; ordinary composition remains 250 ms even for execution-status request kind.
+
+	
+=
+endpoint: string
+request: DaemonExecutionStatusRequest
+	
+=
+Promise<DaemonExecutionStatus>
+
+Authenticated execution status value.
+
+	
+=
+
+Transport errors reject; non-status response throws corrupt/accepted DaemonTransportError.
+
+	
+=
+
+Performs one-response socket exchange.
+
+
+
+LocalDaemonTransport.listen
+method · p131-171
+same declaration + body
+Source & named types ↗
+
+Downstream JSON/binary output caps now come from the supplied policy.
+
+	
+=
+endpoint: string
+handler: (request: DaemonRequest, send: DaemonServerSend) => Promise<DaemonResponse | void>
+	
+=
+Promise<DaemonServer>
+
+Listening server handle.
+
+	
+=
+
+Reachable existing endpoint, bind/listen or filesystem failure rejects.
+
+	
+=
+
+Prepares/removes stale Unix socket, accepts clients, validates frames and dispatches handler.
+
+
+
+LocalDaemonTransport.removeUnavailableEndpoint
+method · p131-172
+same declaration + body
+Source & named types ↗
+
+Probe timeout now originates in transport policy.
+
+	
+=
+endpoint: string
+	
+=
+Promise<boolean>
+
+False for reachable endpoint; true after unavailable-endpoint handling.
+
+	
+=
+
+Filesystem removal can reject.
+
+	
+=
+
+Probes endpoint; removes unavailable Unix socket (no removal on Windows).
+
+
+CLI composition / apps/cli/src/daemon/workspace-daemon.ts
+
+WorkspaceDaemonOptions.navigationWorkerFactory
+callback port · p131-173
+same declaration + body
+Source & named types ↗	
+=
+generation: number
+	
+=
+DaemonNavigationWorker
+
+Navigation worker for the requested generation.
+
+	
+=
+
+Factory construction may throw.
+
+	
+=
+
+Creates the injected worker implementation.
+
+
+
+WorkspaceDaemonOptions.now
+callback port · p131-174
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+number
+
+Current time, resident-memory bytes or retained-spool bytes, according to the callback.
+
+	
+=
+
+Caller-supplied callback; no error type is declared.
+
+	
+=
+
+Samples the injected clock or resource measurement.
+
+
+
+WorkspaceDaemonOptions.exit
+callback port · p131-175
+same declaration + body
+Source & named types ↗	
+=
+code: number
+	
+=
+void
+
+void
+
+	
+=
+
+Host exit callback defines its own control flow.
+
+	
+=
+
+Terminates or records daemon process exit according to injection.
+
+
+
+WorkspaceDaemonOptions.residentMemoryBytes
+callback port · p131-176
+same declaration + body
+Source & named types ↗	
+=
+No arguments
+	
+=
+number
+
+Current time, resident-memory bytes or retained-spool bytes, according to the callback.
+
+	
+=
+
+Caller-supplied callback; no error type is declared.
+
+	
+=
+
+Samples the injected clock or resource measurement.
+
+
+
+WorkspaceDaemon.constructor
+constructor · p131-177
+named type edited
+Source & named types ↗
+
+Independent memory/spool/timing/trace knobs removed from WorkspaceDaemonOptions; policy supplies them all.
+
+	
+B
+private readonly options: WorkspaceDaemonOptions
+Changes in WorkspaceDaemonOptions:
+readonly memoryCapBytes: number;
+readonly resourcePolicy?: DaemonResourcePolicy;
+readonly idleTimeoutMs?: number;
+readonly resourceCheckIntervalMs?: number;
+readonly startupHeartbeatIntervalMs?: number;
+readonly completionSpoolLimits?: { readonly inlineBytes?: number; readonly maximumResultBytes?: number; readonly maximumAggregateBytes?: number; };
+readonly operationTraceRetentionMs?: number;
+readonly maximumRetainedOperationTraces?: number;
+A
+private readonly options: WorkspaceDaemonOptions
+Changes in WorkspaceDaemonOptions:
+memoryCapBytes: (removed)
+resourcePolicy: (removed)
+idleTimeoutMs: (removed)
+resourceCheckIntervalMs: (removed)
+startupHeartbeatIntervalMs: (removed)
+completionSpoolLimits: (removed)
+operationTraceRetentionMs: (removed)
+maximumRetainedOperationTraces: (removed)
+
+Named input/output type changes. Open types beside source.
+
+	
+=
+WorkspaceDaemon
+
+WorkspaceDaemon with request ledger, queue, spool store, logger, worker, lifetime and supervisor.
+
+	
+=
+
+Nested construction, including policy parsing in Node worker, can throw.
+
+	
+B
+
+Constructs worker, starts lifetime timer and wires host callbacks; uses independent numeric options/local defaults alongside policy.
+
+A
+
+Constructs worker and starts lifetime timer; wires host callbacks and policy slices.
+
+
+
+WorkspaceDaemon.start
+method · p131-178
+body edited
+Source & named types ↗
+
+Startup cadence/grace and published memoryCapBytes now use policy; request handling also consumes diagnostic/drain timings.
+
+	
+=
+No arguments
+	
+=
+Promise<void>
+
+Completion once daemon readiness has been published.
+
+	
+=
+
+Lost startup ownership, non-ready worker or dependencies may reject after cleanup/logging.
+
+	
+=
+
+Authorizes startup, heartbeats, listens, warms worker, samples resources, publishes record and starts supervision.
+
+04 / THE VALUES BEING CONSUMED
+
+Policy leaf → caller consequence
+Open the policy record ↗
+
+These values and reasons already exist in #131’s base. This PR changes their consumers. Memory limits are derived from effective system memory; the table keeps the recorded recipes.
+
+Policy leaf	Default / derivation	Consumer purpose	Recorded reason
+transport.singleResponseTimeoutMs	250 ms	Ordinary lifecycle and execution-status exchanges	Bound one-response local socket waits
+transport.statusResponseTimeoutMs	100 ms	Status observer lifecycle exchange	Keep status aggregation responsive independently of routing
+transport.executionAdmissionTimeoutMs	5 s	Execute submission until acceptance	Bound admission without timing accepted completion
+transport.maximumJsonPayloadBytes	8 MiB	Ordinary JSON control frames	Bound decoded control input
+transport.maximumExecutionControlPayloadBytes	256 KiB	Execution transfer control frames	Keep binary-transfer control bounded separately
+startup.coordinationGraceMs	15 s	Startup ownership and missing-owner observation	Preserve election recovery grace
+startup.heartbeatIntervalMs	100 ms	Startup-owner heartbeat	Maintain live ownership while warming
+startup.authorizationPollIntervalMs	10 ms	Process authorization wait	Preserve the distinct fast authorization cadence
+startup.observationPollIntervalMs	20 ms	Launcher readiness observation	Preserve current readiness polling cadence
+startup.previousInstanceTerminationTimeoutMs	5 min	Replacement of a previous instance	Allow controlled termination before new ownership proceeds
+startup.childFailureRetryLimit	1 retry	Explicit startup child failure	Preserve one fresh launch after a failed child
+shutdown.idleTimeoutMs	30 min	Warm daemon idle lifetime	Release retained resources after inactivity
+shutdown.stopTimeoutMs	5 s	User-requested stop	Bound graceful stop and forced escalation together
+shutdown.forcedTerminationReserveMaximumMs	500 ms	Stop escalation reserve	Leave bounded time for authenticated force termination
+shutdown.controllerPollIntervalMs	20 ms	Controller process/registry observation	Preserve control-plane polling cadence
+shutdown.processSignalExitTimeoutMs	500 ms after SIGTERM and 500 ms after SIGKILL	Direct process termination	Give each signal a bounded exit interval
+shutdown.processExitPollIntervalMs	20 ms	Direct process termination	Preserve process-exit polling cadence independently
+shutdown.resourceDrainAcknowledgementGraceMs	250 ms	Completion acknowledgement during drain	Permit an attached client to acknowledge before cleanup
+shutdown.resourceDrainAcknowledgementPollIntervalMs	5 ms	Completion acknowledgement during drain	Preserve the distinct fast acknowledgement cadence
+delivery.postAcceptanceExecutionReattachmentLimit	1 reattachment	Authenticated close after acceptance	Recover the accepted request without local replay
+delivery.resultTransferResumeLimitPerExecutionAttempt	1 fetch resume per execute attempt	Interrupted manifest transfer	Resume one transfer independently for each execute attempt
+output.maximumChunkRawBytes	64 KiB	Worker and result chunks	Bound one raw output record
+output.inlineRawBytes	256 KiB	Inline result storage	Avoid files for small results
+output.maximumResultRawBytes	256 MiB	One completed result	Bound retained output for one request
+output.maximumAggregateSpoolRawBytes	512 MiB	All retained completions for one daemon	Bound aggregate spool pressure
+resources.effectiveMemoryBytes	Selected raw effective bytes	Resource reports and derived thresholds	Preserve non-MiB-aligned system information exactly
+resources.hardProcessRssBytes	Hard-process-RSS recipe	Process replacement and worker launch	Trigger controlled replacement before OOM
+resources.softProcessRssBytes	floor(hardProcessRssMiB * 0.8) * MiB	Transient resource shedding	Shed before hard replacement
+resources.resumeProcessRssBytes	floor(hardProcessRssMiB * 0.7) * MiB	Admission resumption	Require lower RSS before resuming work
+resources.workerMaxOldGenerationSizeMiB	Worker-old-generation recipe	Worker resource limits	Pass the derived V8 limit unchanged
+resources.supervisionIntervalMs	250 ms	Process RSS and spool sampling	Detect sustained pressure without per-operation overhead
+resources.replacementWindowMs	10 min	Replacement circuit	Count only recent replacements
+resources.replacementLimit	2 replacements; third drains	Replacement circuit	Stop persistent replacement churn
+resources.workerHeapSampleIntervalMs	25 ms	Active worker heap high-water sampling	Observe short-lived heap peaks
+diagnostics.logRotateBytes	10 MiB	Diagnostic log rotation	Bound active diagnostic file size
+diagnostics.logBackupCount	4 backups plus active log	Diagnostic log rotation	Retain a bounded diagnostic history
+diagnostics.maximumQueuedEvents	1,024	Pending diagnostic writes	Bound memory when storage is slow
+diagnostics.disconnectedTraceRetentionMs	5 min	Disconnected operation traces	Retain reconnect evidence without changing result retention
+diagnostics.maximumDisconnectedTraces	1,024 with effective minimum 1	Disconnected operation traces	Bound diagnostic-only retention
+
+Evidence is embedded from the supplied base/head worktrees. No live calls, review decisions, or comments are stored.
+
+#131 base b3a6c4fa5dcf96223765aa147a9e094cd4a51b0e
+#131 head b100221db48754656328391b878299c5a0bab443
+
+↑ Return to the start Raw callable index ↗ Method & limitations ↗

@@ -1,0 +1,653 @@
+Skip to content
+31 METHOD / RUNBOOK
+PR 127
+Read the runbook
+Inspect this run
+README
+PR 127 · SCOPE SEMANTIC CACHES TO ONE TURN · STACK LAYER 4 / 26
+Core gets the clearing job.
+Release gets an awaited boundary.
+
+These query results were already turn-scoped. This change moves their clearing machinery into core and connects project-release completion to the backend caller.
+
+A turn here is the service's cache interval, advanced after a successful backend refresh. Read the maps and all twelve decisions for the complete overview. Every deeper section adds mechanism or source to a choice already here.
+
+Move the clearing machinery
+Follow the ownership change ↗
+BEFORE
+a1e325a
+@symnav/backend-typescript
+TypeScriptBackend
+owns service, state, project graph, source cache
+↓ refresh / release
+Semantic query service
+query algorithms + six Maps + manual clear list
+definitions
+references
+call targets
+callers
+callees
+positions
+↓ starts graph release; discards its promise
+TypeScriptProjectGraph
+concrete project cleanup is synchronous
+@symnav/core
+ProjectGraph base
+existing async release loop, inherited by TypeScript graph
+The generic turn-cache scope does not exist here yet.
+AFTER
+64919bc
+@symnav/backend-typescript
+TypeScriptBackend
+same owners; now awaits service release
+↓ refresh / await release
+Semantic query service
+query algorithms + file list; constructs a core scope
+↓ clears scope, then awaits graph release
+TypeScriptProjectGraph
+inherits the same async release loop
+service → core: creates six handles; delegates lookup and clear
+@symnav/core · NEW CACHE MODULE
+TurnScopedCacheScope
+registers and clears isolated Map-backed handles
+definitions
+references
+call targets
+callers
+callees
+positions
+Code is defined in core; the scope instance belongs to the service.
+The existing ProjectGraph base remains in core.
+clearing code removed from TypeScript
+clearing code added to core
+existing units and calls
+Simplified package picture: only units needed for cache lifetime are shown; the six badges stand for separate caches, not six entries. The service already cleared query caches between successful turns. The new scope moves that responsibility across the existing TypeScript → core dependency.
+Keep clearing separate from finishing
+Follow completion and failure ↗
+REFRESH
+both versions
+Current cache turn
+→
+Refresh source / projects / state
+→
+Success: begin next turn, clear entries
+
+Failure: keep prior cache turn
+RELEASE
+before
+Clear six Maps now
+→
+Start graph release
+→
+Backend returns without graph's outcome
+RELEASE
+after
+Clear scope entries now
+→
+Service + backend await graph
+→
+Backend completes or rejects with graph
+Handles can refill while release is pending.
+Clearing does not cancel promises already returned.
+Schematic call order, not measured durations. The new pending/rejecting-release test controls a graph promise. The real graph already returns a promise; concrete TypeScript project cleanup is synchronous. A rejection can stop its later project releases. The cache scope itself has no active/released state.
+Twelve choices, with their reasons
+Why this order ↗
+
+“Stated” means a source gives a reason. “Unexplained” means no reason was found in the bounded PR/commit/plan corpus; the choice may still be explicitly declared. The PR promises preservation, while release completion and failure visibility change. That distinction remains visible below.
+
+01 / The moved boundaries
+D01
+REASON: STATED
+Give six caches one clearing owner
+
+Core owns clearing for all six handles; TypeScript keeps the query algorithms. Five handles use symbol identities, one uses file positions. Their key and value spaces stay separate.
+
+Independent query key and value spaces are the stated reason for six handles.
+
+Mechanism & evidence ↗
+D12
+REASON: UNEXPLAINED
+Carry project completion and failure back to the backend
+
+Backend release now waits for the graph's completion and propagates its rejection, including failure that stops later project releases. This is an observable contract change alongside the ownership move. The PR declares the barrier, but the broad plan promises unchanged failure behavior; no separate rationale reconciles that change. The generic graph already returns a promise even though concrete TypeScript cleanup is synchronous.
+
+The awaited barrier is explicit, but no separate reason reconciles changed failure/completion visibility with the plan's preservation promise. The stated clearing-order reason belongs to D02.
+
+Mechanism & evidence ↗
+D02
+REASON: STATED
+Empty entries before project release
+
+Old cache entries disappear synchronously when release starts, even while project release is pending or rejects. The ordering is preserved; the clearing owner changes.
+
+The PR says released semantics must be unavailable while release is pending or rejecting.
+
+Mechanism & evidence ↗
+D03
+REASON: STATED
+Advance the cache turn only after refresh succeeds
+
+Successful refresh clears the previous turn, even for unchanged files. Failed refresh never reaches beginTurn, so it keeps the prior cache entries and query-file list. This is a cache guarantee, not a claim that every refresh side effect is rolled back.
+
+The PR says failed refresh must preserve the current successful turn.
+
+Mechanism & evidence ↗
+02 / Declared surfaces, missing reasons
+D04
+REASON: UNEXPLAINED
+Use a scope object at the package seam
+
+The service composes a core scope. The plan describes shared backend bases and inheritance; the PR shows this composed form, without giving a reason for that form. The existing TypeScript → core dependency direction is retained.
+
+The PR describes composition but gives no reason for choosing it over the plan's base/extends wording.
+
+Mechanism & evidence ↗
+D05
+REASON: UNEXPLAINED
+Expose reusable handles and whole-scope clearing
+
+The public handle offers getOrCreate; scope methods clear every registered handle synchronously. Handles remain usable before beginTurn, after repeated release, and during pending project release. There is no turn gate, per-key invalidation, or handle-unregister operation; the service creates its six handles once.
+
+The public surface is stated; no reason is given for this minimal, reusable lifecycle contract.
+
+Mechanism & evidence ↗
+D06
+REASON: UNEXPLAINED
+Pass a file list across the exported service API
+
+The already-exported semantic service now takes a file list instead of a whole snapshot. The backend supplies snapshot.files. Direct callers of that public method must change their argument shape; the PR records the signature change without explaining why.
+
+No reason for the narrower argument is stated in the PR, commits, or relevant plan passages.
+
+Mechanism & evidence ↗
+03 / Contracts kept and made generic
+D08
+REASON: STATED
+Return the exact factory value between clears
+
+Between clears, a repeated key on one handle returns the same value or promise object. Clearing forgets entries without cancelling returned work. An old promise may settle later but cannot overwrite a new-turn entry. Promise identity applies at the cached service/handle boundary, not every async wrapper.
+
+The PR's compatibility intent explicitly preserves promise/value identities; it gives no separate optimization claim.
+
+Mechanism & evidence ↗
+D09
+REASON: STATED
+Keep async failures cached; retry synchronous throws
+
+A factory that returns a promise stores it, including later rejection, until the next clear. A factory that throws synchronously stores nothing, so the next access retries. TypeScript definitions/callees take the async path; reference discovery can take the synchronous path.
+
+The stated reason is compatibility with existing failure behavior; no independent defense of the asymmetry is supplied.
+
+Mechanism & evidence ↗
+D07
+REASON: STATED
+Treat undefined as a cached value
+
+A present key is a hit even when its value is undefined. Existing TypeScript caches hold arrays or promises; the generic core contract also supports undefined without rerunning the factory.
+
+The PR explicitly names undefined as a valid cached value.
+
+Mechanism & evidence ↗
+D10
+REASON: STATED
+Keep TypeScript projections and query work in place
+
+Query keys and bodies stay in TypeScript. Observers run on cache misses; callers and references share cached reference locations. Position caches keep locations (including empty results), while each access rebuilds a node array. Reference results are also projected per access; the refactor does not turn all outputs into shared objects.
+
+The PR explicitly preserves all six algorithms, key spaces, and value identities.
+
+Mechanism & evidence ↗
+D11
+REASON: STATED
+Add contract tests while retaining prior assertions
+
+Ten new tests cover identities/isolation, empty-position projection, rejection versus throw, successful-turn preservation, immediate clearing plus awaited release, repeated release, and late promise settlement. The five existing tests remain; none is weakened or deleted. The pending/rejecting release case uses a controlled graph double. This artifact inspects tests; it does not report a test run.
+
+The PR names characterization and identity/error/clearing contracts, alongside its compatibility intent.
+
+Mechanism & evidence ↗
+The complete overview ends here. You have the moved boundaries, preserved contracts, public surfaces, test changes, and rationale gaps. Continue linearly, or follow any decision directly to its mechanism and evidence.
+The same choices, at source resolution
+↑ Complete overview
+D01 · MECHANISM
+Give six caches one clearing owner
+↑ Return to overview
+BEFORE
+The TypeScript service owns six Maps and a six-call clearing list.
+AFTER
+The service creates one core scope with six independent typed handles.
+Part	Mechanism / context	Evidence
+Ownership	The removed clearQueryCaches method names all six Maps. The new scope registers clearable handles and visits its registry on either boundary.	
+E46
+E20
+
+Partition	definitions, references, call targets, callers, and callees use formatted symbol-identity strings. definitionsByPosition uses relativePath:start. Each createCache call allocates a separate Map.	
+E11
+E19
+E21
+E22
+E23
+E26
+
+REASON: STATED — Independent query key and value spaces are the stated reason for six handles.
+
+Intent record: Explicit in the PR context, shape, and decisions.
+
+E10
+E11
+E12
+E46
+E03
+E08
+D12 · MECHANISM
+Carry project completion and failure back to the backend
+↑ Return to overview
+BEFORE
+The graph's promise is started and discarded by a void service method; the backend does not await it.
+AFTER
+The service becomes async and the backend awaits it, connecting the caller to graph settlement.
+Part	Mechanism / context	Evidence
+Before	Service clears, calls the graph, and returns void. The async backend returns without adopting the graph promise.	
+E13
+E15
+E17
+
+After	Service awaits the graph and backend awaits service. A graph rejection now reaches the backend caller. The existing graph's sequential loop stops on rejection, so later release work is not run.	
+E14
+E16
+E17
+E36
+
+Reason boundary	PR shape and signatures explicitly describe the barrier. The reason for clearing before an await does not separately explain why a refactor changes what the backend caller observes. The broad plan asks for unchanged failure paths; this artifact leaves that choice for the reader.	
+E02
+E07
+E09
+
+REASON: UNEXPLAINED — The awaited barrier is explicit, but no separate reason reconciles changed failure/completion visibility with the plan's preservation promise. The stated clearing-order reason belongs to D02.
+
+Intent record: Explicit in PR shape and public surface; broader plan tension is surfaced without a correctness verdict.
+
+E02
+E07
+E09
+E13
+E14
+E15
+E16
+E17
+E18
+E36
+D02 · MECHANISM
+Empty entries before project release
+↑ Return to overview
+BEFORE
+The service synchronously clears its six Maps before starting graph release.
+AFTER
+The service synchronously clears its scope before awaiting graph release.
+Part	Mechanism / context	Evidence
+First	Calling the async service method executes cacheScope.releaseTransientResources synchronously, before its first await.	
+E16
+E20
+
+During release	The added test queries after release begins, obtains a different definition array, and sees the backend release promise still pending before rejecting its controlled graph promise.	
+E36
+
+REASON: STATED — The PR says released semantics must be unavailable while release is pending or rejecting.
+
+Intent record: Explicit PR decision; existing order preserved through the core scope.
+
+E15
+E16
+E20
+E36
+E05
+D03 · MECHANISM
+Advance the cache turn only after refresh succeeds
+↑ Return to overview
+BEFORE
+beginTurn follows the awaited state refresh.
+AFTER
+The ordering remains; beginTurn delegates clearing to core.
+Part	Mechanism / context	Evidence
+Refresh path	Source-cache refresh runs first; workspace coverage also awaits project-graph refresh; state refresh is awaited next. Only then is the file list passed to beginTurn.	
+E14
+
+Failure path	A rejected state refresh skips both the file-list assignment and scope clear. Earlier source/project work is outside this cache-lifecycle claim.	
+E14
+E11
+E35
+
+Unchanged input	The retained next-turn test refreshes the same snapshot twice and expects a second reference search after the second refresh.	
+E37
+
+REASON: STATED — The PR says failed refresh must preserve the current successful turn.
+
+Intent record: Explicit PR decision and new characterization test; behavior preserved.
+
+E13
+E14
+E11
+E35
+E37
+E06
+D04 · MECHANISM
+Use a scope object at the package seam
+↑ Return to overview
+BEFORE
+Generic cache machinery is implemented inside the TypeScript service.
+AFTER
+The service constructs a core helper object and calls its methods.
+Part	Mechanism / context	Evidence
+Construction	cacheScope is a field initialized with new TurnScopedCacheScope. The service still implements PositionDefinitionResolver and is not made a scope subclass.	
+E11
+
+Plan comparison	The plan says a shared concept lives in core as a base the backend extends. The PR's own diagram instead shows the service owning a scope. The supplied material does not reconcile this particular form.	
+E08
+E02
+
+REASON: UNEXPLAINED — The PR describes composition but gives no reason for choosing it over the plan's base/extends wording.
+
+Intent record: Present in the PR shape; differs in implementation form from the plan's wording, rather than being absent from the PR.
+
+E02
+E08
+E11
+E40
+D05 · MECHANISM
+Expose reusable handles and whole-scope clearing
+↑ Return to overview
+BEFORE
+Maps are private to the service; core has no generic turn-cache surface.
+AFTER
+Core exports a scope and a typed getOrCreate-only handle interface.
+Part	Mechanism / context	Evidence
+Handle API	TurnScopedCache<Key, Value> exposes getOrCreate. The unexported concrete handle also has clear; callers typed as the interface are not given that method.	
+E19
+E40
+
+Scope API	createCache registers a handle in an array. beginTurn and releaseTransientResources both call the same synchronous clear loop; the registry is retained.	
+E20
+
+Reusable lifetime	There is no active/released flag. Tests populate before beginTurn, release twice, then populate again. The pending-release test also performs a new query before release settles.	
+E12
+E29
+E36
+
+Allocation boundary	The TypeScript service constructs all six handles as fields. The generic scope exposes neither unregister nor single-key deletion.	
+E11
+E12
+
+REASON: UNEXPLAINED — The public surface is stated; no reason is given for this minimal, reusable lifecycle contract.
+
+Intent record: Public surface explicitly listed in PR; lifecycle limits derived from the entire new implementation.
+
+E07
+E12
+E29
+E36
+E40
+E11
+D06 · MECHANISM
+Pass a file list across the exported service API
+↑ Return to overview
+BEFORE
+beginTurn receives a WorkspaceSnapshot and reads snapshot.files.
+AFTER
+beginTurn receives readonly WorkspaceFile[] directly.
+Part	Mechanism / context	Evidence
+Call boundary	The backend changes beginTurn(request.snapshot) to beginTurn(request.snapshot.files); the service assigns files directly before clearing.	
+E13
+E14
+E10
+E11
+
+Visibility	TypeScriptSemanticQueryService remains exported from the package root. The change is therefore visible to direct service consumers, even though the main backend refresh request keeps its shape.	
+E41
+E07
+E14
+
+REASON: UNEXPLAINED — No reason for the narrower argument is stated in the PR, commits, or relevant plan passages.
+
+Intent record: Explicit PR public-surface change; not an unrequested change relative to that body.
+
+E07
+E10
+E11
+E14
+E41
+D08 · MECHANISM
+Return the exact factory value between clears
+↑ Return to overview
+BEFORE
+Specialized Maps store exact array or promise objects.
+AFTER
+getOrCreate stores and returns the factory result unchanged.
+One key, two promise lifetimes
+
+Illustrative identity trace, transcribed from the new core test; no runtime was executed for this page.
+
+Step	Entry in the cache	Returned work	What to notice
+1 · first lookup	P₀	P₀ pending	The factory's promise is returned unchanged.
+2 · same key, same turn	P₀	P₀ pending	Hit: no second factory call.
+3 · beginTurn()	empty	P₀ still pending	Only the entry is forgotten.
+4 · new lookup	P₁	P₀ and P₁	A new factory result occupies the same key.
+5 · P₀ settles	P₁	Old caller gets old result	Settlement has no cache-write callback.
+Part	Mechanism / context	Evidence
+Identity	The factory result is inserted directly, and hits return it directly. The cache adds no promise wrapper or settlement handler.	
+E19
+
+Later settlement	The core test stores an old pending promise, begins a new turn, stores a new promise, then settles the old one. The old caller still gets old; a cache lookup still gets new.	
+E31
+
+Boundary	The new service test checks the direct promises from definitions, call target, callers, and callees. findReferences projects anew; backend query methods are async wrappers, so this is not a universal API promise-identity claim.	
+E32
+E25
+E14
+
+REASON: STATED — The PR's compatibility intent explicitly preserves promise/value identities; it gives no separate optimization claim.
+
+Intent record: Preservation explicitly requested; old-settlement consequence additionally specified by the new core test.
+
+E01
+E19
+E20
+E31
+E32
+E44
+E14
+E25
+D09 · MECHANISM
+Keep async failures cached; retry synchronous throws
+↑ Return to overview
+BEFORE
+Rejected promises remain in the specialized Maps; a synchronous factory failure never reaches set.
+AFTER
+The generic handle preserves the same split by setting only after createValue returns.
+Part	Mechanism / context	Evidence
+Returned rejection	A Promise is a returned value before it settles. It is inserted once; rejection does not evict it.	
+E19
+E30
+E34
+
+Thrown failure	If createValue throws, values.set is never reached. In referenceLocations, findReferenceLocations executes before Promise.resolve can receive its result.	
+E19
+E26
+E27
+
+Public observation	findReferences is async, so its caller still observes a rejection; the internal factory nevertheless threw before caching. The added test observes two discovery attempts.	
+E25
+E34
+
+REASON: STATED — The stated reason is compatibility with existing failure behavior; no independent defense of the asymmetry is supplied.
+
+Intent record: Explicit preservation request, with new core and TypeScript characterization tests.
+
+E01
+E19
+E26
+E27
+E30
+E34
+E42
+E43
+D07 · MECHANISM
+Treat undefined as a cached value
+↑ Return to overview
+BEFORE
+The specialized Maps use truthiness checks on their array/promise values.
+AFTER
+The generic handle tests Map.has before Map.get.
+Part	Mechanism / context	Evidence
+Hit path	getOrCreate checks values.has(key), then returns values.get(key) as Value. It does not ask whether the retrieved value is truthy.	
+E19
+
+Test contract	The undefined-producing factory is accessed twice at the same key and expected to run once, while another handle has its own independent value space.	
+E28
+
+REASON: STATED — The PR explicitly names undefined as a valid cached value.
+
+Intent record: Explicit PR decision; new generic behavior characterized in core.
+
+E04
+E19
+E28
+E44
+E11
+D10 · MECHANISM
+Keep TypeScript projections and query work in place
+↑ Return to overview
+BEFORE
+The service owns query keys, observers, locations, node reconstruction, and query bodies.
+AFTER
+The same work remains around getOrCreate factories and per-access projections.
+Part	Mechanism / context	Evidence
+Queries and observers	Definition/reference search observers and position-resolution observers remain inside miss factories. findCallers reuses referenceLocations; findReferences uses that same cached location promise.	
+E21
+E22
+E23
+E26
+E25
+
+Position entries	The file:start key stores relative path, start, and syntax kind. A hit still looks up the project's source file and calls nodeAtSemanticLocation for each cached location.	
+E23
+E24
+
+Per-access output	The position test gets different outer arrays containing the same node; empty results avoid a second discovery. Reference projection remains outside its cached location factory.	
+E33
+E25
+
+REASON: STATED — The PR explicitly preserves all six algorithms, key spaces, and value identities.
+
+Intent record: Explicit compatibility intent; position and reference projections are retained implementation choices.
+
+E01
+E21
+E22
+E23
+E24
+E25
+E26
+E33
+E37
+E38
+D11 · MECHANISM
+Add contract tests while retaining prior assertions
+↑ Return to overview
+BEFORE
+The service has five tests; the generic core scope does not exist.
+AFTER
+Six service tests and four core tests are added; the five prior test bodies and helpers are unchanged.
+Part	Mechanism / context	Evidence
+Four core tests	Exact values/undefined/isolation; clearing and repeated release; rejected promises versus throwing factories; late old-promise settlement after a turn change.	
+E28
+E29
+E30
+E31
+
+Six service tests	Four direct query identities; empty positions and fresh outer arrays; async failure retention; synchronous reference retry; failed refresh retention; immediate clearing with pending/rejecting graph release.	
+E32
+E33
+E34
+E35
+E36
+
+Retained assertions	The old block from the first existing test through the fixture helpers is byte-for-byte equal in the two snapshots. The only removed test-file line is the import expanded to include vi.	
+E37
+E38
+E39
+
+Evidence boundary	The added asynchronous graph is an injected test double. Concrete TypeScript project cleanup is synchronous; the existing generic graph returns a promise and can await projects sequentially. No runtime benchmark or whole-system output comparison was performed.	
+E36
+E17
+E18
+
+REASON: STATED — The PR names characterization and identity/error/clearing contracts, alongside its compatibility intent.
+
+Intent record: Test additions explicitly described in PR; no removed or weakened assertions in this diff.
+
+E47
+E28
+E29
+E30
+E31
+E32
+E33
+E34
+E35
+E36
+E37
+E38
+E39
+Evidence shelf
+↑ Complete overview
+
+Exact local excerpts from the frozen base/head and supplied PR. These show the sources of the choices above. Each link opens an excerpt and each excerpt links back to the mechanisms that use it. Full copied files are available beneath the excerpt.
+
+E01PR: compatibility intent
+E02PR: composed scope and awaited barrier
+E03PR: reason for six handles
+E04PR: reason for presence checks
+E05PR: reason for clearing before release
+E06PR: reason for success-only turn change
+E07PR: public surfaces
+E08Plan: bases and language ownership
+E09Plan: preserve behavior and separate fixes
+E10Before: six Maps and snapshot input
+E11After: scope, handles, files input
+E12Core: entire new lifecycle implementation
+E13Before: refresh and detached release
+E14After: refresh, awaited release, and async query wrappers
+E15Before: clear, start graph release, return void
+E16After: clear, await graph release
+E17Existing graph: sequential release with awaits
+E18Existing concrete project: synchronous cleanup
+E19Handle: presence check, raw value, set after factory
+E20Scope: registry and repeatable clear
+E21Definitions: factory and observer remain on misses
+E22Call queries: original algorithms in factories
+E23Position cache: locations in, nodes rehydrated out
+E24Before: same location and node projection
+E25References: per-access projection outside cached locations
+E26Reference discovery can throw before Promise.resolve
+E27Before: same synchronous reference discovery
+E28New test: identity, undefined, isolated handles
+E29New test: turn clear, repeated release, reusable handles
+E30New test: rejected promise versus synchronous throw
+E31New test: old settlement cannot replace new entry
+E32New test: four direct query promise identities
+E33New test: empty locations and per-access node arrays
+E34New tests: async failure retention and sync retry
+E35New test: failed refresh retains current turn
+E36New test: pending and rejecting release double
+E37Retained tests: shared references and next-turn clearing
+E38Retained tests: repeated targets and diamond paths
+E39Retained test: rebuilding released semantics
+E40Added package-root exports
+E41Service was already exported at package root
+E42Definition query starts asynchronously
+E43Callee query starts asynchronously
+E44Before: exact definition promise is stored
+E45Before: call query caching
+E46Removed manual six-cache clear sequence
+E47PR: characterization and contract-test intention
+Built by following Extract → rank → render v1. Inspect the run · Authored ledger · Changed-line assignments. Source inspection, not a correctness verdict, runtime comparison, or reader study. No input or response is stored.

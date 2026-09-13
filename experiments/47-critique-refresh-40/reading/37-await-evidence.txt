@@ -1,0 +1,77 @@
+DECISION 07
+×
+EVIDENCE
+
+Move completion to the far side of project release
+
+Backend release now waits for project release and propagates its rejection; previously it could resolve while project release was pending. The PR names this API change while also claiming failure behavior is preserved. It gives no reason reconciling those two claims.
+
+UNEXPLAINEDAn awaited backend barrier is documented, but no rationale was found for this caller-observable timing/rejection change within a preservation-only refactor.
+
+INSPECT THE SOURCE OF THIS THREAD
+
+Exact local source excerpts, tied to the bundle’s base and head commits. Line numbers refer to the named revision. Rationale is attributed separately from implementation.
+
+Before: the async backend does not join project release.
+
+BASE · a1e325a5 · packages/backend-typescript/src/typescript-backend/typescript-backend.ts:87–89
+
+87  async releaseTransientResources(): Promise<void> {
+88    this.semanticQueries.releaseTransientResources();
+89  }
+Before: the exported service starts project release and returns void.
+
+BASE · a1e325a5 · packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts:125–128
+
+125  releaseTransientResources(): void {
+126    this.clearQueryCaches();
+127    this.projects?.releaseTransientResources();
+128  }
+After: the backend awaits the service.
+
+HEAD · 64919bcb · packages/backend-typescript/src/typescript-backend/typescript-backend.ts:87–89
+
+87  async releaseTransientResources(): Promise<void> {
+88    await this.semanticQueries.releaseTransientResources();
+89  }
+After: the service awaits the project graph.
+
+HEAD · 64919bcb · packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.ts:129–132
+
+129  async releaseTransientResources(): Promise<void> {
+130    this.cacheScope.releaseTransientResources();
+131    await this.projects?.releaseTransientResources();
+132  }
+Pending completion and propagated rejection are explicit new expectations.
+
+HEAD · 64919bcb · packages/backend-typescript/src/typescript-backend/typescript-semantic-query-service.test.ts:207–216
+
+207    expect(afterRelease).not.toBe(beforeRelease);
+208    expect(definitionSearches).toBe(2);
+209    expect(projectGraph.releaseTransientResources).toHaveBeenCalledOnce();
+210    await Promise.resolve();
+211    expect(releaseSettled).toBe(false);
+212
+213    rejectProjectRelease?.(releaseFailure);
+214    await expect(release).rejects.toBe(releaseFailure);
+215    expect(firstProjectRelease).toHaveBeenCalledOnce();
+216    expect(laterProjectRelease).not.toHaveBeenCalled();
+The PR discloses the changed release return type.
+
+PR BODY · bundle · inputs/pr-127/pr.json → body:66–75
+
+66Changed on exported `TypeScriptSemanticQueryService`:
+67
+68```ts
+69// before: beginTurn(snapshot: WorkspaceSnapshot): void
+70beginTurn(files: readonly WorkspaceFile[]): void;
+71
+72// before: releaseTransientResources(): void
+73releaseTransientResources(): Promise<void>;
+74```
+75
+The same PR context claims failure behavior is preserved.
+
+PR BODY · bundle · inputs/pr-127/pr.json → body:3–3
+
+3The [daemon architecture spec](https://github.com/mohasarc/symnav/blob/main/plans/005/daemon-architecture-functional-spec.md) assigns turn-scoped semantic-cache lifetime to core. Building on #126, this layer moves only cache lifetime out of TypeScript while preserving all six algorithms, key spaces, promise/value identities, and failure behavior.
